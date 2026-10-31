@@ -8793,7 +8793,7 @@ async function handleWorkerQueue(batch: MessageBatch<AgentTickMessage | ChannelS
 
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
-export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, handleWorkerQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, resolveWakeContext };
+export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, handleWorkerQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, resolveWakeContext, wakeAgentGoal };
 export type { AgentTickMessage };
 
 export default {

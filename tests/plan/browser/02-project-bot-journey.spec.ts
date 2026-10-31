@@ -1,0 +1,48 @@
+import { expect, test } from "@playwright/test";
+
+test("opens an internal Project Bot and creates a project-scoped thread", async ({
+  page,
+}) => {
+  await page.addInitScript(
+    ({ spaceId }) => {
+      localStorage.setItem(
+        `naelao_product_session:${spaceId}`,
+        JSON.stringify({
+          end_user_id: "owner-e2e",
+          session_token: "test-only-session",
+          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        })
+      );
+    },
+    { spaceId: "space-bot-e2e" }
+  );
+
+  await page.goto("/p/launchpad-e2e/bots", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Project Bots", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Internal Project Bot · Project scoped")
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Project Bots use the same planner and worker system as the Space Assistant, scoped to one project."
+    )
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Talk to Project Bot" })
+  ).toBeVisible();
+
+  const createRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith(`/v1/spaces/space-bot-e2e/threads`)
+  );
+  await page.getByRole("button", { name: "Talk to Project Bot" }).click();
+  const request = await createRequest;
+  expect(request.postDataJSON()).toMatchObject({
+    project_id: "project-logistics-e2e",
+    title: "Project Bot",
+  });
+  await expect(page).toHaveURL(
+    /\/p\/launchpad-e2e\/threads\/thread-project-bot-e2e/
+  );
+});
