@@ -271,9 +271,9 @@ jobs:
           stop_agent_workers
           sleep 2
           start_agent_workers "$RUNNER_TEMP/agent-test/worker-after-restart.log"
-          token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
           restart_ready=0
           for i in $(seq 1 60); do
+            token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
             status=$(curl -s -o "$RUNNER_TEMP/agent-test/restart-poll.json" -w '%{http_code}' --max-time 5 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id" || true)
             if [ "$status" = 200 ]; then restart_ready=1; break; fi
             if ! kill -0 "$pid" 2>/dev/null; then break; fi
@@ -282,6 +282,7 @@ jobs:
           test "$restart_ready" = 1
           echo "task_receipt_recovered_after_worker_restart=true"
           for i in $(seq 1 24); do
+            token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
             status=$(curl -s -o "$RUNNER_TEMP/agent-test/task-$i.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
             echo "task_poll=$i http=$status"; cat "$RUNNER_TEMP/agent-test/task-$i.json"; echo
             test "$status" = 200
@@ -299,6 +300,7 @@ jobs:
           if [ "$state" = failed ]; then
             node -e 'const x=require(process.argv[1]); if(!/workflow_agent_run_reconciliation_required/.test(x.error || "")) process.exit(1)' "$RUNNER_TEMP/agent-test/task-$i.json"
           fi
+          token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/repeated-poll.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
           test "$status" = 200
           node -e 'const a=require(process.argv[1]),b=require(process.argv[2]); if(a.task_id!==b.task_id || a.status!==b.status || JSON.stringify(a.result)!==JSON.stringify(b.result) || a.error!==b.error) process.exit(1)' "$RUNNER_TEMP/agent-test/task-$i.json" "$RUNNER_TEMP/agent-test/repeated-poll.json"
