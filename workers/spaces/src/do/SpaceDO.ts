@@ -1914,7 +1914,7 @@ const MIGRATIONS: Migration[] = [
       CREATE TABLE project_spend_reservations (
         reservation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
         day TEXT NOT NULL, credits INTEGER NOT NULL CHECK (credits > 0),
-        status TEXT NOT NULL CHECK (status IN ('held','uncertain','settled','released','expired')),
+        status TEXT NOT NULL CHECK (status IN ('held','settled','released','expired')),
         expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX idx_project_spend_reservations_live ON project_spend_reservations(project_id,day,status,expires_at);
@@ -2298,6 +2298,25 @@ const MIGRATIONS: Migration[] = [
         project_id TEXT NOT NULL,
         marked_at TEXT NOT NULL
       );
+    `,
+  },
+  {
+    version: 107,
+    description: "retain uncertain project decision reservations across upgrades",
+    up: `
+      CREATE TABLE project_spend_reservations_v107 (
+        reservation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        day TEXT NOT NULL, credits INTEGER NOT NULL CHECK (credits > 0),
+        status TEXT NOT NULL CHECK (status IN ('held','uncertain','settled','released','expired')),
+        expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO project_spend_reservations_v107
+        (reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at)
+        SELECT reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at
+        FROM project_spend_reservations;
+      DROP TABLE project_spend_reservations;
+      ALTER TABLE project_spend_reservations_v107 RENAME TO project_spend_reservations;
+      CREATE INDEX idx_project_spend_reservations_live ON project_spend_reservations(project_id,day,status,expires_at);
     `,
   },
 ];

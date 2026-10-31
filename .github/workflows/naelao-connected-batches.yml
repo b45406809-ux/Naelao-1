@@ -129,7 +129,7 @@ jobs:
           # Run the actual org, usage and token-reservation schema used by the billing worker.
           # The earlier harness omitted BILLING_WORKER and then treated its fail-closed response
           # as an agent failure, so it never tested durable execution past admission.
-          for migration in 0002_orgs.sql 0004_billing.sql 0007_billing_meters.sql 0032_usage_events_idempotency.sql 0072_org_quota_overage.sql 0098_llm_token_reservations.sql 0109_usage_events_v2.sql; do
+          for migration in 0002_orgs.sql 0004_billing.sql 0007_billing_meters.sql 0032_usage_events_idempotency.sql 0072_org_quota_overage.sql 0098_llm_token_reservations.sql 0109_usage_events_v2.sql 0152_decision_call_reservations.sql; do
             pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --file "infra/migrations/$migration"
           done
           pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, config_json TEXT, parent_space_id TEXT); INSERT INTO orgs (id,name,owner_id,plan_tier,status) VALUES ('test-tenant','Local test tenant','test-user','growth','active'); INSERT INTO spaces (id,tenant_id,status,config_json) VALUES ('test-space','test-tenant','active','{\"model_policy\":{\"mode\":\"whitelist_only\",\"allowedModelIds\":[\"@cf/meta/llama-3.3-70b-instruct-fp8-fast\"]}}');"

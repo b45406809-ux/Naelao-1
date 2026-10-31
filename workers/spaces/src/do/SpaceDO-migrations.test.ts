@@ -152,7 +152,7 @@ describe("SpaceDO migration replay", () => {
     ).toArray()[0]).toMatchObject({ status: "active", provider_evidence: "legacy_unverified", consent_facts_json: '{"legacy_unverified":true}' });
   });
 
-  it("adds verification fields in a new migration and retains uncertain decision budget holds", () => {
+  it("adds verification fields and upgrades legacy reservation tables for uncertain decision holds", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 106));
@@ -167,12 +167,15 @@ describe("SpaceDO migration replay", () => {
     expect(storage.sql.exec<{ verification_status: string | null }>("SELECT verification_status FROM tasks WHERE id='task-legacy'").toArray()).toEqual([{ verification_status: null }]);
     const reservationSql = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='project_spend_reservations'").toArray()[0]?.sql ?? "";
     expect(reservationSql).toContain("'uncertain'");
+    storage.sql.exec("INSERT INTO project_spend_reservations(reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,'held',?,?,?)", "legacy-r", "p-1", "run-1", "2026-10-31", 5, "2099-01-01", "now", "now");
+    storage.sql.exec("UPDATE project_spend_reservations SET status='uncertain' WHERE reservation_id='legacy-r'");
+    expect(storage.sql.exec<{status:string}>("SELECT status FROM project_spend_reservations WHERE reservation_id='legacy-r'").toArray()).toEqual([{status:"uncertain"}]);
     storage.sql.exec("INSERT INTO project_decision_uncertainties(reservation_id,project_id,marked_at) VALUES(?,?,?)", "r-1", "p-1", "2026-10-31");
     expect(storage.sql.exec("SELECT reservation_id FROM project_decision_uncertainties WHERE project_id='p-1'").toArray()).toEqual([{ reservation_id: "r-1" }]);
   });
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(106);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(107);
   });
 });
