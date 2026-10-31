@@ -7,9 +7,15 @@ on:
       - 'infra/scripts/swarm-provider-eval*'
       - 'infra/scripts/laya-*'
       - 'workers/agents/src/script-engine/goal-*'
+      - 'workers/agents/src/shared/openrouter-usage*'
+      - 'workers/agents/src/do/NaelaoAgentDO.ts'
+      - 'workers/agents/src/do/decision-usage-reconciliation.test.ts'
       - 'workers/agents/src/do/delegation-admission.test.ts'
       - 'workers/agents/vitest.config.ts'
-      - 'workers/billing/src/decision-reservations*'
+      - 'packages/agent-sdk/src/fast-decision*'
+      - 'infra/migrations/0153_decision_provider_usage_receipts.sql'
+      - 'workers/billing/src/decision-*'
+      - 'workers/billing/src/index.ts'
   workflow_dispatch:
     inputs:
       run_laya:
@@ -43,21 +49,25 @@ jobs:
             src/script-engine/goal-evidence.test.ts \
             src/script-engine/goal-dag.test.ts \
             src/script-engine/r2-workspace-cas.test.ts \
+            src/shared/openrouter-usage.test.ts \
+            src/do/decision-usage-reconciliation.test.ts \
             src/do/delegation-admission.test.ts \
             --reporter=verbose --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
-          result=$?
+          runtime_result=$?
+          pnpm --filter @naelao/agent-sdk exec vitest run src/fast-decision.test.ts \
+            --reporter=verbose --reporter=json --outputFile="$RUNNER_TEMP/decision-client-vitest.json"
+          decision_client_result=$?
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          try {
-            const report=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'utf8'));
-            console.log(`vitest totals: passed=${report.numPassedTests??'?'} failed=${report.numFailedTests??'?'} skipped=${report.numPendingTests??'?'}`);
-            console.log(`vitest suite status: failed=${report.numFailedTestSuites??'?'} success=${report.success??'?'} errors=${report.unhandledErrors?.length??0}`);
+          for(const name of ['swarm-vitest.json','decision-client-vitest.json']) try {
+            const report=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/${name}`,'utf8'));
+            console.log(`${name}: passed=${report.numPassedTests??'?'} failed=${report.numFailedTests??'?'} skipped=${report.numPendingTests??'?'} suite_failures=${report.numFailedTestSuites??'?'} errors=${report.unhandledErrors?.length??0}`);
             for(const file of report.testResults??[]) if(file.status!=='passed') console.log(`failed suite detail: ${JSON.stringify(file).slice(0,7000)}`);
             for(const file of report.testResults??[]) for(const test of file.assertionResults??[]) if(test.status==='failed') console.log(`failed test: ${test.fullName}\n${(test.failureMessages??[]).join('\n').slice(0,3000)}`);
             for(const error of report.unhandledErrors??[]) console.log(`vitest runner error:\n${JSON.stringify(error).slice(0,4000)}`);
-          } catch { console.log('vitest JSON result unavailable; runner/install failure may have occurred'); }
+          } catch { console.log(`${name} unavailable; runner/install failure may have occurred`); }
           JS
-          exit "$result"
+          if [ "$runtime_result" -ne 0 ] || [ "$decision_client_result" -ne 0 ]; then exit 1; fi
       - name: Run test-only provider harness unit tests
         if: always()
         run: node --test --test-reporter=tap infra/scripts/swarm-provider-eval.test.mjs > "$RUNNER_TEMP/provider-unit.tap"
@@ -70,11 +80,12 @@ jobs:
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const read=(p)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}};
-          const vitest=read(`${process.env.RUNNER_TEMP}/swarm-vitest.json`); let tap=''; try{tap=fs.readFileSync(`${process.env.RUNNER_TEMP}/provider-unit.tap`,'utf8')}catch{}
+          const vitest=read(`${process.env.RUNNER_TEMP}/swarm-vitest.json`), decisionClient=read(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`); let tap=''; try{tap=fs.readFileSync(`${process.env.RUNNER_TEMP}/provider-unit.tap`,'utf8')}catch{}
           const tapCount=(name)=>Number(new RegExp(`# ${name} (\\d+)`).exec(tap)?.[1]??0), providerPassed=tapCount('pass'), providerFailed=tapCount('fail');
-          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime',state:vitest?'completed':'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
+          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime-and-generation-reconciliation',state:vitest?(vitest.success?'passed':'failed'):'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'decision-client-receipt-contract',state:decisionClient?(decisionClient.success?'passed':'failed'):'blocked',passed:decisionClient?.numPassedTests??null,failed:decisionClient?.numFailedTests??null,skipped:decisionClient?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
           fs.mkdirSync('swarm-reports',{recursive:true}); fs.writeFileSync('swarm-reports/deterministic.json',JSON.stringify(report,null,2)+'\n');
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'swarm-reports/vitest-results.json')}catch{}
+          try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`,'swarm-reports/decision-client-vitest-results.json')}catch{}
           fs.writeFileSync('swarm-reports/deterministic.md',`# Naelao deterministic swarm evaluation\n\n- Commit: ${report.sourceCommit}\n- State: ${report.state}\n- Runtime tests: ${report.batches[0].passed??'not recorded'} passed, ${report.batches[0].failed??'not recorded'} failed\n- Provider harness safety tests: ${report.batches[1].passed??'not recorded'} passed, ${report.batches[1].failed??'not recorded'} failed\n- Dataset: ${report.dataset}\n\n${report.limitations.map(x=>'- '+x).join('\n')}\n`);
           JS
       - uses: actions/upload-artifact@v4
@@ -95,8 +106,8 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
-      - name: Run billing reservation, quota and uncertainty tests
-        run: pnpm --filter @naelao/billing-worker exec vitest run src/decision-reservations.test.ts src/llm-quota-reservations.test.ts
+      - name: Run billing reservation, usage receipt, quota and uncertainty tests
+        run: pnpm --filter @naelao/billing-worker exec vitest run src/decision-reservations.test.ts src/decision-usage.test.ts src/llm-quota-reservations.test.ts
       - name: Preserve billing result
         if: always()
         env:

@@ -5,11 +5,11 @@ describe("typed fast decisions", () => {
   it("reserves before a billed decision and settles actual usage", async () => {
     const events: string[] = [];
     const billing = { reserve: vi.fn(async () => { events.push("reserve"); return "reservation-1"; }), settle: vi.fn(async () => { events.push("settle"); }) };
-    const fetcher = vi.fn(async () => { events.push("fetch"); return Response.json({ model: CLEF_FLASH_MODEL, answers: { decision: { type: "choice", choice: "yes", probabilities: { yes: 1, no: 0 }, confidence: 1 } }, usage: { input_tokens: 42, output_tokens: 2 } }); });
+    const fetcher = vi.fn(async () => { events.push("fetch"); return Response.json({ id: "gen-dec-123", model: CLEF_FLASH_MODEL, answers: { decision: { type: "choice", choice: "yes", probabilities: { yes: 1, no: 0 }, confidence: 1 } }, usage: { input_tokens: 42, output_tokens: 2, cost: 0.00002 } }); });
     const client = new SystemOneDecisionClient({ billing, fetch: fetcher as typeof fetch });
     await client.choice({ state: "task", instructions: "choose", criteria: { yes: null, no: null }, policyCode: "test" });
     expect(events).toEqual(["reserve", "fetch", "settle"]);
-    expect(billing.settle).toHaveBeenCalledWith("reservation-1", { status: "confirmed", inputTokens: 42, outputTokens: 2 });
+    expect(billing.settle).toHaveBeenCalledWith("reservation-1", { status: "confirmed", generationId: "gen-dec-123", inputTokens: 42, outputTokens: 2, costUsd: 0.00002 });
     expect(billing.reserve.mock.calls[0]?.[0].idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
   });
   it("keeps a failed billed request uncertain and does not retry", async () => {
@@ -19,6 +19,20 @@ describe("typed fast decisions", () => {
     await expect(client.choice({ state: "task", instructions: "choose", criteria: { yes: null, no: null }, policyCode: "test" })).rejects.toThrow("system_one_http_503");
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(billing.settle).toHaveBeenCalledWith("reservation-2", { status: "uncertain" });
+  });
+  it("persists an OpenRouter generation id when usage must be recovered from its generation API", async () => {
+    const billing = { reserve: vi.fn(async () => "reservation-generation"), settle: vi.fn(async () => {}) };
+    const fetcher = vi.fn(async () => Response.json({ id: "gen-dec-234", model: CLEF_FLASH_MODEL, answers: {}, usage: { input_tokens: 42, output_tokens: 2 } }));
+    const client = new SystemOneDecisionClient({ billing, fetch: fetcher as typeof fetch });
+    await expect(client.choice({ state: "task", instructions: "choose", criteria: { yes: null, no: null }, policyCode: "test" })).rejects.toThrow("system_one_generation_receipt_missing");
+    expect(billing.settle).toHaveBeenCalledWith("reservation-generation", { status: "uncertain", generationId: "gen-dec-234" });
+  });
+  it("settles confirmed usage even if the model's decision payload is malformed", async () => {
+    const billing = { reserve: vi.fn(async () => "reservation-malformed"), settle: vi.fn(async () => {}) };
+    const fetcher = vi.fn(async () => Response.json({ id: "gen-dec-345", model: CLEF_FLASH_MODEL, answers: {}, usage: { input_tokens: 15, output_tokens: 1, cost: 0.00001 } }));
+    const client = new SystemOneDecisionClient({ billing, fetch: fetcher as typeof fetch });
+    await expect(client.choice({ state: "task", instructions: "choose", criteria: { yes: null, no: null }, policyCode: "test" })).rejects.toThrow("system_one_missing_answer");
+    expect(billing.settle).toHaveBeenCalledWith("reservation-malformed", { status: "confirmed", generationId: "gen-dec-345", inputTokens: 15, outputTokens: 1, costUsd: 0.00001 });
   });
   it("keeps System-1 output bounded and provider-attributed", () => {
     expect(deterministicChoice("continue", "loop_budget")).toEqual({ kind: "choice", value: "continue", provider: "deterministic", policyCode: "loop_budget" });

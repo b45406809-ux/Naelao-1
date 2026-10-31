@@ -20,6 +20,7 @@ import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lem
 import { normalizePlanTier, PLANS, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
+import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
@@ -480,40 +481,46 @@ app.post("/internal/decisions/reservations/reserve", async (c) => {
 });
 app.post("/internal/decisions/reservations/settle", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
-  const body = await c.req.json<{ reservation_id?: string; outcome?: "confirmed" | "uncertain"; input_tokens?: number; output_tokens?: number; cost_credits?: number; model_id?: string; rate_card_version?: string }>().catch(() => null);
+  const body = await c.req.json<{ reservation_id?: string; outcome?: "confirmed" | "uncertain"; input_tokens?: number; output_tokens?: number; cost_usd?: number; generation_id?: string; evidence_source?: "openrouter_response" | "openrouter_generation_api"; model_id?: string }>().catch(() => null);
   if (!orgId || !body?.reservation_id || !["confirmed", "uncertain"].includes(String(body.outcome))) return c.json({ error_code: "bad_request" }, 400);
   const prior = await c.env.PLATFORM_DB.prepare("SELECT * FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
   if (!prior) return c.json({ error_code: "reservation_not_found" }, 404);
-  if (prior.status === "settled") return c.json({ settled: true, deduplicated: true, reservation_id: body.reservation_id });
+  if (prior.status === "settled") {
+    if (body.generation_id && prior.provider_generation_id !== body.generation_id) return c.json({ error_code: "decision_generation_receipt_conflict" }, 409);
+    return c.json({ settled: true, deduplicated: true, reservation_id: body.reservation_id, cost_credits: prior.cost_credits });
+  }
   if (body.outcome === "uncertain") {
-    await c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='uncertain',updated_at=datetime('now') WHERE id=? AND org_id=? AND status IN ('held','uncertain')").bind(body.reservation_id, orgId).run();
+    const generationId = body.generation_id;
+    if (generationId !== undefined && (typeof generationId !== "string" || !/^gen-[A-Za-z0-9-]{1,124}$/.test(generationId) || body.model_id !== prior.model_id)) return c.json({ error_code: "bad_request" }, 400);
+    const updated = await c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='uncertain',provider_generation_id=COALESCE(provider_generation_id,?),updated_at=datetime('now') WHERE id=? AND org_id=? AND status IN ('held','uncertain') AND (provider_generation_id IS NULL OR provider_generation_id=?)").bind(generationId ?? null, body.reservation_id, orgId, generationId ?? null).run();
+    if (!updated.meta.changes) return c.json({ error_code: "decision_generation_receipt_conflict" }, 409);
     return c.json({ settled: false, uncertain: true, reservation_id: body.reservation_id });
   }
-  if (!Number.isSafeInteger(body.input_tokens) || (body.input_tokens ?? -1) < 0 || !Number.isSafeInteger(body.output_tokens) || (body.output_tokens ?? -1) < 0 || !Number.isSafeInteger(body.cost_credits) || (body.cost_credits ?? -1) < 0 || body.model_id !== prior.model_id || !body.rate_card_version || body.rate_card_version.length > 80) return c.json({ error_code: "bad_request" }, 400);
-  const tokens = body.input_tokens! + body.output_tokens!;
-  if (tokens > Number(prior.max_tokens) || body.cost_credits! > Number(prior.max_credits)) return c.json({ error_code: "decision_usage_exceeds_reservation" }, 409);
-  if (prior.status === "uncertain") {
-    const verifiedModel = body.model_id === prior.model_id;
-    const expectedUsd = Number(body.input_tokens) * Number(prior.input_usd_per_token) + Number(body.output_tokens) * Number(prior.output_usd_per_token);
-    if (!verifiedModel || Math.ceil(expectedUsd * 10_000) !== body.cost_credits) return c.json({ error_code: "uncertain_decision_requires_matching_price_snapshot" }, 409);
-  }
+  const receipt = body.generation_id && body.model_id && body.evidence_source && body.input_tokens !== undefined && body.output_tokens !== undefined && body.cost_usd !== undefined
+    ? { generation_id: body.generation_id, model_id: body.model_id, evidence_source: body.evidence_source, input_tokens: body.input_tokens, output_tokens: body.output_tokens, cost_usd: body.cost_usd }
+    : null;
+  const validated = receipt && validateDecisionUsageReceipt({ status: String(prior.status), model_id: String(prior.model_id), max_tokens: Number(prior.max_tokens), max_credits: Number(prior.max_credits), provider_generation_id: prior.provider_generation_id as string | null }, receipt);
+  if (!validated) return c.json({ error_code: "decision_usage_receipt_invalid" }, 409);
+  const { tokens, costCredits } = validated;
+  const generationId = receipt.generation_id;
+  const rateCardVersion = `openrouter:generation:${generationId}`;
   const eventHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`decision:${orgId}:${body.reservation_id}`)))].map(byte => byte.toString(16).padStart(2,"0")).join("");
   const now = new Date().toISOString();
   const result = await c.env.PLATFORM_DB.batch([
-    c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='settled',actual_tokens=?,cost_credits=?,rate_card_version=?,updated_at=? WHERE id=? AND org_id=? AND status IN ('held','uncertain')").bind(tokens, body.cost_credits, body.rate_card_version, now, body.reservation_id, orgId),
-    c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,project_id,run_id,provider,model_id,payer_kind,decision) VALUES(?,?,?,'decision_tokens',?,?,?,2,'tokens',?,?,?,?,?,?,'plan_quota','charged')`).bind(`decision:${orgId}:${body.reservation_id}`, orgId, prior.space_id, tokens, now, eventHash, body.rate_card_version, body.cost_credits, prior.project_id, prior.run_id, "openrouter", prior.model_id),
+    c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='settled',actual_tokens=?,cost_credits=?,rate_card_version=?,provider_generation_id=?,provider_cost_usd=?,usage_evidence_source=?,updated_at=? WHERE id=? AND org_id=? AND status IN ('held','uncertain') AND (provider_generation_id IS NULL OR provider_generation_id=?)").bind(tokens, costCredits, rateCardVersion, generationId, receipt.cost_usd, receipt.evidence_source, now, body.reservation_id, orgId, generationId),
+    c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,project_id,run_id,provider,model_id,payer_kind,decision) VALUES(?,?,?,'decision_tokens',?,?,?,2,'tokens',?,?,?,?,?,?,'plan_quota','charged')`).bind(`decision:${orgId}:${body.reservation_id}`, orgId, prior.space_id, tokens, now, eventHash, rateCardVersion, costCredits, prior.project_id, prior.run_id, "openrouter", prior.model_id),
   ]);
   if (!result[0]?.meta.changes && prior.status !== "settled") return c.json({ error_code: "decision_settlement_race" }, 409);
   await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
-  return c.json({ settled: true, reservation_id: body.reservation_id });
+  return c.json({ settled: true, reservation_id: body.reservation_id, cost_credits: costCredits, generation_id: generationId });
 });
 app.post("/internal/decisions/reservations/status", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string }>().catch(() => null);
   if (!orgId || !body?.reservation_id || !body.run_id || !body.space_id) return c.json({ error_code: "bad_request" }, 400);
-  const row = await c.env.PLATFORM_DB.prepare("SELECT status,run_id,space_id,model_id,price_snapshot,actual_tokens,cost_credits,rate_card_version FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
+  const row = await c.env.PLATFORM_DB.prepare("SELECT status,run_id,space_id,model_id,price_snapshot,actual_tokens,cost_credits,rate_card_version,provider_generation_id,provider_cost_usd,usage_evidence_source,max_tokens,max_credits,created_at FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
   if (!row || row.run_id !== body.run_id || row.space_id !== body.space_id) return c.json({ error_code: "reservation_not_found" }, 404);
-  return c.json({ status: row.status, model_id: row.model_id, rate_card_version: row.rate_card_version, actual_tokens: row.actual_tokens, cost_credits: row.cost_credits });
+  return c.json({ status: row.status, model_id: row.model_id, rate_card_version: row.rate_card_version, actual_tokens: row.actual_tokens, cost_credits: row.cost_credits, generation_id: row.provider_generation_id, cost_usd: row.provider_cost_usd, evidence_source: row.usage_evidence_source, max_tokens: row.max_tokens, max_credits: row.max_credits, created_at: row.created_at });
 });
 app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";

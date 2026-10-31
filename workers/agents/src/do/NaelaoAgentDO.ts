@@ -58,6 +58,7 @@ import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
 import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
+import { fetchOpenRouterGenerationUsage, retryDelayMs } from "../shared/openrouter-usage.js";
 import {
   ScriptToolSurface,
   privacyBridgeCard,
@@ -2331,8 +2332,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const reservationKey = `decision-reservation:${reservationId}`;
             const previousReservation = await this.ctx.storage.get<{ reservationId: string; status: string }>(reservationKey);
             if (previousReservation?.reservationId === reservationId) {
-              if (previousReservation.status === "settled" || previousReservation.status === "uncertain") throw new Error("system_one_reservation_outcome_unknown");
-              return reservationId;
+              // A repeated SDK call must never resend an admitted attempt whose provider outcome
+              // may have escaped before a crash or lost acknowledgement.
+              throw new Error("system_one_reservation_outcome_unknown");
             }
             // The Decisions API schema has no host-enforced output-token cap. Bound one attempt
             // by request bytes plus the SDK's hard 1 MiB response ceiling; do not clamp an
@@ -2361,32 +2363,59 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               }
               throw new Error("system_one_decision_budget_exhausted");
             }
-            await this.ctx.storage.put(reservationKey, { status: "reserved", model, inputPrice, outputPrice, priceSnapshotAt: priceTimestamp, reservationId, runId, spaceId, projectId: projectId ?? null, tenantId, maxCredits });
+            await this.ctx.storage.put(reservationKey, { status: "reserved", model, inputPrice, outputPrice, priceSnapshotAt: priceTimestamp, reservationId, runId, spaceId, projectId: projectId ?? null, tenantId, maxCredits, maxTokens: estimate, reservedAt: Date.now(), reconcileAttempts: 0 });
+            await this.rescheduleAgentAlarm();
             return reservationId;
           },
           settle: async (reservationId, outcome) => {
             const key = `decision-reservation:${reservationId}`;
-            const row = await this.ctx.storage.get<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; runId: string; spaceId: string; projectId: string | null; tenantId: string }>(key);
+            const row = await this.ctx.storage.get<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits: number; maxTokens: number; reservedAt: number; providerGenerationId?: string; reconcileAttempts?: number }>(key);
             if (!row) throw new Error("system_one_reservation_missing");
-            if (row.status === "settled" || row.status === "uncertain") return;
+            if (row.status === "settled") return;
             if (outcome.status === "uncertain") {
-              await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ reservation_id: reservationId, outcome: "uncertain" }) }));
-              if (row.projectId && this.env.SPACES_WORKER) await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_uncertain", reservation_id: reservationId }) }));
-              await this.ctx.storage.put(key, { ...row, status: "uncertain", uncertainAt: Date.now() }); return;
+              const generationId = outcome.generationId;
+              if (generationId && row.providerGenerationId && generationId !== row.providerGenerationId) throw new Error("system_one_generation_receipt_conflict");
+              const uncertainRow = { ...row, status: "uncertain", ...(generationId ? { providerGenerationId: generationId } : {}), uncertainAt: Date.now(), nextReconcileAt: generationId ? Date.now() : undefined };
+              await this.ctx.storage.put(key, uncertainRow);
+              await this.rescheduleAgentAlarm();
+              const response = await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ reservation_id: reservationId, outcome: "uncertain", ...(generationId ? { generation_id: generationId, model_id: row.model } : {}) }) }));
+              if (!response.ok) throw new Error("system_one_uncertain_persistence_unavailable");
+              if (row.projectId && this.env.SPACES_WORKER) {
+                const projectResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_uncertain", reservation_id: reservationId }) }));
+                if (!projectResponse.ok) throw new Error("system_one_project_uncertain_persistence_unavailable");
+              }
+              return;
             }
-            const usd = outcome.inputTokens * row.inputPrice + outcome.outputTokens * row.outputPrice;
-            const credits = Math.ceil(usd * 10_000);
-            if (!Number.isSafeInteger(credits) || credits < 0) throw new Error("system_one_settlement_price_invalid");
-            const billingResponse = await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", {
-              method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }),
-              body: JSON.stringify({ reservation_id: reservationId, outcome: "confirmed", input_tokens: outcome.inputTokens, output_tokens: outcome.outputTokens, cost_credits: credits, model_id: row.model, rate_card_version: `openrouter:${row.priceSnapshotAt}` }),
-            }));
-            if (!billingResponse.ok) throw new Error("system_one_settlement_unavailable");
-            if (row.projectId && this.env.SPACES_WORKER) {
-              const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: reservationId, credits }) }));
-              if (!projectSettlement.ok) throw new Error("system_one_project_settlement_unavailable");
+            if (!/^gen-[A-Za-z0-9-]{1,124}$/.test(outcome.generationId) || !Number.isSafeInteger(outcome.inputTokens) || outcome.inputTokens < 0 || !Number.isSafeInteger(outcome.outputTokens) || outcome.outputTokens < 0 || !Number.isFinite(outcome.costUsd) || outcome.costUsd < 0 || outcome.inputTokens + outcome.outputTokens > row.maxTokens) throw new Error("system_one_settlement_receipt_invalid");
+            if (row.providerGenerationId && row.providerGenerationId !== outcome.generationId) throw new Error("system_one_generation_receipt_conflict");
+            // Persist the generation identity before settlement egress. If the billing
+            // acknowledgement is lost, alarm recovery can fetch OpenRouter's usage record.
+            const reconcilingRow = { ...row, status: "reconciling", providerGenerationId: outcome.generationId,
+              providerInputTokens: outcome.inputTokens, providerOutputTokens: outcome.outputTokens, providerCostUsd: outcome.costUsd,
+              evidenceSource: "openrouter_response", nextReconcileAt: Date.now() };
+            await this.ctx.storage.put(key, reconcilingRow);
+            await this.rescheduleAgentAlarm();
+            try {
+              const billingResponse = await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", {
+                method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }),
+                body: JSON.stringify({ reservation_id: reservationId, outcome: "confirmed", input_tokens: outcome.inputTokens, output_tokens: outcome.outputTokens, cost_usd: outcome.costUsd, generation_id: outcome.generationId, evidence_source: "openrouter_response", model_id: row.model }),
+              }));
+              if (!billingResponse.ok) throw new Error("system_one_settlement_unavailable");
+              const settledBilling = await readBoundedResponseJson<{ cost_credits?: number }>(billingResponse, 16 * 1024);
+              const credits = settledBilling.cost_credits;
+              if (!Number.isSafeInteger(credits) || credits! < 0 || credits! > row.maxCredits) throw new Error("system_one_settlement_receipt_invalid");
+              if (row.projectId && this.env.SPACES_WORKER) {
+                const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: reservationId, credits }) }));
+                if (!projectSettlement.ok) throw new Error("system_one_project_settlement_unavailable");
+              }
+              await this.ctx.storage.put(key, { ...reconcilingRow, status: "settled", credits, settledAt: Date.now(), nextReconcileAt: undefined });
+              await this.rescheduleAgentAlarm();
+            } catch (error) {
+              if (row.projectId && this.env.SPACES_WORKER) await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_uncertain", reservation_id: reservationId }) })).catch(() => undefined);
+              await this.ctx.storage.put(key, { ...reconcilingRow, status: "reconciling", reconcileAttempts: row.reconcileAttempts ?? 0, nextReconcileAt: Date.now() + 60_000, reconciliationFailure: "settlement_acknowledgement_uncertain" });
+              await this.rescheduleAgentAlarm();
+              throw error;
             }
-            await this.ctx.storage.put(key, { ...row, status: "settled", inputTokens: outcome.inputTokens, outputTokens: outcome.outputTokens, credits, settledAt: Date.now() });
           },
         },
         ...(this.env.ANALYTICS ? {
@@ -8897,16 +8926,105 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async reconcileDecisionReservations(): Promise<void> {
     if (!this.env.BILLING_WORKER || typeof this.ctx.storage.list !== "function") return;
-    const rows = await this.ctx.storage.list<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; reservationId: string; runId: string; spaceId: string; projectId: string | null; tenantId: string }>({ prefix: "decision-reservation:", limit: 100 });
+    const openRouterApiKey = this.env.OPENROUTER_API_KEY;
+    const rows = await this.ctx.storage.list<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; reservationId: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits?: number; maxTokens?: number; reservedAt?: number; providerGenerationId?: string; reconcileAttempts?: number; nextReconcileAt?: number; manualReviewAt?: number }>({ prefix: "decision-reservation:", limit: 1000 });
     for (const [key, row] of rows) {
       if (!row || row.status === "settled") continue;
       try {
         const headers = await this.internalHeaders(row.tenantId, { "content-type": "application/json" });
         const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/decisions/reservations/status", { headers, method: "POST", body: JSON.stringify({ reservation_id: row.reservationId, run_id: row.runId, space_id: row.spaceId }) }));
-        if (!response.ok) continue;
-        const remote = await readBoundedResponseJson<{ status?: string }>(response, 16 * 1024);
-        if (remote.status === "settled") await this.ctx.storage.put(key, { ...row, status: "settled", reconciledAt: Date.now() });
-      } catch { /* Uncertain reservations remain held for the next alarm; never release as zero-cost. */ }
+        if (!response.ok) {
+          const attempt = (row.reconcileAttempts ?? 0) + 1;
+          if (row.status === "reserved" && row.reservedAt && Date.now() - row.reservedAt > 120_000 && row.projectId && this.env.SPACES_WORKER) {
+            await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_uncertain", reservation_id: row.reservationId }) })).catch(() => undefined);
+          }
+          await this.ctx.storage.put(key, { ...row, status: row.status === "reserved" ? "reserved" : "uncertain", reconcileAttempts: attempt,
+            ...(attempt >= 12 ? { manualReviewAt: Date.now() } : { nextReconcileAt: Date.now() + retryDelayMs(response.headers.get("retry-after"), attempt) }),
+            reconciliationFailure: "billing_status_unavailable" });
+          continue;
+        }
+        const remote = await readBoundedResponseJson<{ status?: string; generation_id?: string; model_id?: string; cost_credits?: number; cost_usd?: number; actual_tokens?: number; max_tokens?: number; max_credits?: number; created_at?: string }>(response, 16 * 1024);
+        const settleProjectSpend = async (credits: number) => {
+          if (!row.projectId || !this.env.SPACES_WORKER) return true;
+          const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "settle_reservation", reservation_id: row.reservationId, credits }) }));
+          return projectSettlement.ok;
+        };
+        if (remote.status === "settled") {
+          const credits = remote.cost_credits;
+          if (remote.generation_id && row.providerGenerationId && remote.generation_id !== row.providerGenerationId) {
+            await this.ctx.storage.put(key, { ...row, status: "uncertain", manualReviewAt: Date.now(), reconciliationFailure: "billing_generation_mismatch" });
+            continue;
+          }
+          if (!Number.isSafeInteger(credits) || (credits ?? -1) < 0 || (row.maxCredits !== undefined && credits! > row.maxCredits) || !(await settleProjectSpend(credits!))) continue;
+          await this.ctx.storage.put(key, { ...row, status: "settled", ...(remote.generation_id ? { providerGenerationId: remote.generation_id } : {}), credits, settledAt: Date.now(), nextReconcileAt: undefined });
+          continue;
+        }
+
+        // A crash after admission but before the SDK can persist a provider receipt is
+        // ambiguous. Mark it uncertain and retain both billing and project holds.
+        if (!row.providerGenerationId && row.status === "reserved" && row.reservedAt && Date.now() - row.reservedAt > 120_000) {
+          const uncertain = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", { method: "POST", headers, body: JSON.stringify({ reservation_id: row.reservationId, outcome: "uncertain" }) }));
+          if (!uncertain.ok) continue;
+          if (row.projectId && this.env.SPACES_WORKER) {
+            const projectResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, { method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_uncertain", reservation_id: row.reservationId }) }));
+            if (!projectResponse.ok) continue;
+          }
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", uncertainAt: Date.now(), reconciliationFailure: "generation_id_unavailable" });
+          continue;
+        }
+
+        const generationId = row.providerGenerationId;
+        const now = Date.now();
+        if (!generationId || row.manualReviewAt || (row.nextReconcileAt && row.nextReconcileAt > now)) continue;
+        if (!openRouterApiKey) {
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", manualReviewAt: now, reconciliationFailure: "openrouter_api_key_unavailable" });
+          continue;
+        }
+        const attempts = row.reconcileAttempts ?? 0;
+        if (attempts >= 12) {
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", manualReviewAt: now, reconciliationFailure: "generation_lookup_attempts_exhausted" });
+          continue;
+        }
+        const lookup = await fetchOpenRouterGenerationUsage(fetch, openRouterApiKey, {
+          generationId, model: row.model, reservedAt: row.reservedAt ?? Date.parse(remote.created_at ?? ""),
+          maxTokens: row.maxTokens ?? Number(remote.max_tokens), maxCredits: row.maxCredits ?? Number(remote.max_credits),
+        });
+        if (lookup.state === "review") {
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", manualReviewAt: now, reconciliationFailure: lookup.reason });
+          continue;
+        }
+        if (lookup.state === "retry") {
+          const attempt = attempts + 1;
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", reconcileAttempts: attempt,
+            ...(attempt >= 12 ? { manualReviewAt: now } : { nextReconcileAt: now + retryDelayMs(lookup.retryAfter, attempt) }),
+            reconciliationFailure: lookup.reason });
+          continue;
+        }
+        const verified = lookup.usage;
+        const billingSettlement = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", {
+          method: "POST", headers, body: JSON.stringify({ reservation_id: row.reservationId, outcome: "confirmed", generation_id: verified.generationId,
+            model_id: verified.model, input_tokens: verified.inputTokens, output_tokens: verified.outputTokens, cost_usd: verified.costUsd, evidence_source: "openrouter_generation_api" }),
+        }));
+        if (!billingSettlement.ok) {
+          const attempt = attempts + 1;
+          await this.ctx.storage.put(key, { ...row, status: "uncertain", reconcileAttempts: attempt,
+            ...(attempt >= 12 ? { manualReviewAt: now } : { nextReconcileAt: now + retryDelayMs(billingSettlement.headers.get("retry-after"), attempt) }),
+            reconciliationFailure: "billing_generation_settlement_failed" });
+          continue;
+        }
+        const settled = await readBoundedResponseJson<{ cost_credits?: number }>(billingSettlement, 16 * 1024);
+        const credits = settled.cost_credits;
+        if (!Number.isSafeInteger(credits) || (credits ?? -1) < 0 || (row.maxCredits !== undefined && credits! > row.maxCredits) || !(await settleProjectSpend(credits!))) continue;
+        await this.ctx.storage.put(key, { ...row, status: "settled", providerGenerationId: verified.generationId,
+          providerInputTokens: verified.inputTokens, providerOutputTokens: verified.outputTokens, providerCostUsd: verified.costUsd,
+          evidenceSource: "openrouter_generation_api", credits, settledAt: Date.now(), nextReconcileAt: undefined });
+      } catch {
+        const attempt = (row.reconcileAttempts ?? 0) + 1;
+        await this.ctx.storage.put(key, { ...row, status: row.status === "reserved" ? "reserved" : "uncertain", reconcileAttempts: attempt,
+          ...(attempt >= 12 ? { manualReviewAt: Date.now() } : { nextReconcileAt: Date.now() + retryDelayMs(null, attempt) }),
+          reconciliationFailure: "reconciliation_internal_error" }).catch(() => undefined);
+        /* Missing or bad evidence never releases the run- or project-scoped hold. */
+      }
     }
   }
 
@@ -8933,8 +9051,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const retryRow = sql.exec("SELECT MIN(next_attempt_at) AS next_at FROM billing_usage_event_outbox WHERE status='pending'").toArray()[0] as { next_at?: number | null } | undefined;
     if (typeof retryRow?.next_at === "number") candidates.push(Math.max(now + 1000, retryRow.next_at));
     if (this.env.BILLING_WORKER && typeof this.ctx.storage.list === "function") {
-      const reservations = await this.ctx.storage.list<{ status: string }>({ prefix: "decision-reservation:" });
-      if ([...reservations.values()].some(row => row.status !== "settled")) candidates.push(now + 60_000);
+      const reservations = await this.ctx.storage.list<{ status: string; reservedAt?: number; providerGenerationId?: string; nextReconcileAt?: number; manualReviewAt?: number }>({ prefix: "decision-reservation:", limit: 1000 });
+      for (const row of reservations.values()) {
+        if (!row || row.status === "settled" || row.manualReviewAt) continue;
+        if (row.providerGenerationId) candidates.push(Math.max(now + 1_000, row.nextReconcileAt ?? now + 60_000));
+        else if (row.status === "reserved" && row.reservedAt) candidates.push(Math.max(now + 1_000, row.reservedAt + 120_000));
+      }
     }
     if (candidates.length) await this.ctx.storage.setAlarm(Math.min(...candidates));
     else await this.ctx.storage.deleteAlarm();

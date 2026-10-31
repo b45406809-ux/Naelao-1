@@ -111,7 +111,7 @@ export interface SystemOneClientOptions {
   /** Host-owned reservation lifecycle; a failed or malformed response remains uncertain. */
   billing?: {
     reserve(input: { model: string; requestBytes: number; idempotencyKey: string }): Promise<string>;
-    settle(reservationId: string, outcome: { status: "confirmed"; inputTokens: number; outputTokens: number } | { status: "uncertain" }): Promise<void>;
+    settle(reservationId: string, outcome: { status: "confirmed"; generationId: string; costUsd: number; inputTokens: number; outputTokens: number } | { status: "uncertain"; generationId?: string }): Promise<void>;
   };
   onDecision?: (event: {
   provider: "openrouter";
@@ -128,9 +128,10 @@ type SystemOneAnswer =
   | { type: "noul"; noul: number };
 
 interface SystemOneResponse {
+  id?: string;
   model: string;
   answers: Record<string, SystemOneAnswer>;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: { input_tokens: number; output_tokens: number; cost?: number };
 }
 
 export const OPENROUTER_DECISIONS_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
@@ -240,11 +241,14 @@ function probabilities(value: unknown, allowed?: ReadonlySet<string>): Record<st
   return result;
 }
 
-function usage(value: unknown): { inputTokens: number; outputTokens: number } {
-  const raw = value as { input_tokens?: unknown; output_tokens?: unknown } | null;
+function usage(value: unknown): { inputTokens: number; outputTokens: number; costUsd?: number } {
+  const raw = value as { input_tokens?: unknown; output_tokens?: unknown; cost?: unknown } | null;
   if (!Number.isSafeInteger(raw?.input_tokens) || (raw!.input_tokens as number) < 0 || !Number.isSafeInteger(raw?.output_tokens) || (raw!.output_tokens as number) < 0) throw new Error("system_one_invalid_usage");
-  return { inputTokens: raw!.input_tokens as number, outputTokens: raw!.output_tokens as number };
+  const costUsd = typeof raw?.cost === "number" && Number.isFinite(raw.cost) && raw.cost >= 0 ? raw.cost : undefined;
+  return { inputTokens: raw!.input_tokens as number, outputTokens: raw!.output_tokens as number, ...(costUsd !== undefined ? { costUsd } : {}) };
 }
+
+const OPENROUTER_GENERATION_ID = /^gen-[A-Za-z0-9-]{1,124}$/;
 
 /** Strict client for Naelao's approved decision models through OpenRouter's Decisions API. */
 export class SystemOneDecisionClient implements FastDecisionGateway {
@@ -326,6 +330,8 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength, idempotencyKey: await this.idempotencyKey(model, state, questions) }) : undefined;
     if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
+    let providerReceipt: { generationId: string; inputTokens: number; outputTokens: number; costUsd: number } | undefined;
+    let providerGenerationId: string | undefined;
     try {
     const { response, signal } = await this.post(model, state, { decision: question });
     if (!response?.ok) {
@@ -334,15 +340,23 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
     const payload = await readBoundedDecisionJson(response, signal) as Partial<SystemOneResponse>;
+    const actualUsage = usage(payload.usage);
+    if (typeof payload.id === "string" && OPENROUTER_GENERATION_ID.test(payload.id) && payload.model === model) {
+      providerGenerationId = payload.id;
+      if (actualUsage.costUsd !== undefined) providerReceipt = { generationId: payload.id, inputTokens: actualUsage.inputTokens, outputTokens: actualUsage.outputTokens, costUsd: actualUsage.costUsd };
+    }
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
     if (this.billing && payload.model !== model) throw new Error("system_one_billing_model_mismatch");
+    if (this.billing && !providerReceipt) throw new Error("system_one_generation_receipt_missing");
     const answer = payload.answers["decision"];
     if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
-    const actualUsage = usage(payload.usage);
-    if (reservation !== undefined) { settlementStarted = true; await this.billing!.settle(reservation, { status: "confirmed", inputTokens: actualUsage.inputTokens, outputTokens: actualUsage.outputTokens }); }
+    if (reservation !== undefined) { settlementStarted = true; await this.billing!.settle(reservation, { status: "confirmed", ...providerReceipt! }); }
     return { answer, meta: { provider: this.provider, model: payload.model, latencyMs: Date.now() - started, usage: actualUsage } };
     } catch (error) {
-      if (reservation !== undefined && !settlementStarted) await this.billing!.settle(reservation, { status: "uncertain" });
+      if (reservation !== undefined && !settlementStarted) {
+        settlementStarted = true;
+        await this.billing!.settle(reservation, providerReceipt ? { status: "confirmed", ...providerReceipt } : { status: "uncertain", ...(providerGenerationId ? { generationId: providerGenerationId } : {}) });
+      }
       throw error;
     }
   }
@@ -353,13 +367,21 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength, idempotencyKey: await this.idempotencyKey(model, state, questions) }) : undefined;
     if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
+    let providerReceipt: { generationId: string; inputTokens: number; outputTokens: number; costUsd: number } | undefined;
+    let providerGenerationId: string | undefined;
     try {
     const { response, signal } = await this.post(model, state, questions);
     if (!response?.ok) {
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
-    const raw = await readBoundedDecisionJson(response, signal) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    const raw = await readBoundedDecisionJson(response, signal) as { id?: string; answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    const usageMeta = raw.usage === undefined ? {} : { usage: usage(raw.usage) };
+    if (typeof raw.id === "string" && OPENROUTER_GENERATION_ID.test(raw.id) && raw.model === model) {
+      providerGenerationId = raw.id;
+      if (usageMeta.usage?.costUsd !== undefined) providerReceipt = { generationId: raw.id, inputTokens: usageMeta.usage.inputTokens, outputTokens: usageMeta.usage.outputTokens, costUsd: usageMeta.usage.costUsd };
+    }
     if (this.billing && raw.model !== model) throw new Error("system_one_billing_model_mismatch");
+    if (this.billing && !providerReceipt) throw new Error("system_one_generation_receipt_missing");
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
     const answers: Record<string, SystemOneAnswer> = {};
     for (const key of Object.keys(questions)) {
@@ -367,15 +389,17 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
       answers[key] = answer as SystemOneAnswer;
     }
-    const usageMeta = raw.usage === undefined ? {} : { usage: usage(raw.usage) };
     if (reservation !== undefined) {
-      if (!usageMeta.usage) throw new Error("system_one_invalid_usage");
+      if (!providerReceipt || !usageMeta.usage) throw new Error("system_one_generation_receipt_missing");
       settlementStarted = true;
-      await this.billing!.settle(reservation, { status: "confirmed", inputTokens: usageMeta.usage.inputTokens, outputTokens: usageMeta.usage.outputTokens });
+      await this.billing!.settle(reservation, { status: "confirmed", ...providerReceipt });
     }
     return { answers, meta: { provider: this.provider, ...(typeof raw.model === "string" ? { model: raw.model } : { model }), latencyMs: Date.now() - started, ...usageMeta } };
     } catch (error) {
-      if (reservation !== undefined && !settlementStarted) await this.billing!.settle(reservation, { status: "uncertain" });
+      if (reservation !== undefined && !settlementStarted) {
+        settlementStarted = true;
+        await this.billing!.settle(reservation, providerReceipt ? { status: "confirmed", ...providerReceipt } : { status: "uncertain", ...(providerGenerationId ? { generationId: providerGenerationId } : {}) });
+      }
       throw error;
     }
   }
