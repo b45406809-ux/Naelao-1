@@ -24,7 +24,7 @@ describe("durable OpenRouter decision usage reconciliation", () => {
     let billingSettlements = 0;
     const billing = { fetch: vi.fn(async (request: Request) => {
       const path = new URL(request.url).pathname;
-      if (path.endsWith("/status")) return Response.json({ status: remoteStatus, max_tokens: 500, max_credits: 100, created_at: new Date(now - 5000).toISOString() });
+      if (path.endsWith("/status")) return Response.json({ status: remoteStatus, ...(remoteStatus === "settled" ? { generation_id: "gen-dec-abc", cost_credits: 3 } : {}), max_tokens: 500, max_credits: 100, created_at: new Date(now - 5000).toISOString() });
       if (path.endsWith("/settle")) {
         billingSettlements++;
         remoteStatus = "settled"; // D1 transaction committed before its response was lost.
