@@ -1028,6 +1028,8 @@ export interface AgentDOEnv {
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
   TASK_FIXER_ENABLED?: string;
   GOAL_VERIFICATION_SHADOW_ENABLED?: string;
+  /** When enabled, goals without independently collected evidence wait for review. */
+  GOAL_VERIFICATION_REQUIRED?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
@@ -3648,6 +3650,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
             taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
+            verificationRequired: this.env.GOAL_VERIFICATION_REQUIRED === "true",
             ...(this.env.GOAL_VERIFICATION_SHADOW_ENABLED === "true" && runtimeEnv?.fastDecision ? {
               observeVerification: async (task, result) => {
                 const { assessGoalResult } = await import("../script-engine/goal-verification.js");
