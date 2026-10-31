@@ -3967,7 +3967,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             },
             dispatch: async (task, workerId, handoffs, dispatchId) => {
               const outbox = this.ctx.storage.sql.exec<{ status: string; worker_id: string }>("SELECT status,worker_id FROM goal_dispatch_outbox WHERE dispatch_id=?", dispatchId).toArray()[0];
-              if (!outbox || outbox.worker_id !== workerId || outbox.status === "uncertain" || outbox.status === "review" || outbox.status === "delivering") return { acknowledged: false };
+              if (!outbox || outbox.worker_id !== workerId || outbox.status !== "intent") return { acknowledged: false };
               const updateOutbox = (status: "delivering" | "acknowledged" | "uncertain" | "review", attempt?: number, branch?: string | null) => this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE goal_dispatch_outbox SET status=?,attempt=COALESCE(?,attempt),workspace_branch=COALESCE(?,workspace_branch),updated_at=? WHERE dispatch_id=? AND worker_id=?", status, attempt ?? null, branch ?? null, Date.now(), dispatchId, workerId));
               const existing = this.ctx.storage.sql.exec("SELECT attempt,parent_run_id,workspace_branch,status FROM sub_agents WHERE id=?", workerId).toArray() as Array<{ attempt: number; parent_run_id: string; workspace_branch: string | null; status: string }>;
               const prior = existing[0];
