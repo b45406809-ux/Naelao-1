@@ -7,6 +7,8 @@ on:
       - 'infra/scripts/swarm-provider-eval*'
       - 'infra/scripts/laya-*'
       - 'workers/agents/src/script-engine/goal-*'
+      - 'workers/agents/src/do/delegation-admission.test.ts'
+      - 'workers/agents/vitest.config.ts'
       - 'workers/billing/src/decision-reservations*'
   workflow_dispatch:
     inputs:
