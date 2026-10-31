@@ -49,6 +49,20 @@ def expected_calibration_error(outputs):
             error += len(values) / len(items) * abs(accuracy - confidence)
     return error
 
+def assess_quality(calibration_sample_size, ece, false_acceptances):
+    reasons = []
+    if calibration_sample_size < 100:
+        reasons.append("calibration_sample_below_100")
+    if ece is None or ece > 0.10:
+        reasons.append("calibration_error_above_0.10_or_unavailable")
+    if false_acceptances:
+        reasons.append("false_acceptance_observed")
+    return {
+        "status": "exploratory_only" if reasons else "candidate_for_larger_evaluation",
+        "production_eligible": False,
+        "reason_codes": reasons or ["production_acceptance_requires_external_validation"],
+    }
+
 def main():
     report = {
         "schema_version": 1, "kind": "synthetic_laya_swarm_experiment", "state": "blocked",
@@ -107,7 +121,7 @@ def main():
         brier = sum((p - (e == "pass")) ** 2 for p, e in calibrated) / len(calibrated) if calibrated else None
         confidence = [x["confidence"] for x in outputs if x["confidence"] is not None]
         ece = expected_calibration_error(outputs)
-        report["laya"] = {"state": "passed", "package_version": laya.__version__, "model_download_seconds": round(download_seconds, 3), "model_load_seconds": round(load_seconds, 3), "download_bytes": download_bytes, "cpu_seconds_inference": round(cpu_seconds, 3), "latency_p50_ms": round(percentile(latencies, .5), 3), "latency_p95_ms": round(percentile(latencies, .95), 3), "accuracy": sum(a == b for a, b in zip(predicted, expected)) / len(expected), "false_acceptances": false_accepts, "review_rate": sum(x["decision"] == "review" for x in outputs) / len(outputs), "abstention": "unsupported by this choice output; review is a selected option", "brier_score_pass_probability": round(brier, 5) if brier is not None else None, "calibration_sample_size": len(calibrated), "expected_calibration_error": round(ece, 5) if ece is not None else None, "cases": outputs, "latency_ms": [round(x, 3) for x in latencies]}
+        report["laya"] = {"state": "completed", "quality_assessment": assess_quality(len(calibrated), ece, false_accepts), "package_version": laya.__version__, "model_download_seconds": round(download_seconds, 3), "model_load_seconds": round(load_seconds, 3), "download_bytes": download_bytes, "cpu_seconds_inference": round(cpu_seconds, 3), "latency_p50_ms": round(percentile(latencies, .5), 3), "latency_p95_ms": round(percentile(latencies, .95), 3), "accuracy": sum(a == b for a, b in zip(predicted, expected)) / len(expected), "false_acceptances": false_accepts, "review_rate": sum(x["decision"] == "review" for x in outputs) / len(outputs), "abstention": "unsupported by this choice output; review is a selected option", "brier_score_pass_probability": round(brier, 5) if brier is not None else None, "calibration_sample_size": len(calibrated), "expected_calibration_error": round(ece, 5) if ece is not None else None, "cases": outputs, "latency_ms": [round(x, 3) for x in latencies]}
         report["state"] = "passed"
     except Exception as error:
         # Deliberately omit exception text: native/runtime exceptions can include local paths or model data.

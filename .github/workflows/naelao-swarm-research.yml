@@ -162,6 +162,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test model-quality admission labels
+        run: python -m unittest infra/scripts/test_laya_quality_assessment.py
       - name: Check runner capacity
         id: capacity
         shell: bash

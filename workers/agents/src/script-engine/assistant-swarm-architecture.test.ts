@@ -5,6 +5,7 @@ import { standingBlackboardPeer } from "../../../spaces/src/blackboard-sharing.j
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
 import { collectGoalEvidence } from "./goal-evidence.js";
 import { goalPlanner } from "./prebuilt/goal-planner.js";
+import { projectCoordination } from "./prebuilt/project-coordination.js";
 
 const { scopeAccess } = vi.hoisted(() => ({ scopeAccess: vi.fn(async () => true) }));
 vi.mock("../communications/core.js", () => ({ scopeAccess }));
@@ -88,6 +89,21 @@ function makeProjectAssistantRun(decision: "passed" | "uncertain") {
 }
 
 describe("cross-layer assistant and swarm architecture", () => {
+  it("routes a Space Assistant consult to the named project assistant with explicit project scope", async () => {
+    const spacesWorker = { fetch: vi.fn(async () => Response.json({ data: [{ id: "project-reviewer", name: "Project Reviewer" }] })) };
+    const consultAgent = vi.fn(async input => ({ accepted: true, input }));
+    const consult = projectCoordination.operations["thread.consult"]!;
+
+    await expect(consult({ agent_id: "project-reviewer", project_id: "project-1", parent_thread_id: "space-thread-1", message: "Check the scoped launch risks." }, {
+      env: { spacesWorker, spaceId: "space-1", tenantId: "tenant-1", platformSecret: "host-secret", orchestration: { consultAgent } }, run: vi.fn(),
+    } as never)).resolves.toMatchObject({ accepted: true });
+
+    expect(consultAgent).toHaveBeenCalledWith({
+      agentId: "project-reviewer", message: "Check the scoped launch risks.", spaceId: "space-1", projectId: "project-1", parentThreadId: "space-thread-1",
+    });
+    expect(spacesWorker.fetch).toHaveBeenCalledOnce();
+  });
+
   it("carries a permitted shared-project event through project wake, planner, workers and independent verification", async () => {
     scopeAccess.mockResolvedValueOnce(true);
     const f = wakeFixture();
