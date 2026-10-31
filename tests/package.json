@@ -5,7 +5,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser-plan": "playwright test --config playwright.plan.config.ts"
+    "test:browser-plan": "playwright test --config playwright.plan.config.ts",
+    "test:runtime-plan": "node --test plan/runtime/*.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

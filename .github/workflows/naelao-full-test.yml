@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        suite: [repository, workspace, node, conformance, typecheck, security-lint, browser-journey]
+        suite: [repository, workspace, node, conformance, typecheck, security-lint, browser-journey, runtime-acceptance]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -46,6 +46,7 @@ jobs:
             workspace) pnpm exec vitest run --config vitest.workspace.ts ;;
             node) node --test infra/scripts/*.test.mjs tests/unit/local-agent-client.node.test.mjs packages/bridge/test/*.test.mjs ;;
             browser-journey) pnpm --filter @naelao/tests exec playwright install --with-deps chromium && pnpm --filter @naelao/tests exec playwright test --config playwright.plan.config.ts ;;
+            runtime-acceptance) mkdir -p results && NAELAO_RUNTIME_RESULTS_PATH="$GITHUB_WORKSPACE/results/runtime-acceptance-metrics.json" node --test tests/plan/runtime/*.test.mjs ;;
             conformance) pnpm test:conformance ;;
             typecheck) pnpm --recursive --workspace-concurrency=2 typecheck ;;
             security-lint) pnpm exec biome lint . --only=security --max-diagnostics=25 ;;
@@ -85,9 +86,9 @@ jobs:
         shell: bash
         run: |
           node <<'NODE'
-          const fs=require('fs'); const expected=['repository','workspace','node','conformance','typecheck','security-lint','browser-journey'];
+          const fs=require('fs'); const expected=['repository','workspace','node','conformance','typecheck','security-lint','browser-journey','runtime-acceptance'];
           let rows=expected.map(s=>{try{return JSON.parse(fs.readFileSync(`results/${s}.json`,'utf8'))}catch{return {suite:s,state:'blocked: missing result'}}});
-          let text='## Naelao test inventory\n\n| Suite | Result |\n|---|---|\n'+rows.map(x=>`| ${x.suite} | ${x.state} |`).join('\n')+`\n| Connected worker checks | ${process.env.CONNECTED_RESULT} |\n\nThe agent-authorization batch verifies authorization, durable task admission/polling, and local billing admission. The browser-journey suite covers the seeded Project Bot shell and project-scoped thread flow at desktop and narrow viewports using a local synthetic API fixture. This run has no model-provider credential, so a provider-backed successful completion is not claimed. Still not covered: sidecar runtime integration, restart recovery, stress testing, or live Cloudflare and external-provider acceptance.\n`;
+          let text='## Naelao test inventory\n\n| Suite | Result |\n|---|---|\n'+rows.map(x=>`| ${x.suite} | ${x.state} |`).join('\n')+`\n| Connected worker checks | ${process.env.CONNECTED_RESULT} |\n\nThe browser-journey suite covers the seeded Project Bot shell and project-scoped thread flow at desktop and narrow viewports using a local synthetic API fixture. Runtime acceptance applies repository D1 migrations, creates a blackboard request through actual Spaces routes, runs the production wake coordinator, and reaches real local SpaceDO and AgentDO instances. Wrangler routes SPACES_WORKER through a local service binding to the test Worker, which delegates to the Spaces Worker module; separately configured Agents and Spaces workers remain untested. The run is intentionally air-gapped: AgentDO rejects cloud-model execution with compliance_violation and the wake remains held. No successful provider-backed task is claimed. Still not covered: split-worker service-binding topology, successful reasoning-adapter acceptance, sidecar runtime integration, restart recovery, stress testing, or live Cloudflare and external-provider acceptance. The runtime suite uploads a JSON artifact with migration, startup, route, and dispatch measurements.\n`;
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,text);console.log(text);
           if(rows.some(x=>x.state!=='passed')||process.env.MATRIX_RESULT!=='success'||process.env.CONNECTED_RESULT!=='success')process.exitCode=1;
           NODE

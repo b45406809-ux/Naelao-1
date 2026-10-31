@@ -1,0 +1,33 @@
+name = "naelao-blackboard-spaces-test"
+main = "./spaces-worker-test-entry.ts"
+compatibility_date = "2026-10-13"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "SPACE_DO"
+class_name = "SpaceDO"
+
+[[durable_objects.bindings]]
+name = "NAELAO_AGENT_DO"
+class_name = "NaelaoAgentDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SpaceDO", "NaelaoAgentDO"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-blackboard-test"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "../../../infra/migrations"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-blackboard-spaces-test"
+
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-blackboard-agent-scripts-test"
+
+[vars]
+PLATFORM_SECRET = "blackboard-integration-test-secret"
