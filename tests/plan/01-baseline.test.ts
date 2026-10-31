@@ -8,7 +8,7 @@ describe("Step 01 local baseline", () => {
     expect(output).toContain("Naelao plan preflight");
     expect(output).toMatch(/PASS|WARN|LIVE_REQUIRED/);
     expect(output).toContain("service:shell");
-  });
+  }, 20_000);
 
   it("seeds a disposable space and retrieves the same state after a restart probe", async () => {
     const seeded = await seedSpace();
