@@ -317,6 +317,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     const started = Date.now();
     const model = this.modelFor({ decision: question }, state);
     const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions: { decision: question } })).byteLength }) : undefined;
+    if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
     try {
     const { response, signal } = await this.post(model, state, { decision: question });
@@ -327,6 +328,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     }
     const payload = await readBoundedDecisionJson(response, signal) as Partial<SystemOneResponse>;
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
+    if (this.billing && payload.model !== model) throw new Error("system_one_billing_model_mismatch");
     const answer = payload.answers["decision"];
     if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
     const actualUsage = usage(payload.usage);
@@ -342,6 +344,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     const started = Date.now();
     const model = this.modelFor(questions, state);
     const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength }) : undefined;
+    if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
     try {
     const { response, signal } = await this.post(model, state, questions);
@@ -349,6 +352,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
     const raw = await readBoundedDecisionJson(response, signal) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    if (this.billing && raw.model !== model) throw new Error("system_one_billing_model_mismatch");
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
     const answers: Record<string, SystemOneAnswer> = {};
     for (const key of Object.keys(questions)) {
