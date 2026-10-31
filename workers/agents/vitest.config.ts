@@ -26,6 +26,12 @@ export default defineConfig({
       "@naelao/types": fileURLToPath(
         new URL("../../packages/types/src/index.ts", import.meta.url)
       ),
+      "@naelao/moderation": fileURLToPath(
+        new URL("../../packages/moderation/src/index.ts", import.meta.url)
+      ),
+      "@naelao/tracing": fileURLToPath(
+        new URL("../../packages/tracing/src/index.ts", import.meta.url)
+      ),
       "@naelao/security": fileURLToPath(
         new URL("../../packages/security/src/index.ts", import.meta.url)
       ),
