@@ -401,9 +401,14 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
           {task.coordination_summary.fixer_count > 0 && <span>Fixers: {task.coordination_summary.fixer_count}</span>}
           {(task.coordination_summary.shadow_review_count ?? 0) > 0 && <span>Advisory findings: {task.coordination_summary.shadow_review_count}</span>}
           {(task.coordination_summary.shadow_uncertain_count ?? 0) > 0 && <span>Advisory uncertain: {task.coordination_summary.shadow_uncertain_count}</span>}
+          {(task.coordination_summary.verification_passed_count ?? 0) > 0 && <span>Verified: {task.coordination_summary.verification_passed_count}</span>}
+          {(task.coordination_summary.verification_failed_count ?? 0) > 0 && <span>Verification failed: {task.coordination_summary.verification_failed_count}</span>}
+          {(task.coordination_summary.verification_review_count ?? 0) > 0 && <span>Needs review: {task.coordination_summary.verification_review_count}</span>}
+          {(task.coordination_summary.dispatch_blocked_count ?? 0) > 0 && <span>Dispatch blocked: {task.coordination_summary.dispatch_blocked_count}</span>}
+          {task.coordination_summary.decision_budget && <span>Decision budget: {task.coordination_summary.decision_budget.reserved_credits} reserved credits · {task.coordination_summary.decision_budget.settled_credits} settled credits · {task.coordination_summary.decision_budget.uncertain_calls} uncertain</span>}
         </div>
         {(task.coordination_summary.runtime_workers ?? []).map((worker, index) => <div key={`${worker.graph_id ?? index}:${worker.task_id}`} style={{ display: "flex", flexWrap: "wrap", gap: 7, paddingTop: 5, fontSize: 11, color: "var(--text3)" }}>
-          <code>{worker.graph_id ? `${worker.graph_id} · ` : ""}{worker.task_id.slice(0, 20)}</code><span>{worker.capability ?? "worker runtime"}</span><span>{worker.status.replaceAll("_", " ")}</span>
+          <code>{worker.graph_id ? `${worker.graph_id} · ` : ""}{worker.task_id.slice(0, 20)}</code><span>{worker.capability ?? "worker runtime"}</span><span>{worker.status.replaceAll("_", " ")}</span><span>Verification: {(worker.verification_status ?? "not_required").replaceAll("_", " ")}</span>
           {worker.status === "waiting" && worker.queue_position !== undefined && <span>Queue position {worker.queue_position}</span>}
           {worker.queue_wait_ms !== undefined && <span>Waited {formatElapsedTime(worker.queue_wait_ms)}</span>}
           {worker.started_at_ms !== undefined && <span>Started {new Date(worker.started_at_ms).toLocaleTimeString()}</span>}

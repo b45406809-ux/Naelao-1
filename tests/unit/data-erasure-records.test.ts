@@ -33,6 +33,7 @@ describe("data erasure D1 records", () => {
       "developer_earnings_ledger", "platform_provenance", "template_subscriptions",
       "portal_domains", "space_provisioning_leases", "usage_events", "website_connections",
       "assistant_communication_identities",
+      "decision_call_reservations",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const scoped = new Set<string>();
@@ -61,6 +62,7 @@ describe("data erasure D1 records", () => {
     const retainedTenantScoped = new Set([
       "audit_log", "invoices", "llm_token_run_settlements", "marketplace_license_overpayments",
       "marketplace_license_purchases", "platform_provenance",
+      "decision_call_reservations",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const tenantScoped = new Set<string>();

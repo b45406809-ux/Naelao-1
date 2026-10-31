@@ -21,6 +21,8 @@ export interface GoalTask {
   subtask_spec: string;
   /** Planner-supplied acceptance criteria; untrusted descriptions, never authority. */
   acceptance_criteria?: string[];
+  /** Bounded host operations; never accepts shell or free-form code. */
+  evidence_checks?: Array<{ criterion: string; operation: string }>;
   assigned_role: UniversalAgentRole;
   context_affinity?: "shared" | "isolated";
   agent_id?: string;
@@ -48,6 +50,8 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.id) || !task.title || !task.subtask_spec || !Array.isArray(task.file_paths)) throw new Error(`invalid goal task '${task.id}'`);
     if (typeof task.assigned_role !== "string" || !task.assigned_role.trim() || task.assigned_role.length > 128) throw new Error(`task '${task.id}' has an invalid assigned_role`);
     if (task.acceptance_criteria !== undefined && (!Array.isArray(task.acceptance_criteria) || task.acceptance_criteria.length < 1 || task.acceptance_criteria.length > 8 || task.acceptance_criteria.some(item => typeof item !== "string" || !item.trim() || item.length > 500))) throw new Error(`task '${task.id}' has invalid acceptance_criteria`);
+    if (task.evidence_checks !== undefined && (!Array.isArray(task.evidence_checks) || task.evidence_checks.length > 8 || task.evidence_checks.some(check => !check || typeof check.criterion !== "string" || !task.acceptance_criteria?.includes(check.criterion) || typeof check.operation !== "string" || !/^(artifact\.sha256|workspace\.exists|workspace\.sha256):[^\s]{1,256}$/.test(check.operation)) || new Set(task.evidence_checks.map(check => check.criterion)).size !== task.evidence_checks.length)) throw new Error(`task '${task.id}' has invalid evidence_checks`);
+    if (task.evidence_checks !== undefined && task.evidence_checks.some(check => !task.file_paths.includes(check.operation.split(":")[1] ?? ""))) throw new Error(`task '${task.id}' evidence check paths must be declared`);
     if (!Number.isSafeInteger(task.budget_tokens) || task.budget_tokens < 1 || task.budget_tokens > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error(`task '${task.id}' budget_tokens must be within 1..${MAX_SUB_AGENT_BUDGET_TOKENS}`);
     if (task.resource_keys !== undefined && (!Array.isArray(task.resource_keys) || task.resource_keys.length > 8 || task.resource_keys.some(key => typeof key !== "string" || !/^[a-z][a-z0-9._:-]{0,95}$/.test(key)) || new Set(task.resource_keys).size !== task.resource_keys.length)) throw new Error(`task '${task.id}' has invalid resource_keys`);
     if (task.runtime_capability !== undefined && (typeof task.runtime_capability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(task.runtime_capability))) throw new Error(`task '${task.id}' has an invalid runtime_capability`);
@@ -87,6 +91,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
       subtask_spec: subtaskSpec,
       ...(task.acceptance_criteria !== undefined ? { acceptance_criteria: task.acceptance_criteria as string[] } : {}),
+      ...(task.evidence_checks !== undefined ? { evidence_checks: task.evidence_checks as Array<{ criterion: string; operation: string }> } : {}),
       assigned_role: String(task.assigned_role ?? "worker") as UniversalAgentRole,
       context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),

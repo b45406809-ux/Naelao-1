@@ -151,4 +151,28 @@ describe("SpaceDO migration replay", () => {
       "SELECT status,provider_evidence,consent_facts_json FROM custom_model_lifecycle WHERE space_id=? AND model_id=?", "space-legacy", "custom/legacy",
     ).toArray()[0]).toMatchObject({ status: "active", provider_evidence: "legacy_unverified", consent_facts_json: '{"legacy_unverified":true}' });
   });
+
+  it("adds verification fields in a new migration and retains uncertain decision budget holds", () => {
+    const storage = createDOStorage();
+    const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 106));
+    storage.sql.exec("INSERT INTO spaces(id,name,space_type,created_at) VALUES(?,?,?,?)", "s-1", "Space", "team", "2026-10-31");
+    storage.sql.exec("INSERT INTO tasks(id,space_id,title) VALUES(?,?,?)", "task-legacy", "s-1", "legacy task");
+    const taskColumnsBefore = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('tasks')").toArray().map(row => row.name);
+    expect(taskColumnsBefore).not.toContain("verification_status");
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
+    const taskColumnsAfter = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('tasks')").toArray().map(row => row.name);
+    expect(taskColumnsAfter).toContain("verification_status");
+    expect(taskColumnsAfter).toContain("verification_reason");
+    expect(storage.sql.exec<{ verification_status: string | null }>("SELECT verification_status FROM tasks WHERE id='task-legacy'").toArray()).toEqual([{ verification_status: null }]);
+    const reservationSql = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='project_spend_reservations'").toArray()[0]?.sql ?? "";
+    expect(reservationSql).toContain("'uncertain'");
+    storage.sql.exec("INSERT INTO project_decision_uncertainties(reservation_id,project_id,marked_at) VALUES(?,?,?)", "r-1", "p-1", "2026-10-31");
+    expect(storage.sql.exec("SELECT reservation_id FROM project_decision_uncertainties WHERE project_id='p-1'").toArray()).toEqual([{ reservation_id: "r-1" }]);
+  });
+
+  it("loads the SpaceDO migration runner without generated package aliases", async () => {
+    const space = await import("./SpaceDO");
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(106);
+  });
 });

@@ -231,7 +231,8 @@ export class TaskDO extends DurableObject {
       const body = await request.json<{
         graph_id?: unknown; task_count?: unknown; statuses?: unknown;
         escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown;
-      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown } => ({}));
+        verification_passed_count?: unknown; verification_failed_count?: unknown; verification_review_count?: unknown; dispatch_blocked_count?: unknown; decision_budget?: unknown;
+      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown; verification_passed_count?: unknown; verification_failed_count?: unknown; verification_review_count?: unknown; dispatch_blocked_count?: unknown; decision_budget?: unknown } => ({}));
       const statusKeys = ["pending", "running", "verifying", "completed", "failed", "blocked", "needs_review"] as const;
       const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
         ? body.statuses as Record<string, unknown>
@@ -243,12 +244,15 @@ export class TaskDO extends DurableObject {
       const invalidRuntimeWorkers = !runtimeWorkers || runtimeWorkers.some(worker =>
         typeof worker.task_id !== "string" || worker.task_id.length > 64 ||
         typeof worker.status !== "string" || !runtimeStatuses.has(worker.status) ||
+        worker.verification_status !== undefined && !["not_required", "verifying", "passed", "failed", "uncertain", "review"].includes(String(worker.verification_status)) ||
         worker.capability !== undefined && (typeof worker.capability !== "string" || worker.capability.length > 96) ||
         worker.queue_position !== undefined && (!Number.isSafeInteger(worker.queue_position) || (worker.queue_position as number) < 1 || (worker.queue_position as number) > 100) ||
         worker.queue_wait_ms !== undefined && (!Number.isSafeInteger(worker.queue_wait_ms) || (worker.queue_wait_ms as number) < 0 || (worker.queue_wait_ms as number) > 86_400_000) ||
         worker.execution_ms !== undefined && (!Number.isSafeInteger(worker.execution_ms) || (worker.execution_ms as number) < 0 || (worker.execution_ms as number) > 86_400_000) ||
         worker.assigned_at_ms !== undefined && (!Number.isSafeInteger(worker.assigned_at_ms) || (worker.assigned_at_ms as number) < 0) ||
         worker.started_at_ms !== undefined && (!Number.isSafeInteger(worker.started_at_ms) || (worker.started_at_ms as number) < 0));
+      const decisionBudget = body.decision_budget && typeof body.decision_budget === "object" && !Array.isArray(body.decision_budget) ? body.decision_budget as Record<string, unknown> : undefined;
+      const invalidDecisionBudget = body.decision_budget !== undefined && (!decisionBudget || [decisionBudget.reserved_credits, decisionBudget.settled_credits, decisionBudget.uncertain_calls].some(value => !Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 1_000_000_000));
       if (typeof body.graph_id !== "string" || !/^[a-f0-9]{64}$/.test(body.graph_id) ||
           !Number.isSafeInteger(body.task_count) || (body.task_count as number) < 0 || (body.task_count as number) > 200 ||
           !Number.isSafeInteger(body.escalation_count) || (body.escalation_count as number) < 0 || (body.escalation_count as number) > 200 ||
@@ -256,11 +260,12 @@ export class TaskDO extends DurableObject {
           !statuses || Object.keys(statuses).some(key => !statusKeys.includes(key as typeof statusKeys[number])) ||
           statusKeys.some(key => !(key === "verifying" && statuses[key] === undefined) && (!Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200)) ||
           [body.shadow_review_count, body.shadow_uncertain_count].some(count => count !== undefined && (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 200)) ||
-          invalidRuntimeWorkers)
+          [body.verification_passed_count, body.verification_failed_count, body.verification_review_count, body.dispatch_blocked_count].some(count => count !== undefined && (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 200)) ||
+          invalidRuntimeWorkers || invalidDecisionBudget)
         return Response.json({ error: "invalid_coordination_summary" }, { status: 400 });
       const rows = this.ctx.storage.sql.exec("SELECT coordination_json, expires_at FROM tasks WHERE id = ?", taskId).toArray() as Array<{ coordination_json: string | null; expires_at: number }>;
       if (!rows[0] || rows[0].expires_at <= Date.now()) return Response.json({ error: "not_found" }, { status: 404 });
-      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number; shadow_review_count?: number; shadow_uncertain_count?: number; runtime_workers?: Array<Record<string, unknown>> }> = {};
+      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number; shadow_review_count?: number; shadow_uncertain_count?: number; verification_passed_count?: number; verification_failed_count?: number; verification_review_count?: number; dispatch_blocked_count?: number; decision_budget?: Record<string, number>; runtime_workers?: Array<Record<string, unknown>> }> = {};
       try { summaries = JSON.parse(rows[0].coordination_json ?? "{}"); } catch { /* replace corrupt summary state */ }
       summaries[body.graph_id] = {
         task_count: body.task_count as number,
@@ -269,6 +274,11 @@ export class TaskDO extends DurableObject {
         fixer_count: body.fixer_count as number,
         shadow_review_count: (body.shadow_review_count ?? 0) as number,
         shadow_uncertain_count: (body.shadow_uncertain_count ?? 0) as number,
+        verification_passed_count: (body.verification_passed_count ?? 0) as number,
+        verification_failed_count: (body.verification_failed_count ?? 0) as number,
+        verification_review_count: (body.verification_review_count ?? 0) as number,
+        dispatch_blocked_count: (body.dispatch_blocked_count ?? 0) as number,
+        ...(decisionBudget ? { decision_budget: { reserved_credits: decisionBudget.reserved_credits as number, settled_credits: decisionBudget.settled_credits as number, uncertain_calls: decisionBudget.uncertain_calls as number } } : {}),
         runtime_workers: runtimeWorkers ?? [],
       };
       const graphIds = Object.keys(summaries);
@@ -353,7 +363,7 @@ export class TaskDO extends DurableObject {
       : undefined;
     let coordinationSummary: Record<string, unknown> | undefined;
     try {
-      const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; shadow_review_count?: number; shadow_uncertain_count?: number; runtime_workers?: Array<Record<string, unknown>> }]>;
+      const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; shadow_review_count?: number; shadow_uncertain_count?: number; verification_passed_count?: number; verification_failed_count?: number; verification_review_count?: number; dispatch_blocked_count?: number; decision_budget?: Record<string, number>; runtime_workers?: Array<Record<string, unknown>> }]>;
       const graphs = graphEntries.map(([, graph]) => graph);
       if (graphs.length) {
         const statuses = { pending: 0, running: 0, verifying: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
@@ -369,6 +379,15 @@ export class TaskDO extends DurableObject {
           fixer_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.fixer_count) && graph.fixer_count! >= 0 ? graph.fixer_count! : 0), 0),
           shadow_review_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.shadow_review_count) && graph.shadow_review_count! >= 0 ? graph.shadow_review_count! : 0), 0),
           shadow_uncertain_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.shadow_uncertain_count) && graph.shadow_uncertain_count! >= 0 ? graph.shadow_uncertain_count! : 0), 0),
+          verification_passed_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.verification_passed_count) && graph.verification_passed_count! >= 0 ? graph.verification_passed_count! : 0), 0),
+          verification_failed_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.verification_failed_count) && graph.verification_failed_count! >= 0 ? graph.verification_failed_count! : 0), 0),
+          verification_review_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.verification_review_count) && graph.verification_review_count! >= 0 ? graph.verification_review_count! : 0), 0),
+          dispatch_blocked_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.dispatch_blocked_count) && graph.dispatch_blocked_count! >= 0 ? graph.dispatch_blocked_count! : 0), 0),
+          decision_budget: {
+            reserved_credits: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.decision_budget?.reserved_credits) && (graph.decision_budget?.reserved_credits ?? -1) >= 0 ? graph.decision_budget?.reserved_credits ?? 0 : 0), 0),
+            settled_credits: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.decision_budget?.settled_credits) && (graph.decision_budget?.settled_credits ?? -1) >= 0 ? graph.decision_budget?.settled_credits ?? 0 : 0), 0),
+            uncertain_calls: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.decision_budget?.uncertain_calls) && (graph.decision_budget?.uncertain_calls ?? -1) >= 0 ? graph.decision_budget?.uncertain_calls ?? 0 : 0), 0),
+          },
           runtime_workers: graphEntries.flatMap(([graphId, graph]) => (graph.runtime_workers ?? []).map(worker => ({ ...worker, graph_id: graphId.slice(0, 8) }))).slice(0, 200),
         };
       }

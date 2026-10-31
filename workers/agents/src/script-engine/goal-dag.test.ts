@@ -275,6 +275,27 @@ describe("durable goal DAG", () => {
     expect((await executeGoalDag([task("a")], f.host)).tasks.a?.result?.output).toBe("committed");
     expect(f.host.launch).not.toHaveBeenCalled();
   });
+  it("persists a stable dispatch identity before delivery and uses the existing worker session", async () => {
+    const f = fixture();
+    const dispatchIds: string[] = [];
+    f.host.dispatch = vi.fn(async (_task, id, _handoffs, dispatchId) => { dispatchIds.push(dispatchId); return { acknowledged: true, result: { id, ok: true } }; });
+    await executeGoalDag([task("a")], f.host);
+    expect(dispatchIds).toEqual(["dispatch:worker:a:1"]);
+    expect(f.snapshot().tasks.a?.dispatchId).toBe(dispatchIds[0]);
+    const resumed = fixture(f.snapshot()); resumed.host.dispatch = vi.fn();
+    await executeGoalDag([task("a")], resumed.host);
+    expect(resumed.host.dispatch).not.toHaveBeenCalled();
+  });
+  it("recovers a lost dispatch acknowledgement without creating another attempt", async () => {
+    const f = fixture();
+    f.host.dispatch = vi.fn(async () => ({ acknowledged: false }));
+    f.host.recover = vi.fn(async () => undefined);
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.dispatch).toHaveBeenCalledOnce();
+    expect(f.host.launch).not.toHaveBeenCalled();
+  });
   it("requires review for uncertain effects instead of blindly replaying mutations", async () => {
     const f = fixture({ tasks: { a: { status: "running", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
     const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);

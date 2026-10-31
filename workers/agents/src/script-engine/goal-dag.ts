@@ -1,6 +1,6 @@
 import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
-import { evaluateGoalEvidence, type GoalEvidence } from "./goal-evidence.js";
+import { evaluateGoalEvidence, type GoalEvidence, type GoalEvidenceCheck } from "./goal-evidence.js";
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
 export type GoalTaskStatus = "pending" | "running" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
@@ -15,7 +15,7 @@ export interface GoalTaskRuntimeState {
   queueWaitMs?: number;
   executionMs?: number;
 }
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; verificationRequired?: boolean }
@@ -25,6 +25,7 @@ export interface GoalDagHost {
   load(): Promise<GoalDagJournal | undefined>;
   save(journal: GoalDagJournal): Promise<void>;
   launch(task: GoalTask, workerId: string, handoffs: GoalHandoff[]): Promise<GoalWorkerResult>;
+  dispatch?(task: GoalTask, workerId: string, handoffs: GoalHandoff[], dispatchId: string): Promise<{ result?: GoalWorkerResult; acknowledged: boolean }>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   workerId(taskId: string): string;
@@ -33,6 +34,8 @@ export interface GoalDagHost {
   fixerEnabled?: boolean;
   verificationRequired?: boolean;
   collectEvidence?(task: GoalTask, workerId: string): Promise<GoalEvidence[]>;
+  assessEvidence?(task: GoalTask, evidence: readonly GoalEvidence[], deterministic: { outcome: "passed" | "failed" | "uncertain"; reason: string }): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
+  evidenceChecks?: Readonly<Record<string, readonly GoalEvidenceCheck[]>>;
   verify?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
   observeVerification?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "failed" | "uncertain"; reason: string }>;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
@@ -115,9 +118,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     state.status = "verifying";
     await save();
     try {
-      const assessment = journal.verificationRequired
-        ? evaluateGoalEvidence(task.acceptance_criteria ?? [], await (host.collectEvidence?.(task, state.workerId) ?? Promise.resolve([])))
-        : await host.verify!(task, state.result);
+      let assessment;
+      if (journal.verificationRequired) {
+        const evidence = await (host.collectEvidence?.(task, state.workerId) ?? Promise.resolve([]));
+        const deterministic = evaluateGoalEvidence(task.acceptance_criteria ?? [], evidence);
+        const modelAssessment = deterministic.outcome === "passed" && host.assessEvidence ? await host.assessEvidence(task, evidence, deterministic) : undefined;
+        assessment = modelAssessment && modelAssessment.outcome !== "passed" ? { outcome: "uncertain" as const, reason: "Decision assessment conflicts with deterministic evidence; review required." } : deterministic;
+      } else assessment = await host.verify!(task, state.result);
       if (!assessment || !["passed", "failed", "uncertain"].includes(assessment.outcome) || typeof assessment.reason !== "string" || !assessment.reason.trim()) throw new Error("invalid_verification_result");
       state.verification = { outcome: assessment.outcome, reason: assessment.reason.slice(0, 2000) };
       state.status = assessment.outcome === "passed" ? "completed" : assessment.outcome === "failed" ? "failed" : "needs_review";
@@ -218,6 +225,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       for (const key of resources) claimedResources.add(key);
     }
     for (const task of dispatch) {
+      journal.tasks[task.id]!.dispatchId ??= `dispatch:${journal.tasks[task.id]!.workerId}:${(journal.tasks[task.id]!.dispatchId?.split(":").at(-1) ?? "1")}`;
       journal.tasks[task.id]!.status = "running";
       for (const key of task.resource_keys ?? []) activeResources.add(key);
     }
@@ -250,7 +258,15 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         return;
       }
       try {
-        try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
+        try {
+          const handoffs = dependencyHandoffs(task, journal);
+          if (host.dispatch) {
+            const receipt = await host.dispatch(task, state.workerId, handoffs, state.dispatchId!);
+            if (!receipt.acknowledged) throw new Error("goal_dispatch_acknowledgement_uncertain");
+            if (!receipt.result) throw new Error("goal_dispatch_result_unavailable");
+            result = receipt.result;
+          } else result = await host.launch(task, state.workerId, handoffs);
+        }
         finally { await release(); }
       } catch (error) {
         // Transport failure may mean a committed worker response was lost.

@@ -768,7 +768,12 @@ export interface DurableAgentTask {
     fixer_count: number;
     shadow_review_count?: number;
     shadow_uncertain_count?: number;
-    runtime_workers?: Array<{ graph_id?: string; task_id: string; status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queue_position?: number; queue_wait_ms?: number; assigned_at_ms?: number; started_at_ms?: number; execution_ms?: number }>;
+    verification_passed_count?: number;
+    verification_failed_count?: number;
+    verification_review_count?: number;
+    dispatch_blocked_count?: number;
+    decision_budget?: { reserved_credits: number; settled_credits: number; uncertain_calls: number };
+    runtime_workers?: Array<{ graph_id?: string; task_id: string; status: "waiting" | "assigned" | "running" | "completed" | "failed"; verification_status?: "not_required" | "verifying" | "passed" | "failed" | "uncertain" | "review"; capability?: string; queue_position?: number; queue_wait_ms?: number; assigned_at_ms?: number; started_at_ms?: number; execution_ms?: number }>;
   };
   expires_at: string;
 }

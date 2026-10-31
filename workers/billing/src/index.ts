@@ -457,6 +457,64 @@ app.use("/internal/workflows/budget/*", requireInternalHmac((c) => (c as unknown
 // runs share the same day/week/month quota envelope. Holds are separate from usage_events and
 // only actual post-run token counts become billable usage.
 app.use("/internal/usage/llm-tokens/reservations/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.use("/internal/decisions/reservations/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/decisions/reservations/reserve", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; project_id?: string | null; model_id?: string; price_snapshot?: string; input_usd_per_token?: number; output_usd_per_token?: number; max_tokens?: number; max_credits?: number }>().catch(() => null);
+  if (!orgId || !body?.reservation_id || !body.run_id || !body.space_id || !body.model_id || !body.price_snapshot || body.reservation_id.length > 200 || body.run_id.length > 128 || body.space_id.length > 160 || body.model_id.length > 160 || !Number.isFinite(Date.parse(body.price_snapshot)) || Date.now() - Date.parse(body.price_snapshot) < 0 || Date.now() - Date.parse(body.price_snapshot) > 15 * 60_000 || !Number.isFinite(body.input_usd_per_token) || (body.input_usd_per_token ?? -1) < 0 || !Number.isFinite(body.output_usd_per_token) || (body.output_usd_per_token ?? -1) < 0 || !Number.isSafeInteger(body.max_tokens) || (body.max_tokens ?? 0) < 1 || !Number.isSafeInteger(body.max_credits) || (body.max_credits ?? 0) < 1 || (body.max_credits ?? Infinity) > 10_000_000) return c.json({ error_code: "bad_request" }, 400);
+  const prior = await c.env.PLATFORM_DB.prepare("SELECT * FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
+  if (prior) {
+    const same = prior.run_id === body.run_id && prior.space_id === body.space_id && prior.project_id === (body.project_id ?? null) && prior.model_id === body.model_id && prior.price_snapshot === body.price_snapshot && prior.max_tokens === body.max_tokens && prior.max_credits === body.max_credits;
+    return same && prior.status === "held" ? c.json({ reserved: true, reservation_id: body.reservation_id, status: prior.status, deduplicated: true }) : c.json({ error_code: prior.status === "uncertain" ? "reservation_outcome_uncertain" : "reservation_identity_conflict" }, 409);
+  }
+  const tier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
+  const limits = PLAN_LIMITS[tier] ?? PLAN_LIMITS.free!;
+  const admission = llmReservationAdmission(orgId, body.max_tokens!, limits, await resolveAllowOverage(c.env.PLATFORM_DB, orgId));
+  const withinQuota = await c.env.PLATFORM_DB.prepare(`SELECT 1 WHERE ${admission.predicate}`).bind(...admission.bindings).first();
+  if (!withinQuota) return c.json({ error_code: "quota_exceeded" }, 402);
+  const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO decision_call_reservations(id,org_id,space_id,project_id,run_id,model_id,price_snapshot,input_usd_per_token,output_usd_per_token,max_tokens,max_credits,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'held')`)
+    .bind(body.reservation_id, orgId, body.space_id, body.project_id ?? null, body.run_id, body.model_id, body.price_snapshot, body.input_usd_per_token, body.output_usd_per_token, body.max_tokens, body.max_credits).run();
+  if (!inserted.meta.changes) return c.json({ error_code: "reservation_conflict" }, 409);
+  await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
+  return c.json({ reserved: true, reservation_id: body.reservation_id }, 201);
+});
+app.post("/internal/decisions/reservations/settle", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ reservation_id?: string; outcome?: "confirmed" | "uncertain"; input_tokens?: number; output_tokens?: number; cost_credits?: number; model_id?: string; rate_card_version?: string }>().catch(() => null);
+  if (!orgId || !body?.reservation_id || !["confirmed", "uncertain"].includes(String(body.outcome))) return c.json({ error_code: "bad_request" }, 400);
+  const prior = await c.env.PLATFORM_DB.prepare("SELECT * FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
+  if (!prior) return c.json({ error_code: "reservation_not_found" }, 404);
+  if (prior.status === "settled") return c.json({ settled: true, deduplicated: true, reservation_id: body.reservation_id });
+  if (body.outcome === "uncertain") {
+    await c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='uncertain',updated_at=datetime('now') WHERE id=? AND org_id=? AND status IN ('held','uncertain')").bind(body.reservation_id, orgId).run();
+    return c.json({ settled: false, uncertain: true, reservation_id: body.reservation_id });
+  }
+  if (!Number.isSafeInteger(body.input_tokens) || (body.input_tokens ?? -1) < 0 || !Number.isSafeInteger(body.output_tokens) || (body.output_tokens ?? -1) < 0 || !Number.isSafeInteger(body.cost_credits) || (body.cost_credits ?? -1) < 0 || body.model_id !== prior.model_id || !body.rate_card_version || body.rate_card_version.length > 80) return c.json({ error_code: "bad_request" }, 400);
+  const tokens = body.input_tokens! + body.output_tokens!;
+  if (tokens > Number(prior.max_tokens) || body.cost_credits! > Number(prior.max_credits)) return c.json({ error_code: "decision_usage_exceeds_reservation" }, 409);
+  if (prior.status === "uncertain") {
+    const verifiedModel = body.model_id === prior.model_id;
+    const expectedUsd = Number(body.input_tokens) * Number(prior.input_usd_per_token) + Number(body.output_tokens) * Number(prior.output_usd_per_token);
+    if (!verifiedModel || Math.ceil(expectedUsd * 10_000) !== body.cost_credits) return c.json({ error_code: "uncertain_decision_requires_matching_price_snapshot" }, 409);
+  }
+  const eventHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`decision:${orgId}:${body.reservation_id}`)))].map(byte => byte.toString(16).padStart(2,"0")).join("");
+  const now = new Date().toISOString();
+  const result = await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE decision_call_reservations SET status='settled',actual_tokens=?,cost_credits=?,rate_card_version=?,updated_at=? WHERE id=? AND org_id=? AND status IN ('held','uncertain')").bind(tokens, body.cost_credits, body.rate_card_version, now, body.reservation_id, orgId),
+    c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,project_id,run_id,provider,model_id,payer_kind,decision) VALUES(?,?,?,'decision_tokens',?,?,?,2,'tokens',?,?,?,?,?,?,'plan_quota','charged')`).bind(`decision:${orgId}:${body.reservation_id}`, orgId, prior.space_id, tokens, now, eventHash, body.rate_card_version, body.cost_credits, prior.project_id, prior.run_id, "openrouter", prior.model_id),
+  ]);
+  if (!result[0]?.meta.changes && prior.status !== "settled") return c.json({ error_code: "decision_settlement_race" }, 409);
+  await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
+  return c.json({ settled: true, reservation_id: body.reservation_id });
+});
+app.post("/internal/decisions/reservations/status", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string }>().catch(() => null);
+  if (!orgId || !body?.reservation_id || !body.run_id || !body.space_id) return c.json({ error_code: "bad_request" }, 400);
+  const row = await c.env.PLATFORM_DB.prepare("SELECT status,run_id,space_id,model_id,price_snapshot,actual_tokens,cost_credits,rate_card_version FROM decision_call_reservations WHERE id=? AND org_id=?").bind(body.reservation_id, orgId).first<Record<string, unknown>>();
+  if (!row || row.run_id !== body.run_id || row.space_id !== body.space_id) return c.json({ error_code: "reservation_not_found" }, 404);
+  return c.json({ status: row.status, model_id: row.model_id, rate_card_version: row.rate_card_version, actual_tokens: row.actual_tokens, cost_credits: row.cost_credits });
+});
 app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number; expires_in_seconds?: number }>().catch(() => null);

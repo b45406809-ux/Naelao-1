@@ -72,8 +72,8 @@ export function llmReservationAdmission(orgId: string, estimatedTokens: number, 
   ].filter((window): window is { start: string; limit: number } => typeof window.limit === "number" && window.limit > 0);
   const bindings: Array<string | number> = [];
   const predicates = windows.map(window => {
-    bindings.push(estimatedTokens, orgId, orgId, window.limit);
-    return `? + COALESCE((SELECT SUM(quantity) FROM usage_events WHERE org_id=? AND event_type='llm_tokens' AND recorded_at>=${window.start} AND (schema_version<2 OR payer_kind='plan_quota')),0) + COALESCE((SELECT SUM(estimated_tokens) FROM llm_token_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now') AND created_at>=${window.start}),0) <= ?`;
+    bindings.push(estimatedTokens, orgId, orgId, orgId, window.limit);
+    return `? + COALESCE((SELECT SUM(quantity) FROM usage_events WHERE org_id=? AND event_type IN ('llm_tokens','decision_tokens') AND recorded_at>=${window.start} AND (schema_version<2 OR payer_kind='plan_quota')),0) + COALESCE((SELECT SUM(estimated_tokens) FROM llm_token_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now') AND created_at>=${window.start}),0) + COALESCE((SELECT SUM(max_tokens) FROM decision_call_reservations WHERE org_id=? AND status IN ('held','uncertain') AND created_at>=${window.start}),0) <= ?`;
   });
   return { predicate: predicates.length ? predicates.join(" AND ") : "1=1", bindings };
 }
@@ -160,7 +160,7 @@ async function getCurrentUsage(
           `SELECT COALESCE(SUM(quantity), 0) as cnt
            FROM usage_events
            WHERE org_id = ?
-             AND event_type = 'llm_tokens'
+             AND event_type IN ('llm_tokens','decision_tokens')
              AND (schema_version < 2 OR payer_kind = 'plan_quota')
              AND recorded_at >= datetime('now', 'start of month')`
         )

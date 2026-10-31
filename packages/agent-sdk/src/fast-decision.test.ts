@@ -10,6 +10,7 @@ describe("typed fast decisions", () => {
     await client.choice({ state: "task", instructions: "choose", criteria: { yes: null, no: null }, policyCode: "test" });
     expect(events).toEqual(["reserve", "fetch", "settle"]);
     expect(billing.settle).toHaveBeenCalledWith("reservation-1", { status: "confirmed", inputTokens: 42, outputTokens: 2 });
+    expect(billing.reserve.mock.calls[0]?.[0].idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
   });
   it("keeps a failed billed request uncertain and does not retry", async () => {
     const billing = { reserve: vi.fn(async () => "reservation-2"), settle: vi.fn(async () => {}) };

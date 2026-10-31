@@ -1914,7 +1914,7 @@ const MIGRATIONS: Migration[] = [
       CREATE TABLE project_spend_reservations (
         reservation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
         day TEXT NOT NULL, credits INTEGER NOT NULL CHECK (credits > 0),
-        status TEXT NOT NULL CHECK (status IN ('held','settled','released','expired')),
+        status TEXT NOT NULL CHECK (status IN ('held','uncertain','settled','released','expired')),
         expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX idx_project_spend_reservations_live ON project_spend_reservations(project_id,day,status,expires_at);
@@ -2286,6 +2286,19 @@ const MIGRATIONS: Migration[] = [
     version: 105,
     description: "remove retired Space stored-value credits",
     up: `DROP TABLE IF EXISTS space_credits;`,
+  },
+  {
+    version: 106,
+    description: "task verification state and durable project decision holds",
+    up: `
+      ALTER TABLE tasks ADD COLUMN verification_status TEXT CHECK (verification_status IS NULL OR verification_status IN ('verifying','passed','failed','uncertain','review'));
+      ALTER TABLE tasks ADD COLUMN verification_reason TEXT CHECK (verification_reason IS NULL OR length(verification_reason)<=240);
+      CREATE TABLE project_decision_uncertainties (
+        reservation_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        marked_at TEXT NOT NULL
+      );
+    `,
   },
 ];
 
@@ -7731,7 +7744,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     const spentToday = row?.credits ?? 0;
     const reservedToday = queryOne<{ credits: number }>(this.ctx.storage.sql as never,
-      "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status='held' AND expires_at>?",
+      "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status IN ('held','uncertain') AND (status='uncertain' OR expires_at>?)",
       projectId, day, new Date().toISOString())?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
     return Response.json({
@@ -7780,7 +7793,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ? { reserved: true, deduplicated: true, spentToday: 0, reservedToday: 0 }
           : { reserved: false, conflict: true, spentToday: 0, reservedToday: 0 };
         const spent = queryOne<{ credits: number }>(sql, "SELECT COALESCE(credits,0) AS credits FROM project_spend WHERE project_id=? AND day=?", projectId, day)?.credits ?? 0;
-        const reserved = queryOne<{ credits: number }>(sql, "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status='held' AND expires_at>?", projectId, day, now)?.credits ?? 0;
+        const reserved = queryOne<{ credits: number }>(sql, "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status IN ('held','uncertain') AND (status='uncertain' OR expires_at>?)", projectId, day, now)?.credits ?? 0;
         if (project.daily_spend_cap_credits > 0 && spent + reserved + credits > project.daily_spend_cap_credits) return { reserved: false, capped: true, spentToday: spent, reservedToday: reserved };
         execute(sql, "INSERT INTO project_spend_reservations (reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,'held',?,?,?)", reservationId, projectId, runId, day, credits, expiresAt, now, now);
         return { reserved: true, deduplicated: false, spentToday: spent, reservedToday: reserved + credits };
@@ -7788,6 +7801,49 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (result.conflict) return Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
       if (!result.reserved) return Response.json({ error_code: "spend_capped", project_id: projectId, spent_today: result.spentToday, reserved_today: result.reservedToday, requested_credits: credits, cap: project.daily_spend_cap_credits }, { status: 402 });
       return Response.json({ ...result, project_id: projectId, day, cap: project.daily_spend_cap_credits, expires_at: expiresAt });
+    }
+    if (body.action === "settle_reservation") {
+      const reservationId = body.reservation_id ?? "";
+      if (!reservationId || reservationId.length > 200 || !Number.isSafeInteger(body.credits) || (body.credits ?? -1) < 0) return Response.json({ error_code: "reservation_settlement_invalid" }, { status: 400 });
+      const now = new Date().toISOString();
+      const settled = this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string }>(sql, "SELECT run_id,day,credits,status FROM project_spend_reservations WHERE reservation_id=? AND project_id=?", reservationId, projectId);
+        if (!existing) return { missing: true as const };
+        if (existing.status === "settled") return { deduplicated: true, day: existing.day, runId: existing.run_id };
+        if (!['held', 'uncertain'].includes(existing.status) || (body.credits ?? 0) > existing.credits) return { conflict: true as const };
+        execute(sql, "UPDATE project_spend_reservations SET status='settled',updated_at=? WHERE reservation_id=? AND project_id=? AND status IN ('held','uncertain')", now, reservationId, projectId);
+        execute(sql, "DELETE FROM project_decision_uncertainties WHERE reservation_id=? AND project_id=?", reservationId, projectId);
+        execute(sql, "INSERT INTO project_spend_run_settlements(project_id,run_id,day,actual_credits,settled_at) VALUES(?,?,?,?,?) ON CONFLICT(project_id,run_id) DO UPDATE SET actual_credits=actual_credits+excluded.actual_credits,settled_at=excluded.settled_at", projectId, `decision:${reservationId}`, existing.day, body.credits, now);
+        if ((body.credits ?? 0) > 0) execute(sql, "INSERT INTO project_spend(project_id,day,credits) VALUES(?,?,?) ON CONFLICT(project_id,day) DO UPDATE SET credits=credits+excluded.credits", projectId, existing.day, body.credits);
+        return { deduplicated: false, day: existing.day, runId: existing.run_id };
+      });
+      if ("missing" in settled) return Response.json({ error_code: "reservation_not_found" }, { status: 404 });
+      if ("conflict" in settled) return Response.json({ error_code: "reservation_conflict" }, { status: 409 });
+      const spent = queryOne<{ credits: number }>(sql, "SELECT credits FROM project_spend WHERE project_id=? AND day=?", projectId, settled.day)?.credits ?? 0;
+      return Response.json({ settled: true, deduplicated: settled.deduplicated, project_id: projectId, spent_today: spent, cap: project.daily_spend_cap_credits });
+    }
+    if (body.action === "mark_uncertain") {
+      const reservationId = body.reservation_id ?? "";
+      if (!reservationId || reservationId.length > 200) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
+      const now = new Date().toISOString();
+      const outcome = this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ status: string }>(sql, "SELECT status FROM project_spend_reservations WHERE reservation_id=? AND project_id=?", reservationId, projectId);
+        if (!existing) return "missing";
+        if (existing.status === "uncertain") return "deduplicated";
+        if (existing.status !== "held") return "conflict";
+        execute(sql, "UPDATE project_spend_reservations SET status='uncertain',updated_at=? WHERE reservation_id=? AND project_id=? AND status='held'", now, reservationId, projectId);
+        execute(sql, "INSERT OR IGNORE INTO project_decision_uncertainties(reservation_id,project_id,marked_at) VALUES(?,?,?)", reservationId, projectId, now);
+        return "marked";
+      });
+      if (outcome === "missing") return Response.json({ error_code: "reservation_not_found" }, { status: 404 });
+      if (outcome === "conflict") return Response.json({ error_code: "reservation_conflict" }, { status: 409 });
+      return Response.json({ uncertain: true, deduplicated: outcome === "deduplicated", reservation_id: reservationId });
+    }
+    if (body.action === "release_reservation") {
+      const reservationId = body.reservation_id ?? "";
+      if (!reservationId || reservationId.length > 200) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
+      const released = this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE project_spend_reservations SET status='released',updated_at=? WHERE reservation_id=? AND project_id=? AND status='held'", new Date().toISOString(), reservationId, projectId).rowsWritten);
+      return Response.json({ released: released > 0, reservation_id: reservationId });
     }
     if (body.action === "settle_run" || body.action === "release_run") {
       const runId = body.run_id ?? "";
@@ -10040,6 +10096,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         status?: string;
         dependencies?: string[];
         assigned_agent?: string | null;
+        verification_status?: string | null;
+        verification_reason?: string | null;
       }>()
       .catch(() => ({}) as Record<string, never>);
     const existing = queryOne<{ id: string }>(
@@ -10083,6 +10141,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.assigned_agent !== undefined) {
       sets.push("assigned_agent = ?");
       args.push(body.assigned_agent);
+    }
+    if (body.verification_status !== undefined) {
+      if (body.verification_status !== null && !["verifying", "passed", "failed", "uncertain", "review"].includes(body.verification_status)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+      sets.push("verification_status = ?"); args.push(body.verification_status);
+    }
+    if (body.verification_reason !== undefined) {
+      if (body.verification_reason !== null && (typeof body.verification_reason !== "string" || body.verification_reason.length > 240)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+      sets.push("verification_reason = ?"); args.push(body.verification_reason);
     }
     if (sets.length === 0) {
       return Response.json(

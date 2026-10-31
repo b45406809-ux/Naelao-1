@@ -110,7 +110,7 @@ export interface SystemOneClientOptions {
   timeoutMs?: number;
   /** Host-owned reservation lifecycle; a failed or malformed response remains uncertain. */
   billing?: {
-    reserve(input: { model: string; requestBytes: number }): Promise<string>;
+    reserve(input: { model: string; requestBytes: number; idempotencyKey: string }): Promise<string>;
     settle(reservationId: string, outcome: { status: "confirmed"; inputTokens: number; outputTokens: number } | { status: "uncertain" }): Promise<void>;
   };
   onDecision?: (event: {
@@ -313,10 +313,17 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     throw new Error("system_one_context_exceeds_decider_limit");
   }
 
+  private async idempotencyKey(model: string, state: SystemOneState, questions: Record<string, Record<string, unknown>>): Promise<string> {
+    const bytes = new TextEncoder().encode(JSON.stringify({ model, state, questions }));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
     const model = this.modelFor({ decision: question }, state);
-    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions: { decision: question } })).byteLength }) : undefined;
+    const questions = { decision: question };
+    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength, idempotencyKey: await this.idempotencyKey(model, state, questions) }) : undefined;
     if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
     try {
@@ -343,7 +350,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
     const model = this.modelFor(questions, state);
-    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength }) : undefined;
+    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength, idempotencyKey: await this.idempotencyKey(model, state, questions) }) : undefined;
     if (this.billing && (typeof reservation !== "string" || !reservation.trim())) throw new Error("system_one_invalid_reservation");
     let settlementStarted = false;
     try {

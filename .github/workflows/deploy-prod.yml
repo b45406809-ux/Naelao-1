@@ -83,6 +83,12 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --file=infra/migrations/0115_sweeper_fairness_cursors.sql \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0152_decision_call_reservations.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT status,model_id,price_snapshot FROM decision_call_reservations LIMIT 0" \
+            --remote
           # Refuse to deploy consumers that require the suspension-reason column if migration
           # application failed in the legacy best-effort loop above.
           npx wrangler d1 execute "$DB_ID" \
