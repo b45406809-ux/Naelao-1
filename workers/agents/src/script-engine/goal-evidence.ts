@@ -6,6 +6,22 @@ export interface GoalEvidence {
   reference: string;
 }
 
+/** A check names a host-provided operation, never executable code from a worker. */
+export interface GoalEvidenceCheck { criterion: string; operation: string }
+
+export async function collectGoalEvidence(
+  criteria: readonly string[], checks: readonly GoalEvidenceCheck[],
+  runAuthorizedCheck: (operation: string) => Promise<{ outcome: "passed" | "failed" | "uncertain"; reference: string }>,
+): Promise<GoalEvidence[]> {
+  if (checks.length > 8 || checks.some(check => !check || !criteria.includes(check.criterion) || typeof check.operation !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(check.operation))) throw new Error("invalid_goal_evidence_checks");
+  const evidence: GoalEvidence[] = [];
+  for (const check of checks) {
+    const result = await runAuthorizedCheck(check.operation);
+    evidence.push({ criterion: check.criterion, source: "host_check", outcome: result.outcome, reference: result.reference });
+  }
+  return evidence;
+}
+
 /** Evaluate only host-supplied evidence; worker claims are not evidence. */
 export function evaluateGoalEvidence(criteria: readonly string[], evidence: readonly GoalEvidence[]): { outcome: "passed" | "failed" | "uncertain"; reason: string } {
   if (!criteria.length || criteria.length > 8 || criteria.some(c => typeof c !== "string" || !c.trim() || c.length > 500)) return { outcome: "uncertain", reason: "Acceptance criteria are missing or invalid" };
