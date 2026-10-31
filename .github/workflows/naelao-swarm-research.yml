@@ -26,6 +26,18 @@ on:
         description: Use configured provider secrets only when free-tier approval variables are true
         type: boolean
         default: false
+      gemini_free_tier_confirmed:
+        description: Confirm Gemini credentials are authorized for this bounded test-only evaluation
+        type: boolean
+        default: false
+      groq_free_tier_confirmed:
+        description: Confirm GroqCloud credentials are authorized for this bounded test-only evaluation
+        type: boolean
+        default: false
+      groq_free_model_id:
+        description: Account-available GroqCloud model for this test-only run
+        type: string
+        default: llama-3.1-8b-instant
 permissions:
   contents: read
 jobs:
@@ -208,9 +220,9 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           RUN_GEMINI_FREE_EVAL: 'true'
           RUN_GROQ_FREE_EVAL: 'true'
-          GEMINI_FREE_TIER_CONFIRMED: ${{ vars.GEMINI_FREE_TIER_CONFIRMED }}
-          GROQ_FREE_TIER_CONFIRMED: ${{ vars.GROQ_FREE_TIER_CONFIRMED }}
-          GROQ_FREE_MODEL_ID: ${{ vars.GROQ_FREE_MODEL_ID }}
+          GEMINI_FREE_TIER_CONFIRMED: ${{ inputs.gemini_free_tier_confirmed }}
+          GROQ_FREE_TIER_CONFIRMED: ${{ inputs.groq_free_tier_confirmed }}
+          GROQ_FREE_MODEL_ID: ${{ inputs.groq_free_model_id }}
           SWARM_PROVIDER_REPORT: swarm-reports/provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - uses: actions/upload-artifact@v4
