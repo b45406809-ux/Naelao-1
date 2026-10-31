@@ -38,8 +38,11 @@ function harness() {
     SCRIPTS_R2: bucket,
     SPACES_WORKER: { async fetch() { return Response.json({ data: member ? [{ user_id: "actor-a", role: "owner" }] : [] }); } },
   };
+  let instance = new WorkflowRunDO({ storage } as never, env as never);
   return {
-    instance: new WorkflowRunDO({ storage } as never, env as never),
+    get instance() { return instance; },
+    restart() { instance = new WorkflowRunDO({ storage } as never, env as never); },
+    storage,
     env,
     values,
     artifacts,
@@ -50,6 +53,24 @@ function harness() {
 }
 
 describe("WorkflowRunDO persisted authorization", () => {
+  it("claims an agent turn once across duplicate workflow delivery and Durable Object restart", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-agent-once", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-agent-once",
+      startKey: "start-agent-once", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-agent-once/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, {});
+
+    await expect(h.instance.claimAgentRun(identity.runId, "task-once")).resolves.toBe(true);
+    h.restart();
+    await expect(h.instance.claimAgentRun(identity.runId, "task-once")).resolves.toBe(false);
+    expect(h.values.get("effect:agent-run")).toMatchObject({ key: "agent-run", operation: "agent.run", status: "prepared" });
+  });
+
   it("persists initialization and rejects resumed work after its membership grant is revoked", async () => {
     const h = harness();
     const identity = {

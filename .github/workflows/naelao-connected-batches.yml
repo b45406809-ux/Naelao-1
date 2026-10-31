@@ -159,9 +159,20 @@ jobs:
           build_id=$(git rev-parse HEAD | sha256sum | cut -d' ' -f1)
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\nWORKFLOW_BUILD_ID=%s\n' "$build_id" > workers/agents/.dev.vars
           printf 'PLATFORM_SECRET=local-test-secret\n' > workers/billing/.dev.vars
-          pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml -c workers/billing/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
-          pid=$!
-          trap 'rm -f workers/agents/.dev.vars workers/spaces/.dev.vars workers/billing/.dev.vars workers/agents/wrangler.ci.toml workers/spaces/wrangler.ci.toml; kill "$pid" 2>/dev/null || true' EXIT
+          start_agent_workers() {
+            local log_file="$1"
+            setsid pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml -c workers/billing/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$log_file" 2>&1 &
+            pid=$!
+          }
+          stop_agent_workers() {
+            if [ -n "${pid:-}" ]; then
+              kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+              pid=""
+            fi
+          }
+          start_agent_workers "$RUNNER_TEMP/agent-test/worker.log"
+          trap 'rm -f workers/agents/.dev.vars workers/spaces/.dev.vars workers/billing/.dev.vars workers/agents/wrangler.ci.toml workers/spaces/wrangler.ci.toml; if [ -n "${pid:-}" ]; then kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; fi' EXIT
           status=000
           for i in $(seq 1 80); do
             sleep 3
@@ -202,6 +213,19 @@ jobs:
           echo "accepted_status=$status"; cat "$RUNNER_TEMP/agent-test/accepted.json"; test "$status" = 202
           node -e 'const x=require(process.argv[1]); if(x.status !== "queued" || !x.task_id) process.exit(1)' "$RUNNER_TEMP/agent-test/accepted.json"
           task_id=$(node -p 'require(process.argv[1]).task_id' "$RUNNER_TEMP/agent-test/accepted.json")
+          echo "accepted_task_id=$task_id; terminating local Workers before retrieving its result"
+          stop_agent_workers
+          sleep 2
+          start_agent_workers "$RUNNER_TEMP/agent-test/worker-after-restart.log"
+          restart_ready=0
+          for i in $(seq 1 60); do
+            status=$(curl -s -o "$RUNNER_TEMP/agent-test/restart-poll.json" -w '%{http_code}' --max-time 5 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id" || true)
+            if [ "$status" = 200 ]; then restart_ready=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          test "$restart_ready" = 1
+          echo "task_receipt_recovered_after_worker_restart=true"
           for i in $(seq 1 24); do
             status=$(curl -s -o "$RUNNER_TEMP/agent-test/task-$i.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
             echo "task_poll=$i http=$status"; cat "$RUNNER_TEMP/agent-test/task-$i.json"; echo
@@ -219,6 +243,10 @@ jobs:
           if [ "$state" = failed ]; then
             node -e 'const x=require(process.argv[1]); if(!x.error || /reservation_unavailable|no inference was sent/.test(x.error)) process.exit(1)' "$RUNNER_TEMP/agent-test/task-$i.json"
           fi
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/repeated-poll.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
+          test "$status" = 200
+          node -e 'const a=require(process.argv[1]),b=require(process.argv[2]); if(a.task_id!==b.task_id || a.status!==b.status || JSON.stringify(a.result)!==JSON.stringify(b.result) || a.error!==b.error) process.exit(1)' "$RUNNER_TEMP/agent-test/task-$i.json" "$RUNNER_TEMP/agent-test/repeated-poll.json"
+          echo "duplicate_task_poll_same_terminal_receipt=true"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

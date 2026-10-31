@@ -89,6 +89,7 @@ jobs:
             src/script-engine/r2-workspace-cas.test.ts \
             src/shared/openrouter-usage.test.ts \
             src/do/decision-usage-reconciliation.test.ts \
+            src/do/WorkflowRunDO.test.ts \
             src/do/delegation-admission.test.ts \
             --reporter=verbose --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
           runtime_result=$?
