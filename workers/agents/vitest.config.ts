@@ -23,6 +23,9 @@ export default defineConfig({
       "@naelao/agent-sdk": fileURLToPath(
         new URL("../../packages/agent-sdk/src/index.ts", import.meta.url)
       ),
+      "@naelao/types": fileURLToPath(
+        new URL("../../packages/types/src/index.ts", import.meta.url)
+      ),
       "@naelao/security": fileURLToPath(
         new URL("../../packages/security/src/index.ts", import.meta.url)
       ),

@@ -146,7 +146,7 @@ jobs:
         run: python infra/scripts/laya-swarm-eval.py
       - name: Print safe Laya metrics
         if: steps.capacity.outputs.ready == 'true' && steps.install.outcome == 'success' && always()
-        run: cat laya-report.json >> "$GITHUB_STEP_SUMMARY"
+        run: cat laya-report.json | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Record blocked Laya result
         if: always() && (steps.capacity.outputs.ready != 'true' || steps.install.outcome != 'success')
         env:
