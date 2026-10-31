@@ -6,12 +6,18 @@ on:
       - '.github/workflows/naelao-swarm-research.yml'
       - 'infra/scripts/swarm-provider-eval*'
       - 'infra/scripts/laya-*'
+      - 'infra/scripts/test_laya_quality_assessment.py'
       - 'workers/agents/src/script-engine/goal-*'
       - 'workers/agents/src/script-engine/assistant-swarm-architecture.test.ts'
       - 'workers/agents/src/communications/blackboard-*'
       - 'workers/agents/src/communications/heartbeat-scope*'
       - 'workers/agents/src/voice/planner-turn*'
       - 'workers/agents/src/agent-run-session-scope*'
+      - 'workers/agents/src/script-engine/task-blackboard*'
+      - 'workers/agents/src/script-engine/worker-capabilities*'
+      - 'workers/agents/src/script-engine/worker-model-routing*'
+      - 'workers/agents/src/script-engine/prebuilt/space-blackboard*'
+      - 'workers/agents/src/script-engine/prebuilt/project-coordination-capabilities*'
       - 'workers/spaces/src/blackboard-sharing*'
       - 'workers/agents/src/shared/openrouter-usage*'
       - 'workers/agents/src/do/NaelaoAgentDO.ts'
@@ -48,7 +54,7 @@ permissions:
   contents: read
 jobs:
   runtime-evaluation:
-    name: Swarm evidence, dependency and dispatch tests
+    name: Assistant, planner, worker and blackboard architecture tests
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -75,6 +81,11 @@ jobs:
             src/communications/heartbeat-scope.test.ts \
             src/voice/planner-turn.test.ts \
             src/agent-run-session-scope.test.ts \
+            src/script-engine/task-blackboard.test.ts \
+            src/script-engine/worker-capabilities.test.ts \
+            src/script-engine/worker-model-routing.test.ts \
+            src/script-engine/prebuilt/space-blackboard.test.ts \
+            src/script-engine/prebuilt/project-coordination-capabilities.test.ts \
             src/script-engine/r2-workspace-cas.test.ts \
             src/shared/openrouter-usage.test.ts \
             src/do/decision-usage-reconciliation.test.ts \
@@ -111,7 +122,7 @@ jobs:
           const tapCount=(name)=>Number(new RegExp(`# ${name} (\\d+)`).exec(tap)?.[1]??0), providerPassed=tapCount('pass'), providerFailed=tapCount('fail');
           const crossLayerTests=vitest?.testResults?.find(file=>file.name?.endsWith('assistant-swarm-architecture.test.ts'))?.assertionResults??[];
           const crossLayerPassed=crossLayerTests.filter(test=>test.status==='passed').length, crossLayerFailed=crossLayerTests.filter(test=>test.status==='failed').length;
-          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime-and-generation-reconciliation',state:vitest?(vitest.success?'passed':'failed'):'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'assistant-planner-worker-cross-layer',state:crossLayerTests.length>0&&crossLayerFailed===0?'passed':'failed',passed:crossLayerPassed,failed:crossLayerFailed},{name:'goal-architecture-benchmark',state:architecture?.counts?.oracleCorrectRuns===architecture?.counts?.runs?'passed':'failed',runs:architecture?.counts?.runs??null,oracleCorrectRuns:architecture?.counts?.oracleCorrectRuns??null,verifiedTasks:architecture?.counts?.completedAndVerified??null,falseAcceptances:architecture?.counts?.unverifiedFalseAcceptances??null,p50Ms:architecture?.orchestrationLatencyMs?.p50??null,p95Ms:architecture?.orchestrationLatencyMs?.p95??null},{name:'decision-client-receipt-contract',state:decisionClient?(decisionClient.success?'passed':'failed'):'blocked',passed:decisionClient?.numPassedTests??null,failed:decisionClient?.numFailedTests??null,skipped:decisionClient?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
+          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime-and-generation-reconciliation',state:vitest?(vitest.success?'passed':'failed'):'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'assistant-planner-worker-cross-layer',state:crossLayerTests.length>0&&crossLayerFailed===0?'passed':'failed',passed:crossLayerPassed,failed:crossLayerFailed},{name:'goal-architecture-benchmark',state:architecture?.counts?.oracleCorrectRuns===architecture?.counts?.runs?'passed':'failed',runs:architecture?.counts?.runs??null,oracleCorrectRuns:architecture?.counts?.oracleCorrectRuns??null,verifiedTasks:architecture?.counts?.completedAndVerified??null,falseAcceptances:architecture?.counts?.unverifiedFalseAcceptances??null,p50Ms:architecture?.orchestrationLatencyMs?.p50??null,p95Ms:architecture?.orchestrationLatencyMs?.p95??null},{name:'decision-client-receipt-contract',state:decisionClient?(decisionClient.success?'passed':'failed'):'blocked',passed:decisionClient?.numPassedTests??null,failed:decisionClient?.numFailedTests??null,skipped:decisionClient?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','The cross-layer path uses a mocked database, worker dispatch and workspace; it validates control flow and safety gates, not live queue delivery or service reliability.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
           fs.mkdirSync('swarm-reports',{recursive:true}); fs.writeFileSync('swarm-reports/deterministic.json',JSON.stringify(report,null,2)+'\n');
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'swarm-reports/vitest-results.json')}catch{}
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`,'swarm-reports/decision-client-vitest-results.json')}catch{}
