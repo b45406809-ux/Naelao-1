@@ -4,11 +4,11 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1.26: the infra-credits pre-run gate — same scoping as the existing llm-tokens builder quota
 // gate (P0-3): a builder (owner/admin/editor/viewer) chatting with their own Space Assistant is
-// now ALSO checked against a separate monthly Cloudflare-infra-consumption ceiling, not just an
-// LLM-token ceiling. Same fail-open-on-transient-error / fail-closed-on-confirmed-over-cap
-// posture as every other billing gate in enforceRunGates.
+// checked against a separate monthly Cloudflare-infra-consumption ceiling as well as an LLM-token
+// ceiling. A transient preflight check error is tolerated, but the later atomic inference
+// reservation is mandatory and fails closed if its outcome cannot be verified.
 
-function makeBillingWorker(opts: { llmAllowed?: boolean; infraAllowed?: boolean; infraUnreachable?: boolean }) {
+function makeBillingWorker(opts: { llmAllowed?: boolean; infraAllowed?: boolean; infraUnreachable?: boolean; reservationUnreachable?: boolean }) {
   const calls: string[] = [];
   const fetcher = {
     async fetch(input: RequestInfo) {
@@ -21,6 +21,10 @@ function makeBillingWorker(opts: { llmAllowed?: boolean; infraAllowed?: boolean;
       if (url.pathname.endsWith("/internal/usage/infra-credits/check")) {
         if (opts.infraUnreachable) throw new Error("network down");
         return Response.json({ allowed: opts.infraAllowed ?? true, current: 0, limit: 5_000 });
+      }
+      if (url.pathname.endsWith("/internal/usage/llm-tokens/reservations/reserve")) {
+        if (opts.reservationUnreachable) throw new Error("reservation service down");
+        return Response.json({ reservation_id: "reservation-1", status: "reserved" });
       }
       return new Response("not found", { status: 404 });
     },
@@ -63,17 +67,28 @@ describe("NaelaoAgentDO — builder infra-credits quota gate (enforceRunGates)",
   });
 
   it("does not block when both llm-tokens and infra-credits are within quota", async () => {
-    const { fetcher: BILLING_WORKER } = makeBillingWorker({ llmAllowed: true, infraAllowed: true });
+    const { fetcher: BILLING_WORKER, calls } = makeBillingWorker({ llmAllowed: true, infraAllowed: true });
     const env = { PLATFORM_SECRET: "test", KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher, BILLING_WORKER };
     const res = await runInteractive(env, { userId: "owner-1", callerRole: "owner" });
     expect(res.status).not.toBe(402);
+    expect(calls.some((p) => p.endsWith("/internal/usage/llm-tokens/reservations/reserve"))).toBe(true);
   });
 
-  it("fails OPEN (does not block) when the infra-credits check itself is unreachable", async () => {
-    const { fetcher: BILLING_WORKER } = makeBillingWorker({ infraUnreachable: true });
+  it("tolerates a transient infra precheck error but still performs the atomic LLM reservation", async () => {
+    const { fetcher: BILLING_WORKER, calls } = makeBillingWorker({ infraUnreachable: true });
     const env = { PLATFORM_SECRET: "test", KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher, BILLING_WORKER };
     const res = await runInteractive(env, { userId: "owner-1", callerRole: "owner" });
     expect(res.status).not.toBe(402);
+    expect(calls.some((p) => p.endsWith("/internal/usage/infra-credits/check"))).toBe(true);
+    expect(calls.some((p) => p.endsWith("/internal/usage/llm-tokens/reservations/reserve"))).toBe(true);
+  });
+
+  it("fails closed before inference when the atomic LLM reservation cannot be verified", async () => {
+    const { fetcher: BILLING_WORKER } = makeBillingWorker({ llmAllowed: true, infraAllowed: true, reservationUnreachable: true });
+    const env = { PLATFORM_SECRET: "test", KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher, BILLING_WORKER };
+    const res = await runInteractive(env, { userId: "owner-1", callerRole: "owner" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error_code: "spend_reservation_unavailable" });
   });
 
   it("applies the Space infra-credits gate to a signed-in assistant user", async () => {
