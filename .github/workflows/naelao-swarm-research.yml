@@ -34,14 +34,27 @@ jobs:
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
       - name: Run deterministic swarm evaluation suite
-        run: >-
-          pnpm --filter @naelao/agents-worker exec vitest run
-          src/script-engine/goal-evidence.test.ts
-          src/script-engine/goal-dag.test.ts
-          src/script-engine/r2-workspace-cas.test.ts
-          src/do/delegation-admission.test.ts
-          --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
+        shell: bash
+        run: |
+          set +e
+          pnpm --filter @naelao/agents-worker exec vitest run \
+            src/script-engine/goal-evidence.test.ts \
+            src/script-engine/goal-dag.test.ts \
+            src/script-engine/r2-workspace-cas.test.ts \
+            src/do/delegation-admission.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
+          result=$?
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          try {
+            const report=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'utf8'));
+            console.log(`vitest totals: passed=${report.numPassedTests??'?'} failed=${report.numFailedTests??'?'} skipped=${report.numPendingTests??'?'}`);
+            for(const file of report.testResults??[]) for(const test of file.assertionResults??[]) if(test.status==='failed') console.log(`failed test: ${test.fullName}\n${(test.failureMessages??[]).join('\n').slice(0,3000)}`);
+          } catch { console.log('vitest JSON result unavailable; runner/install failure may have occurred'); }
+          JS
+          exit "$result"
       - name: Run test-only provider harness unit tests
+        if: always()
         run: node --test --test-reporter=tap infra/scripts/swarm-provider-eval.test.mjs > "$RUNNER_TEMP/provider-unit.tap"
       - name: Write deterministic evaluation report
         if: always()
@@ -56,6 +69,7 @@ jobs:
           const tapCount=(name)=>Number(new RegExp(`# ${name} (\\d+)`).exec(tap)?.[1]??0), providerPassed=tapCount('pass'), providerFailed=tapCount('fail');
           const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime',state:vitest?'completed':'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
           fs.mkdirSync('swarm-reports',{recursive:true}); fs.writeFileSync('swarm-reports/deterministic.json',JSON.stringify(report,null,2)+'\n');
+          try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'swarm-reports/vitest-results.json')}catch{}
           fs.writeFileSync('swarm-reports/deterministic.md',`# Naelao deterministic swarm evaluation\n\n- Commit: ${report.sourceCommit}\n- State: ${report.state}\n- Runtime tests: ${report.batches[0].passed??'not recorded'} passed, ${report.batches[0].failed??'not recorded'} failed\n- Provider harness safety tests: ${report.batches[1].passed??'not recorded'} passed, ${report.batches[1].failed??'not recorded'} failed\n- Dataset: ${report.dataset}\n\n${report.limitations.map(x=>'- '+x).join('\n')}\n`);
           JS
       - uses: actions/upload-artifact@v4
