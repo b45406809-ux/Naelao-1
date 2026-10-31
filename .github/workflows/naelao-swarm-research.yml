@@ -49,7 +49,10 @@ jobs:
           try {
             const report=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'utf8'));
             console.log(`vitest totals: passed=${report.numPassedTests??'?'} failed=${report.numFailedTests??'?'} skipped=${report.numPendingTests??'?'}`);
+            console.log(`vitest suite status: failed=${report.numFailedTestSuites??'?'} success=${report.success??'?'} errors=${report.unhandledErrors?.length??0}`);
+            for(const file of report.testResults??[]) if(file.status!=='passed') console.log(`failed suite: ${file.name} status=${file.status}\n${(file.message??'').slice(0,4000)}`);
             for(const file of report.testResults??[]) for(const test of file.assertionResults??[]) if(test.status==='failed') console.log(`failed test: ${test.fullName}\n${(test.failureMessages??[]).join('\n').slice(0,3000)}`);
+            for(const error of report.unhandledErrors??[]) console.log(`vitest runner error:\n${JSON.stringify(error).slice(0,4000)}`);
           } catch { console.log('vitest JSON result unavailable; runner/install failure may have occurred'); }
           JS
           exit "$result"
@@ -141,6 +144,9 @@ jobs:
           HF_HOME: ${{ runner.temp }}/laya-hub-cache
           LAYA_REPORT: laya-report.json
         run: python infra/scripts/laya-swarm-eval.py
+      - name: Print safe Laya metrics
+        if: steps.capacity.outputs.ready == 'true' && steps.install.outcome == 'success' && always()
+        run: cat laya-report.json >> "$GITHUB_STEP_SUMMARY"
       - name: Record blocked Laya result
         if: always() && (steps.capacity.outputs.ready != 'true' || steps.install.outcome != 'success')
         env:
@@ -230,7 +236,7 @@ jobs:
           if(provider) rows[3][1]=provider.results.map(r=>`${r.provider}: ${r.state} (${r.reason??'complete'})`).join('; ');
           if(laya) rows[2][1]=`${laya.state}${laya.blocker?`: ${laya.blocker}`:''}`;
           const table='## Naelao swarm research evaluation\n\nCommit: `'+process.env.SHA+'`\n\n| Batch | Outcome |\n|---|---|\n'+rows.map(r=>`| ${r[0]} | ${r[1]} |`).join('\n')+'\n\nFocused deterministic jobs are required. Provider and Laya jobs are opt-in and do not affect production routing. Artifacts include machine-readable reports; provider reports never include keys or response bodies.\n';
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table); fs.mkdirSync('summary',{recursive:true});
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table); console.log(table); fs.mkdirSync('summary',{recursive:true});
           fs.writeFileSync('summary/swarm-evaluation.json',JSON.stringify({schemaVersion:1,sourceCommit:process.env.SHA,batches:rows.map(([name,outcome])=>({name,outcome})),limitations:deterministic?.limitations??[]},null,2)+'\n');
           if(process.env.RUNTIME!=='success'||process.env.BILLING!=='success')process.exitCode=1;
           JS

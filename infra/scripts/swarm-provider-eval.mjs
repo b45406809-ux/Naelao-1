@@ -174,6 +174,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const report = await runProviderEvaluation();
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  console.log(`configured key slots (Gemini/GroqCloud): ${report.credentialPresence.geminiSlots}/${report.credentialPresence.groqcloudSlots}`);
   for (const result of report.results) console.log(`${result.provider}: ${result.state} (${result.reason ?? "complete"}; requests=${result.requests})`);
   console.log(`report=${outputPath}`);
 }
