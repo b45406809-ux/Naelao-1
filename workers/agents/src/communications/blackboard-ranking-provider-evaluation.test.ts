@@ -263,8 +263,45 @@ async function evaluateProductionReranker(
     seed: 0x4242,
     bootstrapSamples: 5000,
   });
+  const strata: Record<string, typeof pairedCases> = {
+    single_intent: [],
+    multi_project: [],
+    paraphrase: [],
+  };
+  for (const item of pairedCases) {
+    const stratum = item.id.startsWith("paraphrase-")
+      ? "paraphrase"
+      : item.id.includes("-vs-")
+        ? "multi_project"
+        : "single_intent";
+    strata[stratum]?.push(item);
+  }
+  const stratifiedMetrics = Object.fromEntries(
+    Object.entries(strata).map(([name, cases]) => {
+      if (!cases.length) throw new Error("blackboard_eval_stratum_empty");
+      const metrics = evaluateBlackboardRankings(cases, {
+        k: 5,
+        seed: 0x4242,
+        bootstrapSamples: 1000,
+      });
+      return [
+        name,
+        {
+          cases: cases.length,
+          baseline: metrics.baseline,
+          modelCandidate: metrics.candidate,
+          pairedDelta: {
+            meanReciprocalRank: metrics.pairedDelta.meanReciprocalRank,
+            meanRecallAtK: metrics.pairedDelta.meanRecallAtK,
+            meanNdcgAtK: metrics.pairedDelta.meanNdcgAtK,
+          },
+        },
+      ];
+    })
+  );
   return {
     ...result,
+    stratifiedMetrics,
     rankingDiagnostics: {
       queriesWithChangedTopFive: pairedCases.filter(
         (item) =>
@@ -447,6 +484,9 @@ describe("blackboard provider ranking evaluation harness", () => {
     expect(measured.candidate.meanNdcgAtK).toBeGreaterThanOrEqual(
       measured.baseline.meanNdcgAtK
     );
+    expect(measured.stratifiedMetrics.paraphrase.cases).toBe(8);
+    expect(measured.stratifiedMetrics.multi_project.cases).toBe(4);
+    expect(measured.stratifiedMetrics.single_intent.cases).toBe(16);
   });
 
   it.skipIf(!LIVE_ENABLED)(
@@ -569,6 +609,7 @@ describe("blackboard provider ranking evaluation harness", () => {
             baseline: result.baseline,
             modelCandidate: result.candidate,
             pairedDelta: result.pairedDelta,
+            stratifiedMetrics: result.stratifiedMetrics,
             scoringDiagnostics,
             rankingDiagnostics: result.rankingDiagnostics,
             queries: blackboardRankingQueries.length,
