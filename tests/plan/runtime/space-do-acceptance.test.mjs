@@ -34,6 +34,7 @@ const metrics = {
   spaces_worker_start_ms: 0,
   agents_worker_start_ms: 0,
   requests: [],
+  benchmarks: [],
 };
 
 async function availablePort() {
@@ -408,6 +409,46 @@ test("concurrent wake sweepers claim one Project Bot event exactly once", async 
     "compliance_violation"
   );
   assert.equal(wakeResult.repeatSweep.checked, 0);
+});
+
+test("measures 30 local blackboard-to-Project-Bot admission attempts", async () => {
+  const samples = [];
+  const iterations = 30;
+  for (let index = 0; index < iterations; index++) {
+    const project = await jsonRequest(
+      spacesBaseUrl,
+      `/spaces/${identity.spaceId}/projects`,
+      "POST",
+      { name: `Wake latency sample ${index + 1}` }
+    );
+    const started = performance.now();
+    const wakeResult = await jsonRequest(
+      agentsBaseUrl,
+      "/__test/wake",
+      "POST",
+      { projectId: project.id }
+    );
+    samples.push(Math.round(performance.now() - started));
+    assert.equal(wakeResult.wake.status, "held");
+    assert.equal(wakeResult.wake.attempts, 1);
+    assert.equal(wakeResult.dispatchResponses.length, 1);
+    assert.equal(wakeResult.dispatchResponses[0].status, 403);
+    assert.equal(
+      wakeResult.dispatchResponses[0].body?.error_code,
+      "compliance_violation"
+    );
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const percentile = (value) => sorted[Math.ceil(value * sorted.length) - 1];
+  metrics.benchmarks.push({
+    name: "local-blackboard-project-bot-admission",
+    evidence_class: "integrated-local",
+    samples: iterations,
+    p50_ms: percentile(0.5),
+    p95_ms: percentile(0.95),
+    provider_attempts: 0,
+    terminal_boundary: "air-gap compliance_violation before model/provider execution",
+  });
 });
 
 test("real D1 authority revocation holds a pending wake without AgentDO dispatch", async () => {

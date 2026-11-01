@@ -38,6 +38,10 @@ On commit `68922e7e` before the new integration/browser additions, repository te
 
 The latest Wrangler run applied **154 repository D1 migration files** in **45.311 seconds**, started separate Spaces and Agents Workers in **2.408 s** and **3.654 s** respectively, and took **58.478 seconds** by harness instrumentation (**59.189 seconds** as reported by Node's test runner). The main blackboard request route took **134 ms**; the revoked-authority path took **105 ms** and made zero AgentDO dispatches; the busy retry route took **117 ms**; the expired-lease route took **64 ms**; and viewer denial returned 403 in **7 ms**. Restarting both Workers and re-reading the persisted SpaceDO thread/session took **6.266 s**. These are one-run local point measurements, not latency percentiles or production comparisons. The air-gapped AgentDO returned `compliance_violation` (403) before provider I/O. The CI runtime suite writes route, dispatch, and restart measurements as a JSON artifact.
 
+## Follow-up run on 2026-11-01
+
+The runtime suite now passes **7/7** after adding an actual 16-sweeper D1 claim race and 30 repeated blackboard-to-Project-Bot admission samples. The race produced exactly one dispatch and one attempt. The admission route measured **p50 94 ms / p95 114 ms** over 30 local samples. Each sample terminates at the air-gap `compliance_violation` before model/provider execution; these figures do not measure a successful planner/worker task. Migration application took **44.113 s**, both Worker startups **6.143 s**, restart/readiness **6.337 s**, and the complete harness **60.994 s**. Local output is not yet CI evidence for the modified commit; the push-triggered CI run is required.
+
 ## Immediate uncovered acceptance criteria
 
 1. Add member/editor/viewer and archived-project UI journeys; assert hidden or disabled actions match backend authorization.

@@ -54,6 +54,7 @@ Additional local evidence on the current working tree:
 - Batch 1 scope/assistant/blackboard focused suites: **24/24** across 6 files.
 - Batch 2–4 goal DAG, evidence, architecture benchmark, Decisions client, usage reconciliation, and billing reservations: **86 passed, 1 skipped** across 7 files. The skipped case remains skipped; no live provider result is implied.
 - Batch 3 two-Worker local runtime suite after adding a 16-way sweep race: **6/6**. Sixteen simultaneous D1-backed sweepers yielded exactly one dispatch and one attempt; the wake then remained held because this fixture deliberately prohibits cloud-model execution. The other cases still covered restart of both Worker processes and Project Bot session persistence.
+- Follow-up local runtime run after adding a 30-sample measurement: **7/7**. The blackboard-to-Project-Bot wake/admission route measured p50 **94 ms** and p95 **114 ms** in this local Wrangler run. These times end at the air-gap `compliance_violation` before model/provider execution and do not measure a successful planner/worker task. The 16-way concurrent claim still dispatched exactly once.
 - Batch 6 Worker-side runtime/tunnel/container admission suites: **42/42** across 7 files; repository tunnel/container policy suites: **38/38** across 6 files. These are deterministic/local tests, not tests against a user's connected machine or a live container fleet.
 - The latest local runtime run applied 154 migrations in **44.368 s**, started both Workers in **6.544 s**, restarted both in **6.536 s**, and completed in **58.752 s**. The concurrent-wake route took **225 ms**. These are single-run local timings, not percentile or capacity results.
 - A local package build attempt could not serve as clean-install evidence: the environment has pnpm 11 despite `packageManager` pinning pnpm 9.12.0, pnpm 11 refused ignored dependency install scripts, and the overlay had under 300 MB free. The GitHub runner's install and prerequisite build passed; do not treat the local attempt as a source failure or as a pass.
@@ -228,7 +229,7 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 
 ## Immediate next actions
 
-1. Rerun the full GitHub Actions inventory after the test-only race addition and inspect each per-suite result plus the overall summary.
+1. Rerun the full GitHub Actions inventory after the concurrent-claim and 30-sample harness additions; inspect every per-suite result plus the overall summary.
 2. Close Batch 2's actual successful provider-free joined task and exact host evidence binding; current joined synthetic planner/worker tests pass, but the local Worker fixture is intentionally denied before model execution.
 3. Continue Batch 3 with concurrent wake-claim recovery across crash/lease boundaries and blackboard message delivery; continue Batch 4 with AgentDO goal-state restart and uncertain external-effect tests.
 4. Run authenticated UI-to-DO lifecycle cases and archive/restore/member journeys. The current browser tests are useful but synthetic.
