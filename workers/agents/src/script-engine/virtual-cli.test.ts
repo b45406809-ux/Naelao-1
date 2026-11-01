@@ -34,6 +34,14 @@ describe("VirtualCliDispatcher", () => {
       operation: "thread.list_project_agents", params: { query: "invoice reconciliation" },
     });
   });
+  it("routes planner DAG creation through the typed CLI boundary", () => {
+    const plan = { objective: "write a report", tasks: [{ id: "write", title: "Write report", subtask_spec: "Create the report", assigned_role: "worker", acceptance_criteria: ["artifact exists"], evidence_checks: [{ criterion: "artifact exists", operation: "workspace.exists:report.txt" }], file_paths: ["report.txt"], budget_tokens: 128 }] };
+    expect(interceptPlatformCli(`naelao goal plan --json '${JSON.stringify(plan)}'`)).toEqual({
+      operation: "engine.plan_and_delegate_goal", params: plan,
+    });
+    expect(() => interceptPlatformCli("naelao goal plan --json '{\"objective\":\"write it\"}'")).toThrow("requires objective and tasks");
+    expect(() => interceptPlatformCli("naelao goal destroy")).toThrow("usage: naelao goal plan");
+  });
   it("requests Markdown-for-agents through the scoped fetch callback and reports honest fallbacks", async () => {
     const fetchMarkdown = vi.fn(async () => ({
       url: "https://example.com/guide.md",

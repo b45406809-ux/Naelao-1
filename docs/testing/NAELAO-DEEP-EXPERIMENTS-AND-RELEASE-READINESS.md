@@ -71,6 +71,13 @@ The test-only concurrent wake option is bounded to 32 sweeps and only exists in 
 - The experiment caught a status bug: `NaelaoAgentDO` can return HTTP 200 while the script result contains `ok:false`. The blackboard coordinator previously marked any HTTP 200 wake `completed`, hiding model/tool failure. It now requires `result.ok === true`; explicit failure, missing result, and deferred approvals remain `held`. Focused regression suites passed **20/20** and Agents typecheck passed.
 - Full local Wrangler acceptance passed **8/8** on the updated source. It applied 154 migrations in **43.891 s**, started Spaces in **2.516 s**, Agents in **3.883 s**, and measured the 30-sample air-gap admission boundary at p50 **88 ms** / p95 **104 ms**. These are local emulation timings, not an SLO or production latency claim.
 
+### Follow-up: planner DAG command was unreachable through the documented CLI (2026-11-01)
+
+- Review of `PLANNER_FIRST_PROTOCOL`, `ScriptToolSurface`, and `virtual-cli.ts` found that planner instructions named `engine.plan_and_delegate_goal`, while the model-facing surface intentionally hides that operation and no `naelao` CLI command dispatched to it. The operation was allowed by the host planner policy but unreachable using the documented Bash route. This made the planner-to-DAG contract inconsistent at its public interface.
+- Added `naelao goal plan --json '<JSON object with objective and tasks>'` as a typed virtual-CLI route to the existing host operation. It requires an object with a non-empty objective and task array; DAG schema, permissions, budgets, runtime choice, persistence, and execution remain in their existing host-controlled code paths. Updated planner instructions and command help to use the CLI form.
+- Added a parser test plus an execution-surface test that invokes the command through `ScriptToolSurface.run("Bash", ...)`, reaches `engine.plan_and_delegate_goal`, and confirms that the internal operation remains hidden from the model-facing operation list. Focused CLI/kernel/assistant architecture suites passed **37/37**; Agents TypeScript check passed. This closes the planner command reachability gap but is not a real DO leaf-worker/evidence journey.
+- The source commit and new Actions inventory are recorded below after the push completes. The previous full Actions inventory on `7a843dbe9dde5dc048104872ef0e70120b0c6249` was still in progress at the time of this entry; do not count that run as a pass until its final suite artifacts and summary are inspected.
+
 ### Batch state after the first pass
 
 | Batch | State | Evidence and remaining gap |

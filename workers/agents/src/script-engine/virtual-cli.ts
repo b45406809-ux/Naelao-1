@@ -33,6 +33,21 @@ function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispat
     return { operation: "tunnel." + action, params: { ...body, machine: positional[0] } };
   }
 
+  if (words[1] === "goal") {
+    const action = words[2] ?? "plan";
+    if (action !== "plan") throw new Error("usage: naelao goal plan --json '<objective and tasks>'");
+    const { body } = bodyAndFlags(words.slice(3));
+    const input = words.includes("--json") ? rawJsonFlag(rawCommand, "--json") : body;
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("naelao goal plan --json requires an object");
+    }
+    const params = input as Record<string, unknown>;
+    if (typeof params.objective !== "string" || !params.objective.trim() || !Array.isArray(params.tasks)) {
+      throw new Error("naelao goal plan requires objective and tasks");
+    }
+    return { operation: "engine.plan_and_delegate_goal", params };
+  }
+
   if (words[1] === "project" && words[2] === "agents") {
     const action = words[3] ?? "list";
     if (action === "list") {
