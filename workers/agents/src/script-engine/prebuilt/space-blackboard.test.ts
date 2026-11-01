@@ -68,13 +68,28 @@ describe("space blackboard commands", () => {
     const score = vi.fn(async ({ state }: { state: { summary: string } }) => ({
       value: state.summary.includes("strong match") ? 2 : state.summary.includes("possible match") ? 1 : 0,
       provider: "decisions-test",
+      latencyMs: 12,
+      usage: { inputTokens: 100, outputTokens: 5, costUsd: 0.001 },
     }));
     const fetch = vi.fn(async () => Response.json({ cards }));
     const ctx = { env: { tenantId: "t", spaceId: "s", userId: "u", platformSecret: "secret", spacesWorker: { fetch }, fastDecision: { score } } } as unknown as PrebuiltOpContext;
-    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment tracking", model_triage: true }, ctx) as { candidates: Array<{ card: { projectId: string } }>; triage: Array<{ projectId: string }> };
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment tracking", model_triage: true }, ctx) as {
+      candidates: Array<{ card: { projectId: string } }>;
+      triage: Array<{ projectId: string; latencyMs?: number; usage?: { costUsd?: number } }>;
+      triage_usage: { calls: number; calls_with_usage: number; input_tokens: number; output_tokens: number; provider_reported_cost_usd: number | null; latency_ms: number[] };
+    };
     expect(score).toHaveBeenCalledTimes(5);
     expect(result.candidates.slice(0, 5).map(candidate => candidate.card.projectId)).toEqual(["b", "c", "a", "extra-00", "extra-01"]);
     expect(result.candidates.slice(5).map(candidate => candidate.card.projectId)).toEqual(cards.slice(5, 20).map(card => card.projectId));
     expect(result.triage.map(item => item.projectId)).toEqual(["a", "b", "c", "extra-00", "extra-01"]);
+    expect(result.triage_usage).toEqual({ calls: 5, calls_with_usage: 5, input_tokens: 500, output_tokens: 25, latency_ms: [12, 12, 12, 12, 12], provider_reported_cost_usd: 0.005 });
+    expect(result.triage[0]?.usage?.costUsd).toBe(0.001);
+  });
+  it("does not invent a cost when the decision adapter supplies token usage without price evidence", async () => {
+    const score = vi.fn(async () => ({ value: 1, provider: "decisions-test", usage: { inputTokens: 40, outputTokens: 3 } }));
+    const fetch = vi.fn(async () => Response.json({ cards: [{ projectId: "p", summary: "shipment tracking", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" }] }));
+    const ctx = { env: { tenantId: "t", spaceId: "s", userId: "u", platformSecret: "secret", spacesWorker: { fetch }, fastDecision: { score } } } as unknown as PrebuiltOpContext;
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment", model_triage: true }, ctx) as { triage_usage: { input_tokens: number; output_tokens: number; provider_reported_cost_usd: number | null } };
+    expect(result.triage_usage).toMatchObject({ input_tokens: 40, output_tokens: 3, provider_reported_cost_usd: null });
   });
 });

@@ -48,12 +48,12 @@ describe("typed fast decisions", () => {
     const onDecision = vi.fn();
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({ model: CLEF_FLASH_MODEL, questions: { decision: { type: "choice", criteria: { isolate: expect.anything(), container: expect.anything() } } } });
-      return Response.json({ model: CLEF_FLASH_MODEL, answers: { decision: { type: "choice", choice: "container", probabilities: { isolate: 0.04, container: 0.96 }, confidence: 0.93 } }, usage: { input_tokens: 42, output_tokens: 0 } });
+      return Response.json({ model: CLEF_FLASH_MODEL, answers: { decision: { type: "choice", choice: "container", probabilities: { isolate: 0.04, container: 0.96 }, confidence: 0.93 } }, usage: { input_tokens: 42, output_tokens: 0, cost: 0.00002 } });
     });
     const client = new SystemOneDecisionClient({ apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0, onDecision });
-    await expect(client.choice({ state: "cargo build", instructions: "Choose runtime", criteria: { isolate: "V8", container: "Linux" }, policyCode: "execution_preflight" })).resolves.toMatchObject({ kind: "choice", value: "container", provider: "openrouter", model: CLEF_FLASH_MODEL, usage: { inputTokens: 42, outputTokens: 0 } });
+    await expect(client.choice({ state: "cargo build", instructions: "Choose runtime", criteria: { isolate: "V8", container: "Linux" }, policyCode: "execution_preflight" })).resolves.toMatchObject({ kind: "choice", value: "container", provider: "openrouter", model: CLEF_FLASH_MODEL, usage: { inputTokens: 42, outputTokens: 0, costUsd: 0.00002 } });
     expect(fetcher).toHaveBeenCalledWith("https://openrouter.ai/api/alpha/decisions", expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer secret" }) }));
-    expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ provider: "openrouter", policyCode: "execution_preflight", model: CLEF_FLASH_MODEL, usage: { inputTokens: 42, outputTokens: 0 } }));
+    expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ provider: "openrouter", policyCode: "execution_preflight", model: CLEF_FLASH_MODEL, usage: { inputTokens: 42, outputTokens: 0, costUsd: 0.00002 } }));
   });
 
   it("caps deployment retry overrides to two retries", async () => {

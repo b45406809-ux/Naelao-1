@@ -388,6 +388,12 @@ Serial local Wrangler acceptance passed **13/13** in **105.19 s** under Node (**
 
 The first full Wrangler attempt, run concurrently with CPU-heavy checks, missed its 30-second dispatch-observation window; dependent scenarios then saw `assistant_busy`. The crash-recovery test passed alone, and the serial full run passed, so the timing miss is recorded as a harness/load sensitivity rather than hidden. GitHub Actions access is unavailable in this environment because the configured `GH_TOKEN` is rejected as invalid, so no Actions result is claimed for this follow-up.
 
+### Follow-up: Space Blackboard Decisions cost and latency telemetry (2026-11-01)
+
+The Decisions SDK already received OpenRouter usage and exact reported cost for host billing, but typed `ScoreDecision` results exposed tokens only and `blackboard.search` discarded all usage metadata. `FastDecisionMeta.usage` now carries optional `costUsd`, and each blackboard triage result returns provider/model, latency, token counts, and provider-reported cost when present. A bounded aggregate reports call count, calls with usage, token totals, per-call latency samples, and total provider-reported cost. If any cost receipt is missing, aggregate cost is `null`; token prices are never guessed. This remains telemetry returned by the operation, not a live-model result or an independently benchmarked relevance claim.
+
+Blackboard contract tests passed **8/8**, including capped reranking, five-call usage aggregation, and missing-cost behavior. Decisions SDK tests passed **29/29**; the full Agents suite passed **1,095 tests with 1 skipped across 214 files**; Agents and Agent SDK typechecks passed. The preceding 13/13 local Wrangler run remains the integration baseline; no external provider request or GitHub Actions result was available for this telemetry-only increment.
+
 ### Follow-up: correlated Space Assistant, Project Assistant, and worker audit trace (2026-11-01)
 
 The previous audit surface stored per-run IDs and optional project scope but lacked a first-class root-run link. SpaceDO migration 108 adds `assistant_scope`, `root_run_id`, `parent_run_id`, and `worker_id` to `agent_activity_log`, plus an indexed root-run lookup. NaelaoAgentDO classifies only host-verified delegated runs as `worker`; top-level runs use their Space or Project scope. The builder read route can filter by a bounded root-run ID. The new fields are optional, preserving older rows and writer compatibility.

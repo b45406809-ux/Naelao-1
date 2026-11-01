@@ -7,7 +7,7 @@ export interface FastDecisionMeta {
   confidence?: number;
   model?: string;
   latencyMs?: number;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: { inputTokens: number; outputTokens: number; costUsd?: number };
 }
 
 export interface ChoiceDecision<T extends string> extends FastDecisionMeta {
@@ -118,7 +118,7 @@ export interface SystemOneClientOptions {
     policyCode: string;
     model: string;
     latencyMs: number;
-    usage: { inputTokens: number; outputTokens: number };
+    usage: { inputTokens: number; outputTokens: number; costUsd?: number };
   }) => void;
 }
 
