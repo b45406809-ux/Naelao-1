@@ -314,7 +314,7 @@ Passing a bounded test plan does not prove broad model intelligence, zero real-w
 
 ### Follow-up: delegated worker blackboard delivery boundary (2026-11-01)
 
-Added an integration regression that invokes `task_blackboard.recipients`, `.publish`, and `.read` through `ScriptToolSurface.run`, the worker orchestration hook, and the `NaelaoAgentDO` internal route. A three-worker task graph grants the sender access to its dependent worker only. The receiver reads the finding, an unrelated worker sees no message, and an attempted send to that unrelated worker is rejected by the host with HTTP 403. Hostile-looking quoted source text remains explicitly untrusted data.
+Added an integration regression that invokes `task_blackboard.recipients`, `.publish`, and `.read` through `ScriptToolSurface.run`, the worker orchestration hook, and the `NaelaoAgentDO` internal route. A three-worker task graph grants the sender access to its dependent worker only. The receiver reads the finding, an unrelated worker sees no message, and an attempted send to that unrelated worker is rejected by the host with HTTP 403. A valid worker is denied after the host membership check is revoked, without modifying the stored message. Hostile-looking quoted source text remains explicitly untrusted data.
 
 - Focused blackboard and DAG checks passed **46 tests across 5 files**.
 - The full Agents Vitest suite passed **1,077 tests with 1 skipped across 212 files**; Agents TypeScript checking and `git diff --check` passed.

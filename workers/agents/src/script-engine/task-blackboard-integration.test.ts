@@ -3,9 +3,10 @@ import { NaelaoAgentDO } from "../do/NaelaoAgentDO.js";
 import { issueDelegationContract, type DelegationContract } from "./delegation-contract.js";
 import { ScriptToolSurface } from "./tool-surface.js";
 
+const { scopeAccess } = vi.hoisted(() => ({ scopeAccess: vi.fn(async () => true) }));
 vi.mock("../communications/core.js", async importOriginal => ({
   ...await importOriginal<typeof import("../communications/core.js")>(),
-  scopeAccess: vi.fn(async () => true),
+  scopeAccess,
 }));
 
 const SECRET = "task-blackboard-integration-secret";
@@ -131,5 +132,10 @@ describe("task blackboard operation to host integration", () => {
     expect(isolatedResult.ok).toBe(true, isolatedResult.error);
     const isolated = isolatedResult.output as { messages: unknown[] };
     expect(isolated.messages).toEqual([]);
+
+    scopeAccess.mockResolvedValueOnce(false);
+    const revoked = await recipientSurface.run("task_blackboard.read", {});
+    expect(revoked).toMatchObject({ ok: false, error: expect.stringContaining("task_blackboard_request_failed_403") });
+    expect(values.get(`task-blackboard:messages:${GOAL_HASH}`)).toEqual([expect.objectContaining({ id: "inspection-finding-1" })]);
   });
 });
