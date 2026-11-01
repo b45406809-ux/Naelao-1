@@ -396,6 +396,49 @@ describe("durable goal DAG", () => {
     expect(f.host.dispatch).toHaveBeenCalledOnce();
     expect(f.host.launch).not.toHaveBeenCalled();
   });
+  it("holds an interrupted delivering wave on restored journal without replay", async () => {
+    const tasks = [task("a"), task("b", ["a"])];
+    const f = fixture();
+    let enteredDelivery!: () => void;
+    let releaseDelivery!: () => void;
+    const delivering = new Promise<void>(resolve => { enteredDelivery = resolve; });
+    const lostReceipt = new Promise<void>(resolve => { releaseDelivery = resolve; });
+    let outboxStatus = "intent";
+    f.host.commitDispatches = vi.fn(async (journal, dispatches) => {
+      expect(dispatches).toHaveLength(1);
+      await f.host.save!(journal);
+      outboxStatus = "intent";
+    });
+    f.host.recover = vi.fn(async () => { outboxStatus = "review"; return undefined; });
+    f.host.dispatch = vi.fn(async () => {
+      // Persist the boundary observed by a replacement parent, then lose the receipt.
+      outboxStatus = "delivering";
+      enteredDelivery();
+      await lostReceipt;
+      return { acknowledged: false };
+    });
+    const originalRun = executeGoalDag(tasks, f.host);
+    await delivering;
+    expect(f.snapshot().tasks.a).toMatchObject({ status: "running", dispatchId: "dispatch:worker:a:1" });
+    expect(outboxStatus).toBe("delivering");
+
+    // A process restart restores only the durable journal; no execution receipt exists.
+    const restarted = fixture(f.snapshot());
+    restarted.host.recover = vi.fn(async () => { outboxStatus = "review"; return undefined; });
+    restarted.host.dispatch = vi.fn();
+    const recovered = await executeGoalDag(tasks, restarted.host);
+    expect(recovered.tasks.a?.status).toBe("needs_review");
+    expect(recovered.tasks.b?.status).toBe("blocked");
+    expect(restarted.host.dispatch).not.toHaveBeenCalled();
+    expect(restarted.host.launch).not.toHaveBeenCalled();
+
+    releaseDelivery();
+    const originalResult = await originalRun;
+    expect(originalResult.tasks.a?.status).toBe("needs_review");
+    expect(f.host.dispatch).toHaveBeenCalledOnce();
+    expect(f.host.launch).not.toHaveBeenCalled();
+    expect(outboxStatus).toBe("review");
+  });
   it("requires review for uncertain effects instead of blindly replaying mutations", async () => {
     const f = fixture({ tasks: { a: { status: "running", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
     const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
