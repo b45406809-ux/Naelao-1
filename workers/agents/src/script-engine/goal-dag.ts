@@ -125,7 +125,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         const evidence = await (host.collectEvidence?.(task, state.workerId) ?? Promise.resolve([]));
         const deterministic = evaluateGoalEvidence(task.acceptance_criteria ?? [], evidence);
         const modelAssessment = deterministic.outcome === "passed" && host.assessEvidence ? await host.assessEvidence(task, evidence, deterministic) : undefined;
-        assessment = modelAssessment && modelAssessment.outcome !== "passed" ? { outcome: "uncertain" as const, reason: "Decision assessment conflicts with deterministic evidence; review required." } : deterministic;
+        assessment = !modelAssessment
+          ? deterministic
+          : modelAssessment.outcome === "passed"
+            ? modelAssessment
+            : { outcome: "uncertain" as const, reason: "Decision assessment conflicts with deterministic evidence; review required." };
       } else assessment = await host.verify!(task, state.result);
       if (!assessment || !["passed", "failed", "uncertain"].includes(assessment.outcome) || typeof assessment.reason !== "string" || !assessment.reason.trim()) throw new Error("invalid_verification_result");
       state.verification = { outcome: assessment.outcome, reason: assessment.reason.slice(0, 2000) };

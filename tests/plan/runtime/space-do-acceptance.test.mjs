@@ -469,7 +469,7 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
   const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leafWorkerMode: true }),
+    body: JSON.stringify({ leafWorkerMode: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
   });
   assert.equal(configure.status, 200, await configure.clone().text());
   const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
@@ -488,6 +488,16 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
   assert.equal(result.workspaceArtifact?.contentMatches, true, JSON.stringify(result.workspaceArtifact));
   assert.match(result.workspaceArtifact?.sha256 ?? "", /^[a-f0-9]{64}$/);
   assert.match(result.workspaceArtifact?.branch ?? "", /^task\/[a-f0-9]{48}$/);
+  assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, wake: result.wake, dispatch: result.dispatchResponses, decisions: after.decisions }));
+  assert.equal(result.goalActivity.goals[0]?.verificationRequired, true);
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "completed");
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "passed");
+  assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /agrees with deterministic host evidence/i);
+  assert.equal(after.decisions.calls - before.decisions.calls, 1, JSON.stringify(after.decisions));
+  assert.deepEqual(after.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
+  assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
+  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "billing_reserve") < after.decisions.timeline.findIndex(event => event.kind === "decision"));
+  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "decision") < after.decisions.timeline.findIndex(event => event.kind === "billing_settle"));
   const tasks = await jsonRequest(
     spacesBaseUrl,
     `/spaces/${identity.spaceId}/tasks?project_id=${encodeURIComponent(project.id)}`,
@@ -503,7 +513,49 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
     artifact_path: "reports/blackboard-worker-smoke.txt",
     artifact_branch: result.workspaceArtifact.branch,
     external_provider_requests: 0,
-    host_evidence_verification: "not_enabled_in_this_fixture",
+    host_evidence_verification: result.goalActivity.goals[0].tasks[0].verification.outcome,
+    verification_reason: result.goalActivity.goals[0].tasks[0].verification.reason,
+    decisions_requests: after.decisions.calls - before.decisions.calls,
+    decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),
+  };
+});
+
+test("a cautious Decisions verdict remains visible as review instead of being promoted to a pass", async () => {
+  const project = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Project Bot Verification Review" }
+  );
+  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ leafWorkerMode: true, decisionOutcome: "uncertain", resetDecisionTelemetry: true }),
+  });
+  assert.equal(configure.status, 200, await configure.clone().text());
+  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: project.id,
+    mockModelRun: true,
+  });
+  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  assert.equal(result.wake.status, "held", JSON.stringify({ wake: result.wake, dispatch: result.dispatchResponses }));
+  assert.equal(result.dispatchResponses[0]?.body?.steps_completed?.some((step) => step.ok === false), true);
+  assert.equal(result.workspaceArtifact?.exists, true);
+  assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, dispatch: result.dispatchResponses }));
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "needs_review");
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "uncertain");
+  assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /review required/i);
+  assert.equal(after.decisions.calls, 1);
+  assert.deepEqual(after.decisions.billingEvents.map((event) => event.kind), ["reserve", "settle"]);
+  assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
+  metrics.project_bot_uncertain_verification = {
+    evidence_class: "integrated-local-synthetic-model",
+    task_status: result.goalActivity.goals[0].tasks[0].status,
+    verification_outcome: result.goalActivity.goals[0].tasks[0].verification.outcome,
+    decisions_requests: after.decisions.calls,
+    decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),
+    artifact_exists: result.workspaceArtifact.exists,
+    external_provider_requests: 0,
   };
 });
 

@@ -1000,6 +1000,9 @@ export interface ScriptEngineEnv {
   /** Optional OpenRouter decision sentry. Callers must retain deterministic fail-closed policy
    * when it is absent, unavailable, or returns a low-confidence answer. */
   fastDecision?: import("@naelao/agent-sdk").FastDecisionGateway;
+  /** Test-only Decisions adapter, consumed only by the host goal-evidence verifier. It must not
+   * influence planning, routing, or any other system decision. */
+  testGoalVerificationDecision?: import("@naelao/agent-sdk").FastDecisionGateway;
   /** Append-only execution telemetry used to prove, rather than assume, tier distribution. */
   recordExecution?: (event: { operation: string; tier: ExecutionTier; engine?: string; durationMs: number; ok: boolean; tokensUsed: number }) => void;
   /** Host adapters for declarative, validated per-step context and verification hooks. */

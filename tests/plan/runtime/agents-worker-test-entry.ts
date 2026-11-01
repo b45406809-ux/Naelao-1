@@ -1,4 +1,5 @@
 import { mintInternalToken } from "@naelao/http";
+import { getDOName } from "@naelao/crypto";
 import {
   ConcurrencyDO,
   NaelaoAgentDO,
@@ -318,7 +319,9 @@ export default {
         .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`)
         .first();
       let workspaceArtifact: { exists: boolean; branch?: string; contentMatches?: boolean; sha256?: string; candidates?: string[]; workspaceKeys?: string[] } | undefined;
-      if (mockModelRun && wake?.status === "completed") {
+      let goalActivity: { goals?: Array<{ verificationRequired?: boolean; tasks?: Array<{ status?: string; verification?: { outcome?: string; reason?: string } }> }> } | undefined;
+      let goalActivityStatus: number | undefined;
+      if (mockModelRun && (wake?.status === "completed" || wake?.status === "held")) {
         const eventRow = await db.prepare("SELECT event_id FROM space_blackboard_wakes WHERE tenant_id=? AND space_id=? AND project_id=? AND event_id=?")
           .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`).first<{ event_id: string }>();
         if (eventRow?.event_id) {
@@ -347,6 +350,17 @@ export default {
             candidates,
             workspaceKeys,
           };
+          const agentDoName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+          const agentStub = (env.NAELAO_AGENT_DO as DurableObjectNamespace).get((env.NAELAO_AGENT_DO as DurableObjectNamespace).idFromName(agentDoName));
+          const activityResponse = await agentStub.fetch(new Request(`http://agent-do/internal/goal-activity?run_id=${encodeURIComponent(rootRunId)}&space_id=${encodeURIComponent(TEST_SPACE_ID)}`, {
+            headers: {
+              "x-naelao-tenant-id": TEST_TENANT_ID,
+              "x-naelao-user-id": TEST_USER_ID,
+              "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+            },
+          }));
+          goalActivityStatus = activityResponse.status;
+          if (activityResponse.ok) goalActivity = await activityResponse.json() as typeof goalActivity;
         }
       }
       if (revokeAuthority) {
@@ -381,6 +395,8 @@ export default {
         repeatSweep,
         wake,
         workspaceArtifact,
+        goalActivity,
+        goalActivityStatus,
         dispatchResponses,
         requestCounts,
         conflictingRequestStatus: conflictingRequestResponse.status,

@@ -11,14 +11,16 @@ describe("task blackboard durable object route", () => {
     const data = new Map<string, unknown>([
       ["goal-activity:index:run", [hash]],
       [`goal-activity:metadata:${hash}`, { tenantId: "t", spaceId: "s", actorId: "u", tasks: [{ id: "a", title: "Task", dependencies: [] }] }],
-      [`goal-dag:${hash}`, { tasks: { a: { status: "completed", workerId: "w" } } }],
+      [`goal-dag:${hash}`, { verificationRequired: true, tasks: { a: { status: "completed", workerId: "w", verification: { outcome: "passed", reason: "Independent evidence accepted." } } } }],
     ]);
     const storage = { get: async (key: string) => data.get(key) };
     const instance = new NaelaoAgentDO({ storage, id: { toString: () => "parent" } } as never, { PLATFORM_SECRET: secret } as never);
     (instance as unknown as { ensureInit(): void }).ensureInit = () => {};
     const token = await mintInternalToken(secret, "t");
     const get = (actor: string, space: string, internal = token) => instance.fetch(new Request(`http://agent/internal/goal-activity?run_id=run&space_id=${space}`, { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": actor, "x-naelao-internal-token": internal } }));
-    expect((await (await get("u", "s")).json() as { goals: unknown[] }).goals).toHaveLength(1);
+    const ownerGoals = (await (await get("u", "s")).json() as { goals: Array<{ verificationRequired: boolean; tasks: Array<{ verification?: { outcome: string; reason: string } }> }> }).goals;
+    expect(ownerGoals).toHaveLength(1);
+    expect(ownerGoals[0]).toMatchObject({ verificationRequired: true, tasks: [{ verification: { outcome: "passed", reason: "Independent evidence accepted." } }] });
     expect((await (await get("other", "s")).json() as { goals: unknown[] }).goals).toHaveLength(0);
     expect((await (await get("u", "other")).json() as { goals: unknown[] }).goals).toHaveLength(0);
     expect((await get("u", "s", "invalid")).status).toBe(403);

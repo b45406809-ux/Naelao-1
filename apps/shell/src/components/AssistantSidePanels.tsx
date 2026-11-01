@@ -446,6 +446,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task graph · {goal.tasks.length} tasks</summary>
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
+        <div style={{ color: "var(--text3)", fontSize: 11 }}>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
         {task.dependencies.length > 0 && <div style={{ color: "var(--text3)" }}>Depends on: {task.dependencies.map(id => id.slice(0, 100)).join(", ")}</div>}
         {task.runtime && <div style={{ color: "var(--text3)", fontSize: 11 }}>Runtime: {task.runtime.capability ?? "worker execution"} · {task.runtime.status}{task.runtime.status === "waiting" && task.runtime.queuePosition !== undefined ? ` · queue position ${task.runtime.queuePosition}` : ""}{task.runtime.queueWaitMs !== undefined ? ` · waited ${formatElapsedTime(task.runtime.queueWaitMs)}` : ""}{task.runtime.executionMs !== undefined ? ` · ran ${formatElapsedTime(task.runtime.executionMs)}` : ""}</div>}
         {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
@@ -1363,6 +1364,7 @@ function WorkersPanel({
           <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task coordination ({goal.tasks.length} tasks)</summary>
           {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
             <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
+            <div>Verification: {task.verification?.outcome ?? (goal.verificationRequired ? "pending" : "not required")}{task.verification?.reason ? ` · ${task.verification.reason}` : ""}</div>
             {task.dependencies.length > 0 && <div>Depends on: {task.dependencies.join(", ")}</div>}
             {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
           </div>)}

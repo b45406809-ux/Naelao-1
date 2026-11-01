@@ -68,3 +68,20 @@ Latest single-run measurements: migrations **45.311 s**; Spaces Worker startup *
 | External providers | No live provider was called. | Provider-specific authentication, event delivery, action confirmation, rate limits, cost and operational acceptance. |
 
 The **86-test focused suite and 5-test Wrangler suite are evidence for specific paths only**. This document remains an implementation-progress checklist; passing focused tests do not turn the unchecked marketplace, provider, benchmarking, or product-lifecycle items into shipped capabilities.
+
+## Local assistant-to-worker verification experiment (2026-11-01)
+
+A newer local Wrangler experiment extends the blackboard wake test through the actual local Space Agent, project leaf AgentDO, workspace R2 artifact, host evidence verifier, Decisions adapter and billing binding. The four Workers run in separate Wrangler processes; the test model gateway is local and blocks external provider egress. The AgentDO receives a test-only Decisions adapter through its explicit goal-verification slot; production decisions continue to use the configured OpenRouter client.
+
+Results from one run:
+
+- **10/10** Node acceptance tests passed; no live Cloudflare deployment or external model/provider call was made.
+- **30** local blackboard-to-Project-Bot admission attempts: p50 **108 ms**, p95 **138 ms**. These are local measurements from this run, not production latency claims.
+- The successful Space Assistant path completed in **375 ms** with one local synthetic model inference.
+- The Project assistant dispatched a leaf worker that wrote a scoped artifact to local R2. The host checked its workspace path, version and hash; the deterministic evidence check passed, followed by an agreeing local Decisions assessment. The journal recorded `verified`, with exactly one Decisions request and one billing reserve/settle pair.
+- An injected ambiguous Decisions result produced `needs_review`; the blackboard wake stayed `held`. The artifact remained available for review and the confirmed usage was settled once. It did not falsely mark the task complete.
+- No external calls occurred. This experiment does not demonstrate recovery from a production provider timeout, sidecar/tunnel isolation, concurrent worker resource contention, human resolution of a review, or deployed Cloudflare behavior.
+
+The run also exposed and fixed two test/visibility defects: local test Decisions were accidentally available to unrelated AgentDO decisions, causing extra billed calls, and the task activity endpoint read the legacy key/value journal while the scheduler wrote the SQLite journal. The test adapter is now isolated to verification, and the activity endpoint reads the durable SQLite journal with a compatibility fallback. The task panel renders verification state and reason.
+
+Verification commands included the full Agents Vitest suite (**1,075 passed, 1 skipped across 211 files**), Agents and Shell TypeScript checks, and the multi-Worker Wrangler Node suite (**10 passed**). The repository's full GitHub Actions workflow is still required for the final cross-package result after these changes; this evidence must not be described as production readiness.

@@ -1029,6 +1029,8 @@ export interface AgentDOEnv {
   ENVIRONMENT?: string;
   /** Test-only mock model service; read only when ENVIRONMENT is exactly `test`. */
   MODEL_GATEWAY?: Fetcher;
+  /** Allows the local Wrangler fixture to exercise the real Decisions SDK without provider egress. */
+  GOAL_VERIFICATION_TEST_MODE?: string;
   /** Opt in new goal runs to durable, task-scoped completion messages. */
   TASK_BLACKBOARD_ENABLED?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
@@ -2435,6 +2437,75 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } : {}),
       });
     }
+    // The local multi-Worker acceptance can exercise the real Decisions client, host-collected
+    // artifact evidence, and metered verifier callbacks without contacting OpenRouter. This
+    // adapter is available only in an explicitly marked test Worker and is never a production
+    // fallback. The OpenRouter key path above always takes precedence.
+    if (!airGappedOnly && !env.fastDecision && this.env.ENVIRONMENT === "test" &&
+      this.env.GOAL_VERIFICATION_TEST_MODE === "true" && this.env.MODEL_GATEWAY && this.env.BILLING_WORKER) {
+      const testGateway = this.env.MODEL_GATEWAY;
+      env.testGoalVerificationDecision = new SystemOneDecisionClient({
+        apiKey: "test-only-decisions-token",
+        fetch: (input, init) => testGateway.fetch(new Request(input, init)),
+        maxRetries: 0,
+        billing: {
+          reserve: async ({ model, requestBytes, idempotencyKey }) => {
+            const runId = env.runId ?? env.rootRunId ?? env.taskId ?? "runtime-test-decision";
+            const reservationId = `${runId}:test-decision:${idempotencyKey}`;
+            const reservationKey = `decision-reservation:${reservationId}`;
+            const previous = await this.ctx.storage.get<{ status: string }>(reservationKey);
+            if (previous) throw new Error("system_one_reservation_outcome_unknown");
+            const maxCredits = 1;
+            if (projectId) {
+              if (!this.env.SPACES_WORKER) throw new Error("system_one_project_budget_unavailable");
+              const projectReservation = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`, {
+                method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+                body: JSON.stringify({ action: "reserve", reservation_id: reservationId, run_id: runId, credits: maxCredits }),
+              }));
+              if (!projectReservation.ok) throw new Error("system_one_project_budget_exhausted");
+            }
+            const response = await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/reserve", {
+              method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({ reservation_id: reservationId, run_id: runId, space_id: spaceId, project_id: projectId ?? null, model_id: model, request_bytes: requestBytes, idempotency_key: idempotencyKey, max_tokens: 256, max_credits: maxCredits }),
+            }));
+            if (!response.ok) {
+              if (projectId && this.env.SPACES_WORKER) await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`, {
+                method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+                body: JSON.stringify({ action: "release_reservation", reservation_id: reservationId, run_id: runId }),
+              }));
+              throw new Error("system_one_decision_budget_exhausted");
+            }
+            await this.ctx.storage.put(reservationKey, { status: "reserved", model, reservationId, runId, spaceId, projectId: projectId ?? null, tenantId, maxCredits, maxTokens: 256, reservedAt: Date.now() });
+            await this.rescheduleAgentAlarm();
+            return reservationId;
+          },
+          settle: async (reservationId, outcome) => {
+            const key = `decision-reservation:${reservationId}`;
+            const row = await this.ctx.storage.get<{ status: string; model: string; runId: string; spaceId: string; projectId: string | null; tenantId: string; maxCredits: number; maxTokens: number }>(key);
+            if (!row) throw new Error("system_one_reservation_missing");
+            if (row.status === "settled") return;
+            const confirmed = outcome.status === "confirmed";
+            if (confirmed && (!/^gen-[A-Za-z0-9-]{1,124}$/.test(outcome.generationId) || !Number.isSafeInteger(outcome.inputTokens) || !Number.isSafeInteger(outcome.outputTokens) || outcome.inputTokens + outcome.outputTokens > row.maxTokens || !Number.isFinite(outcome.costUsd) || outcome.costUsd < 0)) throw new Error("system_one_settlement_receipt_invalid");
+            const billingResponse = await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/decisions/reservations/settle", {
+              method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({ reservation_id: reservationId, outcome: confirmed ? "confirmed" : "uncertain", ...(confirmed ? { input_tokens: outcome.inputTokens, output_tokens: outcome.outputTokens, cost_usd: outcome.costUsd, generation_id: outcome.generationId, evidence_source: "openrouter_response", model_id: row.model } : outcome.generationId ? { generation_id: outcome.generationId, model_id: row.model } : {}) }),
+            }));
+            if (!billingResponse.ok) throw new Error("system_one_settlement_unavailable");
+            const credits = confirmed ? (await readBoundedResponseJson<{ cost_credits?: number }>(billingResponse, 16 * 1024)).cost_credits : undefined;
+            if (confirmed && (!Number.isSafeInteger(credits) || credits! < 0 || credits! > row.maxCredits)) throw new Error("system_one_settlement_receipt_invalid");
+            if (row.projectId && this.env.SPACES_WORKER) {
+              const projectSettlement = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(row.spaceId)}/projects/${encodeURIComponent(row.projectId)}/spend`, {
+                method: "POST", headers: await this.internalHeaders(row.tenantId, { "content-type": "application/json" }),
+                body: JSON.stringify(confirmed ? { action: "settle_reservation", reservation_id: reservationId, credits } : { action: "mark_uncertain", reservation_id: reservationId }),
+              }));
+              if (!projectSettlement.ok) throw new Error("system_one_project_settlement_unavailable");
+            }
+            await this.ctx.storage.put(key, { ...row, status: confirmed ? "settled" : "uncertain", ...(credits !== undefined ? { credits } : {}), ...(confirmed ? { providerGenerationId: outcome.generationId, settledAt: Date.now() } : { uncertainAt: Date.now() }) });
+            await this.rescheduleAgentAlarm();
+          },
+        },
+      });
+    }
     // Air-gapped execution must not emit even metadata to a remote Analytics Engine dataset.
     if (!airGappedOnly && this.env.ANALYTICS) {
       env.recordExecution = (event) => {
@@ -3782,15 +3853,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }).flat();
           if (this.env.GOAL_VERIFICATION_REQUIRED === "true" && tasks.some(task => !task.acceptance_criteria?.length || !task.evidence_checks?.length)) throw new Error("goal_verification_requires_explicit_host_check_specs");
           if (this.env.GOAL_VERIFICATION_REQUIRED === "true" && tasks.some(task => task.evidence_checks?.some(check => !task.file_paths.includes(check.operation.split(":")[1] ?? "")))) throw new Error("goal_verification_check_path_must_be_declared");
-          if (this.env.GOAL_VERIFICATION_REQUIRED === "true" && (!runtimeEnv?.fastDecision || !this.env.BILLING_WORKER)) throw new Error("goal_verification_metered_decision_unavailable");
+          const goalVerificationDecision = runtimeEnv?.testGoalVerificationDecision ?? runtimeEnv?.fastDecision;
+          if (this.env.GOAL_VERIFICATION_REQUIRED === "true" && (!goalVerificationDecision || !this.env.BILLING_WORKER)) throw new Error("goal_verification_metered_decision_unavailable");
           const journal = await executeGoalDag(tasks, {
             concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
             taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
             verificationRequired: this.env.GOAL_VERIFICATION_REQUIRED === "true",
-            ...(this.env.GOAL_VERIFICATION_REQUIRED === "true" && runtimeEnv?.fastDecision ? { assessEvidence: async (task, evidence, deterministic) => {
+            ...(this.env.GOAL_VERIFICATION_REQUIRED === "true" && goalVerificationDecision ? { assessEvidence: async (task, evidence, deterministic) => {
               const { assessGoalEvidence } = await import("../script-engine/goal-verification.js");
-              return assessGoalEvidence(runtimeEnv.fastDecision!, task, evidence, deterministic);
+              return assessGoalEvidence(goalVerificationDecision, task, evidence, deterministic);
             } } : {}),
             collectEvidence: async (task, workerId) => {
               if (!runtimeEnv?.workspaceBucket && !runtimeEnv?.scriptsBucket) throw new Error("goal_evidence_workspace_unavailable");
@@ -4622,10 +4694,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!/^[a-f0-9]{64}$/.test(hash)) continue;
       const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[] }> }>(`goal-activity:metadata:${hash}`);
       if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
-      const journal = await this.ctx.storage.get<GoalDagJournal>(`goal-dag:${hash}`);
+      // Goal DAG journals are projected into SQLite by the durable scheduler. Older
+      // K/V-backed journals remain readable during migration, but a K/V-only lookup makes
+      // completed tasks (including verification receipts) disappear from the dashboard.
+      const journalKey = `goal-dag:${hash}`;
+      const sqlJournal = this.ctx.storage.sql?.exec<{ journal_json: string }>(
+        "SELECT journal_json FROM goal_dag_journals WHERE journal_key=?", journalKey
+      ).toArray()[0]?.journal_json;
+      let journal: GoalDagJournal | undefined;
+      if (sqlJournal) {
+        try { journal = JSON.parse(sqlJournal) as GoalDagJournal; }
+        catch { throw new Error("goal_journal_corrupt"); }
+      } else {
+        journal = await this.ctx.storage.get<GoalDagJournal>(journalKey);
+      }
       if (!journal) continue;
       const messages = await this.ctx.storage.get<import("../script-engine/task-blackboard.js").TaskMessage[]>(`task-blackboard:messages:${hash}`) ?? [];
-      goals.push({ id: hash, tasks: metadata.tasks.map(task => ({ ...task, status: journal.tasks[task.id]?.status ?? "pending", workerId: journal.tasks[task.id]?.workerId, ...(journal.tasks[task.id]?.runtime ? { runtime: journal.tasks[task.id]!.runtime } : {}) })), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
+      goals.push({ id: hash, verificationRequired: journal.verificationRequired === true, tasks: metadata.tasks.map(task => {
+        const state = journal.tasks[task.id];
+        return { ...task, status: state?.status ?? "pending", workerId: state?.workerId,
+          ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
+          ...(state?.runtime ? { runtime: state.runtime } : {}) };
+      }), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }
     return Response.json({ goals: history ? goals.reverse() : goals });
   }

@@ -34,6 +34,10 @@ binding = "MODEL_GATEWAY"
 service = "naelao-blackboard-model-test"
 
 [[services]]
+binding = "BILLING_WORKER"
+service = "naelao-blackboard-model-test"
+
+[[services]]
 binding = "ARTIFACT_WORKER"
 service = "naelao-blackboard-artifacts-test"
 
@@ -46,3 +50,5 @@ PLATFORM_SECRET = "blackboard-integration-test-secret"
 ENVIRONMENT = "test"
 NAELAO_AIG_TOKEN = "test-only-model-gateway-token"
 CF_API_TOKEN = "test-only-model-gateway-token"
+GOAL_VERIFICATION_TEST_MODE = "true"
+GOAL_VERIFICATION_REQUIRED = "true"

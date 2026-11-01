@@ -5,3 +5,4 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "test"
+PLATFORM_SECRET = "blackboard-integration-test-secret"
