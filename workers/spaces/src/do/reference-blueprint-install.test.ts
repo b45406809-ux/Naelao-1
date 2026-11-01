@@ -90,12 +90,36 @@ describe("reference Space Templates on fresh Space scopes", () => {
   it("allows only one concurrent activation claim for a target Space and blueprint", async () => {
     const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=template-test&user_id=owner&project_id="));
+    const instantiate = space.instantiateBlueprint.bind(space);
+    let announceEntered!: () => void;
+    let releaseInstall!: () => void;
+    const entered = new Promise<void>(resolve => { announceEntered = resolve; });
+    const installGate = new Promise<void>(resolve => { releaseInstall = resolve; });
+    space.instantiateBlueprint = async (blueprint, targetSpaceId) => {
+      announceEntered();
+      await installGate;
+      return instantiate(blueprint, targetSpaceId);
+    };
     const install = () => space.fetch(new Request("http://space/blueprints/instantiate", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ blueprint: PERSONAL_ASSISTANT_SPACE_TEMPLATE, target_space_id: "fresh-space", activation_key: PERSONAL_ASSISTANT_SPACE_TEMPLATE.id }),
     }));
-    const results = await Promise.all([install(), install()]);
-    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+    const firstInstall = install();
+    await entered;
+    let competingInstall: Response;
+    try {
+      competingInstall = await install();
+    } finally {
+      releaseInstall();
+    }
+    const firstResult = await firstInstall;
+    expect(firstResult.status).toBe(201);
+    expect(competingInstall.status).toBe(409);
+    expect(await competingInstall.json()).toMatchObject({ error_code: "blueprint_install_in_progress" });
     expect(storage.sql.exec("SELECT COUNT(*) AS total FROM projects WHERE space_id='fresh-space'").toArray()[0]?.total).toBe(1);
+    const retry = await install();
+    expect(retry.status).toBe(200);
+    const installed = await firstResult.json();
+    expect(await retry.json()).toMatchObject({ ...installed, alreadyInstalled: true });
   });
 });
