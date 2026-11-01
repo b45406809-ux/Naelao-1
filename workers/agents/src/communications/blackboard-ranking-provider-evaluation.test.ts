@@ -257,11 +257,43 @@ async function evaluateProductionReranker(
       output.candidates.map(({ card }) => card.projectId)
     );
   }
-  const result = evaluateBlackboardRankings(
-    asBlackboardRankingCases(orders, cards),
-    { k: 5, seed: 0x4242, bootstrapSamples: 5000 }
-  );
-  return result;
+  const pairedCases = asBlackboardRankingCases(orders, cards);
+  const result = evaluateBlackboardRankings(pairedCases, {
+    k: 5,
+    seed: 0x4242,
+    bootstrapSamples: 5000,
+  });
+  return {
+    ...result,
+    rankingDiagnostics: {
+      queriesWithChangedTopFive: pairedCases.filter(
+        (item) =>
+          item.baselineOrder.slice(0, 5).join("\0") !==
+          item.candidateOrder.slice(0, 5).join("\0")
+      ).length,
+      queriesWithChangedFullOrder: pairedCases.filter(
+        (item) =>
+          item.baselineOrder.join("\0") !== item.candidateOrder.join("\0")
+      ).length,
+    },
+  };
+}
+
+function summarizeProviderScores(
+  scores: ReturnType<typeof parseBlackboardRankingScores>
+) {
+  const distribution = { unrelated: 0, possible: 0, strong: 0 };
+  let queriesWithScoreVariation = 0;
+  for (const query of scores) {
+    const values = new Set(query.scores.map(({ relevance }) => relevance));
+    if (values.size > 1) queriesWithScoreVariation++;
+    for (const { relevance } of query.scores) {
+      if (relevance === 0) distribution.unrelated++;
+      else if (relevance === 1) distribution.possible++;
+      else distribution.strong++;
+    }
+  }
+  return { distribution, queriesWithScoreVariation };
 }
 
 async function writeLiveReport(report: unknown): Promise<void> {
@@ -503,6 +535,7 @@ describe("blackboard provider ranking evaluation harness", () => {
             response.model,
             parsed
           );
+          const scoringDiagnostics = summarizeProviderScores(parsed);
           results.push({
             provider,
             model: response.model,
@@ -536,6 +569,8 @@ describe("blackboard provider ranking evaluation harness", () => {
             baseline: result.baseline,
             modelCandidate: result.candidate,
             pairedDelta: result.pairedDelta,
+            scoringDiagnostics,
+            rankingDiagnostics: result.rankingDiagnostics,
             queries: blackboardRankingQueries.length,
             cards: blackboardRankingCards.length,
             candidatesPerQueryMaximum: 5,
@@ -578,7 +613,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         providers: results,
         limitations: [
           "The corpus contains 28 synthetic hand-labeled queries and 16 synthetic cards; results are exploratory, not independently validated or representative of user traffic.",
-          `The model scores are supplied to the same bounded production blackboard reranker; provider usage and latency are from at most ${Math.ceil(blackboardRankingQueries.length / QUERIES_PER_PROVIDER_REQUEST)} sequential chunked API requests per eligible provider.`,
+          `The model scores are supplied to the same bounded production blackboard reranker; provider usage and latency are from at most ${MAX_PROVIDER_REQUESTS} sequential or adaptively split API requests per eligible provider. Schema-invalid output is split into smaller query groups; rate limits stop further calls.`,
           "The test uses Gemini and GroqCloud directly and does not alter or replace OpenRouter Decisions production routing.",
           "Provider billing receipts are unavailable in this test; cost is null and is not inferred from token usage.",
           "A free-tier flag is an operator assertion. The harness does not guarantee provider billing or remaining quota; it stops and records provider rate limits.",
