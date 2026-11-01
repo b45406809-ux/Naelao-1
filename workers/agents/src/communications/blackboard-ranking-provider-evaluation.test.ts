@@ -2,7 +2,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { PrebuiltOpContext } from "../script-engine/prebuilt/index.js";
 import { spaceBlackboard } from "../script-engine/prebuilt/space-blackboard.js";
-import type { SharedProjectCard } from "./blackboard-domain.js";
+import {
+  type SharedProjectCard,
+  rankSharedCards,
+} from "./blackboard-domain.js";
 import { evaluateBlackboardRankings } from "./blackboard-ranking-evaluation.js";
 import {
   blackboardRankingCards,
@@ -12,15 +15,22 @@ import {
   asBlackboardRankingCases,
   buildBlackboardRankingPrompt,
   buildBlackboardRankingPromptForQueries,
+  evaluateBlackboardCandidateCoverage,
   getBlackboardCandidateSets,
+  getBlackboardPromptCandidateSets,
   parseBlackboardRankingScores,
+  rerankAllVisibleBlackboardCards,
+  restoreBlackboardRankingScoreIds,
 } from "./blackboard-ranking-provider-evaluation.js";
 
 const LIVE_ENABLED = process.env.NAELAO_RUN_LIVE_BLACKBOARD_RANKING === "true";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const PROVIDER_TIMEOUT_MS = 20_000;
-const QUERIES_PER_PROVIDER_REQUEST = 7;
+const QUERIES_PER_PROVIDER_REQUEST = 2;
 const MAX_PROVIDER_REQUESTS = 16;
+const HARD_RANKING_QUERIES = blackboardRankingQueries.filter(
+  ({ id }) => id.startsWith("paraphrase-") || id.includes("-vs-")
+);
 
 function expectedCandidates(): Map<string, Set<string>> {
   return getBlackboardCandidateSets(blackboardRankingCards);
@@ -49,7 +59,8 @@ function percentile(
 async function requestModelScores(
   provider: "gemini" | "groqcloud",
   queries: readonly (typeof blackboardRankingQueries)[number][],
-  onRequestAttempt: () => void
+  onRequestAttempt: () => void,
+  allVisibleCards = false
 ): Promise<{
   model: string;
   latencyMs: number;
@@ -82,7 +93,9 @@ async function requestModelScores(
       : process.env.GROQ_FREE_MODEL_ID?.trim() || "";
   if (!model) throw new Error("approved_free_model_not_configured");
 
-  const prompt = buildBlackboardRankingPromptForQueries(queries);
+  const prompt = buildBlackboardRankingPromptForQueries(queries, {
+    allVisibleCards,
+  });
   let rejectedCredentialAttempts = 0;
   for (let index = 0; index < keys.length; index++) {
     const key = keys[index];
@@ -210,7 +223,8 @@ async function requestModelScores(
 async function evaluateProductionReranker(
   provider: string,
   model: string,
-  scores: ReturnType<typeof parseBlackboardRankingScores>
+  scores: ReturnType<typeof parseBlackboardRankingScores>,
+  queries: readonly (typeof blackboardRankingQueries)[number][] = blackboardRankingQueries
 ) {
   const scoresByQuery = new Map(
     scores.map((item) => [
@@ -224,7 +238,7 @@ async function evaluateProductionReranker(
   const searchOperation = spaceBlackboard.operations["blackboard.search"];
   if (!searchOperation)
     throw new Error("blackboard_search_operation_unavailable");
-  for (const query of blackboardRankingQueries) {
+  for (const query of queries) {
     const scoreMap = scoresByQuery.get(query.id);
     if (!scoreMap) throw new Error("provider_evaluation_query_mapping_failed");
     const fetcher = async () =>
@@ -257,7 +271,44 @@ async function evaluateProductionReranker(
       output.candidates.map(({ card }) => card.projectId)
     );
   }
-  const pairedCases = asBlackboardRankingCases(orders, cards);
+  return summarizeOrders(orders, queries, cards);
+}
+
+function evaluateAllVisibleReranker(
+  scores: ReturnType<typeof parseBlackboardRankingScores>,
+  queries: readonly (typeof blackboardRankingQueries)[number][]
+) {
+  const scoresByQuery = new Map(
+    scores.map(({ queryId, scores: values }) => [
+      queryId,
+      new Map(values.map(({ projectId, relevance }) => [projectId, relevance])),
+    ])
+  );
+  const orders = new Map<string, string[]>();
+  for (const query of queries) {
+    const scoreMap = scoresByQuery.get(query.id);
+    if (!scoreMap) throw new Error("provider_evaluation_query_mapping_failed");
+    orders.set(
+      query.id,
+      rerankAllVisibleBlackboardCards(
+        query.query,
+        blackboardRankingCards,
+        scoreMap
+      )
+    );
+  }
+  return summarizeOrders(orders, queries, blackboardRankingCards, true);
+}
+
+function summarizeOrders(
+  orders: ReadonlyMap<string, readonly string[]>,
+  queries: readonly (typeof blackboardRankingQueries)[number][],
+  cards: readonly SharedProjectCard[],
+  includeZeroBaseline = false
+) {
+  const pairedCases = asBlackboardRankingCases(orders, cards, queries, {
+    includeZeroBaseline,
+  });
   const result = evaluateBlackboardRankings(pairedCases, {
     k: 5,
     seed: 0x4242,
@@ -278,7 +329,7 @@ async function evaluateProductionReranker(
   }
   const stratifiedMetrics = Object.fromEntries(
     Object.entries(strata).map(([name, cases]) => {
-      if (!cases.length) throw new Error("blackboard_eval_stratum_empty");
+      if (!cases.length) return [name, null];
       const metrics = evaluateBlackboardRankings(cases, {
         k: 5,
         seed: 0x4242,
@@ -301,7 +352,11 @@ async function evaluateProductionReranker(
   );
   return {
     ...result,
-    stratifiedMetrics,
+    stratifiedMetrics: Object.fromEntries(
+      Object.entries(stratifiedMetrics).filter(
+        ([, metrics]) => metrics !== null
+      )
+    ),
     rankingDiagnostics: {
       queriesWithChangedTopFive: pairedCases.filter(
         (item) =>
@@ -344,7 +399,9 @@ async function writeLiveReport(report: unknown): Promise<void> {
 describe("blackboard provider ranking evaluation harness", () => {
   it("keeps the scoring prompt free of relevance labels and bounds model candidates", () => {
     const prompt = buildBlackboardRankingPrompt();
-    expect(prompt).toContain('"queryId":"customs-classification"');
+    expect(prompt).toContain('"queryId":"query_001"');
+    expect(prompt).not.toContain('"queryId":"customs-classification"');
+    expect(prompt).not.toContain('"projectId":"support"');
     expect(prompt).not.toContain("relevantProjectIds");
     expect(prompt).not.toContain("labelOracleCeiling");
     for (const candidateSet of expectedCandidates().values())
@@ -352,14 +409,52 @@ describe("blackboard provider ranking evaluation harness", () => {
   });
 
   it("builds independently parseable chunks without leaking labels", () => {
+    const firstQuery = blackboardRankingQueries[0];
+    if (!firstQuery) throw new Error("blackboard_query_fixture_missing");
     const subset = blackboardRankingQueries.slice(0, 7);
     const prompt = buildBlackboardRankingPromptForQueries(subset);
-    expect(prompt).toContain('"queryId":"customs-classification"');
+    expect(prompt).toContain('"queryId":"query_001"');
     expect(prompt).not.toContain('"queryId":"legal-redline"');
     expect(prompt).not.toContain("relevantProjectIds");
     expect(
       getBlackboardCandidateSets(blackboardRankingCards, subset).size
     ).toBe(7);
+    const allVisiblePrompt = buildBlackboardRankingPromptForQueries(
+      [firstQuery],
+      { allVisibleCards: true }
+    );
+    expect(allVisiblePrompt).toContain('"projectId":"candidate_014"');
+    expect(
+      getBlackboardCandidateSets(blackboardRankingCards, [firstQuery], {
+        allVisibleCards: true,
+      }).get(firstQuery.id)?.size
+    ).toBe(blackboardRankingCards.length);
+    const hardCoverage =
+      evaluateBlackboardCandidateCoverage(HARD_RANKING_QUERIES);
+    expect(hardCoverage.queries).toBe(12);
+    expect(hardCoverage.foundByLexicalAny).toBeLessThan(
+      hardCoverage.relevantCards
+    );
+    const opaqueCandidates = getBlackboardPromptCandidateSets(
+      blackboardRankingCards,
+      [firstQuery],
+      { allVisibleCards: true }
+    );
+    expect(opaqueCandidates.get("query_001")?.size).toBe(
+      blackboardRankingCards.length
+    );
+    const restored = restoreBlackboardRankingScoreIds(
+      [
+        {
+          queryId: "query_001",
+          scores: [{ projectId: "candidate_001", relevance: 2 }],
+        },
+      ],
+      blackboardRankingCards,
+      [firstQuery]
+    );
+    expect(restored[0]?.queryId).toBe(firstQuery.id);
+    expect(restored[0]?.scores[0]?.projectId).toBe("customs");
   });
 
   it("rejects incomplete, invented, duplicate, and invalid model scores", () => {
@@ -489,8 +584,47 @@ describe("blackboard provider ranking evaluation harness", () => {
     expect(measured.stratifiedMetrics.single_intent.cases).toBe(16);
   });
 
+  it("shows why a lexical zero-candidate query needs candidate-pool expansion", () => {
+    const query = blackboardRankingQueries.find(
+      ({ id }) => id === "paraphrase-refund"
+    );
+    if (!query) throw new Error("blackboard_hard_query_fixture_missing");
+    const lexical = rankSharedCards(query.query, blackboardRankingCards);
+    expect(
+      lexical.some(({ card }) =>
+        query.relevantProjectIds.includes(card.projectId)
+      )
+    ).toBe(false);
+    const labelOracleScores = new Map(
+      blackboardRankingCards.map((card) => [
+        card.projectId,
+        query.relevantProjectIds.includes(card.projectId) ? 2 : 0,
+      ])
+    );
+    const expanded = rerankAllVisibleBlackboardCards(
+      query.query,
+      blackboardRankingCards,
+      labelOracleScores
+    );
+    expect(expanded[0]).toBe("support");
+    const [measured] = evaluateBlackboardRankings(
+      [
+        {
+          id: query.id,
+          relevantProjectIds: query.relevantProjectIds,
+          baselineOrder: rankSharedCards(query.query, blackboardRankingCards, {
+            includeZeroScore: true,
+          }).map(({ card }) => card.projectId),
+          candidateOrder: expanded,
+        },
+      ],
+      { k: 5 }
+    ).pairedDelta.meanReciprocalRank95Ci;
+    expect(measured).toBeGreaterThan(0);
+  });
+
   it.skipIf(!LIVE_ENABLED)(
-    "runs bounded, chunked free-tier ranking calls per approved test provider",
+    "compares bounded production top-five triage with all-visible candidate scoring on hard queries",
     async () => {
       const providers = ["gemini", "groqcloud"] as const;
       const results: Array<Record<string, unknown>> = [];
@@ -510,15 +644,14 @@ describe("blackboard provider ranking evaluation harness", () => {
         }
         const startedAt = Date.now();
         try {
-          const allCandidateSets = expectedCandidates();
           const chunks: Array<(typeof blackboardRankingQueries)[number][]> = [];
           for (
             let offset = 0;
-            offset < blackboardRankingQueries.length;
+            offset < HARD_RANKING_QUERIES.length;
             offset += QUERIES_PER_PROVIDER_REQUEST
           ) {
             chunks.push(
-              blackboardRankingQueries.slice(
+              HARD_RANKING_QUERIES.slice(
                 offset,
                 offset + QUERIES_PER_PROVIDER_REQUEST
               )
@@ -538,20 +671,30 @@ describe("blackboard provider ranking evaluation harness", () => {
           const requestAndParse = async (
             chunk: (typeof blackboardRankingQueries)[number][]
           ): Promise<ReturnType<typeof parseBlackboardRankingScores>> => {
-            const response = await requestModelScores(provider, chunk, () => {
-              if (inferenceRequests >= MAX_PROVIDER_REQUESTS)
-                throw new Error("blackboard_provider_request_budget_exhausted");
-              inferenceRequests++;
-            });
+            const response = await requestModelScores(
+              provider,
+              chunk,
+              () => {
+                if (inferenceRequests >= MAX_PROVIDER_REQUESTS)
+                  throw new Error(
+                    "blackboard_provider_request_budget_exhausted"
+                  );
+                inferenceRequests++;
+              },
+              true
+            );
             responses.push(response);
-            const expected = new Map(
-              chunk.flatMap(({ id }) => {
-                const candidates = allCandidateSets.get(id);
-                return candidates ? [[id, candidates] as const] : [];
-              })
+            const expected = getBlackboardPromptCandidateSets(
+              blackboardRankingCards,
+              chunk,
+              { allVisibleCards: true }
             );
             try {
-              return parseBlackboardRankingScores(response.raw, expected);
+              return restoreBlackboardRankingScoreIds(
+                parseBlackboardRankingScores(response.raw, expected),
+                blackboardRankingCards,
+                chunk
+              );
             } catch (error) {
               const reason = error instanceof Error ? error.message : "";
               const code = reason.split(":", 1)[0] ?? "";
@@ -573,7 +716,12 @@ describe("blackboard provider ranking evaluation harness", () => {
           const result = await evaluateProductionReranker(
             provider,
             response.model,
-            parsed
+            parsed,
+            HARD_RANKING_QUERIES
+          );
+          const expandedResult = evaluateAllVisibleReranker(
+            parsed,
+            HARD_RANKING_QUERIES
           );
           const scoringDiagnostics = summarizeProviderScores(parsed);
           results.push({
@@ -610,12 +758,21 @@ describe("blackboard provider ranking evaluation harness", () => {
             modelCandidate: result.candidate,
             pairedDelta: result.pairedDelta,
             stratifiedMetrics: result.stratifiedMetrics,
+            candidatePoolCoverage:
+              evaluateBlackboardCandidateCoverage(HARD_RANKING_QUERIES),
+            expandedCandidatePool: {
+              baseline: expandedResult.baseline,
+              modelCandidate: expandedResult.candidate,
+              pairedDelta: expandedResult.pairedDelta,
+              stratifiedMetrics: expandedResult.stratifiedMetrics,
+              rankingDiagnostics: expandedResult.rankingDiagnostics,
+            },
             scoringDiagnostics,
             rankingDiagnostics: result.rankingDiagnostics,
-            queries: blackboardRankingQueries.length,
+            queries: HARD_RANKING_QUERIES.length,
             cards: blackboardRankingCards.length,
-            candidatesPerQueryMaximum: 5,
-            searchQueriesEvaluated: blackboardRankingQueries.length,
+            candidatesPerQueryMaximum: blackboardRankingCards.length,
+            searchQueriesEvaluated: HARD_RANKING_QUERIES.length,
             durationMs: Date.now() - startedAt,
           });
         } catch (error) {
@@ -653,8 +810,8 @@ describe("blackboard provider ranking evaluation harness", () => {
         noRelevanceLabelsSentToProviders: true,
         providers: results,
         limitations: [
-          "The corpus contains 28 synthetic hand-labeled queries and 16 synthetic cards; results are exploratory, not independently validated or representative of user traffic.",
-          `The model scores are supplied to the same bounded production blackboard reranker; provider usage and latency are from at most ${MAX_PROVIDER_REQUESTS} sequential or adaptively split API requests per eligible provider. Schema-invalid output is split into smaller query groups; rate limits stop further calls.`,
+          "The corpus has 16 synthetic shared-project cards and 12 hard hand-labeled queries (8 paraphrases, 4 multi-project); results are exploratory, not independently validated or representative of user traffic.",
+          `Each provider receives up to 16 visible candidate cards per hard query. The current production path is evaluated using its bounded top-five Decisions calls; a separate all-visible candidate-pool ablation uses the same reranking comparator. Provider use is capped at ${MAX_PROVIDER_REQUESTS} requests; schema-invalid output is split into smaller query groups and rate limits stop further calls.`,
           "The test uses Gemini and GroqCloud directly and does not alter or replace OpenRouter Decisions production routing.",
           "Provider billing receipts are unavailable in this test; cost is null and is not inferred from token usage.",
           "A free-tier flag is an operator assertion. The harness does not guarantee provider billing or remaining quota; it stops and records provider rate limits.",

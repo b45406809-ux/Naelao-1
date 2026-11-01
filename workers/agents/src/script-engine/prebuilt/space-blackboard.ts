@@ -1,6 +1,6 @@
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
-import { rankSharedCards, type SharedProjectCard } from "../../communications/blackboard-domain.js";
+import { rankSharedCards, rerankSharedCards, type SharedProjectCard } from "../../communications/blackboard-domain.js";
 
 async function call(ctx: PrebuiltOpContext, method: string, path: string, body?: Record<string, unknown>) {
   if (!ctx.env.spacesWorker || !ctx.env.platformSecret || !ctx.env.userId) throw new Error("blackboard_user_context_required");
@@ -83,16 +83,9 @@ export const spaceBlackboard: PrebuiltScript = {
               ...(decision.model ? { model: decision.model } : {}), ...(decision.latencyMs !== undefined ? { latencyMs: decision.latencyMs } : {}),
               ...(decision.usage ? { usage: decision.usage } : {}) };
           }));
-          const lexicalIndex = new Map(candidates.map((candidate, index) => [candidate.card.projectId, index]));
           const triageByProject = new Map(triage.map(item => [item.projectId, item.score]));
           // Re-rank only the top five scored cards; keep the remainder and ties lexical.
-          rankedCandidates = [...candidates].sort((a, b) => {
-            const aScore = triageByProject.get(a.card.projectId);
-            const bScore = triageByProject.get(b.card.projectId);
-            if (aScore === undefined && bScore !== undefined) return 1;
-            if (aScore !== undefined && bScore === undefined) return -1;
-            return (bScore ?? 0) - (aScore ?? 0) || (lexicalIndex.get(a.card.projectId) ?? 0) - (lexicalIndex.get(b.card.projectId) ?? 0);
-          });
+          rankedCandidates = rerankSharedCards(candidates, triageByProject);
         } catch { triage = undefined; }
       }
       const triageUsage = triage ? {
