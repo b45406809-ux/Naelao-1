@@ -35,7 +35,25 @@ export interface ArtifactReadPort {
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 32;
 const HASH = /^[a-f0-9]{64}$/;
+const isWorkspaceArtifactPath = (path: unknown): path is string => typeof path === "string" && path.length > 0 && path.length <= 256 && !path.startsWith("/") && !path.split("/").some(part => !part || part === "." || part === "..");
 const sha256 = async (bytes: Uint8Array): Promise<string> => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+
+function isWellFormedManifest(manifest: WorkerArtifactManifest): boolean {
+  if (manifest.version !== 1 || !Number.isSafeInteger(manifest.capturedAt) || manifest.capturedAt < 0 ||
+    !manifest.tenantId || !manifest.spaceId || !manifest.parentRunId || !manifest.workerId || !manifest.branch ||
+    !Array.isArray(manifest.artifacts) || manifest.artifacts.length > MAX_ARTIFACTS) return false;
+  const paths = new Set<string>();
+  for (const artifact of manifest.artifacts) {
+    if (!artifact || !isWorkspaceArtifactPath(artifact.path) || paths.has(artifact.path) ||
+      !["captured", "missing", "too_large", "unavailable"].includes(artifact.status)) return false;
+    paths.add(artifact.path);
+    if (artifact.status === "captured") {
+      if (!artifact.hash || !HASH.test(artifact.hash) || typeof artifact.etag !== "string" || !artifact.etag || artifact.etag.length > 256 ||
+        !Number.isSafeInteger(artifact.bytes) || artifact.bytes! < 0 || artifact.bytes! > MAX_ARTIFACT_BYTES) return false;
+    } else if (artifact.hash !== undefined || artifact.etag !== undefined || artifact.bytes !== undefined) return false;
+  }
+  return true;
+}
 
 /** Capture a bounded, immutable view of declared paths. A changing R2 object is uncertain. */
 export async function captureWorkerArtifactManifest(input: Omit<WorkerArtifactManifest, "version" | "capturedAt" | "artifacts"> & { paths: readonly string[] }, port: ArtifactReadPort, now = Date.now()): Promise<WorkerArtifactManifest> {
@@ -60,7 +78,8 @@ export async function captureWorkerArtifactManifest(input: Omit<WorkerArtifactMa
 
 /** Compare current scoped bytes with the exact captured version; never trust a branch name alone. */
 export async function verifyWorkerArtifact(manifest: WorkerArtifactManifest, path: string, port: ArtifactReadPort, expected: Pick<WorkerArtifactManifest, "tenantId" | "spaceId" | "projectId" | "parentRunId" | "workerId" | "attempt" | "branch">): Promise<{ outcome: "passed" | "failed" | "uncertain"; reference: string }> {
-  if (manifest.artifacts.length > MAX_ARTIFACTS || manifest.artifacts.some(item => item.path.length > 256 || (item.bytes ?? 0) > MAX_ARTIFACT_BYTES)) return { outcome: "uncertain", reference: "manifest_bounds_invalid" };
+  if (!isWellFormedManifest(manifest) || !isWorkspaceArtifactPath(path)) return { outcome: "uncertain", reference: "manifest_bounds_invalid" };
+  if (!Number.isSafeInteger(manifest.attempt) || manifest.attempt < 1 || !Number.isSafeInteger(expected.attempt) || expected.attempt < 1) return { outcome: "uncertain", reference: "manifest_scope_mismatch" };
   if (["tenantId", "spaceId", "projectId", "parentRunId", "workerId", "attempt", "branch"].some(key => manifest[key as keyof WorkerArtifactManifest] !== expected[key as keyof typeof expected])) return { outcome: "uncertain", reference: "manifest_scope_mismatch" };
   const entry = manifest.artifacts.find(item => item.path === path);
   if (!entry || entry.status !== "captured" || !entry.hash || !HASH.test(entry.hash) || !entry.etag) return { outcome: "uncertain", reference: `artifact:${path}:uncaptured` };
@@ -70,7 +89,7 @@ export async function verifyWorkerArtifact(manifest: WorkerArtifactManifest, pat
     if (before.etag !== entry.etag || before.size !== entry.bytes) return { outcome: "uncertain", reference: `artifact:${path}:changed` };
     const current = await port.read(path, MAX_ARTIFACT_BYTES);
     const after = await port.head(path);
-    if (!current || !after || current.etag !== entry.etag || after.etag !== entry.etag || current.bytes.byteLength !== entry.bytes || await sha256(current.bytes) !== entry.hash) return { outcome: "uncertain", reference: `artifact:${path}:changed` };
+    if (!current || !after || current.etag !== entry.etag || after.etag !== entry.etag || after.size !== entry.bytes || current.bytes.byteLength !== entry.bytes || await sha256(current.bytes) !== entry.hash) return { outcome: "uncertain", reference: `artifact:${path}:changed` };
     return { outcome: "passed", reference: `artifact:${path}:sha256:${entry.hash}` };
   } catch { return { outcome: "uncertain", reference: `artifact:${path}:unavailable` }; }
 }

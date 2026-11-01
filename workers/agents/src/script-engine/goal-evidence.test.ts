@@ -32,6 +32,27 @@ describe("independent goal evidence", () => {
     expect((await verifyWorkerArtifact(manifest, "src/a.ts", port, scope)).outcome).toBe("uncertain");
     expect((await verifyWorkerArtifact(manifest, "src/a.ts", port, { ...scope, attempt: 3 })).outcome).toBe("uncertain");
   });
+  it("fails closed on unsupported, duplicate, or malformed persisted manifest entries", async () => {
+    const bytes = new TextEncoder().encode("stable");
+    const port: ArtifactReadPort = { head: async () => ({ size: bytes.length, etag: "v1" }), read: async () => ({ bytes, etag: "v1" }) };
+    const scope = { tenantId: "t", spaceId: "s", projectId: "p", parentRunId: "run", workerId: "worker", attempt: 1, branch: "workers/worker", paths: ["src/a.ts"] };
+    const manifest = await captureWorkerArtifactManifest(scope, port);
+    expect((await verifyWorkerArtifact({ ...manifest, version: 2 }, "src/a.ts", port, scope)).reference).toBe("manifest_bounds_invalid");
+    expect((await verifyWorkerArtifact({ ...manifest, artifacts: [...manifest.artifacts, manifest.artifacts[0]!] }, "src/a.ts", port, scope)).reference).toBe("manifest_bounds_invalid");
+    expect((await verifyWorkerArtifact({ ...manifest, artifacts: [{ ...manifest.artifacts[0]!, hash: "bad" }] }, "src/a.ts", port, scope)).reference).toBe("manifest_bounds_invalid");
+    expect((await verifyWorkerArtifact(manifest, "../src/a.ts", port, scope)).reference).toBe("manifest_bounds_invalid");
+  });
+  it("detects a final size change even if the storage ETag is unchanged", async () => {
+    const bytes = new TextEncoder().encode("stable");
+    const scope = { tenantId: "t", spaceId: "s", projectId: "p", parentRunId: "run", workerId: "worker", attempt: 1, branch: "workers/worker", paths: ["src/a.ts"] };
+    const manifest = await captureWorkerArtifactManifest(scope, { head: async () => ({ size: bytes.length, etag: "same-etag" }), read: async () => ({ bytes, etag: "same-etag" }) });
+    let calls = 0;
+    const racingPort: ArtifactReadPort = {
+      head: async () => ({ size: calls++ < 1 ? bytes.length : bytes.length + 1, etag: "same-etag" }),
+      read: async () => ({ bytes, etag: "same-etag" }),
+    };
+    expect(await verifyWorkerArtifact(manifest, "src/a.ts", racingPort, scope)).toMatchObject({ outcome: "uncertain", reference: "artifact:src/a.ts:changed" });
+  });
   it("rejects duplicate and conflicting evidence specifications", async () => {
     const run = async () => ({ outcome: "passed" as const, reference: "host:stable" });
     const duplicate = [{ criterion: "build succeeds", operation: "workspace.sha256:src/build.log" }, { criterion: "build succeeds", operation: "workspace.exists:src/build.log" }];
