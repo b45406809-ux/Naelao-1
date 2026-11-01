@@ -21,9 +21,16 @@ migrations_dir = "../../../infra/migrations"
 binding = "SPACES_WORKER"
 service = "naelao-blackboard-spaces-test"
 
+[[services]]
+binding = "MODEL_GATEWAY"
+service = "naelao-blackboard-model-test"
+
 [[r2_buckets]]
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-blackboard-agent-scripts-test"
 
 [vars]
 PLATFORM_SECRET = "blackboard-integration-test-secret"
+ENVIRONMENT = "test"
+NAELAO_AIG_TOKEN = "test-only-model-gateway-token"
+CF_API_TOKEN = "test-only-model-gateway-token"

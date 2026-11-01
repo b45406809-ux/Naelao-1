@@ -117,7 +117,7 @@ describe("blackboard event to Project Bot dispatch integration", () => {
         if (path === "/active-run") return Response.json({ active: false });
         const body = (await request.json()) as Record<string, unknown>;
         agentCalls.push({ path, body });
-        return Response.json({ accepted: true });
+        return Response.json({ result: { ok: true } });
       },
     };
     const agentNamespace = {

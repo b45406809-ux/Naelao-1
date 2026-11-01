@@ -79,6 +79,34 @@ describe("pre-inference spend admission", () => {
   });
 });
 
+describe("host-injected model transport", () => {
+  it("uses the host-approved deterministic endpoint without touching global network fetch", async () => {
+    const globalFetch = vi.fn(async () => { throw new Error("unexpected_global_network_fetch"); });
+    vi.stubGlobal("fetch", globalFetch);
+    const fetcher = vi.fn(async () => Response.json({
+      choices: [{ message: { role: "assistant", content: JSON.stringify({ action: "answer", text: "synthetic accepted" }) }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 9, completion_tokens: 4 },
+    }));
+    try {
+      const reasoner = new GatewayReasoner({
+        apiKey: "",
+        gateway: { accountId: "test", gatewayId: "test", aigToken: "test-only" },
+        ctx: { spaceId: "space", agentId: "project-assistant", model: "@cf/test-model" },
+        model: "@cf/test-model",
+        fetcher: fetcher as typeof globalThis.fetch,
+      });
+      await expect(reasoner.decide({
+        goal: "complete deterministic test task", level: "L2", snapshot: {}, candidates: [], availableOperations: [],
+      } as never)).resolves.toEqual({ action: "answer", text: "synthetic accepted" });
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(String(fetcher.mock.calls[0]?.[0])).toContain("/ai/v1/chat/completions");
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("restricted external channel answers", () => {
   it("sends only the host-selected published excerpts to a text-only local completion", async () => {
     const reserveInferenceCost = vi.fn(async () => true);

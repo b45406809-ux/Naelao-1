@@ -65,6 +65,9 @@ import {
 export interface ReasonerDeps {
   apiKey: string;
   gateway: GatewayOpts;
+  /** Host-owned transport override for isolated deterministic integration tests. Production callers
+   * leave this unset and use the configured Cloudflare/provider endpoint. */
+  fetcher?: typeof globalThis.fetch;
   ctx: AIClientContext;
   /** Local development may use the bound Workers AI runtime when Gateway secrets are absent. */
   localDevelopment?: boolean;
@@ -764,6 +767,10 @@ export class GatewayReasoner implements Reasoner {
 
   constructor(private readonly deps: ReasonerDeps) {}
 
+  private get fetcher(): typeof globalThis.fetch {
+    return this.deps.fetcher ?? globalThis.fetch;
+  }
+
   /** A single text-only response for an external channel principal. This path deliberately
    * bypasses decide(): it receives no planner prompt, operation catalogue, tools, or workspace
    * context. Only host-selected, owner-published source excerpts may be included. */
@@ -803,7 +810,7 @@ export class GatewayReasoner implements Reasoner {
       if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, model)) throw new Error("external_answer_provider_unavailable");
       const gateway = byok ? compatGatewayUrl(this.deps.gateway) : universalGatewayUrl(this.deps.gateway);
       const headers = byok ? compatGatewayHeaders(this.deps.gateway, model) : universalGatewayHeaders(this.deps.gateway);
-      response = await fetch(gateway, { method: "POST", headers,
+      response = await this.fetcher(gateway, { method: "POST", headers,
         body: buildUniversalBody({ apiKey: this.deps.apiKey, ...(this.deps.gateway.cfApiToken ? { cfApiToken: this.deps.gateway.cfApiToken } : {}),
           gatewayOpts: this.deps.gateway, ctx: { ...this.deps.ctx, skipCache: true },
           query: byok ? { ...query, model: compatProviderModelId(model) } : query }),
@@ -1090,7 +1097,7 @@ export class GatewayReasoner implements Reasoner {
         if (!this.deps.gateway.cfApiToken) {
           return { action: "give_up", reason: "custom_model_gateway_unavailable: configure a Cloudflare AI Gateway API token with Workers AI access" };
         }
-        resp = await fetch(universalGatewayUrl(this.deps.gateway), {
+        resp = await this.fetcher(universalGatewayUrl(this.deps.gateway), {
           method: "POST",
           headers: universalGatewayHeaders(this.deps.gateway),
           body: privateLoraGatewayBody({
@@ -1112,7 +1119,7 @@ export class GatewayReasoner implements Reasoner {
           : query.model.startsWith("groq/")
             ? "https://api.groq.com/openai/v1/chat/completions"
             : "https://openrouter.ai/api/v1/chat/completions";
-        resp = await fetch(directUrl, {
+        resp = await this.fetcher(directUrl, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -1130,7 +1137,7 @@ export class GatewayReasoner implements Reasoner {
             ...(streaming ? { stream: true } : {}),
           }),
         });
-      } else resp = await fetch(url, {
+      } else resp = await this.fetcher(url, {
         method: "POST",
         headers,
         body: buildUniversalBody({

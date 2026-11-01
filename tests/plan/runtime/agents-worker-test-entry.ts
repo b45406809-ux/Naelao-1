@@ -80,12 +80,14 @@ export default {
         simulateBusyFirst = false,
         expireLease = false,
         concurrentSweepCount = 0,
+        mockModelRun = false,
       } = (await request.json()) as {
         projectId: string;
         revokeAuthority?: boolean;
         simulateBusyFirst?: boolean;
         expireLease?: boolean;
         concurrentSweepCount?: number;
+        mockModelRun?: boolean;
       };
       if (!projectId)
         return Response.json({ error: "projectId required" }, { status: 400 });
@@ -214,6 +216,12 @@ export default {
       let busySweep: { checked: number } | undefined;
       let busyResponse: { status: number; body: unknown } | undefined;
       const eventId = `${requestId}:pending`;
+      if (mockModelRun) {
+        // Test-only opt-in to the deterministic local model endpoint. Normal acceptance stays
+        // air-gapped and can never contact a model provider.
+        await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
+          .bind(JSON.stringify({ compliance: { airGappedOnly: false } }), TEST_SPACE_ID).run();
+      }
       if (expireLease) {
         const now = Math.floor(Date.now() / 1000);
         await db
@@ -289,6 +297,10 @@ export default {
         `/spaces/${TEST_SPACE_ID}/threads?project_id=${encodeURIComponent(projectId)}`,
         "GET"
       );
+      if (mockModelRun) {
+        await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
+          .bind(JSON.stringify({ compliance: { airGappedOnly: true } }), TEST_SPACE_ID).run();
+      }
       return Response.json({
         sourceProjectId: sourceProject.id,
         sweep: result,

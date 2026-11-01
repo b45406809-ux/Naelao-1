@@ -11,11 +11,20 @@ function fixture() {
 }
 describe("blackboard project wakes",()=>{
   it("checks current project authority and dispatches an untrusted event in project scope",async()=>{
-    access.mockResolvedValueOnce(true); const f=fixture(); const wake=vi.fn(async(_input:unknown)=>new Response("ok"));
+    access.mockResolvedValueOnce(true); const f=fixture(); const wake=vi.fn(async(_input:unknown)=>Response.json({result:{ok:true}}));
     await sweepBlackboardWakes(f.env,wake,100);
     expect(wake).toHaveBeenCalledOnce();
     expect(wake.mock.calls[0]![0]).toMatchObject({projectId:"p",userId:"owner"});
     expect(f.updates[0]![0]).toBe("completed");
+  });
+  it("holds an HTTP-accepted AgentDO run when the script result failed or needs approval",async()=>{
+    access.mockResolvedValueOnce(true); const failed=fixture();
+    await sweepBlackboardWakes(failed.env,async()=>Response.json({result:{ok:false,error:"model unavailable"}}),100);
+    expect(failed.updates[0]![0]).toBe("held");
+
+    access.mockResolvedValueOnce(true); const approval=fixture();
+    await sweepBlackboardWakes(approval.env,async()=>Response.json({result:{ok:true},deferred_approvals:[{id:"approval-1"}]}),100);
+    expect(approval.updates[0]![0]).toBe("held");
   });
   it("holds on revoked authority and retries a busy assistant",async()=>{
     const denied=fixture(); access.mockResolvedValueOnce(false); const noWake=vi.fn();

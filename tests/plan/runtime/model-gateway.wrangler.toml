@@ -1,0 +1,7 @@
+name = "naelao-blackboard-model-test"
+main = "./model-gateway-test-entry.ts"
+compatibility_date = "2026-10-13"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "test"

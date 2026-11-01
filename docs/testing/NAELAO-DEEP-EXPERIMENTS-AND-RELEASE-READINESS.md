@@ -64,14 +64,21 @@ Additional local evidence on the current working tree:
 
 The test-only concurrent wake option is bounded to 32 sweeps and only exists in the isolated `tests/plan/runtime` wrapper. It does not change production wake behavior.
 
+### Follow-up: deterministic Project Bot run and wake-result correction (2026-11-01)
+
+- Added a host-injected model transport usable only when `ENVIRONMENT === "test"`, plus an isolated local OpenAI-compatible stub Worker. The stub keeps request counts and model IDs only, never prompts. Ordinary runtime cases remain air-gapped; only the explicit test case temporarily relaxes its synthetic Space policy and restores it afterward.
+- A three-Worker Wrangler run (Spaces, Agents/AgentDO, and the test model endpoint) exercises a Project Bot blackboard wake through `wakeAgentGoal`, real `SpaceDO`/`NaelaoAgentDO`, the actual Reasoner request parser, and a completed script run. It made **1** local mock inference request for `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, completed in **213 ms**, and made **0 external-provider requests**. This proves a successful Project Assistant wake/run using a deterministic mock response; it does not prove a delegated leaf worker or production model quality.
+- The experiment caught a status bug: `NaelaoAgentDO` can return HTTP 200 while the script result contains `ok:false`. The blackboard coordinator previously marked any HTTP 200 wake `completed`, hiding model/tool failure. It now requires `result.ok === true`; explicit failure, missing result, and deferred approvals remain `held`. Focused regression suites passed **20/20** and Agents typecheck passed.
+- Full local Wrangler acceptance passed **8/8** on the updated source. It applied 154 migrations in **43.891 s**, started Spaces in **2.516 s**, Agents in **3.883 s**, and measured the 30-sample air-gap admission boundary at p50 **88 ms** / p95 **104 ms**. These are local emulation timings, not an SLO or production latency claim.
+
 ### Batch state after the first pass
 
 | Batch | State | Evidence and remaining gap |
 |---|---|---|
 | 0 — Freeze/baseline | **PASS** | Full Actions inventory and connected checks passed on `f7b152eb`; clean checkout and synced branches. Local clean install is blocked by this session's pnpm 11/script policy/disk, while the clean runner install/build passed. |
 | 1 — Actor/scope boundary | **PARTIAL PASS** | Focused scope/assistant/blackboard tests passed; full CI passed. Needs a larger generated matrix covering extension principals, archive/delete, tunnels, and all tool surfaces in joined traces. |
-| 2 — Joined task/evidence | **PARTIAL** | Synthetic cross-layer planner/worker/evidence tests pass. Real two-Worker path creates a heartbeat session and reaches AgentDO but is intentionally stopped by air-gap policy; no successful end-to-end worker task is yet proven. |
-| 3 — Blackboard coordination | **PARTIAL PASS** | 16 simultaneous D1 sweepers produce exactly one claim/dispatch; authorization revocation, busy retry, lease expiry and dedupe pass. Worker-message recovery, AgentDO restart during dispatch and fixer escalation remain open. |
+| 2 — Joined task/evidence | **PARTIAL PASS** | Synthetic cross-layer planner/worker/evidence tests pass. A real local three-Worker path now completes a Project Bot run through a deterministic mock model and real AgentDO. A delegated leaf-worker completion with host-collected evidence in that same integrated path is still unproven. |
+| 3 — Blackboard coordination | **PARTIAL PASS** | 16 simultaneous D1 sweepers produce exactly one claim/dispatch; authorization revocation, busy retry, lease expiry and dedupe pass. The HTTP-200/script-failure false completion is fixed and tested. Worker-message recovery, AgentDO restart during dispatch and fixer escalation remain open. |
 | 4 — Durable dispatch/side effects | **PARTIAL** | Goal DAG, outbox, usage reconciliation, tunnel idempotency/restart and billing reservation tests pass. AgentDO outbox recovery plus real external side-effect uncertainty/reconciliation is not yet exercised across a running DO restart. |
 | 5 — Decision/evaluation quality | **SYNTHETIC ONLY** | 9 repository-authored graph scenarios repeated 3 times plus generated DAG stress run in tests; one test is skipped. No external held-out dataset or current live model quality evaluation was part of this full-test run. |
 | 6 — CLI/MCP/runtime environments | **PARTIAL PASS** | Selected command/MCP (52), MCP Hub (21), tunnel/container (42 + 38) tests pass; distinct container affinity and shared-resource queuing are covered in goal DAG tests. No live tunnel machine, managed container provider, browser profile or production snapshot acceptance. |
@@ -249,7 +256,7 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 ## Immediate next actions
 
 1. **Complete for commit `f7b152eb`:** the full GitHub Actions inventory and connected checks passed; the per-suite summary and runtime metrics were inspected. A documentation-only update may trigger another inventory run, but does not change this code-tested SHA.
-2. Close Batch 2's actual successful provider-free joined task and exact host evidence binding; current joined synthetic planner/worker tests pass, but the local Worker fixture is intentionally denied before model execution.
+2. **Partially closed:** a deterministic local mock proves a successful Project Bot wake/run. Next, extend the same harness to exercise a delegated leaf worker, host artifact manifest/evidence collection, and dependent-task verification through the running DOs; keep this separate from provider-live acceptance.
 3. Continue Batch 3 with concurrent wake-claim recovery across crash/lease boundaries and blackboard message delivery; continue Batch 4 with AgentDO goal-state restart and uncertain external-effect tests.
 4. Run authenticated UI-to-DO lifecycle cases and archive/restore/member journeys. The current browser tests are useful but synthetic.
 5. Continue independent Batch 5 decision-quality and Batch 6 environment/browser/container experiments, then Batch 9. Batch 8's migrations have already been applied successfully during the local runtime test, but deletion/backup/rollback recovery remains open.

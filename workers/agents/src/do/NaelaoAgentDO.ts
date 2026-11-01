@@ -1027,6 +1027,8 @@ export function processAgentException(
 
 export interface AgentDOEnv {
   ENVIRONMENT?: string;
+  /** Test-only mock model service; read only when ENVIRONMENT is exactly `test`. */
+  MODEL_GATEWAY?: Fetcher;
   /** Opt in new goal runs to durable, task-scoped completion messages. */
   TASK_BLACKBOARD_ENABLED?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
@@ -6102,6 +6104,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
+      ...(this.env.ENVIRONMENT === "test" && this.env.MODEL_GATEWAY ? {
+        fetcher: (input, init) => this.env.MODEL_GATEWAY!.fetch(new Request(input, init)),
+      } : {}),
       localDevelopment: this.env.ENVIRONMENT === "development",
       gateway: {
         accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
@@ -9519,6 +9524,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false, estimatedCredits: 0, estimatedTokens: 0 };
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
+      ...(this.env.ENVIRONMENT === "test" && this.env.MODEL_GATEWAY ? {
+        fetcher: (input, init) => this.env.MODEL_GATEWAY!.fetch(new Request(input, init)),
+      } : {}),
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,

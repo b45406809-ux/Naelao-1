@@ -50,3 +50,11 @@ The runtime suite now passes **7/7** after adding an actual 16-sweeper D1 claim 
 4. Persist one correlated audit trace distinguishing Space Assistant, Project Assistant invocation, and task/thread worker actions while demonstrating shared planner/worker execution.
 5. Add a separate opt-in accepted worker run using a local/mock reasoning adapter; keep no-model and live-provider acceptance results distinct.
 6. Run deployed acceptance against an isolated test Space and report provider-free tests separately from live model/provider tests.
+
+## Deterministic local Project Bot completion (2026-11-01)
+
+The local Wrangler topology now starts a third, test-only model Worker bound to the Agents Worker only in `ENVIRONMENT=test`. The existing Spaces Worker and Agents Worker remain separate processes with real D1, `SpaceDO`, and `NaelaoAgentDO`; the explicit test case temporarily disables the synthetic Space's air-gap policy, invokes the local model stub, then restores the policy. The stub records only request counts and model IDs and does not persist prompt contents.
+
+The Project Bot wake completed through the actual `wakeAgentGoal` and AgentDO script-run path with one stub inference (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`), in 213 ms, with zero external-provider calls. Full local Wrangler acceptance passed **8/8**. The same run measured 30 air-gap admission samples at p50 **88 ms** / p95 **104 ms**, applied 154 migrations in **43.891 s**, and restarted the two application Workers successfully. These timings are local observations. This case ends with a deterministic assistant answer; it does not yet execute a delegated worker or collect its artifact evidence in the same live DO trace.
+
+This run also caught and fixed a wake-status bug. A script-run failure can be returned with HTTP 200 and `result.ok === false`; blackboard delivery now remains held unless the script result explicitly succeeded and has no deferred approval. Focused wake, integration, architecture, and Reasoner tests passed **20/20**, and the Agents TypeScript check passed.

@@ -331,6 +331,8 @@ export interface AgentsEnv extends Cloudflare.Env {
    *  injects its OWN stored Anthropic/OpenAI key so no ANTHROPIC_API_KEY is needed on the worker.
    *  Set via `wrangler secret put NAELAO_AIG_TOKEN`. */
   NAELAO_AIG_TOKEN?: string;
+  /** Test-environment-only mock LLM endpoint. NaelaoAgentDO ignores this binding outside ENVIRONMENT=test. */
+  MODEL_GATEWAY?: Fetcher;
   /** Optional native ScaleDown Compress credentials. Kept separate from OpenRouter BYOK keys.
    * The native endpoint's negotiated rate is supplied per million input tokens; Compress does
    * not have a current OpenRouter catalog entry we can use for live pricing. */

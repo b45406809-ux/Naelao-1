@@ -17,9 +17,11 @@ const repoRoot = path.resolve(
 );
 let spacesWorker;
 let agentsWorker;
+let modelGatewayWorker;
 let persistPath;
 let spacesBaseUrl;
 let agentsBaseUrl;
+let modelGatewayBaseUrl;
 let identity;
 let runtimeRestartCount = 0;
 const runStartedAt = new Date().toISOString();
@@ -32,6 +34,7 @@ const metrics = {
   migration_apply_ms: 0,
   worker_start_ms: 0,
   spaces_worker_start_ms: 0,
+  model_gateway_start_ms: 0,
   agents_worker_start_ms: 0,
   requests: [],
   benchmarks: [],
@@ -119,8 +122,10 @@ async function stopWorker(child) {
 async function startLocalWorkers() {
   const spacesPort = await availablePort();
   const agentsPort = await availablePort();
+  const modelGatewayPort = await availablePort();
   spacesBaseUrl = `http://127.0.0.1:${spacesPort}`;
   agentsBaseUrl = `http://127.0.0.1:${agentsPort}`;
+  modelGatewayBaseUrl = `http://127.0.0.1:${modelGatewayPort}`;
   const spacesStarted = performance.now();
   spacesWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/spaces.wrangler.toml"),
@@ -128,6 +133,13 @@ async function startLocalWorkers() {
   );
   await waitForWorker(spacesWorker, spacesBaseUrl);
   const spacesWorkerStartMs = Math.round(performance.now() - spacesStarted);
+  const modelGatewayStarted = performance.now();
+  modelGatewayWorker = startWorker(
+    path.join(repoRoot, "tests/plan/runtime/model-gateway.wrangler.toml"),
+    modelGatewayPort
+  );
+  await waitForWorker(modelGatewayWorker, modelGatewayBaseUrl);
+  const modelGatewayStartMs = Math.round(performance.now() - modelGatewayStarted);
   const agentsStarted = performance.now();
   agentsWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/agents.wrangler.toml"),
@@ -137,8 +149,9 @@ async function startLocalWorkers() {
   const agentsWorkerStartMs = Math.round(performance.now() - agentsStarted);
   return {
     spacesWorkerStartMs,
+    modelGatewayStartMs,
     agentsWorkerStartMs,
-    totalWorkerStartMs: spacesWorkerStartMs + agentsWorkerStartMs,
+    totalWorkerStartMs: spacesWorkerStartMs + modelGatewayStartMs + agentsWorkerStartMs,
   };
 }
 
@@ -171,6 +184,7 @@ before(
     );
     const workerStart = await startLocalWorkers();
     metrics.spaces_worker_start_ms = workerStart.spacesWorkerStartMs;
+    metrics.model_gateway_start_ms = workerStart.modelGatewayStartMs;
     metrics.agents_worker_start_ms = workerStart.agentsWorkerStartMs;
     metrics.worker_start_ms = workerStart.totalWorkerStartMs;
     const bootstrapStarted = performance.now();
@@ -191,6 +205,7 @@ before(
 after(async () => {
   await stopWorker(agentsWorker);
   await stopWorker(spacesWorker);
+  await stopWorker(modelGatewayWorker);
   if (persistPath) await rm(persistPath, { recursive: true, force: true });
   metrics.finished_at = new Date().toISOString();
   metrics.total_duration_ms = Math.round(performance.now() - runStarted);
@@ -354,6 +369,7 @@ test("separate Spaces and Agents Workers coordinate a provider-free blackboard w
 
   await stopWorker(agentsWorker);
   await stopWorker(spacesWorker);
+  await stopWorker(modelGatewayWorker);
   const restartStarted = performance.now();
   const restart = await startLocalWorkers();
   runtimeRestartCount++;
@@ -377,6 +393,40 @@ test("separate Spaces and Agents Workers coordinate a provider-free blackboard w
     title: "Blackboard wake — runtime acceptance",
   });
   metrics.runtime_restart_count = runtimeRestartCount;
+});
+
+test("a Project Bot wake completes through the local model adapter without external provider calls", async () => {
+  const project = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Deterministic Project Bot Completion" }
+  );
+  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const started = performance.now();
+  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: project.id,
+    mockModelRun: true,
+  });
+  const elapsedMs = Math.round(performance.now() - started);
+  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  assert.deepEqual(result.sweep, { checked: 1 });
+  assert.equal(result.wake.status, "completed");
+  assert.equal(result.wake.attempts, 1);
+  assert.equal(result.dispatchResponses.length, 1);
+  assert.equal(result.dispatchResponses[0].status, 200);
+  assert.equal(result.dispatchResponses[0].body?.result?.ok, true, JSON.stringify(result.dispatchResponses[0].body));
+  assert.ok(after.totalRequests > before.totalRequests, `the authorized local model endpoint should receive an inference request; before=${JSON.stringify(before)} after=${JSON.stringify(after)} dispatch=${JSON.stringify(result.dispatchResponses)}`);
+  assert.ok(Object.keys(after.modelCounts).some((model) => model.startsWith("@cf/")));
+  assert.ok(result.threads.data?.some((thread) => thread.project_id === project.id && thread.title.startsWith("Project routine") && thread.session_id));
+  metrics.project_assistant_mock_run = {
+    evidence_class: "integrated-local-mock-model",
+    outcome: "completed",
+    duration_ms: elapsedMs,
+    model_requests: after.totalRequests - before.totalRequests,
+    model_ids: Object.keys(after.modelCounts),
+    external_provider_requests: 0,
+  };
 });
 
 test("concurrent wake sweepers claim one Project Bot event exactly once", async () => {
