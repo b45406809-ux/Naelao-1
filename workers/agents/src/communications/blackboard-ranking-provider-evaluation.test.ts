@@ -11,6 +11,7 @@ import {
 import {
   asBlackboardRankingCases,
   buildBlackboardRankingPrompt,
+  buildBlackboardRankingPromptForQueries,
   getBlackboardCandidateSets,
   parseBlackboardRankingScores,
 } from "./blackboard-ranking-provider-evaluation.js";
@@ -18,6 +19,7 @@ import {
 const LIVE_ENABLED = process.env.NAELAO_RUN_LIVE_BLACKBOARD_RANKING === "true";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const PROVIDER_TIMEOUT_MS = 20_000;
+const QUERIES_PER_PROVIDER_REQUEST = 7;
 
 function expectedCandidates(): Map<string, Set<string>> {
   return getBlackboardCandidateSets(blackboardRankingCards);
@@ -30,7 +32,23 @@ function classifyFailure(status: number): string {
   return "provider_error";
 }
 
-async function requestModelScores(provider: "gemini" | "groqcloud"): Promise<{
+function percentile(
+  values: readonly number[],
+  fraction: number
+): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return (
+    sorted[
+      Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)
+    ] ?? null
+  );
+}
+
+async function requestModelScores(
+  provider: "gemini" | "groqcloud",
+  queries: readonly (typeof blackboardRankingQueries)[number][]
+): Promise<{
   model: string;
   latencyMs: number;
   inputTokens: number | null;
@@ -62,7 +80,7 @@ async function requestModelScores(provider: "gemini" | "groqcloud"): Promise<{
       : process.env.GROQ_FREE_MODEL_ID?.trim() || "";
   if (!model) throw new Error("approved_free_model_not_configured");
 
-  const prompt = buildBlackboardRankingPrompt();
+  const prompt = buildBlackboardRankingPromptForQueries(queries);
   let rejectedCredentialAttempts = 0;
   for (let index = 0; index < keys.length; index++) {
     const key = keys[index];
@@ -260,6 +278,17 @@ describe("blackboard provider ranking evaluation harness", () => {
       expect(candidateSet.size).toBeLessThanOrEqual(5);
   });
 
+  it("builds independently parseable chunks without leaking labels", () => {
+    const subset = blackboardRankingQueries.slice(0, 7);
+    const prompt = buildBlackboardRankingPromptForQueries(subset);
+    expect(prompt).toContain('"queryId":"customs-classification"');
+    expect(prompt).not.toContain('"queryId":"legal-redline"');
+    expect(prompt).not.toContain("relevantProjectIds");
+    expect(
+      getBlackboardCandidateSets(blackboardRankingCards, subset).size
+    ).toBe(7);
+  });
+
   it("rejects incomplete, invented, duplicate, and invalid model scores", () => {
     const expected = new Map([
       ["q1", new Set(["p1", "p2"])],
@@ -385,11 +414,12 @@ describe("blackboard provider ranking evaluation harness", () => {
   });
 
   it.skipIf(!LIVE_ENABLED)(
-    "runs one bounded free-tier ranking call per approved test provider",
+    "runs bounded, chunked free-tier ranking calls per approved test provider",
     async () => {
       const providers = ["gemini", "groqcloud"] as const;
       const results: Array<Record<string, unknown>> = [];
       for (const provider of providers) {
+        let completedInferenceRequests = 0;
         const enabled =
           process.env[
             `NAELAO_BLACKBOARD_${provider === "gemini" ? "GEMINI" : "GROQ"}_ALLOWED`
@@ -404,12 +434,38 @@ describe("blackboard provider ranking evaluation harness", () => {
         }
         const startedAt = Date.now();
         try {
-          const response = await requestModelScores(provider);
-          const candidateSets = expectedCandidates();
-          const parsed = parseBlackboardRankingScores(
-            response.raw,
-            candidateSets
-          );
+          const allCandidateSets = expectedCandidates();
+          const chunks: Array<(typeof blackboardRankingQueries)[number][]> = [];
+          for (
+            let offset = 0;
+            offset < blackboardRankingQueries.length;
+            offset += QUERIES_PER_PROVIDER_REQUEST
+          ) {
+            chunks.push(
+              blackboardRankingQueries.slice(
+                offset,
+                offset + QUERIES_PER_PROVIDER_REQUEST
+              )
+            );
+          }
+          const responses = [];
+          const parsed = [];
+          for (const chunk of chunks) {
+            const response = await requestModelScores(provider, chunk);
+            completedInferenceRequests++;
+            responses.push(response);
+            const expected = new Map(
+              chunk.flatMap(({ id }) => {
+                const candidates = allCandidateSets.get(id);
+                return candidates ? [[id, candidates] as const] : [];
+              })
+            );
+            parsed.push(
+              ...parseBlackboardRankingScores(response.raw, expected)
+            );
+          }
+          const response = responses[0];
+          if (!response) throw new Error("provider_response_missing");
           const result = await evaluateProductionReranker(
             provider,
             response.model,
@@ -419,12 +475,30 @@ describe("blackboard provider ranking evaluation harness", () => {
             provider,
             model: response.model,
             state: "completed",
-            inferenceRequests: 1,
+            inferenceRequests: responses.length,
             latencyMs: response.latencyMs,
-            inputTokens: response.inputTokens,
-            outputTokens: response.outputTokens,
-            keySlot: response.keySlot,
-            rejectedCredentialAttempts: response.rejectedCredentialAttempts,
+            requestLatencyMs: responses.map(({ latencyMs }) => latencyMs),
+            requestLatencyP50Ms: percentile(
+              responses.map(({ latencyMs }) => latencyMs),
+              0.5
+            ),
+            requestLatencyP95Ms: percentile(
+              responses.map(({ latencyMs }) => latencyMs),
+              0.95
+            ),
+            inputTokens: responses.reduce(
+              (total, item) => total + (item.inputTokens ?? 0),
+              0
+            ),
+            outputTokens: responses.reduce(
+              (total, item) => total + (item.outputTokens ?? 0),
+              0
+            ),
+            keySlots: [...new Set(responses.map(({ keySlot }) => keySlot))],
+            rejectedCredentialAttempts: responses.reduce(
+              (total, item) => total + item.rejectedCredentialAttempts,
+              0
+            ),
             providerReportedCostUsd: null,
             measuredCostUsd: null,
             baseline: result.baseline,
@@ -441,12 +515,6 @@ describe("blackboard provider ranking evaluation harness", () => {
             error instanceof Error
               ? error.message.slice(0, 100)
               : "provider_evaluation_failed";
-          const preflightBlocked = [
-            "provider_not_eligible_from_prior_smoke",
-            "provider_secret_missing",
-            "free_tier_not_confirmed",
-            "approved_free_model_not_configured",
-          ].includes(reason);
           results.push({
             provider,
             model:
@@ -455,12 +523,7 @@ describe("blackboard provider ranking evaluation harness", () => {
                 : process.env.GROQ_FREE_MODEL_ID || null,
             state: "blocked",
             reason,
-            inferenceRequests: preflightBlocked
-              ? 0
-              : reason.startsWith("blackboard_provider_") ||
-                  reason === "provider_response_content_missing"
-                ? 1
-                : null,
+            inferenceRequests: completedInferenceRequests,
             providerResponseLogged: false,
             durationMs: Date.now() - startedAt,
           });
@@ -483,7 +546,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         providers: results,
         limitations: [
           "The corpus contains 28 synthetic hand-labeled queries and 16 synthetic cards; results are exploratory, not independently validated or representative of user traffic.",
-          "The model scores are supplied to the same bounded production blackboard reranker; provider usage and latency are from one batched API request per eligible provider.",
+          `The model scores are supplied to the same bounded production blackboard reranker; provider usage and latency are from at most ${Math.ceil(blackboardRankingQueries.length / QUERIES_PER_PROVIDER_REQUEST)} sequential chunked API requests per eligible provider.`,
           "The test uses Gemini and GroqCloud directly and does not alter or replace OpenRouter Decisions production routing.",
           "Provider billing receipts are unavailable in this test; cost is null and is not inferred from token usage.",
           "A free-tier flag is an operator assertion. The harness does not guarantee provider billing or remaining quota; it stops and records provider rate limits.",

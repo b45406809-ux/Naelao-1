@@ -20,7 +20,13 @@ export interface BlackboardProviderScores {
 
 /** Build only from published card fields and query text; fixture labels never enter the prompt. */
 export function buildBlackboardRankingPrompt(): string {
-  const tasks = blackboardRankingQueries.map(({ id, query }) => ({
+  return buildBlackboardRankingPromptForQueries(blackboardRankingQueries);
+}
+
+export function buildBlackboardRankingPromptForQueries(
+  queries: readonly (typeof blackboardRankingQueries)[number][]
+): string {
+  const tasks = queries.map(({ id, query }) => ({
     queryId: id,
     query,
     candidates: rankSharedCards(query, blackboardRankingCards)
@@ -110,10 +116,11 @@ export function parseBlackboardRankingScores(
 }
 
 export function getBlackboardCandidateSets(
-  cards: readonly SharedProjectCard[] = blackboardRankingCards
+  cards: readonly SharedProjectCard[] = blackboardRankingCards,
+  queries: readonly (typeof blackboardRankingQueries)[number][] = blackboardRankingQueries
 ): Map<string, Set<string>> {
   return new Map(
-    blackboardRankingQueries.map(({ id, query }) => [
+    queries.map(({ id, query }) => [
       id,
       new Set(
         rankSharedCards(query, [...cards])
