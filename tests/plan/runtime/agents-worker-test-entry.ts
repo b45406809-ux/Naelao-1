@@ -79,11 +79,13 @@ export default {
         revokeAuthority = false,
         simulateBusyFirst = false,
         expireLease = false,
+        concurrentSweepCount = 0,
       } = (await request.json()) as {
         projectId: string;
         revokeAuthority?: boolean;
         simulateBusyFirst?: boolean;
         expireLease?: boolean;
+        concurrentSweepCount?: number;
       };
       if (!projectId)
         return Response.json({ error: "projectId required" }, { status: 400 });
@@ -202,6 +204,13 @@ export default {
 
       const agentEnv = env as never;
       const dispatchResponses: Array<{ status: number; body: unknown }> = [];
+      const dispatch = async (input: Parameters<typeof wakeAgentGoal>[1]) => {
+        const response = await wakeAgentGoal(agentEnv, input);
+        const body = await response.clone().json().catch(() => null);
+        dispatchResponses.push({ status: response.status, body });
+        return response;
+      };
+      let concurrentSweeps: Array<{ checked: number }> = [];
       let busySweep: { checked: number } | undefined;
       let busyResponse: { status: number; body: unknown } | undefined;
       const eventId = `${requestId}:pending`;
@@ -239,30 +248,22 @@ export default {
           Math.floor(Date.now() / 1000)
         );
       }
+      if (Number.isInteger(concurrentSweepCount) && concurrentSweepCount > 0) {
+        const boundedCount = Math.min(concurrentSweepCount, 32);
+        concurrentSweeps = await Promise.all(
+          Array.from({ length: boundedCount }, () =>
+            sweepBlackboardWakes(agentEnv, dispatch, Math.floor(Date.now() / 1000))
+          )
+        );
+      }
       const result = await sweepBlackboardWakes(
         agentEnv,
-        async (input) => {
-          const response = await wakeAgentGoal(agentEnv, input);
-          const body = await response
-            .clone()
-            .json()
-            .catch(() => null);
-          dispatchResponses.push({ status: response.status, body });
-          return response;
-        },
+        dispatch,
         Math.floor(Date.now() / 1000) + (simulateBusyFirst ? 301 : 0)
       );
       const repeatSweep = await sweepBlackboardWakes(
         agentEnv,
-        async (input) => {
-          const response = await wakeAgentGoal(agentEnv, input);
-          const body = await response
-            .clone()
-            .json()
-            .catch(() => null);
-          dispatchResponses.push({ status: response.status, body });
-          return response;
-        },
+        dispatch,
         Math.floor(Date.now() / 1000) + 1
       );
       const wake = await db
@@ -291,6 +292,7 @@ export default {
       return Response.json({
         sourceProjectId: sourceProject.id,
         sweep: result,
+        concurrentSweeps,
         busySweep,
         busyResponse,
         repeatSweep,

@@ -378,6 +378,38 @@ test("separate Spaces and Agents Workers coordinate a provider-free blackboard w
   metrics.runtime_restart_count = runtimeRestartCount;
 });
 
+test("concurrent wake sweepers claim one Project Bot event exactly once", async () => {
+  const project = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Concurrent Wake Claim Project" }
+  );
+  const wakeResult = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: project.id,
+    concurrentSweepCount: 16,
+  });
+
+  assert.equal(wakeResult.concurrentSweeps.length, 16);
+  assert.ok(
+    wakeResult.concurrentSweeps.every((result) => result.checked <= 1),
+    "each concurrent sweep should inspect at most the one fixture wake"
+  );
+  assert.equal(
+    wakeResult.dispatchResponses.length,
+    1,
+    "only one racing sweeper may dispatch the event"
+  );
+  assert.equal(wakeResult.wake.attempts, 1);
+  assert.equal(wakeResult.wake.status, "held");
+  assert.equal(wakeResult.dispatchResponses[0].status, 403);
+  assert.equal(
+    wakeResult.dispatchResponses[0].body?.error_code,
+    "compliance_violation"
+  );
+  assert.equal(wakeResult.repeatSweep.checked, 0);
+});
+
 test("real D1 authority revocation holds a pending wake without AgentDO dispatch", async () => {
   const project = await jsonRequest(
     spacesBaseUrl,

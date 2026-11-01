@@ -45,6 +45,21 @@ Evidence recorded in the current repository includes:
 - `.github/workflows/naelao-full-test.yml` has repository, workspace, node, conformance, typecheck, security-lint, browser-journey, and runtime-acceptance suites, plus a connected-worker check and result summary. The workflow itself correctly warns that its current browser fixture is synthetic and its runtime fixture is air-gapped.
 - `docs/ai-os-competitive-platform-progress.md` still lists unfinished extension discovery/dependency installs, assistant/blackboard execution, Foundry lifecycle, team benchmarking, and reference-template end-to-end work.
 
+### Execution log — 2026-11-01
+
+Candidate SHA `8590bfe323600d302a83cd28daed881e14d8a673` full inventory Actions run [41258926581](https://github.com/b45406809-ux/Naelao-1/actions/runs/41258926581) succeeded on attempt 2. Attempt 1 was cancelled while the browser-journey job was running; attempt 2 reran the matrix, and the overall summary concluded success. Repository, workspace, Node, conformance, typecheck, security-lint, browser-journey, runtime-acceptance, and all three connected checks passed. This is the documentation-plan SHA; subsequent test additions require their own run before they count as CI evidence.
+
+Additional local evidence on the current working tree:
+
+- Batch 1 scope/assistant/blackboard focused suites: **24/24** across 6 files.
+- Batch 2–4 goal DAG, evidence, architecture benchmark, Decisions client, usage reconciliation, and billing reservations: **86 passed, 1 skipped** across 7 files. The skipped case remains skipped; no live provider result is implied.
+- Batch 3 two-Worker local runtime suite after adding a 16-way sweep race: **6/6**. Sixteen simultaneous D1-backed sweepers yielded exactly one dispatch and one attempt; the wake then remained held because this fixture deliberately prohibits cloud-model execution. The other cases still covered restart of both Worker processes and Project Bot session persistence.
+- Batch 6 Worker-side runtime/tunnel/container admission suites: **42/42** across 7 files; repository tunnel/container policy suites: **38/38** across 6 files. These are deterministic/local tests, not tests against a user's connected machine or a live container fleet.
+- The latest local runtime run applied 154 migrations in **44.368 s**, started both Workers in **6.544 s**, restarted both in **6.536 s**, and completed in **58.752 s**. The concurrent-wake route took **225 ms**. These are single-run local timings, not percentile or capacity results.
+- A local package build attempt could not serve as clean-install evidence: the environment has pnpm 11 despite `packageManager` pinning pnpm 9.12.0, pnpm 11 refused ignored dependency install scripts, and the overlay had under 300 MB free. The GitHub runner's install and prerequisite build passed; do not treat the local attempt as a source failure or as a pass.
+
+The test-only concurrent wake option is bounded to 32 sweeps and only exists in the isolated `tests/plan/runtime` wrapper. It does not change production wake behavior.
+
 These are the baseline, not a claim that all tests passed on the planning commit. For every new result record exact SHA, workflow/run URL, each suite's *recorded suite result*, overall workflow conclusion, counts, skips, artifacts, and whether the test used mocks, local Cloudflare emulation, or live services. A green wrapper job alone is not evidence that a provider test passed.
 
 ## Release claim taxonomy
@@ -213,12 +228,12 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 
 ## Immediate next actions
 
-1. Run Batch 0 against the exact current remote commit and retrieve its complete per-suite result artifacts.
-2. Turn every failed test into a root-cause ticket, fix the code, and rerun dependent gates; do not spend time on optional model comparison while core authorization/durability is red.
-3. Close Batch 2's missing successful provider-free joined task and exact evidence binding, then Batch 3 concurrent claim/recovery cases and Batch 4 crash-point/uncertain-side-effect cases.
-4. Run Batch 7 browser and Batch 8 migration/rollback checks in parallel with independent Batch 5 synthetic decision evaluation and Batch 6 environment tests only after the core contract remains stable.
-5. Reconcile this plan and existing evidence docs after every batch. Then perform Batch 9, and Batch 10 only with the required staging/provider configuration.
-6. Keep both maintained Git branches synchronized to the final tested SHA and attach the batch result artifacts to that commit.
+1. Rerun the full GitHub Actions inventory after the test-only race addition and inspect each per-suite result plus the overall summary.
+2. Close Batch 2's actual successful provider-free joined task and exact host evidence binding; current joined synthetic planner/worker tests pass, but the local Worker fixture is intentionally denied before model execution.
+3. Continue Batch 3 with concurrent wake-claim recovery across crash/lease boundaries and blackboard message delivery; continue Batch 4 with AgentDO goal-state restart and uncertain external-effect tests.
+4. Run authenticated UI-to-DO lifecycle cases and archive/restore/member journeys. The current browser tests are useful but synthetic.
+5. Continue independent Batch 5 decision-quality and Batch 6 environment/browser/container experiments, then Batch 9. Batch 8's migrations have already been applied successfully during the local runtime test, but deletion/backup/rollback recovery remains open.
+6. Only after the relevant local gates pass, perform Batch 10 with the required staging/provider configuration. Keep both maintained branches at the tested SHA and attach result artifacts.
 
 ## Explicitly out of scope for a one-day proof
 
