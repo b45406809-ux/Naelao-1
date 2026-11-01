@@ -2027,10 +2027,27 @@ async function wakeAgentGoal(
   // business context the recurring run — the one most in need of knowing what business it is
   // reviewing — was the only run still flying blind after that was added everywhere else.
   const wake = await resolveWakeContext(env, params.spaceId, params.tenantId);
+  // The child-worker ceiling is an account entitlement, not an implicit free-plan default.
+  // Interactive runs carry this value from the authenticated route, but scheduled/blackboard
+  // wakes enter directly through this host path. Without resolving it here, paid tenants' leaf
+  // workers silently receive the free 2k-token ceiling and can be forced to wrap up before their
+  // first action. On lookup failure retain the restrictive free allowance.
+  let workerTokenBudget = getPlanLimits("free").max_worker_tokens;
+  try {
+    const tier = await new EntitlementsChecker(env.PLATFORM_DB).getTenantTier(params.tenantId);
+    workerTokenBudget = getPlanLimits(tier).max_worker_tokens;
+  } catch {
+    // Missing entitlement data must never increase the worker ceiling.
+  }
+  // This is a host-triggered run, not an interactive request made by the configured user. The
+  // userId remains attached for attribution and scope, while omitting the caller role preserves
+  // the host/system principal so the owner's explicit autonomous policy can apply. The wake sweep
+  // has already revalidated membership, assistant access, and the standing wake grant; ordinary
+  // user calls still carry their verified role through the interactive route.
   return stub.fetch(
     new Request("http://agent-do/script/run", {
       method: "POST",
-      headers: { "content-type": "application/json", ...(params.userId ? { "x-naelao-user-id": params.userId, "x-naelao-role": "product_end_user" } : {}) },
+      headers: { "content-type": "application/json", ...(params.userId ? { "x-naelao-user-id": params.userId } : {}) },
       body: JSON.stringify({
         // Scheduled work is intentionally pristine: no wake-up brief and no prior transcript.
         // The AgentDO also enforces the 2k context window from this attested trigger marker.
@@ -2042,7 +2059,7 @@ async function wakeAgentGoal(
         ...(params.runId ? { runId: params.runId } : {}),
         sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000 },
+        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000, worker_token_budget: workerTokenBudget },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
         model: wake.model,
         ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),

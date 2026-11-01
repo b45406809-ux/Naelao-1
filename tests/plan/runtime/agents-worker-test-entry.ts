@@ -1,17 +1,25 @@
 import { mintInternalToken } from "@naelao/http";
 import {
+  ConcurrencyDO,
   NaelaoAgentDO,
   wakeAgentGoal,
 } from "../../../workers/agents/src/index.js";
 import agentsWorker from "../../../workers/agents/src/index.js";
 import { sweepBlackboardWakes } from "../../../workers/agents/src/communications/blackboard-wake.js";
+import { writeAgentConfig } from "../../../workers/agents/src/script-engine/agent-config.js";
+import { DEFAULT_NAELAO_AGENT } from "../../../workers/agents/src/script-engine/profiles.js";
 
-export { NaelaoAgentDO };
+export { NaelaoAgentDO, ConcurrencyDO };
 
 const TEST_TENANT_ID = "tenant-blackboard-runtime-test";
 const TEST_SPACE_ID = "space-blackboard-runtime-test";
 const TEST_USER_ID = "owner-blackboard-runtime-test";
 const TEST_VIEWER_ID = "viewer-blackboard-runtime-test";
+
+async function sha256(value: string): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /** Test-only control routes wrap the production Agents Worker in the isolated test runtime. */
 export default {
@@ -21,6 +29,10 @@ export default {
     ctx: ExecutionContext
   ) {
     const url = new URL(request.url);
+    // Wrangler's readiness probe must not fall through the production router: this fixture's
+    // goal is to test the real runtime only after bootstrapping, while module cold-start can be
+    // expensive in the four-worker local topology.
+    if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
     if (url.pathname === "/__test/bootstrap" && request.method === "POST") {
       const db = env.PLATFORM_DB as D1Database;
       await db.batch([
@@ -111,6 +123,18 @@ export default {
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           })
         );
+      // The host wake identity is also the SpaceDO publication actor. Platform membership
+      // authorizes the wake, while the SpaceDO roster independently authorizes artifact
+      // publication. Provision both through their production routes in this fixture.
+      const spaceMemberResponse = await callSpaces(
+        `/spaces/${TEST_SPACE_ID}/members`,
+        "POST",
+        { space_id: TEST_SPACE_ID, user_id: TEST_USER_ID, role: "owner" }
+      );
+      if (!spaceMemberResponse.ok)
+        return new Response(spaceMemberResponse.body, {
+          status: spaceMemberResponse.status,
+        });
       const sourceProjectResponse = await callSpaces(
         `/spaces/${TEST_SPACE_ID}/projects`,
         "POST",
@@ -218,9 +242,22 @@ export default {
       const eventId = `${requestId}:pending`;
       if (mockModelRun) {
         // Test-only opt-in to the deterministic local model endpoint. Normal acceptance stays
-        // air-gapped and can never contact a model provider.
+        // air-gapped and can never contact a model provider. This fixture models an owner who
+        // explicitly opted the Project Assistant into autonomous execution for the test.
         await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
           .bind(JSON.stringify({ compliance: { airGappedOnly: false } }), TEST_SPACE_ID).run();
+        // This integrated path exercises a multi-turn leaf worker. Give the synthetic tenant an
+        // explicit paid-tier allowance so the host wake path must propagate the D1 entitlement,
+        // rather than relying on an oversized task request or a test-only budget override.
+        await db.prepare("UPDATE orgs SET plan_tier='growth' WHERE id=?").bind(TEST_TENANT_ID).run();
+        const policy = await callSpaces(
+          `/spaces/${TEST_SPACE_ID}/agents/naelao-agent/policy`,
+          "PATCH",
+          { approval_mode: "yolo", auto_approved_actions: [] }
+        );
+        if (!policy.ok) return new Response(policy.body, { status: policy.status });
+        if (!env.SCRIPTS_R2) return Response.json({ error: "test_agent_config_storage_unavailable" }, { status: 503 });
+        await writeAgentConfig(env.SCRIPTS_R2 as R2Bucket, TEST_SPACE_ID, "naelao-agent", DEFAULT_NAELAO_AGENT.config);
       }
       if (expireLease) {
         const now = Math.floor(Date.now() / 1000);
@@ -280,6 +317,38 @@ export default {
         )
         .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`)
         .first();
+      let workspaceArtifact: { exists: boolean; branch?: string; contentMatches?: boolean; sha256?: string; candidates?: string[]; workspaceKeys?: string[] } | undefined;
+      if (mockModelRun && wake?.status === "completed") {
+        const eventRow = await db.prepare("SELECT event_id FROM space_blackboard_wakes WHERE tenant_id=? AND space_id=? AND project_id=? AND event_id=?")
+          .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`).first<{ event_id: string }>();
+        if (eventRow?.event_id) {
+          const rootRunId = `blackboard-${await sha256(JSON.stringify([TEST_TENANT_ID, TEST_SPACE_ID, projectId, eventRow.event_id]))}`;
+          const branchDigest = await sha256(JSON.stringify([TEST_TENANT_ID, TEST_SPACE_ID, projectId, rootRunId]));
+          const branch = `task/${branchDigest.slice(0, 48)}`;
+          const scripts = env.SCRIPTS_R2 as R2Bucket | undefined;
+          const object = scripts ? await scripts.get(`spaces/${TEST_SPACE_ID}/projects/${projectId}/workspace/branches/${branch}/reports/blackboard-worker-smoke.txt`) : null;
+          const artifactText = object ? await object.text() : null;
+          const artifactHash = artifactText === null ? undefined : await sha256(artifactText);
+          const candidates: string[] = [];
+          const workspaceKeys: string[] = [];
+          if (scripts) {
+            let cursor: string | undefined;
+            do {
+              const page = await scripts.list({ prefix: `spaces/${TEST_SPACE_ID}/projects/${projectId}/workspace/`, ...(cursor ? { cursor } : {}), limit: 100 });
+              workspaceKeys.push(...page.objects.slice(0, 100).map(item => item.key));
+              candidates.push(...page.objects.filter(item => item.key.endsWith("/reports/blackboard-worker-smoke.txt")).map(item => item.key));
+              cursor = page.truncated ? page.cursor : undefined;
+            } while (cursor && workspaceKeys.length < 100);
+          }
+          workspaceArtifact = {
+            exists: object !== null,
+            branch,
+            ...(artifactText !== null ? { contentMatches: artifactText === "project bot leaf worker completed\n", sha256: artifactHash } : {}),
+            candidates,
+            workspaceKeys,
+          };
+        }
+      }
       if (revokeAuthority) {
         await db
           .prepare(
@@ -300,6 +369,8 @@ export default {
       if (mockModelRun) {
         await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
           .bind(JSON.stringify({ compliance: { airGappedOnly: true } }), TEST_SPACE_ID).run();
+        const modelGateway = env.MODEL_GATEWAY as Fetcher | undefined;
+        await modelGateway?.fetch(new Request("http://model/__test/configure", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leafWorkerMode: false }) }));
       }
       return Response.json({
         sourceProjectId: sourceProject.id,
@@ -309,6 +380,7 @@ export default {
         busyResponse,
         repeatSweep,
         wake,
+        workspaceArtifact,
         dispatchResponses,
         requestCounts,
         conflictingRequestStatus: conflictingRequestResponse.status,

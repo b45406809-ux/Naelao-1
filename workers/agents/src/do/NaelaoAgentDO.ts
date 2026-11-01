@@ -4528,7 +4528,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           } finally {
             abortSignal?.removeEventListener("abort", cancelChild);
           }
-          const body = await readBoundedResponseJson<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ tokens?: number }>; notes?: string[] }>(resp, 2 * 1024 * 1024).catch(() => ({} as { result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ tokens?: number }>; notes?: string[] }));
+          const body = await readBoundedResponseJson<{ error?: string; message?: string; error_code?: string; result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ phase?: string; name?: string; detail?: string; ok?: boolean; tokens?: number; duration_ms?: number }>; notes?: string[] }>(resp, 2 * 1024 * 1024).catch(() => ({} as { error?: string; message?: string; error_code?: string; result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ phase?: string; name?: string; detail?: string; ok?: boolean; tokens?: number; duration_ms?: number }>; notes?: string[] }));
           const tokensUsed = body.result?.tokens_used ?? body.trace?.reduce((total, step) => total + (Number.isSafeInteger(step.tokens) ? Number(step.tokens) : 0), 0) ?? 0;
           const ok = resp.ok && !!body.result?.ok;
           const awaitingPlanner = resp.ok && body.pending_worker_question !== undefined;
@@ -4546,8 +4546,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.ctx.storage.sql.exec(
             `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, error = ?, updated_at = ? WHERE id = ?`,
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", tokensUsed, ok ? JSON.stringify(output) : null,
-            boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: `HTTP ${resp.status}` }),
-            ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
+            boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: body.error ?? body.message ?? `HTTP ${resp.status}` }),
+            ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}`), Date.now(), subId
           );
           await recordWorkerWidgetEvent(ok ? "worker.completed" : awaitingPlanner || awaitingHuman ? "worker.waiting" : "worker.failed",
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", modelResolution.model);
@@ -4560,9 +4560,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ...(modelResolution.downgraded ? { effort_downgraded: true, effort_downgrade_reason: modelResolution.reason } : {}),
             ...(workerCapabilityReceipt ? { worker_capability_selection: workerCapabilityReceipt } : {}),
             modifiedFiles,
+            ...(!ok && resp.ok ? { failure_diagnostics: {
+              notes: (body.notes ?? []).slice(-8).map(note => note.slice(0, 500)),
+              trace: (body.trace ?? []).slice(-12).map(step => ({
+                ...(step.phase ? { phase: step.phase } : {}),
+                ...(step.name ? { name: step.name } : {}),
+                ...(step.detail ? { detail: step.detail.slice(0, 500) } : {}),
+                ...(typeof step.ok === "boolean" ? { ok: step.ok } : {}),
+                ...(Number.isSafeInteger(step.tokens) ? { tokens: step.tokens } : {}),
+                ...(Number.isSafeInteger(step.duration_ms) ? { duration_ms: step.duration_ms } : {}),
+              })),
+            } } : {}),
             ...(awaitingPlanner ? { status: "awaiting_planner_input", question: body.pending_worker_question } : {}),
             ...(awaitingHuman ? { status: "awaiting_human_input", pending_approval: body.pending_approval, pending_question: body.pending_question } : {}),
-            ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }),
+            ...(ok ? { output } : { error: body.result?.error ?? body.error ?? body.message ?? `HTTP ${resp.status}` }),
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

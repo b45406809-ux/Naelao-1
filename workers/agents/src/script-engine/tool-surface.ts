@@ -529,12 +529,17 @@ export class ScriptToolSurface {
     for (const group of groups) for (const operation of group.operations) {
       const domain = this.ops.get(operation)?.prebuilt.domain ?? "other";
       if (domain !== heading) { rows.push(`## ${domain}`); heading = domain; }
-      rows.push(`- \`${operation}\` - ${group.description.replace(/\s+/g, " ").trim()} - ${group.paramHints?.[operation] ?? "{}"}`);
+      // Full descriptions and parameter hints already appear in the structured
+      // `available_operations` field. Repeating them in the system-level catalog made the
+      // immutable prompt exceed the context window for delegated workers with several bundles.
+      // Keep this index to names; details remain available through the per-turn catalog and
+      // tools.describe.
+      rows.push(`- \`${operation}\``);
     }
     rows.push("## distilled skills");
     for (const name of await this.library.list()) {
       const metadata = await this.library.readMetadata(name);
-      if (metadata && this.isSkillVisible(metadata)) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim()} - ${JSON.stringify(metadata.parameters)}`);
+      if (metadata && this.isSkillVisible(metadata)) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim().slice(0, 180)}`);
     }
     const selectedBuiltinSkills = BUILTIN_PLATFORM_SKILLS.filter(skill => this.defaultSkills.has(skill.name) &&
       ((this.plannerScope && skill.role_target === "PLANNER_ORCHESTRATION") || (!this.plannerScope && skill.role_target === "WORKER_EXECUTION")));
@@ -547,16 +552,21 @@ export class ScriptToolSurface {
       rows.push("Use `naelao environment list` for scoped capability cards. The planner delegates execution and includes capability, account, filesystem model and same-environment requirements in the worker task. A machine-local card means that computer keeps its own files and applications; it is never the Naelao workspace mount.");
       if (!this.plannerScope) rows.push("Use `naelao environment execute --session-id <stable-session> --action-id <stable-step> --command <command>` for dependent native work. Reuse the session; group commands needing shell variables/process state into one command. On an external machine, set `--cwd` only to an owner-consented folder. Its independent filesystem is the default; never mount or sync the workspace there. Move a selected file only through `environment.artifact_import` or `environment.artifact_export` (16 MiB maximum, resumable 8 KiB chunks); export creates a new file and refuses to overwrite. Choose mode capability for an explicitly consented external resource such as CUDA. Choose fallback only as a last resort; the host permits it only when no compatible managed target is eligible and the owner explicitly granted fallback use. Never retry uncertain actions on another machine. Use `naelao environment status --session-id <id> --action-id <id>` to reconcile execution receipts and the returned `request_id` with `tunnel.status` for file-transfer receipts. Pending is not success. Managed sessions require explicit restoration before continuing in a new run; an installed runtime is not a permanent computer. Never copy account credentials.");
     }
-    rows.push("## planner coordination Bash commands");
-    rows.push("- `naelao goal plan --json '<JSON object with objective and tasks>'` - validate, persist and execute a dependency-aware worker DAG; host policy selects worker capabilities and models");
-    rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
-    rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
-    rows.push("- `naelao project agents delegate --agent-id <id> --task <text>` - delegate bounded work to a named project worker");
-    rows.push("- `naelao worker project_manager_worker <operation> --params <json>` - route an allowlisted project administration operation through the capability-isolated worker");
-    rows.push("- `skill list|search <query>|read <name>` - discover role-matched skills and read one on demand");
-    rows.push("- `tool help <operation>` - inspect an operation's exact parameters");
-    rows.push("## planner interaction");
-    rows.push("- `AskUser` - open a questionnaire with one to five related questions when required information is missing; the run resumes after all answers are submitted");
+    if (this.plannerScope) {
+      rows.push("## planner coordination Bash commands");
+      rows.push("- `naelao goal plan --json '<JSON object with objective and tasks>'` - validate, persist and execute a dependency-aware worker DAG; host policy selects worker capabilities and models");
+      rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
+      rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
+      rows.push("- `naelao project agents delegate --agent-id <id> --task <text>` - delegate bounded work to a named project worker");
+      rows.push("- `naelao worker project_manager_worker <operation> --params <json>` - route an allowlisted project administration operation through the capability-isolated worker");
+      rows.push("- `skill list|search <query>|read <name>` - discover role-matched skills and read one on demand");
+      rows.push("- `tool help <operation>` - inspect an operation's exact parameters");
+      rows.push("## planner interaction");
+      rows.push("- `AskUser` - open a questionnaire with one to five related questions when required information is missing; the run resumes after the person answers");
+    } else {
+      rows.push("## worker interaction");
+      rows.push("Use only the scoped operations listed in this turn's `available_operations`; use `tools.describe` for exact parameters. Planner coordination commands are unavailable to leaf workers.");
+    }
     const bucket = this.env.workspaceBucket ?? this.env.scriptsBucket;
     const prefix = `${machinePrefix(this.env)}bin/`;
     rows.push("## virtual CLI namespaces (avos chore / ext: / auto:)");

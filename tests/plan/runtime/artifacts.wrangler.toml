@@ -1,0 +1,28 @@
+name = "naelao-blackboard-artifacts-test"
+main = "./artifact-worker-test-entry.ts"
+compatibility_date = "2026-10-13"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "REPOSITORY_DO"
+class_name = "RepositoryDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RepositoryDO"]
+
+[[r2_buckets]]
+binding = "ARTIFACT_BUCKET"
+bucket_name = "naelao-blackboard-artifacts-test"
+
+[[r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-blackboard-repository-objects-test"
+
+[[r2_buckets]]
+binding = "WORKSPACE_R2"
+bucket_name = "naelao-blackboard-agent-scripts-test"
+
+[vars]
+PLATFORM_SECRET = "blackboard-integration-test-secret"
+ENVIRONMENT = "test"

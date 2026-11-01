@@ -5,6 +5,7 @@ import { composeUniversalPrompt } from "./prompt-assembly.js";
 import { isToolAllowedForRole, sanitizeToolsForRole } from "./agent-firewall.js";
 import { goalPlanner, validateGoalDag } from "./prebuilt/goal-planner.js";
 import { framePlannerFirstGoal, PLANNER_FIRST_PROTOCOL } from "./planner-first.js";
+import { approvalSubjectForAction } from "./loop.js";
 import { isPlannerOperationAllowed, UNIVERSAL_AGENT_BASELINE_PREBUILTS } from "./agent-topology.js";
 import { ScriptToolSurface } from "./tool-surface.js";
 import type { ScriptEngineEnv } from "./types.js";
@@ -142,6 +143,19 @@ describe("Batch 04 universal kernel", () => {
     await expect(tools.run("Bash", { command, doing: "Plan and delegate the report" })).resolves.toMatchObject({ ok: true });
     expect(executeGoalDag).toHaveBeenCalledWith("write a report", [expect.objectContaining({ id: "write", file_paths: ["report.txt"], budget_tokens: 128 })]);
     expect(tools.availableOperations()).not.toContain("engine.plan_and_delegate_goal");
+  });
+
+  it("gates the recognized planner CLI by its scoped host operation while preserving raw Bash gating", () => {
+    const plan = { objective: "write a report", tasks: [{ id: "write", title: "Write", subtask_spec: "Create report.txt", assigned_role: "DEV_OPERATOR", file_paths: [] }] };
+    const command = `naelao goal plan --json '${JSON.stringify(plan)}'`;
+    expect(approvalSubjectForAction("Bash", { command })).toEqual({
+      name: "engine.plan_and_delegate_goal",
+      params: plan,
+    });
+    expect(approvalSubjectForAction("Bash", { command: "rm -rf /tmp/work" })).toEqual({
+      name: "Bash",
+      params: { command: "rm -rf /tmp/work" },
+    });
   });
 
   it("derives task context affinity and discards planner-supplied worker model ids", async () => {

@@ -18,10 +18,12 @@ const repoRoot = path.resolve(
 let spacesWorker;
 let agentsWorker;
 let modelGatewayWorker;
+let artifactWorker;
 let persistPath;
 let spacesBaseUrl;
 let agentsBaseUrl;
 let modelGatewayBaseUrl;
+let artifactBaseUrl;
 let identity;
 let runtimeRestartCount = 0;
 const runStartedAt = new Date().toISOString();
@@ -35,6 +37,7 @@ const metrics = {
   worker_start_ms: 0,
   spaces_worker_start_ms: 0,
   model_gateway_start_ms: 0,
+  artifact_worker_start_ms: 0,
   agents_worker_start_ms: 0,
   requests: [],
   benchmarks: [],
@@ -70,7 +73,15 @@ function startWorker(configPath, port) {
       "--log-level",
       "error",
     ],
-    { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] }
+    {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        WRANGLER_WRITE_LOGS: "false",
+        WRANGLER_LOG_PATH: path.join(os.tmpdir(), "naelao-wrangler-logs"),
+      },
+    }
   );
   child.outputTail = "";
   for (const stream of [child.stdout, child.stderr]) {
@@ -90,14 +101,15 @@ async function waitForWorker(child, baseUrl) {
       throw new Error(`Wrangler worker exited early:\n${child.outputTail}`);
     }
     try {
-      await fetch(`${baseUrl}/__runtime_ready`, {
+      const response = await fetch(`${baseUrl}/__runtime_ready`, {
         signal: AbortSignal.timeout(1000),
       });
-      return;
+      if (response.ok) return;
+      lastError = new Error(`readiness endpoint returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 150));
     }
+    await new Promise((resolve) => setTimeout(resolve, 150));
   }
   throw new Error(
     `Wrangler worker did not become ready: ${String(lastError)}\n${child.outputTail}`
@@ -121,11 +133,7 @@ async function stopWorker(child) {
 
 async function startLocalWorkers() {
   const spacesPort = await availablePort();
-  const agentsPort = await availablePort();
-  const modelGatewayPort = await availablePort();
   spacesBaseUrl = `http://127.0.0.1:${spacesPort}`;
-  agentsBaseUrl = `http://127.0.0.1:${agentsPort}`;
-  modelGatewayBaseUrl = `http://127.0.0.1:${modelGatewayPort}`;
   const spacesStarted = performance.now();
   spacesWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/spaces.wrangler.toml"),
@@ -133,6 +141,11 @@ async function startLocalWorkers() {
   );
   await waitForWorker(spacesWorker, spacesBaseUrl);
   const spacesWorkerStartMs = Math.round(performance.now() - spacesStarted);
+  // Keep each selected port occupied before asking the OS for the next. Allocating four free
+  // ports up front and closing each probe socket can return the same port repeatedly, making
+  // Wrangler workers race to bind it and causing requests to reach the wrong test service.
+  const modelGatewayPort = await availablePort();
+  modelGatewayBaseUrl = `http://127.0.0.1:${modelGatewayPort}`;
   const modelGatewayStarted = performance.now();
   modelGatewayWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/model-gateway.wrangler.toml"),
@@ -140,6 +153,17 @@ async function startLocalWorkers() {
   );
   await waitForWorker(modelGatewayWorker, modelGatewayBaseUrl);
   const modelGatewayStartMs = Math.round(performance.now() - modelGatewayStarted);
+  const artifactPort = await availablePort();
+  artifactBaseUrl = `http://127.0.0.1:${artifactPort}`;
+  const artifactStarted = performance.now();
+  artifactWorker = startWorker(
+    path.join(repoRoot, "tests/plan/runtime/artifacts.wrangler.toml"),
+    artifactPort
+  );
+  await waitForWorker(artifactWorker, artifactBaseUrl);
+  const artifactWorkerStartMs = Math.round(performance.now() - artifactStarted);
+  const agentsPort = await availablePort();
+  agentsBaseUrl = `http://127.0.0.1:${agentsPort}`;
   const agentsStarted = performance.now();
   agentsWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/agents.wrangler.toml"),
@@ -150,8 +174,9 @@ async function startLocalWorkers() {
   return {
     spacesWorkerStartMs,
     modelGatewayStartMs,
+    artifactWorkerStartMs,
     agentsWorkerStartMs,
-    totalWorkerStartMs: spacesWorkerStartMs + modelGatewayStartMs + agentsWorkerStartMs,
+    totalWorkerStartMs: spacesWorkerStartMs + modelGatewayStartMs + artifactWorkerStartMs + agentsWorkerStartMs,
   };
 }
 
@@ -185,6 +210,7 @@ before(
     const workerStart = await startLocalWorkers();
     metrics.spaces_worker_start_ms = workerStart.spacesWorkerStartMs;
     metrics.model_gateway_start_ms = workerStart.modelGatewayStartMs;
+    metrics.artifact_worker_start_ms = workerStart.artifactWorkerStartMs;
     metrics.agents_worker_start_ms = workerStart.agentsWorkerStartMs;
     metrics.worker_start_ms = workerStart.totalWorkerStartMs;
     const bootstrapStarted = performance.now();
@@ -206,7 +232,9 @@ after(async () => {
   await stopWorker(agentsWorker);
   await stopWorker(spacesWorker);
   await stopWorker(modelGatewayWorker);
-  if (persistPath) await rm(persistPath, { recursive: true, force: true });
+  await stopWorker(artifactWorker);
+  if (persistPath && process.env.NAELAO_RUNTIME_KEEP_PERSIST !== "1") await rm(persistPath, { recursive: true, force: true });
+  else if (persistPath) console.log(`NAELAO_RUNTIME_PERSIST_PATH ${persistPath}`);
   metrics.finished_at = new Date().toISOString();
   metrics.total_duration_ms = Math.round(performance.now() - runStarted);
   const serializedMetrics = `${JSON.stringify(metrics, null, 2)}\n`;
@@ -228,11 +256,12 @@ function headers(userId = identity.userId, role = "owner") {
   };
 }
 
-async function jsonRequest(baseUrl, pathname, method, body) {
+async function jsonRequest(baseUrl, pathname, method, body, timeoutMs = 120_000) {
   const started = performance.now();
   const response = await fetch(`${baseUrl}${pathname}`, {
     method,
     headers: headers(),
+    signal: AbortSignal.timeout(timeoutMs),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
@@ -370,6 +399,7 @@ test("separate Spaces and Agents Workers coordinate a provider-free blackboard w
   await stopWorker(agentsWorker);
   await stopWorker(spacesWorker);
   await stopWorker(modelGatewayWorker);
+  await stopWorker(artifactWorker);
   const restartStarted = performance.now();
   const restart = await startLocalWorkers();
   runtimeRestartCount++;
@@ -407,7 +437,7 @@ test("a Project Bot wake completes through the local model adapter without exter
   const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
     projectId: project.id,
     mockModelRun: true,
-  });
+  }, 90_000);
   const elapsedMs = Math.round(performance.now() - started);
   const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
   assert.deepEqual(result.sweep, { checked: 1 });
@@ -426,6 +456,54 @@ test("a Project Bot wake completes through the local model adapter without exter
     model_requests: after.totalRequests - before.totalRequests,
     model_ids: Object.keys(after.modelCounts),
     external_provider_requests: 0,
+  };
+});
+
+test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped workspace artifact", async () => {
+  const project = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Project Bot Leaf Worker Journey" }
+  );
+  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ leafWorkerMode: true }),
+  });
+  assert.equal(configure.status, 200, await configure.clone().text());
+  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const started = performance.now();
+  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: project.id,
+    mockModelRun: true,
+  });
+  const elapsedMs = Math.round(performance.now() - started);
+  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  assert.equal(result.wake.status, "completed", JSON.stringify({ wake: result.wake, dispatchResponses: result.dispatchResponses, gateway: after }));
+  assert.equal(result.wake.attempts, 1);
+  assert.equal(result.dispatchResponses[0]?.body?.result?.ok, true, JSON.stringify(result.dispatchResponses[0]?.body));
+  assert.ok(after.totalRequests - before.totalRequests >= 3, `planner and leaf worker should each reason through the local adapter: ${JSON.stringify({ before, after })}`);
+  assert.equal(result.workspaceArtifact?.exists, true, JSON.stringify({ workspaceArtifact: result.workspaceArtifact, dispatchResponses: result.dispatchResponses, modelRequests: after.totalRequests - before.totalRequests }));
+  assert.equal(result.workspaceArtifact?.contentMatches, true, JSON.stringify(result.workspaceArtifact));
+  assert.match(result.workspaceArtifact?.sha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.match(result.workspaceArtifact?.branch ?? "", /^task\/[a-f0-9]{48}$/);
+  const tasks = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/tasks?project_id=${encodeURIComponent(project.id)}`,
+    "GET"
+  );
+  assert.ok(tasks.data?.some((task) => task.project_id === project.id && task.status === "completed"));
+  metrics.project_bot_leaf_worker_run = {
+    evidence_class: "integrated-local-synthetic-model",
+    outcome: "completed",
+    duration_ms: elapsedMs,
+    inference_requests: after.totalRequests - before.totalRequests,
+    task_status: "completed",
+    artifact_path: "reports/blackboard-worker-smoke.txt",
+    artifact_branch: result.workspaceArtifact.branch,
+    external_provider_requests: 0,
+    host_evidence_verification: "not_enabled_in_this_fixture",
   };
 });
 

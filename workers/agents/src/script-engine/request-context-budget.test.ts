@@ -15,4 +15,18 @@ describe("complete reasoner request budget", () => {
     expect(() => boundReasonerRequestContext("system".repeat(10_000), JSON.stringify({ goal: "g" }), [], 2_048, 1_500))
       .toThrow("reasoner_fixed_prompt_exceeds_context_budget");
   });
+
+  it("terminates while trimming an oversized two-item operations catalog", () => {
+    const payload = JSON.stringify({
+      goal: "keep this",
+      available_operations: [
+        { script: "first", description: "a".repeat(8_000) },
+        { script: "second", description: "b".repeat(8_000) },
+      ],
+    });
+
+    const result = boundReasonerRequestContext("system", payload, [], 2_048, 1_500);
+    expect(result.trimmedFields).toContain("available_operations");
+    expect(JSON.parse(result.user).available_operations).toEqual([]);
+  });
 });

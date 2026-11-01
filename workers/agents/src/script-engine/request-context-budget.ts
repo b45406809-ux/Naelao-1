@@ -27,7 +27,13 @@ export function boundReasonerRequestContext(system: string, user: string, toolSc
     } else if (Array.isArray(value)) {
       let next = value;
       while (size() > limitChars && next.length) {
-        next = next.slice(-Math.floor(next.length / 2));
+        // `slice(-0)` is `slice(0)`, so the previous halving loop stopped making
+        // progress at a one-item remainder (commonly reached from a two-group
+        // operations catalog). A long Project Bot prompt could then spin the DO
+        // indefinitely before making any provider request. Explicitly drop the
+        // final item when halving reaches zero.
+        const retained = Math.floor(next.length / 2);
+        next = retained === 0 ? [] : next.slice(-retained);
         payload[key] = next;
       }
     } else if (value && typeof value === "object") {
@@ -44,6 +50,10 @@ export function boundReasonerRequestContext(system: string, user: string, toolSc
 
   const boundedUser = JSON.stringify(payload);
   const inputChars = system.length + boundedUser.length + JSON.stringify(toolSchema).length;
-  if (inputChars > limitChars) throw new Error("reasoner_fixed_prompt_exceeds_context_budget");
+  if (inputChars > limitChars) {
+    throw new Error(
+      `reasoner_fixed_prompt_exceeds_context_budget:input_chars=${inputChars}:limit_chars=${limitChars}:system_chars=${system.length}:user_chars=${boundedUser.length}:schema_chars=${JSON.stringify(toolSchema).length}`
+    );
+  }
   return { system, user: boundedUser, inputChars, trimmedFields };
 }

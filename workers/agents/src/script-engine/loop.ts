@@ -48,6 +48,30 @@ import { evaluateLoopAfterTool } from "./loop-evaluator.js";
 import { beginConsultation, restoreDeliberationState } from "./deliberation-state.js";
 
 /**
+ * A recognized virtual CLI command is not arbitrary shell execution. Bind its HITL decision to
+ * the host operation it dispatches, so policy can independently grant/gate that capability while
+ * raw Bash remains gated. Keep this allowlist intentionally narrow: broad CLI normalization could
+ * accidentally turn a shell gate into an authorization bypass.
+ */
+export function approvalSubjectForAction(
+  name: string,
+  params: Record<string, unknown>,
+): { name: string; params: Record<string, unknown> } {
+  if (name !== "Bash") return { name, params };
+  const command = params.commands ?? params.command ?? params.cmd;
+  if (typeof command !== "string") return { name, params };
+  try {
+    const dispatch = interceptPlatformCli(command);
+    if (dispatch?.operation === "engine.plan_and_delegate_goal") {
+      return { name: dispatch.operation, params: dispatch.params };
+    }
+  } catch {
+    // Malformed/unknown commands retain the ordinary Bash policy and fail through the CLI parser.
+  }
+  return { name, params };
+}
+
+/**
  * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
  * original run's plan.* calls are in resumeSteps (shown to the model as done work) but were not
  * re-executed, so env.plan would otherwise be empty and the plan gate would let a half-finished
@@ -872,10 +896,11 @@ export async function runScriptLoop(
     case "L1": {
       const params = paramsFor(top!, opts.goal);
       // HITL gate before execution
-      const gate = await gateCurrentPolicy(top!.name, params);
-      if (gate.verdict === "pending") return suspend(level, gate, top!.name, params, opts.resumeSteps ?? []);
+      const subject = approvalSubjectForAction(top!.name, params);
+      const gate = await gateCurrentPolicy(subject.name, subject.params);
+      if (gate.verdict === "pending") return suspend(level, gate, subject.name, subject.params, opts.resumeSteps ?? []);
       if (gate.verdict === "denied") {
-        return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
+        return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(subject.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
       await reportProgress(opts, { phase: "run", name: top!.name, detail: `Running ${top!.name}`, params });
       const result = await runOnce(top!.name, params);
@@ -922,10 +947,11 @@ export async function runScriptLoop(
         if (await tenantSuspended()) return tenantSuspensionResult();
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
-        const gate = await gateCurrentPolicy(decision.name, params);
-        if (gate.verdict === "pending") return suspend(level, gate, decision.name, params, opts.resumeSteps ?? []);
+        const subject = approvalSubjectForAction(decision.name, params);
+        const gate = await gateCurrentPolicy(subject.name, subject.params);
+        if (gate.verdict === "pending") return suspend(level, gate, subject.name, subject.params, opts.resumeSteps ?? []);
         if (gate.verdict === "denied") {
-          return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
+          return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(subject.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
         await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
         const result = await runOnce(decision.name, params);
@@ -1375,7 +1401,8 @@ export async function runScriptLoop(
           }
 
           // HITL gate before execution
-          const gate = await gateCurrentPolicy(decision.name, decision.params);
+          const subject = approvalSubjectForAction(decision.name, decision.params);
+          const gate = await gateCurrentPolicy(subject.name, subject.params);
           if (gate.verdict === "pending") {
             // Park it and CARRY ON. Blocking the whole run here is what made an agent useless the
             // moment it needed permission for one thing: an assistant with five jobs to do would
@@ -1384,8 +1411,8 @@ export async function runScriptLoop(
             // work on — and the parked action resumes on its own once someone answers.
             deferred.push({
               approval_id: gate.approvalId,
-              action_name: decision.name,
-              params: decision.params,
+              action_name: subject.name,
+              params: subject.params,
               ...(gate.expiresAt ? { expires_at: gate.expiresAt } : {}),
               steps_completed: [...priorSteps],
             });
@@ -1404,7 +1431,7 @@ export async function runScriptLoop(
             continue;
           }
           if (gate.verdict === "denied") {
-            return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
+            return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(subject.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
           await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}`, params: decision.params });
           const result = await runOnce(decision.name, decision.params);

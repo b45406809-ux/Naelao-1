@@ -25,6 +25,13 @@ describe("blackboard project wakes",()=>{
     access.mockResolvedValueOnce(true); const approval=fixture();
     await sweepBlackboardWakes(approval.env,async()=>Response.json({result:{ok:true},deferred_approvals:[{id:"approval-1"}]}),100);
     expect(approval.updates[0]![0]).toBe("held");
+
+    access.mockResolvedValueOnce(true); const toolFailure=fixture();
+    await sweepBlackboardWakes(toolFailure.env,async()=>Response.json({
+      result:{ok:true,text:"I could not complete the requested operation."},
+      steps_completed:[{name:"engine.plan_and_delegate_goal",ok:false,error:"task status publication failed"}],
+    }),100);
+    expect(toolFailure.updates[0]![0]).toBe("held");
   });
   it("holds on revoked authority and retries a busy assistant",async()=>{
     const denied=fixture(); access.mockResolvedValueOnce(false); const noWake=vi.fn();

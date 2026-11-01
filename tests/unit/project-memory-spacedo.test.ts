@@ -43,6 +43,17 @@ describe("Project-scoped facts (Layer 3)", () => {
     expect(unrelated.json.data).toHaveLength(0);
   });
 
+  it("bounds and deduplicates long recall queries below SQLite's variable limit", async () => {
+    const doInstance = makeSpaceDO();
+    await call(doInstance, "/projects/proj-1/memory/facts", "POST", { entity: "refund_policy", relation: "is", attribute: "30 days" });
+    const repeated = Array.from({ length: 420 }, (_, index) => `token${index % 140}`).join(" ");
+    const query = new URLSearchParams({ q: repeated, limit: "50" });
+    const recalled = await call(doInstance, `/projects/proj-1/memory/facts?${query}`, "GET");
+
+    expect(recalled.status).toBe(200);
+    expect(recalled.json.data).toEqual([]);
+  });
+
   it("re-remembering the same (entity, relation) updates the attribute in place, not a duplicate", async () => {
     const doInstance = makeSpaceDO();
     await call(doInstance, "/projects/proj-1/memory/facts", "POST", { entity: "refund_policy", relation: "is", attribute: "30 days" });

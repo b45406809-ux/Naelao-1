@@ -3919,7 +3919,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       const taskLeaseMatch = url.pathname.match(/^\/tasks\/([^/]+)\/lease$/);
       if (method === "POST" && taskLeaseMatch?.[1]) {
-        return this.claimTaskLease(taskLeaseMatch[1], request);
+        return this.claimTaskLease(decodeURIComponent(taskLeaseMatch[1]), request);
       }
       const documentNodeLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/document-nodes\/([^/]+)\/lease$/);
       if (method === "POST" && documentNodeLeaseMatch?.[1] && documentNodeLeaseMatch[2]) {
@@ -3966,10 +3966,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const taskIdMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
       // PATCH /tasks/:id — status/title/dependencies/assigned_agent, any subset.
       if (method === "PATCH" && taskIdMatch?.[1]) {
-        return this.updateTask(taskIdMatch[1], request);
+        return this.updateTask(decodeURIComponent(taskIdMatch[1]), request);
       }
       if (method === "DELETE" && taskIdMatch?.[1]) {
-        return this.deleteTask(taskIdMatch[1]);
+        return this.deleteTask(decodeURIComponent(taskIdMatch[1]));
       }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
@@ -7499,13 +7499,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     projectId: string,
     params: URLSearchParams
   ): Response {
-    const q = params.get("q") ?? "";
+    // This is a retrieval hint, not a SQL expression. The agent may send a long
+    // conversation summary here; bound and deduplicate it before expanding each token
+    // into three LIKE bindings. Otherwise SQLite's variable limit turns ordinary long
+    // context into a 500 for every project-memory recall in the run.
+    const q = (params.get("q") ?? "").slice(0, 2048);
     const limit = parseBoundedInteger(params.get("limit"), 5, 1, 50);
     const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
-    const tokens = q
+    const tokens = [...new Set(q
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter((token) => token.length > 2);
+      .filter((token) => token.length > 2))]
+      // Cloudflare's SQLite DO build has a much lower variable ceiling than desktop
+      // SQLite. 24 tokens means at most 75 bindings (three LIKEs plus project, role,
+      // and result limit), safely below its current 100-variable ceiling.
+      .slice(0, 24);
     if (tokens.length === 0) return Response.json({ data: [] });
     const tokenClauses = tokens
       .map(() => `(entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')`)

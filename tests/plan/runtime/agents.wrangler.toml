@@ -7,9 +7,17 @@ compatibility_flags = ["nodejs_compat"]
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
+[[durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["NaelaoAgentDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ConcurrencyDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -24,6 +32,10 @@ service = "naelao-blackboard-spaces-test"
 [[services]]
 binding = "MODEL_GATEWAY"
 service = "naelao-blackboard-model-test"
+
+[[services]]
+binding = "ARTIFACT_WORKER"
+service = "naelao-blackboard-artifacts-test"
 
 [[r2_buckets]]
 binding = "SCRIPTS_R2"
