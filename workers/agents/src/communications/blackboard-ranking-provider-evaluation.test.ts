@@ -354,6 +354,7 @@ async function evaluateAvailableProviderScores(
       total: HOLDOUT_RANKING_QUERIES.length,
       baseline: holdout.baseline,
       candidate: holdout.candidate,
+      rankingDiagnostics: holdout.rankingDiagnostics,
       allVisibleBaseline: holdoutExpanded.baseline,
       allVisibleCandidate: holdoutExpanded.candidate,
     };
@@ -499,6 +500,9 @@ describe("blackboard provider ranking evaluation harness", () => {
     expect(result.completedHoldoutQueries).toBe(2);
     expect(result.completedHardQueries).toBe(0);
     expect(holdout.completed).toBe(2);
+    expect(
+      holdout.rankingDiagnostics.queriesWithChangedTopFive
+    ).toBeGreaterThan(0);
     expect(holdout.candidate.meanReciprocalRank).toBeLessThan(1);
     expect(holdout.candidate.meanRecallAtK).toBeLessThan(1);
     expect(holdout.allVisibleCandidate.meanReciprocalRank).toBe(1);
@@ -894,6 +898,7 @@ describe("blackboard provider ranking evaluation harness", () => {
               allVisibleBaseline: holdoutExpandedResult.baseline,
               allVisibleModelCandidate: holdoutExpandedResult.candidate,
               allVisiblePairedDelta: holdoutExpandedResult.pairedDelta,
+              rankingDiagnostics: holdoutResult.rankingDiagnostics,
               queryCount: HOLDOUT_RANKING_QUERIES.length,
               sharedCardCatalog: blackboardRankingCards.length,
               labelsIndependentlyAdjudicated: false,
