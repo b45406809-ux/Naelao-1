@@ -199,4 +199,65 @@ describe("blackboard event to Project Bot dispatch integration", () => {
     expect(agentFetch).not.toHaveBeenCalled();
     database.close();
   });
+
+  it("allows only one concurrent sweep to claim and launch an event", async () => {
+    const { database, platformDb } = makeDatabase();
+    let notifyStarted!: () => void;
+    const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+    let releaseWake!: () => void;
+    const blocked = new Promise<void>(resolve => { releaseWake = resolve; });
+    let dispatchCalls = 0;
+    const wake = vi.fn(async () => {
+      dispatchCalls++;
+      if (dispatchCalls === 1) {
+        notifyStarted();
+        await blocked;
+      }
+      return Response.json({ result: { ok: true } });
+    });
+    const env = {
+      PLATFORM_DB: platformDb,
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async () => Response.json({ effective_role: "owner" }) },
+    } as unknown as AgentsEnv;
+
+    const first = sweepBlackboardWakes(env, wake, 300);
+    const second = sweepBlackboardWakes(env, wake, 300);
+    await started;
+    // The losing sweep must finish while the winning dispatch remains blocked.
+    await Promise.race([first, second]);
+    const callsBeforeRelease = dispatchCalls;
+    releaseWake();
+    await Promise.all([first, second]);
+
+    expect(callsBeforeRelease).toBe(1);
+    const row = platformDb.prepare(
+      "SELECT status, attempts FROM space_blackboard_wakes WHERE project_id=?"
+    ).bind("project-1");
+    await expect(row.first()).resolves.toEqual({ status: "completed", attempts: 1 });
+    database.close();
+  });
+
+  it("holds an expired running lease for review instead of redispatching an uncertain wake", async () => {
+    const { database, platformDb } = makeDatabase();
+    database.prepare(`INSERT INTO space_blackboard_wakes
+      (tenant_id,space_id,project_id,event_id,status,next_at,updated_at,attempts,lease_until)
+      VALUES(?,?,?,?,?,?,?,?,?)`)
+      .run("tenant-1", "space-1", "project-1", "request:r1:pending", "running", 100, 200, 1, 299);
+    const wake = vi.fn(async () => Response.json({ result: { ok: true } }));
+    const env = {
+      PLATFORM_DB: platformDb,
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async () => Response.json({ effective_role: "owner" }) },
+    } as unknown as AgentsEnv;
+
+    await sweepBlackboardWakes(env, wake, 300);
+
+    expect(wake).not.toHaveBeenCalled();
+    const row = platformDb.prepare(
+      "SELECT status, attempts, lease_until FROM space_blackboard_wakes WHERE project_id=?"
+    ).bind("project-1");
+    await expect(row.first()).resolves.toEqual({ status: "held", attempts: 1, lease_until: null });
+    database.close();
+  });
 });
