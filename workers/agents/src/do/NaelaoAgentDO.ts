@@ -4519,7 +4519,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             depth, planner, maxTokens: budgetTokens, maxSteps, ...(modelRequirements ? {modelRequirements}:{}), model: modelResolution.model,
             ...(typeof t["runtime_capability"] === "string" ? { runtimeCapability: t["runtime_capability"] }
               : typeof savedConfiguration?.runtimeCapability === "string" ? { runtimeCapability: savedConfiguration.runtimeCapability } : {}),
-            role: typeof t["role"] === "string" ? t["role"] : "worker", callerRole: runtimeEnv.callerRole ?? runtimeEnv.effectiveRole ?? "viewer",
+            role: typeof t["role"] === "string" ? t["role"] : "worker",
+            // Preserve the authenticated principal exactly. A host/system wake intentionally has
+            // no callerRole so the owner's standing assistant policy applies; synthesizing
+            // "viewer" here turns yolo into an unavailable HITL approval for background workers.
+            ...(runtimeEnv.callerRole ? { callerRole: runtimeEnv.callerRole } : {}),
             maxTier: runtimeEnv.maxTier ?? 6, localOnly: runtimeEnv.airGappedOnly === true,
             ...(workerCapabilities ? { workerCapabilities } : {}),
             ...(workerCapabilities?.enabledPrebuilts.includes("knowledge-base") ? { knowledgeScopes: ["space"] as Array<"space"> } : {}),
@@ -4554,7 +4558,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           try {
             resp = await stub.fetch(new Request("http://agent-do/script/run", {
               method: "POST",
-              headers: { "content-type": "application/json", "x-naelao-role": contract.callerRole },
+              headers: { "content-type": "application/json", ...(contract.callerRole ? { "x-naelao-role": contract.callerRole } : {}) },
               body: JSON.stringify({
               goal,
               spaceId,
@@ -5837,7 +5841,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         depth: context["delegation_depth"] as 2 | 3, planner: context["delegation_planner"] as boolean,
         maxTokens: context["max_tokens"] as number, maxSteps: context["max_steps"] as number,
         ...(typeof context["runtime_capability"] === "string" ? { runtimeCapability: context["runtime_capability"] } : {}),
-        model: requestedModel, role: body.functionalRole ?? "DEV_OPERATOR", callerRole: callerRole ?? "",
+        model: requestedModel, role: body.functionalRole ?? "DEV_OPERATOR", ...(callerRole ? { callerRole } : {}),
         maxTier: context["delegation_max_tier"] as number, localOnly: body.airGappedOnly === true,
         ...(context["worker_model_requirements"] !== undefined ? {modelRequirements:context["worker_model_requirements"] as NonNullable<DelegationContract["modelRequirements"]>}:{}),
         ...(context["worker_capabilities"] && typeof context["worker_capabilities"] === "object"

@@ -28,6 +28,13 @@ describe("host-signed worker identity", () => {
     await expect(issueDelegationContract({ ...contract, workerCapabilities: { enabledPrebuilts: ["../escape"], selectedSkills: [] } }, "test-host-secret")).rejects.toThrow("delegation_worker_capabilities_invalid");
     await expect(issueDelegationContract({ ...contract, runtimeCapability: "../unapproved" }, "test-host-secret")).rejects.toThrow("delegation_budget_or_depth_invalid");
   });
+  it("preserves an absent system-wake caller role instead of inventing viewer privileges", async () => {
+    const systemWake = { ...contract, callerRole: undefined };
+    const token = await issueDelegationContract(systemWake, "test-host-secret");
+    await expect(verifyDelegationContract(systemWake, token, "test-host-secret")).resolves.toBeUndefined();
+    await expect(verifyDelegationContract({ ...systemWake, callerRole: "viewer" }, token, "test-host-secret")).rejects.toThrow();
+    await expect(verifyDelegationContract({ ...systemWake, callerRole: "owner" }, token, "test-host-secret")).rejects.toThrow();
+  });
 });
 
 

@@ -100,6 +100,71 @@ export default {
       });
     }
 
+    if (url.pathname === "/__test/space-assistant-goal" && request.method === "POST") {
+      const db = env.PLATFORM_DB as D1Database;
+      const spacesService = env.SPACES_WORKER as Fetcher;
+      const internalHeaders = {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": TEST_TENANT_ID,
+        "x-naelao-user-id": TEST_USER_ID,
+        "x-naelao-role": "product_end_user",
+        "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+      };
+      const callSpaces = async (path: string, method: string, body?: unknown) => spacesService.fetch(new Request(`http://spaces${path}`, {
+        method, headers: internalHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }));
+      const member = await callSpaces(`/spaces/${TEST_SPACE_ID}/members`, "POST", { space_id: TEST_SPACE_ID, user_id: TEST_USER_ID, role: "owner" });
+      if (!member.ok) return new Response(member.body, { status: member.status });
+      await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
+        .bind(JSON.stringify({ compliance: { airGappedOnly: false } }), TEST_SPACE_ID).run();
+      await db.prepare("UPDATE orgs SET plan_tier='growth' WHERE id=?").bind(TEST_TENANT_ID).run();
+      const policy = await callSpaces(`/spaces/${TEST_SPACE_ID}/agents/naelao-agent/policy`, "PATCH", { approval_mode: "yolo", auto_approved_actions: [] });
+      if (!policy.ok) return new Response(policy.body, { status: policy.status });
+      const assistantPolicy = await callSpaces(`/spaces/${TEST_SPACE_ID}/assistant-policy`, "PATCH", { approval_mode: "yolo", auto_approved_actions: [] });
+      if (!assistantPolicy.ok) return new Response(assistantPolicy.body, { status: assistantPolicy.status });
+      if (!env.SCRIPTS_R2) return Response.json({ error: "test_agent_config_storage_unavailable" }, { status: 503 });
+      await writeAgentConfig(env.SCRIPTS_R2 as R2Bucket, TEST_SPACE_ID, "naelao-agent", DEFAULT_NAELAO_AGENT.config);
+      const modelGateway = env.MODEL_GATEWAY as Fetcher | undefined;
+      if (!modelGateway) return Response.json({ error: "test_model_gateway_unavailable" }, { status: 503 });
+      const configure = await modelGateway.fetch(new Request("http://model/__test/configure", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ leafWorkerMode: true, dependentTaskMode: false, spaceAssistantMode: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
+      }));
+      if (!configure.ok) return Response.json({ error: "test_model_gateway_unavailable" }, { status: 503 });
+
+      const runId = `space-assistant-runtime:${crypto.randomUUID()}`;
+      const response = await wakeAgentGoal(env as never, {
+        tenantId: TEST_TENANT_ID,
+        spaceId: TEST_SPACE_ID,
+        userId: TEST_USER_ID,
+        runId,
+        goal: "Create and verify the bounded Space Assistant runtime artifact using its assigned worker. Do not use external services.",
+      });
+      const dispatch = await response.clone().json().catch(() => null);
+      const activity = await (env.NAELAO_AGENT_DO as DurableObjectNamespace).get((env.NAELAO_AGENT_DO as DurableObjectNamespace).idFromName(
+        await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET))
+      )).fetch(new Request(`http://agent-do/internal/goal-activity?run_id=${encodeURIComponent(runId)}&space_id=${encodeURIComponent(TEST_SPACE_ID)}`, {
+        headers: {
+          "x-naelao-tenant-id": TEST_TENANT_ID,
+          "x-naelao-user-id": TEST_USER_ID,
+          "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+        },
+      }));
+      const scripts = env.SCRIPTS_R2 as R2Bucket;
+      const artifact = await scripts.get(`spaces/${TEST_SPACE_ID}/workspace/reports/blackboard-worker-smoke.txt`);
+      const artifactText = artifact ? await artifact.text() : null;
+      const gatewayMetrics = await modelGateway.fetch(new Request("http://model/__test/metrics"));
+      return Response.json({
+        status: response.status,
+        dispatch,
+        runId,
+        goalActivityStatus: activity.status,
+        goalActivity: activity.ok ? await activity.json() : undefined,
+        artifact: artifactText,
+        gateway: await gatewayMetrics.json(),
+      });
+    }
+
     if (url.pathname === "/__test/wake" && request.method === "POST") {
       const {
         projectId,

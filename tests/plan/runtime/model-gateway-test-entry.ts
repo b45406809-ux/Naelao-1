@@ -3,12 +3,15 @@ import { verifyInternalToken } from "@naelao/http";
 let totalRequests = 0;
 let leafWorkerMode = false;
 let dependentTaskMode = false;
+let spaceAssistantMode = false;
 let leafWorkerRequests = 0;
 let decisionCalls = 0;
 let decisionOutcome: "passed" | "uncertain" = "passed";
 let decisionGeneration = 0;
 const billingReservations = new Map<string, { tenantId: string; status: "reserved" | "settled" | "uncertain"; runId: string; maxCredits: number }>();
 const billingEvents: Array<{ kind: "reserve" | "settle"; outcome?: string; credits?: number }> = [];
+const llmTokenReservations = new Map<string, { tenantId: string; spaceId: string; runId: string; estimatedTokens: number; status: "held" | "settled" | "released" }>();
+const llmTokenSettlements = new Map<string, { actualTokens: number; modelId?: string }>();
 const decisionTimeline: Array<{ kind: "model" | "decision" | "billing_reserve" | "billing_settle"; ordinal?: number }> = [];
 const modelCounts = new Map<string, number>();
 const requestMetrics: Array<{ model: string; message_count: number; tool_names: string[]; content_chars: number }> = [];
@@ -19,9 +22,10 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
     if (url.pathname === "/__test/configure" && request.method === "POST") {
-      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; decisionOutcome?: unknown; resetDecisionTelemetry?: unknown } | null;
+      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; spaceAssistantMode?: unknown; decisionOutcome?: unknown; resetDecisionTelemetry?: unknown } | null;
       leafWorkerMode = body?.leafWorkerMode === true;
       dependentTaskMode = leafWorkerMode && body?.dependentTaskMode === true;
+      spaceAssistantMode = leafWorkerMode && body?.spaceAssistantMode === true;
       leafWorkerRequests = 0;
       if (body?.decisionOutcome === "passed" || body?.decisionOutcome === "uncertain") decisionOutcome = body.decisionOutcome;
       if (body?.resetDecisionTelemetry === true) {
@@ -30,11 +34,54 @@ export default {
         billingReservations.clear();
         billingEvents.length = 0;
         decisionTimeline.length = 0;
+        llmTokenReservations.clear();
+        llmTokenSettlements.clear();
       }
       return Response.json({ ok: true });
     }
     if (url.pathname === "/__test/metrics" && request.method === "GET") {
-      return Response.json({ totalRequests, modelCounts: Object.fromEntries(modelCounts), requests: requestMetrics.slice(-20), decisions: { calls: decisionCalls, billingEvents: billingEvents.slice(), timeline: decisionTimeline.slice() } });
+      return Response.json({ totalRequests, modelCounts: Object.fromEntries(modelCounts), requests: requestMetrics.slice(-20), decisions: { calls: decisionCalls, billingEvents: billingEvents.slice(), timeline: decisionTimeline.slice() }, llmUsage: {
+        reservations: [...llmTokenReservations.values()].map(({ tenantId: _tenantId, ...row }) => row),
+        settlements: [...llmTokenSettlements.entries()].map(([runId, settlement]) => ({ runId, ...settlement })),
+      } });
+    }
+    if (url.pathname.startsWith("/internal/usage/llm-tokens/")) {
+      const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+      if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, "blackboard-integration-test-secret")) return Response.json({ error_code: "forbidden" }, { status: 403 });
+      if (url.pathname === "/internal/usage/llm-tokens/check" && request.method === "GET") {
+        const used = [...llmTokenSettlements.entries()].filter(([runId]) => [...llmTokenReservations.values()].some(row => row.tenantId === tenantId && row.runId === runId))
+          .reduce((total, [, row]) => total + row.actualTokens, 0);
+        return Response.json({ allowed: used < 1_000_000, current: used, limit: 1_000_000, plan_tier: "growth" });
+      }
+      if (url.pathname === "/internal/usage/llm-tokens/reservations/reserve" && request.method === "POST") {
+        const body = await request.json().catch(() => null) as { reservation_id?: unknown; run_id?: unknown; space_id?: unknown; estimated_tokens?: unknown } | null;
+        if (typeof body?.reservation_id !== "string" || typeof body.run_id !== "string" || typeof body.space_id !== "string"
+          || !Number.isSafeInteger(body.estimated_tokens) || (body.estimated_tokens as number) <= 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        const existing = llmTokenReservations.get(body.reservation_id);
+        if (existing) return existing.tenantId === tenantId && existing.runId === body.run_id && existing.estimatedTokens === body.estimated_tokens
+          ? Response.json({ reserved: true, deduplicated: true, reservation_id: body.reservation_id })
+          : Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
+        llmTokenReservations.set(body.reservation_id, { tenantId, spaceId: body.space_id, runId: body.run_id, estimatedTokens: body.estimated_tokens as number, status: "held" });
+        return Response.json({ reserved: true, reservation_id: body.reservation_id }, { status: 201 });
+      }
+      if (url.pathname === "/internal/usage/llm-tokens/reservations/settle" && request.method === "POST") {
+        const body = await request.json().catch(() => null) as { run_id?: unknown; actual_tokens?: unknown; model_id?: unknown } | null;
+        if (typeof body?.run_id !== "string" || !Number.isSafeInteger(body.actual_tokens) || (body.actual_tokens as number) < 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        const held = [...llmTokenReservations.values()].some(row => row.tenantId === tenantId && row.runId === body.run_id && row.status === "held");
+        const existing = llmTokenSettlements.get(body.run_id);
+        if (existing) return Response.json({ settled: true, deduplicated: true, actual_tokens: existing.actualTokens });
+        if (!held) return Response.json({ settled: false, error_code: "reservation_not_found" }, { status: 409 });
+        for (const row of llmTokenReservations.values()) if (row.tenantId === tenantId && row.runId === body.run_id && row.status === "held") row.status = "settled";
+        llmTokenSettlements.set(body.run_id, { actualTokens: body.actual_tokens as number, ...(typeof body.model_id === "string" ? { modelId: body.model_id } : {}) });
+        return Response.json({ settled: true, actual_tokens: body.actual_tokens });
+      }
+      if (url.pathname === "/internal/usage/llm-tokens/reservations/release" && request.method === "POST") {
+        const body = await request.json().catch(() => null) as { run_id?: unknown } | null;
+        if (typeof body?.run_id !== "string") return Response.json({ error_code: "bad_request" }, { status: 400 });
+        for (const row of llmTokenReservations.values()) if (row.tenantId === tenantId && row.runId === body.run_id && row.status === "held") row.status = "released";
+        return Response.json({ released: true });
+      }
+      return Response.json({ error_code: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/api/alpha/decisions" && request.method === "POST") {
       if (request.headers.get("authorization") !== "Bearer test-only-decisions-token") return Response.json({ error: "test_decision_auth_missing" }, { status: 401 });
@@ -109,13 +156,15 @@ export default {
     if (leafWorkerMode) {
       const ordinal = ++leafWorkerRequests;
       if (ordinal === 1) {
+        const assistantLabel = spaceAssistantMode ? "Space Assistant" : "Project Bot";
+        const artifactContent = spaceAssistantMode ? "space assistant leaf worker completed\n" : "project bot leaf worker completed\n";
         const tasks: Array<Record<string, unknown>> = [{
           id: "write-report",
-          title: "Write the Project Bot smoke artifact",
-          subtask_spec: "Create reports/blackboard-worker-smoke.txt in the scoped project workspace with the exact content: project bot leaf worker completed. Do not use external services.",
+          title: `Write the ${assistantLabel} smoke artifact`,
+          subtask_spec: `Create reports/blackboard-worker-smoke.txt in the assigned assistant workspace with the exact content: ${artifactContent.trim()}. Do not use external services.`,
           assigned_role: "DEV_OPERATOR",
-          acceptance_criteria: ["The Project Bot leaf worker artifact exists in its assigned project workspace branch"],
-          evidence_checks: [{ criterion: "The Project Bot leaf worker artifact exists in its assigned project workspace branch", operation: "workspace.exists:reports/blackboard-worker-smoke.txt" }],
+          acceptance_criteria: [`The ${assistantLabel} leaf worker artifact exists in its assigned workspace branch`],
+          evidence_checks: [{ criterion: `The ${assistantLabel} leaf worker artifact exists in its assigned workspace branch`, operation: "workspace.exists:reports/blackboard-worker-smoke.txt" }],
           file_paths: ["reports/blackboard-worker-smoke.txt"],
           budget_tokens: 12_000,
         }];
@@ -141,9 +190,10 @@ export default {
         });
       }
       if (ordinal === 2) {
+        const content = spaceAssistantMode ? "space assistant leaf worker completed\n" : "project bot leaf worker completed\n";
         return Response.json({
           id: `local-test-${totalRequests}`, model,
-          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-smoke.txt", content: "project bot leaf worker completed\n", expectedHash: null }, doing: "Write the smoke report in the assigned project workspace" }) }, finish_reason: "stop" }],
+          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-smoke.txt", content, expectedHash: null }, doing: "Write the smoke report in the assigned assistant workspace" }) }, finish_reason: "stop" }],
           usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
         });
       }

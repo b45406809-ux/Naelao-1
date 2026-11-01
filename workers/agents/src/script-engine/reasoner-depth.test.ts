@@ -66,16 +66,16 @@ describe("pre-inference spend admission", () => {
     reserveInferenceCost,
   });
 
-  it("does not continue when the project cap rejects the reservation", async () => {
+  it("does not continue when the host budget rejects the reservation", async () => {
     const reserveInferenceCost = vi.fn(async () => false);
     const decision = await new GatewayReasoner(deps(reserveInferenceCost)).decide(input);
     expect(reserveInferenceCost).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model", maxOutputTokens: 1500 }));
-    expect(decision).toMatchObject({ action: "give_up", reason: "project_spend_capped: no inference was sent" });
+    expect(decision).toMatchObject({ action: "give_up", reason: "inference_budget_cap_reached: no inference was sent" });
   });
 
   it("fails closed when reservation status cannot be verified", async () => {
     const decision = await new GatewayReasoner(deps(async () => { throw new Error("offline"); })).decide(input);
-    expect(decision).toMatchObject({ action: "give_up", reason: "project_spend_reservation_unavailable: no inference was sent" });
+    expect(decision).toMatchObject({ action: "give_up", reason: "inference_budget_reservation_unavailable: no inference was sent" });
   });
 });
 

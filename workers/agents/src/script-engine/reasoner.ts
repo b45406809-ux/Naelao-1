@@ -1016,9 +1016,9 @@ export class GatewayReasoner implements Reasoner {
           maxOutputTokens: query.max_tokens,
         });
       } catch {
-        return { action: "give_up", reason: "project_spend_reservation_unavailable: no inference was sent" };
+        return { action: "give_up", reason: "inference_budget_reservation_unavailable: no inference was sent" };
       }
-      if (!admitted) return { action: "give_up", reason: "project_spend_capped: no inference was sent" };
+      if (!admitted) return { action: "give_up", reason: "inference_budget_cap_reached: no inference was sent" };
     }
 
     const isLocalModel = query.model.startsWith("local/");

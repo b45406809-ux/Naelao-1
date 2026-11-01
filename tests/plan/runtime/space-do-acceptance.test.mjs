@@ -473,6 +473,30 @@ test("a Project Bot wake completes through the local model adapter without exter
   };
 });
 
+test("Space Assistant uses the shared planner, verified leaf worker and Space workspace", async () => {
+  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const result = await jsonRequest(agentsBaseUrl, "/__test/space-assistant-goal", "POST", {}, 90_000);
+  assert.equal(result.status, 200, JSON.stringify(result));
+  assert.equal(result.dispatch?.result?.ok, true, JSON.stringify(result.dispatch));
+  assert.equal(result.goalActivityStatus, 200, JSON.stringify(result));
+  const tasks = result.goalActivity?.goals?.[0]?.tasks ?? [];
+  assert.deepEqual(tasks.map(task => [task.status, task.verification?.outcome]), [["completed", "passed"]], JSON.stringify({ tasks, dispatch: result.dispatch, gateway: result.gateway }));
+  assert.equal(result.artifact, "space assistant leaf worker completed\n");
+  assert.equal(result.gateway.decisions.calls, 1);
+  assert.deepEqual(result.gateway.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
+  assert.ok(result.gateway.totalRequests > before.totalRequests);
+  assert.equal(result.gateway.totalRequests - before.totalRequests, 4, JSON.stringify({ before, after: result.gateway }));
+  metrics.space_assistant_verified_worker_run = {
+    evidence_class: "integrated-local-synthetic-model",
+    task_status: tasks[0].status,
+    verification: tasks[0].verification.outcome,
+    artifact_workspace: "Space Assistant workspace",
+    decisions_requests: result.gateway.decisions.calls,
+    billing_events: result.gateway.decisions.billingEvents.map(event => event.kind),
+    external_provider_requests: 0,
+  };
+});
+
 test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped workspace artifact", async () => {
   const project = await jsonRequest(
     spacesBaseUrl,

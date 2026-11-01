@@ -10,7 +10,7 @@ export interface DelegationContract {
   /** Host-classified managed runtime capability; advisory until the execution tool resolves it. */
   runtimeCapability?: string;
   modelRequirements?: WorkerModelRequirements;
-  model: string; role: string; callerRole: string; workspaceBranch?: string;
+  model: string; role: string; callerRole?: string; workspaceBranch?: string;
   /** Exact project files a task worker may access through the host VFS. [] means none. */
   filePaths?: string[];
   /** Host-selected subset of the worker agent's configured tools and learned skills. */
@@ -20,9 +20,10 @@ export interface DelegationContract {
   maxTier: number; localOnly: boolean; localModelMachine?: string;
 }
 function resource(contract: DelegationContract): string {
-  for (const value of [contract.actorId, contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId, contract.model, contract.role, contract.callerRole]) {
+  for (const value of [contract.actorId, contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId, contract.model, contract.role]) {
     if (typeof value !== "string" || !value || value.length > 192) throw new Error("delegation_identity_invalid");
   }
+  if (contract.callerRole !== undefined && (typeof contract.callerRole !== "string" || !contract.callerRole || contract.callerRole.length > 192)) throw new Error("delegation_identity_invalid");
   if (!Number.isInteger(contract.maxTier) || contract.maxTier < 1 || contract.maxTier > 6 || typeof contract.localOnly !== "boolean" || (contract.localModelMachine !== undefined && (typeof contract.localModelMachine !== "string" || !contract.localModelMachine))
     || (contract.runtimeCapability !== undefined && (typeof contract.runtimeCapability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(contract.runtimeCapability)))
     || ![2, 3].includes(contract.depth) || typeof contract.planner !== "boolean" || (contract.depth === 3 && contract.planner)
@@ -52,7 +53,7 @@ function resource(contract: DelegationContract): string {
   const requirements=validateWorkerModelRequirements(contract.modelRequirements);
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
-    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.runtimeCapability ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
+    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole ?? null, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.runtimeCapability ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
     contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ],
     ...(requirements ? [[...requirements.inputModalities].sort(), requirements.minContextTokens] : [])]);
 }
