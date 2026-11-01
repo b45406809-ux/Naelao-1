@@ -692,7 +692,7 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
   };
 });
 
-test("concurrent wake sweepers claim one Project Bot event exactly once", async () => {
+test("32 concurrent wake sweepers claim one Project Bot event exactly once", async () => {
   const project = await jsonRequest(
     spacesBaseUrl,
     `/spaces/${identity.spaceId}/projects`,
@@ -701,10 +701,10 @@ test("concurrent wake sweepers claim one Project Bot event exactly once", async 
   );
   const wakeResult = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
     projectId: project.id,
-    concurrentSweepCount: 16,
+    concurrentSweepCount: 32,
   });
 
-  assert.equal(wakeResult.concurrentSweeps.length, 16);
+  assert.equal(wakeResult.concurrentSweeps.length, 32);
   assert.ok(
     wakeResult.concurrentSweeps.every((result) => result.checked <= 1),
     "each concurrent sweep should inspect at most the one fixture wake"
@@ -722,6 +722,7 @@ test("concurrent wake sweepers claim one Project Bot event exactly once", async 
     "compliance_violation"
   );
   assert.equal(wakeResult.repeatSweep.checked, 0);
+  metrics.blackboard_wake_contention = { contenders: 32, dispatches: wakeResult.dispatchResponses.length, attempts: wakeResult.wake.attempts, repeat_dispatches: wakeResult.repeatSweep.checked };
 });
 
 test("measures 30 local blackboard-to-Project-Bot admission attempts", async () => {
