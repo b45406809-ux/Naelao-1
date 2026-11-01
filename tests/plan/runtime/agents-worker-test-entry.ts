@@ -34,6 +34,20 @@ export default {
     // goal is to test the real runtime only after bootstrapping, while module cold-start can be
     // expensive in the four-worker local topology.
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
+    if (url.pathname === "/__test/goal-activity" && request.method === "GET") {
+      const runId = url.searchParams.get("run_id");
+      if (!runId || runId.length > 256) return Response.json({ error: "run_id_required" }, { status: 400 });
+      const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+      const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;
+      const stub = namespace.get(namespace.idFromName(doName));
+      return stub.fetch(new Request(`http://agent-do/internal/goal-activity?run_id=${encodeURIComponent(runId)}&space_id=${encodeURIComponent(TEST_SPACE_ID)}`, {
+        headers: {
+          "x-naelao-tenant-id": TEST_TENANT_ID,
+          "x-naelao-user-id": TEST_USER_ID,
+          "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+        },
+      }));
+    }
     if (url.pathname === "/__test/bootstrap" && request.method === "POST") {
       const db = env.PLATFORM_DB as D1Database;
       await db.batch([
@@ -319,6 +333,7 @@ export default {
         .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`)
         .first();
       let workspaceArtifact: { exists: boolean; branch?: string; contentMatches?: boolean; sha256?: string; candidates?: string[]; workspaceKeys?: string[] } | undefined;
+      let goalActivityRunId: string | undefined;
       let goalActivity: { goals?: Array<{ verificationRequired?: boolean; tasks?: Array<{ status?: string; verification?: { outcome?: string; reason?: string } }> }> } | undefined;
       let goalActivityStatus: number | undefined;
       if (mockModelRun && (wake?.status === "completed" || wake?.status === "held")) {
@@ -326,6 +341,7 @@ export default {
           .bind(TEST_TENANT_ID, TEST_SPACE_ID, projectId, `${requestId}:pending`).first<{ event_id: string }>();
         if (eventRow?.event_id) {
           const rootRunId = `blackboard-${await sha256(JSON.stringify([TEST_TENANT_ID, TEST_SPACE_ID, projectId, eventRow.event_id]))}`;
+          goalActivityRunId = rootRunId;
           const branchDigest = await sha256(JSON.stringify([TEST_TENANT_ID, TEST_SPACE_ID, projectId, rootRunId]));
           const branch = `task/${branchDigest.slice(0, 48)}`;
           const scripts = env.SCRIPTS_R2 as R2Bucket | undefined;
@@ -395,6 +411,7 @@ export default {
         repeatSweep,
         wake,
         workspaceArtifact,
+        goalActivityRunId,
         goalActivity,
         goalActivityStatus,
         dispatchResponses,

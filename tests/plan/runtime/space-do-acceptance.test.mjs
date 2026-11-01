@@ -39,6 +39,7 @@ const metrics = {
   model_gateway_start_ms: 0,
   artifact_worker_start_ms: 0,
   agents_worker_start_ms: 0,
+  agents_goal_journal_restarts: [],
   requests: [],
   benchmarks: [],
 };
@@ -178,6 +179,19 @@ async function startLocalWorkers() {
     agentsWorkerStartMs,
     totalWorkerStartMs: spacesWorkerStartMs + modelGatewayStartMs + artifactWorkerStartMs + agentsWorkerStartMs,
   };
+}
+
+async function restartAgentsWorker() {
+  const port = Number(new URL(agentsBaseUrl).port);
+  const started = performance.now();
+  await stopWorker(agentsWorker);
+  agentsWorker = startWorker(
+    path.join(repoRoot, "tests/plan/runtime/agents.wrangler.toml"),
+    port
+  );
+  await waitForWorker(agentsWorker, agentsBaseUrl);
+  runtimeRestartCount++;
+  return Math.round(performance.now() - started);
 }
 
 before(
@@ -504,6 +518,19 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
     "GET"
   );
   assert.ok(tasks.data?.some((task) => task.project_id === project.id && task.status === "completed"));
+  const restartMs = await restartAgentsWorker();
+  const persistedGoal = await jsonRequest(
+    agentsBaseUrl,
+    `/__test/goal-activity?run_id=${encodeURIComponent(result.goalActivityRunId)}`,
+    "GET"
+  );
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "completed", JSON.stringify(persistedGoal));
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "passed", JSON.stringify(persistedGoal));
+  metrics.agents_goal_journal_restarts.push({
+    outcome: "completed",
+    verification: "passed",
+    duration_ms: restartMs,
+  });
   metrics.project_bot_leaf_worker_run = {
     evidence_class: "integrated-local-synthetic-model",
     outcome: "completed",
@@ -548,6 +575,19 @@ test("a cautious Decisions verdict remains visible as review instead of being pr
   assert.equal(after.decisions.calls, 1);
   assert.deepEqual(after.decisions.billingEvents.map((event) => event.kind), ["reserve", "settle"]);
   assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
+  const restartMs = await restartAgentsWorker();
+  const persistedGoal = await jsonRequest(
+    agentsBaseUrl,
+    `/__test/goal-activity?run_id=${encodeURIComponent(result.goalActivityRunId)}`,
+    "GET"
+  );
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "needs_review", JSON.stringify(persistedGoal));
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "uncertain", JSON.stringify(persistedGoal));
+  metrics.agents_goal_journal_restarts.push({
+    outcome: "needs_review",
+    verification: "uncertain",
+    duration_ms: restartMs,
+  });
   metrics.project_bot_uncertain_verification = {
     evidence_class: "integrated-local-synthetic-model",
     task_status: result.goalActivity.goals[0].tasks[0].status,
