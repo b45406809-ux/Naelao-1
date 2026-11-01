@@ -58,4 +58,23 @@ describe("space blackboard commands", () => {
     expect(result.triage).toBeUndefined();
     expect(JSON.stringify(score.mock.calls[0])).not.toContain("private-link");
   });
+  it("reranks at most five shared cards by decision score and preserves lexical order for the rest", async () => {
+    const cards = [
+      { projectId: "a", summary: "shipment tracking", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" },
+      { projectId: "b", summary: "shipment tracking strong match", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" },
+      { projectId: "c", summary: "shipment tracking possible match", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" },
+      ...Array.from({ length: 18 }, (_, index) => ({ projectId: `extra-${String(index).padStart(2, "0")}`, summary: "shipment tracking", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" })),
+    ];
+    const score = vi.fn(async ({ state }: { state: { summary: string } }) => ({
+      value: state.summary.includes("strong match") ? 2 : state.summary.includes("possible match") ? 1 : 0,
+      provider: "decisions-test",
+    }));
+    const fetch = vi.fn(async () => Response.json({ cards }));
+    const ctx = { env: { tenantId: "t", spaceId: "s", userId: "u", platformSecret: "secret", spacesWorker: { fetch }, fastDecision: { score } } } as unknown as PrebuiltOpContext;
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment tracking", model_triage: true }, ctx) as { candidates: Array<{ card: { projectId: string } }>; triage: Array<{ projectId: string }> };
+    expect(score).toHaveBeenCalledTimes(5);
+    expect(result.candidates.slice(0, 5).map(candidate => candidate.card.projectId)).toEqual(["b", "c", "a", "extra-00", "extra-01"]);
+    expect(result.candidates.slice(5).map(candidate => candidate.card.projectId)).toEqual(cards.slice(5, 20).map(card => card.projectId));
+    expect(result.triage.map(item => item.projectId)).toEqual(["a", "b", "c", "extra-00", "extra-01"]);
+  });
 });

@@ -2,7 +2,7 @@
 
 **Status:** experiment plan; it is not evidence that any comparative or production claim has passed  
 **Prepared:** 2026-11-01  
-**Current code reference:** `f36ee93bd7289ff0584fab0d8ba065ddbf93faf3`  
+**Tested base commit:** `2492058efca60ed3e7a55de41ac7e648c98a8dda` (the experiment and fixes documented below were tested on this base plus the current changes)
 **Purpose:** turn the ambition to outperform into falsifiable, measured engineering targets; improve the system wherever it misses; and prevent test counts from being mistaken for product-performance evidence.
 
 ## Decision
@@ -47,7 +47,7 @@ For all task-success and safety rates, report the numerator and denominator plus
 |---|---|---|---|
 | Space Assistant and Project Assistant are distinct identities using one planner/worker architecture | Local four-Worker Wrangler journeys for both scopes, host evidence/verification, dependent-task gate, scope trace, typechecks | `integrated-local` with synthetic model/Decisions | Repeated randomized task fixtures, auth/UI-to-DO trace, deployed staging parity |
 | Workers cannot self-verify their own success | Host artifact evidence and verification path; uncertain result blocks descendants | `integrated-local`/`synthetic-model` | Held-out positive, negative, stale, cross-attempt and adversarial evidence set; provider decision evaluation; live canary |
-| Blackboard improves coordination and reduces duplicate work/token use | Claim races and deterministic message-boundary tests; no full ablation result | Partial | Same task graph with no-board, broadcast-board and policy-filtered board; measure outcomes, messages, planner/decision tokens, duplicate work and latency |
+| Blackboard improves coordination and reduces duplicate work/token use | 100 deterministic task graphs compare direct DAG handoffs with recipient-targeted worker-board messages; payload bytes were identical. Space-wide Decisions triage is now bounded to five cards and reranks its scored prefix, with lexical fallback. No real model/token/cost comparison yet. | Partial; initial cost hypothesis missed | Same task graph with no-board, broadcast-board and policy-filtered board; measure outcomes, messages, planner/decision tokens, duplicate work and latency. Separately measure cross-project relevance/recall and decision cost for the Space-wide board. |
 | The intelligent system prewarms/selects the right environment efficiently | Environment policy and admission tests exist; no representative selection accuracy/economics result | Partial | Blind environment-requirement fixtures; compare policy selection and no-prewarm baseline; record correct selection, cold/warm time, idle waste and total verified-task cost |
 | Naelao is cheaper | Test logic and reservation/reconciliation coverage; no complete live unit economics | Unproven | End-to-end provider usage plus Cloudflare invoice attribution, storage/egress/runtime costs and successful/failed/review denominators |
 | Naelao is faster | Local wake-admission p50/p95 observations only; those stop before provider execution | Narrow local route timings only | End-to-end first response and verified completion p50/p95/p99 under matched hardware/provider/config, with cold/warm and queue breakdowns |
@@ -78,6 +78,10 @@ Start with 30 cases per boundary to find defects; after fixes, run a held-out se
 **Gate:** zero unauthorized effects and zero false acceptance in the held-out set; all expected valid cases complete; uncertainty remains review-only. If a failure appears, minimize it, fix the host boundary, rerun the failing case, all related suites, and the complete matrix.
 
 ### Experiment 2 — Blackboard value and fixer ablation
+
+The first task-level ablation is now implemented as a fixed-seed synthetic control. It is diagnostic, not the full experiment: 100 graphs, 701 tasks, and 595 dependency edges produced 80,518 UTF-8 bytes for both direct DAG handoffs and targeted-board handoffs. Targeted messages themselves totaled 81,173 bytes. A synthetic all-to-all broadcast counterfactual totaled 368,311 bytes, but that broadcast mode is not a production baseline. There were zero payload/status mismatches or cross-recipient leaks. Thus the first cost-reduction hypothesis is **not supported**: the current task board adds coordination state but does not reduce handoff payload versus direct DAG delivery. Continue toward the target by measuring the intelligent Space-wide board and testing whether relevance retrieval, deduplication, and summarization avoid actual worker/planner calls; do not present the counterfactual as a product advantage.
+
+The Space-wide search path now uses its optional Decisions scores to rerank the top five lexically relevant shared cards. Calls remain opt-in and bounded at five; scores are advisory, lexical order breaks ties, unscored results retain lexical order, and provider failure returns lexical results. A mock contract test verifies ranking mechanics and the cap; it does not establish real-model relevance, token savings, latency, or cost. Those remain the next measured gates.
 
 Use at least 100 fixed multi-worker task graphs with three treatments, randomized by task/seed:
 

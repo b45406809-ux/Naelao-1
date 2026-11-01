@@ -10,7 +10,11 @@ export interface GoalEvidence {
 export interface GoalEvidenceCheck { criterion: string; operation: string }
 const CHECK_SPEC = /^(?:artifact\.sha256|workspace\.exists|workspace\.sha256):([^\s]{1,256})$/;
 export function validateGoalEvidenceChecks(criteria: readonly string[], checks: readonly GoalEvidenceCheck[]): GoalEvidenceCheck[] {
-  if (checks.length > 8 || new Set(checks.map(check => check?.criterion)).size !== checks.length || checks.some(check => !check || !criteria.includes(check.criterion) || typeof check.operation !== "string" || !CHECK_SPEC.test(check.operation))) throw new Error("invalid_goal_evidence_checks");
+  if (checks.length > 8 || new Set(checks.map(check => check?.criterion)).size !== checks.length || checks.some(check => {
+    if (!check || !criteria.includes(check.criterion) || typeof check.operation !== "string") return true;
+    const match = CHECK_SPEC.exec(check.operation);
+    return !match || !isWorkspaceArtifactPath(match[1]);
+  })) throw new Error("invalid_goal_evidence_checks");
   return checks.map(check => ({ criterion: check.criterion, operation: check.operation }));
 }
 
@@ -35,7 +39,7 @@ export interface ArtifactReadPort {
 const MAX_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_ARTIFACTS = 32;
 const HASH = /^[a-f0-9]{64}$/;
-const isWorkspaceArtifactPath = (path: unknown): path is string => typeof path === "string" && path.length > 0 && path.length <= 256 && !path.startsWith("/") && !path.split("/").some(part => !part || part === "." || part === "..");
+const isWorkspaceArtifactPath = (path: unknown): path is string => typeof path === "string" && path.length > 0 && path.length <= 256 && !path.startsWith("/") && !path.includes("\\") && !path.includes("\0") && !path.split("/").some(part => !part || part === "." || part === "..");
 const sha256 = async (bytes: Uint8Array): Promise<string> => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
 
 function isWellFormedManifest(manifest: WorkerArtifactManifest): boolean {
@@ -60,7 +64,7 @@ export async function captureWorkerArtifactManifest(input: Omit<WorkerArtifactMa
   if (!input.tenantId || !input.spaceId || !input.parentRunId || !input.workerId || !input.branch || !Number.isSafeInteger(input.attempt) || input.attempt < 1 || input.paths.length > MAX_ARTIFACTS) throw new Error("invalid_worker_artifact_manifest_scope");
   const artifacts: WorkerArtifactManifest["artifacts"] = [];
   for (const path of [...new Set(input.paths)].slice(0, MAX_ARTIFACTS)) {
-    if (!path || path.length > 256 || path.startsWith("/") || path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("invalid_worker_artifact_path");
+    if (!isWorkspaceArtifactPath(path)) throw new Error("invalid_worker_artifact_path");
     try {
       const before = await port.head(path);
       if (!before || before.deleted) { artifacts.push({ path, status: "missing" }); continue; }
