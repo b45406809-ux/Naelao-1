@@ -56,10 +56,28 @@ Additional local evidence on the current working tree:
 - Batch 3 two-Worker local runtime suite after adding a 16-way sweep race: **6/6**. Sixteen simultaneous D1-backed sweepers yielded exactly one dispatch and one attempt; the wake then remained held because this fixture deliberately prohibits cloud-model execution. The other cases still covered restart of both Worker processes and Project Bot session persistence.
 - Follow-up local runtime run after adding a 30-sample measurement: **7/7**. The blackboard-to-Project-Bot wake/admission route measured p50 **94 ms** and p95 **114 ms** in this local Wrangler run. These times end at the air-gap `compliance_violation` before model/provider execution and do not measure a successful planner/worker task. The 16-way concurrent claim still dispatched exactly once.
 - Batch 6 Worker-side runtime/tunnel/container admission suites: **42/42** across 7 files; repository tunnel/container policy suites: **38/38** across 6 files. These are deterministic/local tests, not tests against a user's connected machine or a live container fleet.
+- CLI/MCP and extension boundary follow-up: **52/52** across 6 files for dynamic-code, Code Mode, worker capabilities, virtual CLI, daemon MCP, and SDK artifact-client tests; **21/21** across 5 MCP Hub files for tenant/Space isolation, connector policy, upstream response bounds, Composio handling, and air-gap rejection.
 - The latest local runtime run applied 154 migrations in **44.368 s**, started both Workers in **6.544 s**, restarted both in **6.536 s**, and completed in **58.752 s**. The concurrent-wake route took **225 ms**. These are single-run local timings, not percentile or capacity results.
+- The CI runtime acceptance on commit `f7b152eb5ddd3010c55222b6fd56220edcbf3d4f` passed **7/7** in Actions run [41267466326](https://github.com/b45406809-ux/Naelao-1/actions/runs/41267466326). Its 30 local-Wrangler wake/admission samples measured p50 **126 ms** / p95 **133 ms**; this ended at the air-gap denial before model execution. CI applied 154 migrations in **50.694 s**, started both Workers in **6.540 s**, restarted them in **6.619 s**, and finished the runtime harness in **69.188 s**. All eight full-test matrix suites, all connected checks, and the overall workflow summary succeeded on attempt 1. This remains local Cloudflare emulation, not a deployed Cloudflare test.
 - A local package build attempt could not serve as clean-install evidence: the environment has pnpm 11 despite `packageManager` pinning pnpm 9.12.0, pnpm 11 refused ignored dependency install scripts, and the overlay had under 300 MB free. The GitHub runner's install and prerequisite build passed; do not treat the local attempt as a source failure or as a pass.
 
 The test-only concurrent wake option is bounded to 32 sweeps and only exists in the isolated `tests/plan/runtime` wrapper. It does not change production wake behavior.
+
+### Batch state after the first pass
+
+| Batch | State | Evidence and remaining gap |
+|---|---|---|
+| 0 — Freeze/baseline | **PASS** | Full Actions inventory and connected checks passed on `f7b152eb`; clean checkout and synced branches. Local clean install is blocked by this session's pnpm 11/script policy/disk, while the clean runner install/build passed. |
+| 1 — Actor/scope boundary | **PARTIAL PASS** | Focused scope/assistant/blackboard tests passed; full CI passed. Needs a larger generated matrix covering extension principals, archive/delete, tunnels, and all tool surfaces in joined traces. |
+| 2 — Joined task/evidence | **PARTIAL** | Synthetic cross-layer planner/worker/evidence tests pass. Real two-Worker path creates a heartbeat session and reaches AgentDO but is intentionally stopped by air-gap policy; no successful end-to-end worker task is yet proven. |
+| 3 — Blackboard coordination | **PARTIAL PASS** | 16 simultaneous D1 sweepers produce exactly one claim/dispatch; authorization revocation, busy retry, lease expiry and dedupe pass. Worker-message recovery, AgentDO restart during dispatch and fixer escalation remain open. |
+| 4 — Durable dispatch/side effects | **PARTIAL** | Goal DAG, outbox, usage reconciliation, tunnel idempotency/restart and billing reservation tests pass. AgentDO outbox recovery plus real external side-effect uncertainty/reconciliation is not yet exercised across a running DO restart. |
+| 5 — Decision/evaluation quality | **SYNTHETIC ONLY** | 9 repository-authored graph scenarios repeated 3 times plus generated DAG stress run in tests; one test is skipped. No external held-out dataset or current live model quality evaluation was part of this full-test run. |
+| 6 — CLI/MCP/runtime environments | **PARTIAL PASS** | Selected command/MCP (52), MCP Hub (21), tunnel/container (42 + 38) tests pass; distinct container affinity and shared-resource queuing are covered in goal DAG tests. No live tunnel machine, managed container provider, browser profile or production snapshot acceptance. |
+| 7 — UI/template journeys | **PARTIAL** | Browser CI passes its seeded fake-API Project Bot journey. Authenticated UI-to-DO task/evidence/approval and member/editor/viewer/archive lifecycle journeys remain open. |
+| 8 — Migration/recovery | **PARTIAL PASS** | All 154 D1 migrations apply in local Wrangler acceptance. Restore from backup, deletion/retention cleanup and deployed rollback have not been proven. |
+| 9 — Cost/latency/load | **PARTIAL** | 30-sample local admission latency is recorded (94/114 ms local, 126/133 ms on CI runner). These are pre-model timings; no end-to-end verified-task cost, production p95, or saturation curve is measured. |
+| 10 — Live acceptance | **NOT RUN** | No deployed Cloudflare test Space, real model call, telephone/SMS, WhatsApp, email, billing-provider, or external runtime acceptance in these runs. |
 
 These are the baseline, not a claim that all tests passed on the planning commit. For every new result record exact SHA, workflow/run URL, each suite's *recorded suite result*, overall workflow conclusion, counts, skips, artifacts, and whether the test used mocks, local Cloudflare emulation, or live services. A green wrapper job alone is not evidence that a provider test passed.
 
@@ -229,7 +247,7 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 
 ## Immediate next actions
 
-1. Rerun the full GitHub Actions inventory after the concurrent-claim and 30-sample harness additions; inspect every per-suite result plus the overall summary.
+1. **Complete for commit `f7b152eb`:** the full GitHub Actions inventory and connected checks passed; the per-suite summary and runtime metrics were inspected. A documentation-only update may trigger another inventory run, but does not change this code-tested SHA.
 2. Close Batch 2's actual successful provider-free joined task and exact host evidence binding; current joined synthetic planner/worker tests pass, but the local Worker fixture is intentionally denied before model execution.
 3. Continue Batch 3 with concurrent wake-claim recovery across crash/lease boundaries and blackboard message delivery; continue Batch 4 with AgentDO goal-state restart and uncertain external-effect tests.
 4. Run authenticated UI-to-DO lifecycle cases and archive/restore/member journeys. The current browser tests are useful but synthetic.
