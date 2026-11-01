@@ -454,14 +454,19 @@ export interface AgentActivityEntry {
   agent_id: string;
   event_type: "run_completed" | "run_failed" | "approval_requested" | "approval_resolved" | "moderation_blocked";
   summary: string;
+  assistant_scope: "space_assistant" | "project_assistant" | "worker" | null;
+  root_run_id: string | null;
+  parent_run_id: string | null;
+  worker_id: string | null;
   tokens_used: number | null;
   cost_credits: number | null;
   created_at: string;
 }
 
-export async function getAgentActivity(spaceId: string, opts: { projectId?: string; limit?: number } = {}): Promise<{ data: AgentActivityEntry[]; count: number }> {
+export async function getAgentActivity(spaceId: string, opts: { projectId?: string; rootRunId?: string; limit?: number } = {}): Promise<{ data: AgentActivityEntry[]; count: number }> {
   const params = new URLSearchParams();
   if (opts.projectId) params.set("project_id", opts.projectId);
+  if (opts.rootRunId) params.set("root_run_id", opts.rootRunId);
   if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString();
   return apiFetch(`/spaces/${pathSegment(spaceId)}/agent-activity${qs ? `?${qs}` : ""}`);
