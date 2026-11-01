@@ -1804,6 +1804,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       attempt INTEGER, workspace_branch TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_goal_dispatch_outbox_run ON goal_dispatch_outbox(parent_run_id,status,updated_at)`);
+    // A new DO instance cannot inherit an in-flight JavaScript delivery continuation. Anything
+    // left in `delivering` therefore has an ambiguous receipt after reconstruction; hold it for
+    // explicit recovery instead of presenting it as active or reissuing the launch.
+    const reconcileDeliveringOutbox = () => this.ctx.storage.sql.exec(
+      "UPDATE goal_dispatch_outbox SET status='review',updated_at=? WHERE status='delivering'", Date.now()
+    );
+    if (typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(reconcileDeliveringOutbox);
+    else reconcileDeliveringOutbox();
     // Incremental progress (spec: a parent shouldn't have to wait for a whole child run to
     // finish to see it's alive). Written by the CHILD via a cross-DO callback while `status`
     // is still 'running' — pollable by an admin/dashboard via GET /sub-agents?parent_run_id=
@@ -1820,6 +1828,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     ] as const) {
       try { this.ctx.storage.sql.exec(ddl); } catch { /* already migrated */ }
     }
+
+    // A Durable Object can be reconstructed after its isolate is evicted or its Worker process
+    // dies. Any run left without a terminal record then has no live continuation to resume. Mark
+    // it terminal before serving requests so /active-run cannot report a ghost run as busy for
+    // the five-minute observation lease. Side-effecting dispatches have their own outbox recovery
+    // policy; this terminal marker must never imply that an interrupted action succeeded.
+    const restartNow = Date.now();
+    try {
+      this.ctx.storage.sql.exec(
+        `UPDATE run_state
+         SET status = 'failed',
+             terminal_json = ?,
+             updated_at = ?
+         WHERE terminal_json IS NULL AND status IN ('running', 'cancelling')`,
+        JSON.stringify({ status: "failed", error: "interrupted_by_agent_do_restart" }),
+        restartNow
+      );
+    } catch { /* older partially initialized stores may not have run_state yet */ }
+    try {
+      this.ctx.storage.sql.exec(
+        `UPDATE agent_runs
+         SET status = 'failed', fsm_state = 'ERROR', error = ?, updated_at = ?
+         WHERE status = 'running'`,
+        "interrupted_by_agent_do_restart",
+        new Date(restartNow).toISOString()
+      );
+    } catch { /* agent_runs may not exist in a partially initialized legacy store */ }
 
     this.initialized = true;
   }
@@ -1851,6 +1886,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
       if(method==='POST'&&url.pathname==='/internal/task-blackboard')return this.handleTaskBlackboard(request);
+      if(method==='POST'&&url.pathname==='/internal/test/goal-dispatch-pause'&&this.env.ENVIRONMENT==='test')return this.handleTestGoalDispatchPause(request);
       if(method==='GET'&&url.pathname==='/internal/goal-activity')return this.handleGoalActivity(request);
       if(method==='POST'&&url.pathname==='/internal/steer-worker')return this.handleSteerWorker(request);
       if(method==='POST'&&url.pathname==='/internal/steering'){
@@ -2117,6 +2153,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // instance, so this is what lets it skip firing a second, overlapping run into a still-busy
       // assistant instead of finding out the hard way.
       if (method === "GET" && url.pathname === "/active-run") {
+        await this.reconcileReviewGoalDispatchResources(request.headers.get("x-naelao-tenant-id") ?? undefined);
         const sessionId = url.searchParams.get("session_id") ?? "";
         const active = sessionId ? this.findActiveRunForSession(sessionId) : this.findAnyActiveRun();
         if (!active) return Response.json({ active: false });
@@ -4086,6 +4123,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 return { acknowledged: false };
               }
               updateOutbox("delivering");
+              if (this.env.ENVIRONMENT === "test" && await this.ctx.storage.get<boolean>("test:goal-dispatch-pause") === true) {
+                await this.ctx.storage.put("test:goal-dispatch-paused", dispatchId);
+                // The runtime acceptance deliberately kills the Agents Worker here, after the
+                // outbox commit and before the first child-session side effect.
+                await new Promise(resolve => setTimeout(resolve, 45_000));
+              }
               try {
                 const receipt = await hooks.spawnSubAgent!({ tasks: [{
                   sub_agent_id: workerId, file_paths: task.file_paths,
@@ -4687,11 +4730,49 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromName(route)).fetch(new Request("http://agent/internal/steering",{method:"POST",headers:await this.internalHeaders(tenant,{"content-type":"application/json"}),body:JSON.stringify({...body.command,spaceId:body.spaceId,projectId:body.projectId,actorId:body.actorId,workerId:body.workerId})}));
   }
 
+  /** Release only a scheduling lease whose worker was proven never to launch or already terminal. */
+  private async reconcileUnstartedGoalDispatch(tenantId: string, spaceId: string, goalHash: string, taskId: string): Promise<void> {
+    if (!this.env.CONCURRENCY_DO) return;
+    const workerId = `${goalHash}:${taskId}`;
+    const outbox = this.ctx.storage.sql.exec<{ status: string; dispatch_id: string }>("SELECT status,dispatch_id FROM goal_dispatch_outbox WHERE worker_id=?", workerId).toArray()[0];
+    if (outbox?.status !== "review") return;
+    const worker = this.ctx.storage.sql.exec<{ status: string }>("SELECT status FROM sub_agents WHERE id=?", workerId).toArray()[0];
+    const reason = !worker ? "dispatch_not_started" : ["done", "failed", "terminated"].includes(worker.status) ? "worker_terminal" : undefined;
+    if (!reason) return;
+
+    const digestHex = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const scopedResource = `worker-resource:${await digestHex(`${tenantId}:${spaceId}:_:worker.execution`)}`;
+    const holder = await digestHex(`${tenantId}:${spaceId}:${workerId}`);
+    const claims = { tenantId, spaceId, workerId, dispatchId: outbox.dispatch_id, resource: scopedResource, holder, reason, issuedAt: Date.now() };
+    const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.PLATFORM_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const signature = [...new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(JSON.stringify(claims))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(scopedResource));
+    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/reconcile", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ claims, signature }),
+    }));
+    if (!response.ok) throw new Error("goal_dispatch_resource_reconciliation_failed");
+  }
+
+  /** Reconcile safely provable interrupted leases before any caller is told the assistant is free. */
+  private async reconcileReviewGoalDispatchResources(tenantFilter?: string): Promise<void> {
+    const rows = this.ctx.storage.sql.exec<{ worker_id: string }>(
+      "SELECT worker_id FROM goal_dispatch_outbox WHERE status='review' ORDER BY updated_at DESC LIMIT 100"
+    ).toArray();
+    for (const row of rows) {
+      const match = row.worker_id.match(/^([a-f0-9]{64}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/);
+      if (!match?.[1] || !match[2]) continue;
+      const metadata = await this.ctx.storage.get<{ tenantId?: string; spaceId?: string }>(`goal-activity:metadata:${match[1]}`);
+      if (!metadata?.tenantId || !metadata.spaceId || (tenantFilter && metadata.tenantId !== tenantFilter)) continue;
+      await this.reconcileUnstartedGoalDispatch(metadata.tenantId, metadata.spaceId, match[1], match[2]);
+    }
+  }
+
   private async handleGoalActivity(request: Request): Promise<Response> {
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error: "forbidden" }, { status: 403 });
     const url = new URL(request.url), runId = url.searchParams.get("run_id") ?? "", history = url.searchParams.get("history") === "true", spaceId = url.searchParams.get("space_id") ?? "", actorId = request.headers.get("x-naelao-user-id") ?? "";
     if ((!history && (!runId || runId.length > 192)) || !spaceId || spaceId.length > 192 || !actorId) return Response.json({ error: "invalid_request" }, { status: 400 });
+    await this.reconcileReviewGoalDispatchResources(tenantId);
     const indexKey = history ? `goal-activity:actor-index:${encodeURIComponent(spaceId)}:${encodeURIComponent(actorId)}` : `goal-activity:index:${runId}`;
     const hashes = await this.ctx.storage.get<string[]>(indexKey) ?? [];
     const goals = [];
@@ -4715,21 +4796,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (!journal) continue;
       const messages = await this.ctx.storage.get<import("../script-engine/task-blackboard.js").TaskMessage[]>(`task-blackboard:messages:${hash}`) ?? [];
-      const dispatchTaskIds = metadata.tasks.slice(0, 12).map(task => task.id);
-      const dispatchRows = dispatchTaskIds.length && this.ctx.storage.sql
-        ? this.ctx.storage.sql.exec<{ task_id: string; status: string; attempt: number | null }>(
-          `SELECT task_id,status,attempt FROM goal_dispatch_outbox WHERE task_id IN (${dispatchTaskIds.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT 12`, ...dispatchTaskIds
+      const dispatchWorkerIds = metadata.tasks.slice(0, 12).map(task => `${hash}:${task.id}`);
+      const dispatchRows = dispatchWorkerIds.length && this.ctx.storage.sql
+        ? this.ctx.storage.sql.exec<{ worker_id: string; status: string; attempt: number | null }>(
+          `SELECT worker_id,status,attempt FROM goal_dispatch_outbox WHERE worker_id IN (${dispatchWorkerIds.map(() => "?").join(",")}) LIMIT 12`, ...dispatchWorkerIds
         ).toArray()
         : [];
-      const dispatchByTask = new Map(dispatchRows.map(row => [row.task_id, row]));
-      goals.push({ id: hash, verificationRequired: journal.verificationRequired === true, tasks: metadata.tasks.map(task => {
+      const dispatchByTask = new Map(dispatchRows.map(row => [row.worker_id, row]));
+      const projected = metadata.tasks.map(task => {
         const state = journal.tasks[task.id];
-        const dispatch = dispatchByTask.get(task.id);
-        return { ...task, status: state?.status ?? "pending", workerId: state?.workerId,
+        const dispatch = dispatchByTask.get(`${hash}:${task.id}`);
+        const status = state?.status === "running" && dispatch?.status === "review" ? "needs_review" : state?.status ?? "pending";
+        return { ...task, status, workerId: state?.workerId,
           ...(dispatch && ["intent", "delivering", "acknowledged", "uncertain", "review"].includes(dispatch.status) ? { dispatch: { status: dispatch.status, ...(Number.isSafeInteger(dispatch.attempt) && (dispatch.attempt ?? 0) > 0 ? { attempt: dispatch.attempt } : {}) } } : {}),
           ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
           ...(state?.runtime ? { runtime: state.runtime } : {}) };
-      }), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
+      });
+      const projectedById = new Map(projected.map(task => [task.id, task.status]));
+      for (const task of projected) if (task.status === "pending" && task.dependencies.some(dependency => projectedById.get(dependency) === "needs_review" || projectedById.get(dependency) === "blocked")) task.status = "blocked";
+      goals.push({ id: hash, verificationRequired: journal.verificationRequired === true, tasks: projected, escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }
     return Response.json({ goals: history ? goals.reverse() : goals });
   }
@@ -4759,6 +4844,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       return Response.json({ error: "task_blackboard_action_invalid" }, { status: 400 });
     } catch { return Response.json({ error: "task_blackboard_denied" }, { status: 403 }); }
+  }
+
+  private async handleTestGoalDispatchPause(request: Request): Promise<Response> {
+    const tenantId=request.headers.get("x-naelao-tenant-id")??"";
+    if(!tenantId||!await verifyInternalToken(request.headers.get("x-naelao-internal-token")??undefined,tenantId,this.env.PLATFORM_SECRET))return Response.json({error:"forbidden"},{status:403});
+    const body=await request.json<{pause?:boolean}>().catch((): {pause?:boolean}=>({}));
+    await this.ctx.storage.put("test:goal-dispatch-pause",body.pause===true);
+    return Response.json({ok:true,paused:body.pause===true,stored:await this.ctx.storage.get<boolean>("test:goal-dispatch-pause")===true});
   }
 
   private async handleSubAgentSessionUpdate(request: Request): Promise<Response> {

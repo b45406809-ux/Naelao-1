@@ -96,7 +96,7 @@ function harness() {
     },
   };
   const ctx = { storage: { sql, transaction: async <T>(fn: (tx: { get: <V>(key: string) => Promise<V | undefined>; put: (key: string, value: unknown) => Promise<void> }) => Promise<T>) => fn({ get: async <V>(key: string) => durable.get(key) as V | undefined, put: async (key, value) => { durable.set(key, structuredClone(value)); } }), getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
-  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
+  return { instance: new ConcurrencyDO(ctx as never, { PLATFORM_SECRET: "resource-queue-test-secret" }), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
 }
 
 describe("ConcurrencyDO file mutexes", () => {
@@ -210,6 +210,40 @@ describe("ConcurrencyDO shared resource queue", () => {
     }));
     expect(planCapacity.status).toBe(200);
     expect(await planCapacity.json()).toMatchObject({ acquired: true });
+  });
+
+  it("releases a stranded execution lease only with a valid host reconciliation proof", async () => {
+    const h = harness();
+    const digest = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const tenantId = "tenant-a", spaceId = "space-a", workerId = "goal-a:task-a";
+    const resource = `worker-resource:${await digest(`${tenantId}:${spaceId}:_:worker.execution`)}`;
+    const holder = await digest(`${tenantId}:${spaceId}:${workerId}`);
+    const requestLease = async (worker: string) => {
+      const response = await h.instance.fetch(new Request("http://do/resource-queue/request", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resource, holder: worker, capacity: 1 }),
+      }));
+      return response.json<Record<string, unknown>>();
+    };
+    expect(await requestLease(holder)).toMatchObject({ acquired: true });
+
+    const claims = { tenantId, spaceId, workerId, dispatchId: "dispatch:goal-a:task-a:1", resource, holder, reason: "dispatch_not_started", issuedAt: Date.now() };
+    const sign = async (value: typeof claims) => {
+      const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("resource-queue-test-secret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      return [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(JSON.stringify(value))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const reconcile = (signature: string) => h.instance.fetch(new Request("http://do/resource-queue/reconcile", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ claims, signature }),
+    }));
+    expect((await reconcile("0".repeat(64))).status).toBe(403);
+    expect(await requestLease(holder)).toMatchObject({ acquired: true });
+
+    const response = await reconcile(await sign(claims));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ reconciled: true });
+    expect(await requestLease(holder)).toMatchObject({ acquired: true });
+    expect(await reconcile(await sign(claims)).then(value => value.json())).toMatchObject({ reconciled: false, reason: "proof_replayed" });
+    expect(await requestLease("worker-next")).toMatchObject({ acquired: false, active: 1 });
   });
 
   it("keeps a busy shared runtime within capacity under a burst of queued workers", async () => {

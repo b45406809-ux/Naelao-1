@@ -36,6 +36,16 @@ export default {
     // goal is to test the real runtime only after bootstrapping, while module cold-start can be
     // expensive in the four-worker local topology.
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
+    if (url.pathname === "/__test/pause-goal-dispatch" && request.method === "POST") {
+      const body = await request.json<{ pause?: boolean }>().catch(() => ({}));
+      const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+      const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;
+      const stub = namespace.get(namespace.idFromName(doName));
+      return stub.fetch(new Request("http://agent-do/internal/test/goal-dispatch-pause", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": TEST_TENANT_ID, "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID) },
+        body: JSON.stringify({ pause: body.pause === true }),
+      }));
+    }
     if (url.pathname === "/__test/task-blackboard/publish" && request.method === "POST") {
       const body = await request.json<{ goalId?: string; runId?: string; projectId?: string; senderTaskId?: string; recipientTaskId?: string }>().catch(() => ({}));
       if (!/^[a-f0-9]{64}$/.test(body.goalId ?? "") || !body.runId || !body.projectId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.senderTaskId ?? "") || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.recipientTaskId ?? "")) return Response.json({ error: "invalid_test_message_scope" }, { status: 400 });
@@ -65,6 +75,17 @@ export default {
         headers: {
           "x-naelao-tenant-id": TEST_TENANT_ID,
           "x-naelao-user-id": TEST_USER_ID,
+          "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+        },
+      }));
+    }
+    if (url.pathname === "/__test/active-run" && request.method === "GET") {
+      const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+      const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;
+      const stub = namespace.get(namespace.idFromName(doName));
+      return stub.fetch(new Request("http://agent-do/active-run", {
+        headers: {
+          "x-naelao-tenant-id": TEST_TENANT_ID,
           "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
         },
       }));

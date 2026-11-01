@@ -13,7 +13,7 @@ describe("task blackboard durable object route", () => {
       [`goal-activity:metadata:${hash}`, { tenantId: "t", spaceId: "s", actorId: "u", tasks: [{ id: "a", title: "Task", dependencies: [] }] }],
       [`goal-dag:${hash}`, { verificationRequired: true, tasks: { a: { status: "failed", workerId: "w", verification: { outcome: "failed", reason: "Independent evidence rejected." } } }, fixers: { a: { status: "needs_review", workerId: "w:fix", result: { id: "w:fix", ok: false, output: "private fixer transcript must not be exposed" } } } }],
     ]);
-    const storage = { get: async (key: string) => data.get(key), sql: { exec: (query: string) => ({ toArray: () => query.includes("goal_dag_journals") ? [] : [{ task_id: "a", status: "review", attempt: 2, workspace_branch: "private/branch" }] }) } };
+    const storage = { get: async (key: string) => data.get(key), sql: { exec: (query: string) => ({ toArray: () => query.includes("goal_dag_journals") ? [] : [{ worker_id: `${hash}:a`, status: "review", attempt: 2, workspace_branch: "private/branch" }] }) } };
     const instance = new NaelaoAgentDO({ storage, id: { toString: () => "parent" } } as never, { PLATFORM_SECRET: secret } as never);
     (instance as unknown as { ensureInit(): void }).ensureInit = () => {};
     const token = await mintInternalToken(secret, "t");

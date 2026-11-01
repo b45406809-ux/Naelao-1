@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
@@ -570,6 +571,77 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
     verification_reason: result.goalActivity.goals[0].tasks[0].verification.reason,
     decisions_requests: after.decisions.calls - before.decisions.calls,
     decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),
+  };
+});
+
+test("an AgentDO process crash during delivery is reconciled to review without launching a worker", async () => {
+  const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", { name: "Interrupted AgentDO Dispatch Boundary" });
+  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ leafWorkerMode: true, dependentTaskMode: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
+  });
+  assert.equal(configure.status, 200, await configure.clone().text());
+  const modelBefore = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const pause = await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: true });
+  assert.deepEqual(pause, { ok: true, paused: true, stored: true });
+
+  const wakeRequest = fetch(`${agentsBaseUrl}/__test/wake`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: project.id, mockModelRun: true }),
+  }).then(async response => ({ status: response.status, body: await response.text() })).catch(error => ({ error: String(error) }));
+  const eventId = `runtime-e2e:${project.id}:pending`;
+  const runId = `blackboard-${createHash("sha256").update(JSON.stringify([
+    "tenant-blackboard-runtime-test", identity.spaceId, project.id, eventId,
+  ])).digest("hex")}`;
+  let beforeCrash;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    beforeCrash = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(runId)}`, "GET");
+    const tasks = beforeCrash.goals?.[0]?.tasks ?? [];
+    if (tasks[0]?.dispatch?.status === "delivering") break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (beforeCrash?.goals?.[0]?.tasks?.[0]?.dispatch?.status !== "delivering") {
+    await restartAgentsWorker();
+    await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: false });
+  }
+  assert.equal(beforeCrash?.goals?.[0]?.tasks?.[0]?.dispatch?.status, "delivering", JSON.stringify(beforeCrash));
+  assert.equal(beforeCrash?.goals?.[0]?.tasks?.[0]?.status, "running");
+
+  const restartMs = await restartAgentsWorker();
+  // The original inbound fetch may take a while to observe that its DO continuation was lost.
+  // Drain it before starting later scenarios; otherwise its eventual wake response can overlap
+  // and contend with the next test's project resources.
+  const interruptedWake = await Promise.race([
+    wakeRequest,
+    new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 30_000)),
+  ]);
+  assert.notEqual(interruptedWake.timeout, true, "the interrupted wake must settle before the next acceptance scenario");
+  const resetPause = await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: false });
+  assert.equal(resetPause.paused, false);
+  const afterRestart = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(runId)}`, "GET");
+  const activeRun = await jsonRequest(agentsBaseUrl, "/__test/active-run", "GET");
+  assert.deepEqual(activeRun, { active: false }, "a reconstructed AgentDO must not retain a ghost active-run lease");
+  const tasks = afterRestart.goals?.[0]?.tasks ?? [];
+  assert.deepEqual(tasks.map(task => [task.id, task.status, task.dispatch?.status]), [
+    ["write-report", "needs_review", "review"],
+    ["write-follow-up", "blocked", undefined],
+  ], JSON.stringify(afterRestart));
+  const model = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  assert.equal(model.totalRequests - modelBefore.totalRequests, 1, "only the planner request should occur; child worker must not launch before the injected crash");
+  assert.equal(model.decisions.calls, 0);
+  metrics.agents_dispatch_crash_recovery = {
+    evidence_class: "local-wrangler-process-restart",
+    outbox_before_restart: "delivering",
+    outbox_after_restart: tasks[0].dispatch.status,
+    task_after_restart: tasks[0].status,
+    dependent_after_restart: tasks[1].status,
+    active_run_after_restart: activeRun.active,
+    inference_requests_before_and_after: model.totalRequests - modelBefore.totalRequests,
+    worker_launches_after_restart: 0,
+    restart_ms: restartMs,
+    interrupted_wake_settled: true,
+    external_provider_requests: 0,
   };
 });
 

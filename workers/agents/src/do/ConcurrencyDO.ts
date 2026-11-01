@@ -118,6 +118,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         return this.releaseLock(request);
       }
       if (request.method === "POST" && url.pathname === "/locks/renew") return this.renewLock(request);
+      if (request.method === "POST" && url.pathname === "/resource-queue/reconcile") return this.reconcileResourceQueue(request);
       if (request.method === "POST" && ["/resource-queue/request", "/resource-queue/release", "/resource-queue/renew", "/resource-queue/cancel"].includes(url.pathname)) {
         return this.resourceQueue(request, url.pathname.split("/").at(-1)!);
       }
@@ -151,6 +152,61 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     } catch (err) {
       return Response.json({ error_code: "internal_error", message: String(err) }, { status: 500 });
     }
+  }
+
+  /** HMAC-authorized reconciliation for a host-proven stopped or never-started worker. */
+  private async reconcileResourceQueue(request: Request): Promise<Response> {
+    const body = await request.json<{
+      claims?: { tenantId?: unknown; spaceId?: unknown; workerId?: unknown; dispatchId?: unknown; resource?: unknown; holder?: unknown; reason?: unknown; issuedAt?: unknown };
+      signature?: unknown;
+    }>().catch(() => ({} as { claims?: { tenantId?: unknown; spaceId?: unknown; workerId?: unknown; dispatchId?: unknown; resource?: unknown; holder?: unknown; reason?: unknown; issuedAt?: unknown }; signature?: unknown }));
+    const claims = body.claims;
+    if (!claims || typeof claims.tenantId !== "string" || !claims.tenantId || typeof claims.spaceId !== "string" || !claims.spaceId ||
+        typeof claims.workerId !== "string" || !claims.workerId || typeof claims.dispatchId !== "string" || !claims.dispatchId || typeof claims.resource !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(claims.resource) ||
+        typeof claims.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.holder) ||
+        !["dispatch_not_started", "worker_terminal"].includes(String(claims.reason)) || !Number.isSafeInteger(claims.issuedAt) ||
+        Math.abs(Date.now() - Number(claims.issuedAt)) > 30_000 || typeof body.signature !== "string" || !/^[a-f0-9]{64}$/.test(body.signature)) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    const secret = this.env.PLATFORM_SECRET;
+    if (!secret) return Response.json({ error_code: "reconciliation_unavailable" }, { status: 503 });
+    const digestHex = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const expectedResource = `worker-resource:${await digestHex(`${claims.tenantId}:${claims.spaceId}:_:worker.execution`)}`;
+    const expectedHolder = await digestHex(`${claims.tenantId}:${claims.spaceId}:${claims.workerId}`);
+    if (claims.resource !== expectedResource || claims.holder !== expectedHolder) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    const signature = Uint8Array.from(body.signature.match(/.{2}/g) ?? [], value => Number.parseInt(value, 16));
+    const valid = await crypto.subtle.verify("HMAC", key, signature, new TextEncoder().encode(JSON.stringify(claims)));
+    if (!valid) return Response.json({ error_code: "forbidden" }, { status: 403 });
+
+    const reconciled = await this.ctx.storage.transaction(async tx => {
+      type Lease = { holder: string; token: number; expiresAt: number };
+      type Queue = { fence: number; capacity?: number; active?: Lease; activeLeases?: Lease[]; waiters: Array<{ holder: string; expiresAt: number; priority: number; enqueuedAt: number }> };
+      const proofKey = `resource-queue-reconciliation-proof:${body.signature}`;
+      if (await tx.get<number>(proofKey) !== undefined) return { reconciled: false, reason: "proof_replayed" };
+      // Persist proof consumption even when the lease was already absent. Replaying a valid
+      // signature must never remove a later lease acquired by the same stable worker identity.
+      await tx.put(proofKey, Date.now());
+      const storageKey = `resource-queue:${claims.resource}`;
+      const state = await tx.get<Queue>(storageKey);
+      if (!state) return { reconciled: false, reason: "lease_missing" };
+      const leases = state.activeLeases ?? (state.active ? [state.active] : []);
+      delete state.active;
+      const index = leases.findIndex(lease => lease.holder === claims.holder);
+      if (index < 0) return { reconciled: false, reason: "lease_missing" };
+      leases.splice(index, 1);
+      state.activeLeases = leases;
+      const now = Date.now();
+      state.waiters = state.waiters.filter(waiter => waiter.expiresAt > now && !leases.some(lease => lease.holder === waiter.holder));
+      while (leases.length < (state.capacity ?? 1) && state.waiters.length) {
+        state.waiters.sort((a, b) => (b.priority + Math.floor((now - b.enqueuedAt) / 30_000)) - (a.priority + Math.floor((now - a.enqueuedAt) / 30_000)) || a.enqueuedAt - b.enqueuedAt);
+        const next = state.waiters.shift()!;
+        leases.push({ holder: next.holder, token: ++state.fence, expiresAt: now + 30_000 });
+      }
+      await tx.put(storageKey, state);
+      return { reconciled: true, released_token: true, promoted_waiters: leases.length };
+    });
+    return Response.json(reconciled);
   }
 
   /** FIFO admission primitive. Expired holders require reconciliation before the next grant. */
