@@ -47,7 +47,8 @@ function percentile(
 
 async function requestModelScores(
   provider: "gemini" | "groqcloud",
-  queries: readonly (typeof blackboardRankingQueries)[number][]
+  queries: readonly (typeof blackboardRankingQueries)[number][],
+  onRequestAttempt: () => void
 ): Promise<{
   model: string;
   latencyMs: number;
@@ -89,6 +90,7 @@ async function requestModelScores(
     const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
     const started = performance.now();
     try {
+      onRequestAttempt();
       const response =
         provider === "gemini"
           ? await fetch(
@@ -419,7 +421,7 @@ describe("blackboard provider ranking evaluation harness", () => {
       const providers = ["gemini", "groqcloud"] as const;
       const results: Array<Record<string, unknown>> = [];
       for (const provider of providers) {
-        let completedInferenceRequests = 0;
+        let inferenceRequests = 0;
         const enabled =
           process.env[
             `NAELAO_BLACKBOARD_${provider === "gemini" ? "GEMINI" : "GROQ"}_ALLOWED`
@@ -451,8 +453,9 @@ describe("blackboard provider ranking evaluation harness", () => {
           const responses = [];
           const parsed = [];
           for (const chunk of chunks) {
-            const response = await requestModelScores(provider, chunk);
-            completedInferenceRequests++;
+            const response = await requestModelScores(provider, chunk, () => {
+              inferenceRequests++;
+            });
             responses.push(response);
             const expected = new Map(
               chunk.flatMap(({ id }) => {
@@ -475,7 +478,7 @@ describe("blackboard provider ranking evaluation harness", () => {
             provider,
             model: response.model,
             state: "completed",
-            inferenceRequests: responses.length,
+            inferenceRequests,
             latencyMs: response.latencyMs,
             requestLatencyMs: responses.map(({ latencyMs }) => latencyMs),
             requestLatencyP50Ms: percentile(
@@ -521,9 +524,9 @@ describe("blackboard provider ranking evaluation harness", () => {
               provider === "gemini"
                 ? GEMINI_MODEL
                 : process.env.GROQ_FREE_MODEL_ID || null,
-            state: "blocked",
+            state: inferenceRequests > 0 ? "failed" : "blocked",
             reason,
-            inferenceRequests: completedInferenceRequests,
+            inferenceRequests,
             providerResponseLogged: false,
             durationMs: Date.now() - startedAt,
           });
@@ -555,6 +558,7 @@ describe("blackboard provider ranking evaluation harness", () => {
       await writeLiveReport(report);
       console.log(`blackboard_provider_ranking=${JSON.stringify(report)}`);
       expect(results).toHaveLength(2);
-    }
+    },
+    600_000
   );
 });
