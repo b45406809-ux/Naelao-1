@@ -1,6 +1,6 @@
 # Naelao deep experiments and release-readiness plan
 
-**Status:** execution plan, not a completion or production-readiness claim  
+**Status:** historical execution plan; claim-led testing priority is now maintained in [`NAELAO-CLAIM-LEDGER-AND-NEXT-EXPERIMENTS.md`](./NAELAO-CLAIM-LEDGER-AND-NEXT-EXPERIMENTS.md), not a completion or production-readiness claim
 **Prepared:** 2026-11-01  
 **Target:** establish the strongest defensible release candidate by 2026-11-02; live acceptance follows only after local gates pass.
 
@@ -33,7 +33,7 @@ The source documents most relevant to this run are `new plan/NAELAO-AGENT-OS-EMP
 
 ## Current evidence baseline
 
-Reference checkout at planning time: `Mcbt5s-Backup-2`, commit `42cfbabab89e95b498531532debd29fc9ce9563f`; `origin/Mcbt5s-Backup-2` matches. `origin/work` is at `68922e7e` and is three commits behind this reference. Recheck remotes before running or publishing results.
+Historical reference checkout when this plan was first drafted: `Mcbt5s-Backup-2`, commit `42cfbabab89e95b498531532debd29fc9ce9563f`; `origin/Mcbt5s-Backup-2` matched and `origin/work` was three commits behind. This is not the current source baseline. Read the claim-led plan's current SHA and branch state before relying on any older run or restarting a batch.
 
 Evidence recorded in the current repository includes:
 
@@ -84,12 +84,12 @@ The test-only concurrent wake option is bounded to 32 sweeps and only exists in 
 |---|---|---|
 | 0 — Freeze/baseline | **PASS** | Full Actions inventory and connected checks passed on `f7b152eb`; clean checkout and synced branches. Local clean install is blocked by this session's pnpm 11/script policy/disk, while the clean runner install/build passed. |
 | 1 — Actor/scope boundary | **PARTIAL PASS** | Focused scope/assistant/blackboard tests passed; full CI passed. Needs a larger generated matrix covering extension principals, archive/delete, tunnels, and all tool surfaces in joined traces. |
-| 2 — Joined task/evidence | **PARTIAL PASS** | The local four-Worker Wrangler suite now exercises both Space Assistant and Project Bot planner → child AgentDO → correctly scoped workspace artifact → host evidence → Decisions verification → usage reservation/settlement. Verified/uncertain outcomes and dependent-task gating pass. UI trace continuity, live-provider execution, and a broad independent benchmark remain open. |
+| 2 — Joined task/evidence | **PARTIAL PASS** | The local four-Worker Wrangler suite exercises Space Assistant and Project Assistant planner → child AgentDO → scoped artifact → host evidence → Decisions verification → usage reservation/settlement. Verified/uncertain outcomes and dependent-task gating pass. A builder-only dashboard now groups persisted Space/Project Assistant and worker activity by root run; authenticated browser-to-DO execution, live-provider execution, and broad independent benchmark remain open. |
 | 3 — Blackboard coordination | **PARTIAL PASS** | 1, 2, 8, and 32 simultaneous local-D1 sweepers each produce exactly one claim/dispatch; authorization revocation, busy retry, lease expiry and dedupe pass. The HTTP-200/script-failure false completion is fixed and tested. Fixer spawning is opt-in, host-kill-switch controlled and capped at two per goal in deterministic DAG tests. Worker-message recovery, AgentDO restart during dispatch, and a full AgentDO fixer execution/recovery trace remain open. |
 | 4 — Durable dispatch/side effects | **PARTIAL** | Goal DAG, outbox, usage reconciliation, tunnel idempotency/restart and billing reservation tests pass. AgentDO outbox recovery plus real external side-effect uncertainty/reconciliation is not yet exercised across a running DO restart. |
 | 5 — Decision/evaluation quality | **SYNTHETIC ONLY** | 9 repository-authored graph scenarios repeated 3 times plus generated DAG stress run in tests; one test is skipped. No external held-out dataset or current live model quality evaluation was part of this full-test run. |
 | 6 — CLI/MCP/runtime environments | **PARTIAL PASS** | Selected command/MCP (52), MCP Hub (21), tunnel/container (42 + 38) tests pass; distinct container affinity and shared-resource queuing are covered in goal DAG tests. No live tunnel machine, managed container provider, browser profile or production snapshot acceptance. |
-| 7 — UI/template journeys | **PARTIAL** | Browser CI passes its seeded fake-API Project Bot journey. Authenticated UI-to-DO task/evidence/approval and member/editor/viewer/archive lifecycle journeys remain open. |
+| 7 — UI/template journeys | **PARTIAL** | Browser CI passes its seeded fake-API Project Bot journey. A builder-only trace view is available in the team dashboard, but it has only local build/type/test evidence. Authenticated end-user UI-to-DO task/evidence/approval and member/editor/viewer/archive lifecycle journeys remain open. |
 | 8 — Migration/recovery | **PARTIAL PASS** | All 154 D1 migrations apply in local Wrangler acceptance. Restore from backup, deletion/retention cleanup and deployed rollback have not been proven. |
 | 9 — Cost/latency/load | **PARTIAL** | 30-sample local admission latency is recorded (94/114 ms local, 126/133 ms on CI runner). These are pre-model timings; no end-to-end verified-task cost, production p95, or saturation curve is measured. |
 | 10 — Live acceptance | **NOT RUN** | No deployed Cloudflare test Space, real model call, telephone/SMS, WhatsApp, email, billing-provider, or external runtime acceptance in these runs. |
@@ -263,7 +263,7 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 ## Immediate next actions
 
 1. **Complete for commit `f7b152eb`:** the full GitHub Actions inventory and connected checks passed; the per-suite summary and runtime metrics were inspected. A documentation-only update may trigger another inventory run, but does not change this code-tested SHA.
-2. **Partially closed:** the local mock proves Space Assistant and Project Bot use the shared planner/worker architecture, including host artifact evidence and active verification; the Project Bot two-task test proves dependent gating. Next, add authenticated browser-to-DO visibility assertions that join the assistant, task, worker, artifact, and verification receipt in one user-visible trace.
+2. **Partially closed:** the local mock proves Space Assistant and Project Assistant use the shared planner/worker architecture, including host artifact evidence and active verification; the dependent-task test proves gating. A builder-only dashboard trace now joins activity rows by root run. Next, add an authenticated browser-to-DO journey that joins assistant, task, worker, artifact, verification receipt and durable task status; do not treat the local dashboard build as browser acceptance.
 3. Continue Batch 3 with concurrent wake-claim recovery across crash/lease boundaries and blackboard message delivery; continue Batch 4 with AgentDO goal-state restart and uncertain external-effect tests.
 4. Run authenticated UI-to-DO lifecycle cases and archive/restore/member journeys. The current browser tests are useful but synthetic.
 5. Continue independent Batch 5 decision-quality and Batch 6 environment/browser/container experiments, then Batch 9. Batch 8's migrations have already been applied successfully during the local runtime test, but deletion/backup/rollback recovery remains open.
