@@ -192,6 +192,33 @@ export async function fetchOpenRouterCatalog(
   }
 }
 
+/** Resolve a catalog card for either the platform decision-model ID (for example
+ * `cloudflare/clef-flash`) or the `openrouter/`-qualified ID used by ordinary BYOK routing.
+ * OpenRouter's model listing omits Naelao's routing prefix, while the typed Decisions API uses
+ * the provider's model ID directly. Comparing only `candidate.model` makes metered system
+ * decisions fail closed despite a fresh, valid catalog card. */
+export function findOpenRouterCatalogCandidate(
+  catalog: readonly OpenRouterModelCandidate[],
+  model: string,
+): OpenRouterModelCandidate | undefined {
+  return catalog.find(candidate => candidate.id === model || candidate.model === model);
+}
+
+/** Resolve a priced catalog card only while its observation timestamp is current. A future
+ * timestamp is invalid evidence too; a negative age must not accidentally pass freshness checks. */
+export function findFreshOpenRouterPriceCandidate(
+  catalog: readonly OpenRouterModelCandidate[],
+  model: string,
+  now = Date.now(),
+  maxAgeMs = 15 * 60_000,
+): OpenRouterModelCandidate | undefined {
+  const candidate = findOpenRouterCatalogCandidate(catalog, model);
+  const observedAt = candidate?.catalogObservedAt ? Date.parse(candidate.catalogObservedAt) : Number.NaN;
+  const age = now - observedAt;
+  if (!candidate || !Number.isFinite(observedAt) || age < 0 || age > maxAgeMs) return undefined;
+  return candidate;
+}
+
 /** Isolated catalog parser test hook; not exported from the public Agents worker API. */
 export const openRouterCatalogForTest = {
   parse: parseCatalog,

@@ -280,6 +280,13 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 - **Updated Batch 2 status:** real local AgentDO dispatch and versioned-branch artifact publication are now proven for a Project Bot with a synthetic planner/model adapter. Still open: Space Assistant parity in this same real delegated path, host-collected evidence bound to the exact worker attempt and artifact hash, active verifier enforcement/unblocking of dependent work, and UI visibility of the joined actor/task/evidence trace. Batch 4 restart/reconciliation for a running AgentDO and live provider side effects also remain open.
 - Current limitations remain material: no deployed Cloudflare environment, live OpenRouter usage, phone/channel provider, production container/tunnel, external benchmark dataset, independent verification, or browser UI → live DO lifecycle was exercised. This is stronger local integration evidence, not a production-readiness claim.
 
+### Follow-up: Decisions model catalog ID compatibility (2026-11-01)
+
+- Reviewing the real Durable Object Decisions billing admission found an ID-format mismatch: the Decisions API model is `cloudflare/clef-flash`, while the OpenRouter catalog adapter exposes its same card as `openrouter/cloudflare/clef-flash`. The reserve callback compared only the qualified value and consequently rejected a fresh card before budget reservation.
+- The host now resolves a catalog card by either its raw catalog ID or its qualified BYOK ID, then still requires fresh catalog pricing and the existing billing service before admission. Missing, stale, or unpriced cards remain fail-closed.
+- Regression coverage passed for both representations and verifies that the selected card carries usable prices. Five focused Agents suites passed **41/41**, and the Agents TypeScript project check passed. No OpenRouter request was made.
+- This closes catalog lookup compatibility only. It does not exercise a live Decisions call, production billing ledger, or active goal-verifier enforcement in the multi-Worker runtime acceptance; those remain separate acceptance gates.
+
 ## Explicitly out of scope for a one-day proof
 
 Passing a bounded test plan does not prove broad model intelligence, zero real-world false acceptance, production scalability, regulatory compliance, marketplace trustworthiness, or availability in every country/provider. External benchmark datasets, large-scale customer load, independent FDE publishing, and every vertical integration require separate evidence and must not be smuggled into a “green CI” claim.

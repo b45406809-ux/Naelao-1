@@ -57,7 +57,7 @@ import { enqueueUsageEvent, flushUsageEventOutbox, initUsageEventOutbox, type Us
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
-import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, findFreshOpenRouterPriceCandidate, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 import { fetchOpenRouterGenerationUsage, retryDelayMs } from "../shared/openrouter-usage.js";
 import {
   ScriptToolSurface,
@@ -2324,7 +2324,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         billing: {
           reserve: async ({ model, requestBytes, idempotencyKey }) => {
             const catalog = await fetchOpenRouterCatalog(openRouterDecisionKey).catch(() => []);
-            const card = catalog.find(candidate => candidate.model === model && candidate.catalogObservedAt && Date.now() - Date.parse(candidate.catalogObservedAt) <= 15 * 60_000);
+            const card = findFreshOpenRouterPriceCandidate(catalog, model);
             const inputPrice = card?.promptPriceUsdPerToken;
             const outputPrice = card?.completionPriceUsdPerToken;
             const priceTimestamp = card?.catalogObservedAt;

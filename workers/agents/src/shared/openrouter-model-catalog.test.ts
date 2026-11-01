@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, normalizeOpenRouterCapabilities, openRouterCatalogForTest } from "./openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, findFreshOpenRouterPriceCandidate, findOpenRouterCatalogCandidate, isOpenRouterPlannerCandidate, normalizeOpenRouterCapabilities, openRouterCatalogForTest } from "./openrouter-model-catalog.js";
 
 describe("OpenRouter model catalog", () => {
   beforeEach(() => { vi.restoreAllMocks(); openRouterCatalogForTest.reset(); });
@@ -9,6 +9,23 @@ describe("OpenRouter model catalog", () => {
     expect(cap.output.has("speech")).toBe(true);
     expect(cap.tools).toBeNull();
     expect(cap.fresh).toBe(false);
+  });
+
+  it("matches both raw Decisions API IDs and qualified BYOK model IDs", () => {
+    const catalog = [{
+      id: "cloudflare/clef-flash", model: "openrouter/cloudflare/clef-flash", name: "Clef Flash",
+      promptPriceUsdPerToken: 0.000001, completionPriceUsdPerToken: 0.000002,
+      catalogObservedAt: new Date().toISOString(),
+    }];
+    const decisionsCard = findFreshOpenRouterPriceCandidate(catalog, "cloudflare/clef-flash");
+    const byokCard = findOpenRouterCatalogCandidate(catalog, "openrouter/cloudflare/clef-flash");
+    expect(decisionsCard).toBe(catalog[0]);
+    expect(byokCard).toBe(catalog[0]);
+    expect(decisionsCard?.promptPriceUsdPerToken).toBeGreaterThan(0);
+    expect(decisionsCard?.completionPriceUsdPerToken).toBeGreaterThan(0);
+    expect(findOpenRouterCatalogCandidate(catalog, "cloudflare/other")).toBeUndefined();
+    expect(findFreshOpenRouterPriceCandidate(catalog, "cloudflare/clef-flash", Date.now() - 15 * 60_000 - 1)).toBeUndefined();
+    expect(findFreshOpenRouterPriceCandidate([{ ...catalog[0], catalogObservedAt: new Date(Date.now() + 1).toISOString() }], "cloudflare/clef-flash")).toBeUndefined();
   });
 
   it("validates the key and parses only bounded catalog metadata", async () => {
