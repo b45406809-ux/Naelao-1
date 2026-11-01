@@ -1,6 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { rankSharedCards } from "./blackboard-domain.js";
+import {
+  type SharedProjectCard,
+  rankSharedCards,
+} from "./blackboard-domain.js";
 import { evaluateBlackboardRankings } from "./blackboard-ranking-evaluation.js";
 import {
   blackboardRankingCards,
@@ -103,5 +106,94 @@ describe("synthetic Space Blackboard relevance corpus", () => {
     expect(lexicalAnyHits).toBeGreaterThanOrEqual(0);
     expect(lexicalAnyHits).toBeLessThanOrEqual(relevantCount);
     expect(evaluation.baseline.cases).toBe(16);
+  });
+
+  it("measures candidate recall and ideal reranking ceiling as the catalog grows", () => {
+    const scaleCounts = [16, 64, 256, 1024];
+    const result = scaleCounts.map((size) => {
+      const distractors: SharedProjectCard[] = Array.from(
+        { length: Math.max(0, size - blackboardRankingCards.length) },
+        (_, index) => ({
+          projectId: `distractor-${String(index + 1).padStart(4, "0")}`,
+          summary:
+            "General team operations project for planning, status tracking, review, and reporting.",
+          capabilities: ["project planning", "status updates", "team reports"],
+          evidence: [],
+          updatedAt: "2026-11-01T00:00:00.000Z",
+        })
+      );
+      const cards = [...blackboardRankingCards, ...distractors];
+      const limits = [5, 20, 50, 100, cards.length].filter(
+        (limit, index, all) =>
+          limit <= cards.length && all.indexOf(limit) === index
+      );
+      const candidates = limits.map((limit) => {
+        let relevantInstances = 0;
+        const cases = blackboardRankingHoldoutQueries.map((query) => {
+          const lexical = rankSharedCards(query.query, cards).map(
+            ({ card }) => card.projectId
+          );
+          const retrieved =
+            limit === cards.length
+              ? rankSharedCards(query.query, cards, {
+                  includeZeroScore: true,
+                }).map(({ card }) => card.projectId)
+              : lexical.slice(0, limit);
+          const relevant = new Set(query.relevantProjectIds);
+          relevantInstances += query.relevantProjectIds.filter((id) =>
+            retrieved.includes(id)
+          ).length;
+          const idealized = [
+            ...retrieved.filter((id) => relevant.has(id)),
+            ...retrieved.filter((id) => !relevant.has(id)),
+          ];
+          return {
+            id: query.id,
+            relevantProjectIds: query.relevantProjectIds,
+            baselineOrder: lexical,
+            candidateOrder: idealized,
+          };
+        });
+        const evaluation = evaluateBlackboardRankings(cases, {
+          k: 5,
+          seed: 0x5343414c,
+          bootstrapSamples: 1000,
+        });
+        const relevantCount = blackboardRankingHoldoutQueries.reduce(
+          (sum, query) => sum + query.relevantProjectIds.length,
+          0
+        );
+        return {
+          candidateLimit: limit,
+          relevantCandidateRecall: relevantInstances / relevantCount,
+          boundedRerankerCeiling: evaluation.candidate,
+        };
+      });
+      return { catalogCards: cards.length, candidates };
+    });
+    const report = {
+      evidenceClass: "synthetic-scaled-catalog-stress",
+      queryCount: blackboardRankingHoldoutQueries.length,
+      relevanceLabelsIndependentlyAdjudicated: false,
+      distractorsPerCatalog: scaleCounts.map(
+        (size) => size - blackboardRankingCards.length
+      ),
+      result,
+      limitations: [
+        "The same 16 synthetic relevant cards and query-wording holdout are reused at every size.",
+        "Distractors are templated and intentionally overlap generic planning/status terms; this is a stress case, not a traffic distribution.",
+        "The idealized reranker knows fixture relevance labels and is an upper bound, not a model result.",
+      ],
+    };
+    console.log(`blackboard_catalog_scale=${JSON.stringify(report)}`);
+
+    expect(result.map(({ catalogCards }) => catalogCards)).toEqual(scaleCounts);
+    for (const scale of result) {
+      const recalls = scale.candidates.map(
+        ({ relevantCandidateRecall }) => relevantCandidateRecall
+      );
+      expect(recalls).toEqual([...recalls].sort((a, b) => a - b));
+      expect(scale.candidates.at(-1)?.relevantCandidateRecall).toBe(1);
+    }
   });
 });
