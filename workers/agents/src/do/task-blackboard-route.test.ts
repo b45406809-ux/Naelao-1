@@ -13,16 +13,17 @@ describe("task blackboard durable object route", () => {
       [`goal-activity:metadata:${hash}`, { tenantId: "t", spaceId: "s", actorId: "u", tasks: [{ id: "a", title: "Task", dependencies: [] }] }],
       [`goal-dag:${hash}`, { verificationRequired: true, tasks: { a: { status: "failed", workerId: "w", verification: { outcome: "failed", reason: "Independent evidence rejected." } } }, fixers: { a: { status: "needs_review", workerId: "w:fix", result: { id: "w:fix", ok: false, output: "private fixer transcript must not be exposed" } } } }],
     ]);
-    const storage = { get: async (key: string) => data.get(key) };
+    const storage = { get: async (key: string) => data.get(key), sql: { exec: (query: string) => ({ toArray: () => query.includes("goal_dag_journals") ? [] : [{ task_id: "a", status: "review", attempt: 2, workspace_branch: "private/branch" }] }) } };
     const instance = new NaelaoAgentDO({ storage, id: { toString: () => "parent" } } as never, { PLATFORM_SECRET: secret } as never);
     (instance as unknown as { ensureInit(): void }).ensureInit = () => {};
     const token = await mintInternalToken(secret, "t");
     const get = (actor: string, space: string, internal = token) => instance.fetch(new Request(`http://agent/internal/goal-activity?run_id=run&space_id=${space}`, { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": actor, "x-naelao-internal-token": internal } }));
-    const ownerResponse = await (await get("u", "s")).json() as { goals: Array<{ verificationRequired: boolean; tasks: Array<{ verification?: { outcome: string; reason: string } }>; fixers: Record<string, { status: string }> }> };
+    const ownerResponse = await (await get("u", "s")).json() as { goals: Array<{ verificationRequired: boolean; tasks: Array<{ verification?: { outcome: string; reason: string }; dispatch?: { status: string; attempt?: number } }>; fixers: Record<string, { status: string }> }> };
     const ownerGoals = ownerResponse.goals;
     expect(ownerGoals).toHaveLength(1);
-    expect(ownerGoals[0]).toMatchObject({ verificationRequired: true, tasks: [{ verification: { outcome: "failed", reason: "Independent evidence rejected." } }], fixers: { a: { status: "needs_review" } } });
+    expect(ownerGoals[0]).toMatchObject({ verificationRequired: true, tasks: [{ verification: { outcome: "failed", reason: "Independent evidence rejected." }, dispatch: { status: "review", attempt: 2 } }], fixers: { a: { status: "needs_review" } } });
     expect(JSON.stringify(ownerResponse)).not.toContain("private fixer transcript must not be exposed");
+    expect(JSON.stringify(ownerResponse)).not.toContain("private/branch");
     expect((await (await get("other", "s")).json() as { goals: unknown[] }).goals).toHaveLength(0);
     expect((await (await get("u", "other")).json() as { goals: unknown[] }).goals).toHaveLength(0);
     expect((await get("u", "s", "invalid")).status).toBe(403);

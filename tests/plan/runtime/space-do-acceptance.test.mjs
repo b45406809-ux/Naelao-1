@@ -529,6 +529,7 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
   assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, wake: result.wake, dispatch: result.dispatchResponses, decisions: after.decisions }));
   assert.equal(result.goalActivity.goals[0]?.verificationRequired, true);
   assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "completed");
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.dispatch?.status, "acknowledged", JSON.stringify(result.goalActivity));
   assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "passed");
   assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /agrees with deterministic host evidence/i);
   assert.equal(after.decisions.calls - before.decisions.calls, 1, JSON.stringify(after.decisions));
@@ -549,6 +550,7 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
     "GET"
   );
   assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "completed", JSON.stringify(persistedGoal));
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.dispatch?.status, "acknowledged", JSON.stringify(persistedGoal));
   assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "passed", JSON.stringify(persistedGoal));
   metrics.agents_goal_journal_restarts.push({
     outcome: "completed",
@@ -594,6 +596,7 @@ test("a cautious Decisions verdict remains visible as review instead of being pr
   assert.equal(result.workspaceArtifact?.exists, true);
   assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, dispatch: result.dispatchResponses }));
   assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "needs_review");
+  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.dispatch?.status, "acknowledged", JSON.stringify(result.goalActivity));
   assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "uncertain");
   assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /review required/i);
   assert.equal(after.decisions.calls, 1);
@@ -606,6 +609,7 @@ test("a cautious Decisions verdict remains visible as review instead of being pr
     "GET"
   );
   assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "needs_review", JSON.stringify(persistedGoal));
+  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.dispatch?.status, "acknowledged", JSON.stringify(persistedGoal));
   assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "uncertain", JSON.stringify(persistedGoal));
   metrics.agents_goal_journal_restarts.push({
     outcome: "needs_review",

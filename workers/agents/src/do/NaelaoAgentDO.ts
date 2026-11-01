@@ -4715,9 +4715,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (!journal) continue;
       const messages = await this.ctx.storage.get<import("../script-engine/task-blackboard.js").TaskMessage[]>(`task-blackboard:messages:${hash}`) ?? [];
+      const dispatchTaskIds = metadata.tasks.slice(0, 12).map(task => task.id);
+      const dispatchRows = dispatchTaskIds.length && this.ctx.storage.sql
+        ? this.ctx.storage.sql.exec<{ task_id: string; status: string; attempt: number | null }>(
+          `SELECT task_id,status,attempt FROM goal_dispatch_outbox WHERE task_id IN (${dispatchTaskIds.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT 12`, ...dispatchTaskIds
+        ).toArray()
+        : [];
+      const dispatchByTask = new Map(dispatchRows.map(row => [row.task_id, row]));
       goals.push({ id: hash, verificationRequired: journal.verificationRequired === true, tasks: metadata.tasks.map(task => {
         const state = journal.tasks[task.id];
+        const dispatch = dispatchByTask.get(task.id);
         return { ...task, status: state?.status ?? "pending", workerId: state?.workerId,
+          ...(dispatch && ["intent", "delivering", "acknowledged", "uncertain", "review"].includes(dispatch.status) ? { dispatch: { status: dispatch.status, ...(Number.isSafeInteger(dispatch.attempt) && (dispatch.attempt ?? 0) > 0 ? { attempt: dispatch.attempt } : {}) } } : {}),
           ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
           ...(state?.runtime ? { runtime: state.runtime } : {}) };
       }), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });

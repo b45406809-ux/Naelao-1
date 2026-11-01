@@ -2058,7 +2058,7 @@ export interface SubAgentSummary {
 export interface GoalActivity {
   id: string;
   verificationRequired: boolean;
-  tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
+  tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; dispatch?: { status: "intent" | "delivering" | "acknowledged" | "uncertain" | "review"; attempt?: number }; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
   escalations: Array<{ taskId: string; reason: string; nextAction: string; blockedTasks: string[] }>;
   fixers: Record<string, { status: string }>;
   messages: Array<{ id: string; sender: string; recipients: string[]; kind: string; text: string }>;
