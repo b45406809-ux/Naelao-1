@@ -38,6 +38,8 @@ jobs:
           cache: pnpm
       - name: Install workspace test dependencies
         run: pnpm install --no-frozen-lockfile
+      - name: Verify live-provider follow-up gates
+        run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -53,18 +55,10 @@ jobs:
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
         if: always()
+        env:
+          PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
-          node --input-type=module <<'JS' >> "$GITHUB_ENV"
-          import fs from 'node:fs';
-          let report; try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); } catch {}
-          for (const [name, key] of [['gemini','GEMINI'],['groqcloud','GROQ']]) {
-            const result = report?.results?.find(item => item.provider === name);
-            // Planning is a separate, additional set of live calls. Only run it
-            // when the bounded verifier comparison completed without invalid
-            // responses or transport/provider failures.
-            console.log(`${key}_PLAN_CALLS_ALLOWED=${Boolean(result && result.state === 'completed' && result.validResponseRate === 1 && result.reason == null)}`);
-          }
-          JS
+          node infra/scripts/provider-followup-gate.mjs ranking
       - name: Run bounded model ranking through production blackboard reranker
         if: always()
         env:
@@ -76,10 +70,13 @@ jobs:
           GROQ_FREE_TIER_CONFIRMED: 'true'
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
           NAELAO_RUN_LIVE_BLACKBOARD_RANKING: 'true'
-          NAELAO_BLACKBOARD_GEMINI_ALLOWED: ${{ env.GEMINI_PLAN_CALLS_ALLOWED }}
-          NAELAO_BLACKBOARD_GROQ_ALLOWED: ${{ env.GROQ_PLAN_CALLS_ALLOWED }}
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
+      - name: Disable planning calls after a ranking failure or provider rate limit
+        if: always()
+        env:
+          BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
+        run: node infra/scripts/provider-followup-gate.mjs planning
       - name: Run real-model planning through the goal DAG and host verifier
         if: always()
         env:

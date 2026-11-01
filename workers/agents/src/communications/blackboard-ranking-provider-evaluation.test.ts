@@ -632,7 +632,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         let inferenceRequests = 0;
         const enabled =
           process.env[
-            `NAELAO_BLACKBOARD_${provider === "gemini" ? "GEMINI" : "GROQ"}_ALLOWED`
+            `${provider === "gemini" ? "GEMINI" : "GROQ"}_PLAN_CALLS_ALLOWED`
           ] === "true";
         if (!enabled) {
           results.push({
@@ -811,7 +811,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         providers: results,
         limitations: [
           "The corpus has 16 synthetic shared-project cards and 12 hard hand-labeled queries (8 paraphrases, 4 multi-project); results are exploratory, not independently validated or representative of user traffic.",
-          `Each provider receives up to 16 visible candidate cards per hard query. The current production path is evaluated using its bounded top-five Decisions calls; a separate all-visible candidate-pool ablation uses the same reranking comparator. Provider use is capped at ${MAX_PROVIDER_REQUESTS} requests; schema-invalid output is split into smaller query groups and rate limits stop further calls.`,
+          `Each provider receives up to 16 visible candidate cards per hard query. The current blackboard.search operation is exercised with a test Decisions adapter that returns precomputed scores from this live batch for its bounded top five; the all-visible candidate-pool ablation uses the same pure reranking comparator. No live OpenRouter Decisions calls occur in this experiment. Provider use is capped at ${MAX_PROVIDER_REQUESTS} direct test-provider requests; schema-invalid output is split into smaller query groups and rate limits stop further calls.`,
           "The test uses Gemini and GroqCloud directly and does not alter or replace OpenRouter Decisions production routing.",
           "Provider billing receipts are unavailable in this test; cost is null and is not inferred from token usage.",
           "A free-tier flag is an operator assertion. The harness does not guarantee provider billing or remaining quota; it stops and records provider rate limits.",
