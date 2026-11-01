@@ -79,6 +79,17 @@ export default {
         },
       }));
     }
+    if (url.pathname === "/__test/agent-activity" && request.method === "GET") {
+      const rootRunId = url.searchParams.get("root_run_id");
+      if (!rootRunId || rootRunId.length > 256) return Response.json({ error: "root_run_id_required" }, { status: 400 });
+      const spacesService = env.SPACES_WORKER as Fetcher | undefined;
+      if (!spacesService) return Response.json({ error: "spaces_worker_unavailable" }, { status: 503 });
+      const token = await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID);
+      return spacesService.fetch(new Request(
+        `http://spaces/spaces/${encodeURIComponent(TEST_SPACE_ID)}/agent-activity?root_run_id=${encodeURIComponent(rootRunId)}&limit=200`,
+        { headers: { "x-naelao-tenant-id": TEST_TENANT_ID, "x-naelao-internal-token": token } },
+      ));
+    }
     if (url.pathname === "/__test/active-run" && request.method === "GET") {
       const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
       const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;

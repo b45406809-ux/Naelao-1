@@ -6822,6 +6822,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         threadId: sessionId,
         sessionId,
         runId,
+        assistantScope: isSubAgent ? "worker" : projectId ? "project_assistant" : "space_assistant",
+        rootRunId: delegation?.rootRunId ?? (typeof body.context?.["root_run_id"] === "string" ? body.context["root_run_id"] : runId),
+        ...(delegation ? { parentRunId: delegation.parentRunId, workerId: delegation.workerId } : {}),
         triggerSource,
         durationMs: runDurationMs,
         recoveryCount: browserRecoveries,
@@ -6884,6 +6887,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       void this.logAgentActivity(spaceId, tenantId, agentId, "run_failed", {
         projectId: projectId ?? null, threadId: sessionId, summary: errMessage.slice(0, 500),
         sessionId, runId,
+        assistantScope: isSubAgent ? "worker" : projectId ? "project_assistant" : "space_assistant",
+        rootRunId: delegation?.rootRunId ?? (typeof body.context?.["root_run_id"] === "string" ? body.context["root_run_id"] : runId),
+        ...(delegation ? { parentRunId: delegation.parentRunId, workerId: delegation.workerId } : {}),
         failureKind: classifyFailure(errMessage).kind,
         triggerSource: typeof body.context?.["trigger"] === "string" ? String(body.context["trigger"]) : "chat",
       });
@@ -8293,6 +8299,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       failureKind?: string | null;
       /** The thread and run, so a reader can go and continue the exact interrupted work. */
       sessionId?: string | null; runId?: string | null;
+      /** Explicitly correlate parent assistants and delegated worker runs in SpaceDO audit. */
+      assistantScope?: "space_assistant" | "project_assistant" | "worker";
+      rootRunId?: string | null; parentRunId?: string | null; workerId?: string | null;
       /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
       triggerSource?: string | null;
       durationMs?: number | null;
@@ -8319,6 +8328,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             failure_kind: opts.failureKind ?? null,
             session_id: opts.sessionId ?? null,
             run_id: opts.runId ?? null,
+            assistant_scope: opts.assistantScope ?? null,
+            root_run_id: opts.rootRunId ?? null,
+            parent_run_id: opts.parentRunId ?? null,
+            worker_id: opts.workerId ?? null,
             trigger_source: opts.triggerSource ?? null,
             duration_ms: opts.durationMs ?? null,
             recovery_count: opts.recoveryCount ?? 0,

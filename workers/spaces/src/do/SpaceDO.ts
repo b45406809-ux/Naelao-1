@@ -2319,6 +2319,17 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_project_spend_reservations_live ON project_spend_reservations(project_id,day,status,expires_at);
     `,
   },
+  {
+    version: 108,
+    description: "correlate assistant and delegated worker activity by root run",
+    up: `
+      ALTER TABLE agent_activity_log ADD COLUMN assistant_scope TEXT CHECK (assistant_scope IS NULL OR assistant_scope IN ('space_assistant','project_assistant','worker'));
+      ALTER TABLE agent_activity_log ADD COLUMN root_run_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN parent_run_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN worker_id TEXT;
+      CREATE INDEX idx_agent_activity_root_run ON agent_activity_log(space_id,root_run_id,created_at DESC);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -7969,6 +7980,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         /** The thread and run this happened in, so a reader can actually go and continue it. */
         session_id?: string | null;
         run_id?: string | null;
+        assistant_scope?: "space_assistant" | "project_assistant" | "worker" | null;
+        root_run_id?: string | null;
+        parent_run_id?: string | null;
+        worker_id?: string | null;
         /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
         trigger_source?: string | null;
         duration_ms?: number | null;
@@ -7985,11 +8000,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const allowedAssistantScopes = ["space_assistant", "project_assistant", "worker"] as const;
+    if (body.assistant_scope != null && !allowedAssistantScopes.includes(body.assistant_scope)) {
+      return Response.json({ error_code: "invalid_assistant_scope" }, { status: 400 });
+    }
+    if ((body.root_run_id != null && (typeof body.root_run_id !== "string" || body.root_run_id.length < 1 || body.root_run_id.length > 256))
+      || (body.parent_run_id != null && (typeof body.parent_run_id !== "string" || body.parent_run_id.length < 1 || body.parent_run_id.length > 256))
+      || (body.worker_id != null && (typeof body.worker_id !== "string" || body.worker_id.length < 1 || body.worker_id.length > 256))) {
+      return Response.json({ error_code: "invalid_activity_correlation" }, { status: 400 });
+    }
+    if ((body.assistant_scope === "space_assistant" && body.project_id != null)
+      || (body.assistant_scope === "project_assistant" && (typeof body.project_id !== "string" || !body.project_id))
+      || (body.assistant_scope === "worker" && (!body.root_run_id || !body.parent_run_id || !body.worker_id))) {
+      return Response.json({ error_code: "incomplete_activity_correlation" }, { status: 400 });
+    }
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits,
-                                       failure_kind, session_id, run_id, trigger_source, duration_ms, recovery_count, repeated_mutation_calls)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                       failure_kind, session_id, run_id, trigger_source, duration_ms, recovery_count, repeated_mutation_calls,
+                                       assistant_scope, root_run_id, parent_run_id, worker_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(),
       body.space_id,
       body.project_id ?? null,
@@ -8005,7 +8035,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.trigger_source ?? null,
       typeof body.duration_ms === "number" && Number.isSafeInteger(body.duration_ms) && body.duration_ms >= 0 ? body.duration_ms : null,
       typeof body.recovery_count === "number" && Number.isSafeInteger(body.recovery_count) && body.recovery_count >= 0 ? Math.min(body.recovery_count, 10_000) : 0,
-      typeof body.repeated_mutation_calls === "number" && Number.isSafeInteger(body.repeated_mutation_calls) && body.repeated_mutation_calls >= 0 ? Math.min(body.repeated_mutation_calls, 10_000) : 0
+      typeof body.repeated_mutation_calls === "number" && Number.isSafeInteger(body.repeated_mutation_calls) && body.repeated_mutation_calls >= 0 ? Math.min(body.repeated_mutation_calls, 10_000) : 0,
+      body.assistant_scope ?? null,
+      typeof body.root_run_id === "string" && body.root_run_id.length <= 256 ? body.root_run_id : null,
+      typeof body.parent_run_id === "string" && body.parent_run_id.length <= 256 ? body.parent_run_id : null,
+      typeof body.worker_id === "string" && body.worker_id.length <= 256 ? body.worker_id : null
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -8020,6 +8054,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // those four rows specifically instead of paging the whole log looking for them.
     const failureKind = params.get("failure_kind");
     const eventType = params.get("event_type");
+    const rootRunId = params.get("root_run_id");
 
     const where: string[] = [];
     const binds: Array<string | number> = [];
@@ -8034,6 +8069,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (eventType) {
       where.push("event_type = ?");
       binds.push(eventType);
+    }
+    if (rootRunId !== null) {
+      if (rootRunId.length > 256) return Response.json({ error_code: "invalid_root_run_id" }, { status: 400 });
+      where.push("root_run_id = ?");
+      binds.push(rootRunId);
     }
     binds.push(limit);
 

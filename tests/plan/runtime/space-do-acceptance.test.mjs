@@ -295,6 +295,17 @@ async function jsonRequest(baseUrl, pathname, method, body, timeoutMs = 120_000)
   return parsed;
 }
 
+async function waitForCorrelatedAgentActivity(rootRunId, expectedAssistantScope) {
+  let trace = { data: [] };
+  for (let attempt = 0; attempt < 40; attempt++) {
+    trace = await jsonRequest(agentsBaseUrl, `/__test/agent-activity?root_run_id=${encodeURIComponent(rootRunId)}`, "GET");
+    const scopes = new Set((trace.data ?? []).map((row) => row.assistant_scope));
+    if (scopes.has(expectedAssistantScope) && scopes.has("worker")) return trace;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return trace;
+}
+
 test("separate Spaces and Agents Workers coordinate a provider-free blackboard wake through real Durable Objects", async () => {
   const { spaceId } = identity;
   const project = await jsonRequest(
@@ -487,6 +498,10 @@ test("Space Assistant uses the shared planner, verified leaf worker and Space wo
   assert.deepEqual(result.gateway.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
   assert.ok(result.gateway.totalRequests > before.totalRequests);
   assert.equal(result.gateway.totalRequests - before.totalRequests, 4, JSON.stringify({ before, after: result.gateway }));
+  const correlatedTrace = await waitForCorrelatedAgentActivity(result.runId, "space_assistant");
+  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.runId && row.assistant_scope === "space_assistant"), JSON.stringify(correlatedTrace));
+  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.runId && row.assistant_scope === "worker" && row.worker_id), JSON.stringify(correlatedTrace));
+  assert.ok(correlatedTrace.data.filter((row) => row.root_run_id === result.runId).every((row) => row.project_id === null), JSON.stringify(correlatedTrace));
   metrics.space_assistant_verified_worker_run = {
     evidence_class: "integrated-local-synthetic-model",
     task_status: tasks[0].status,
@@ -494,6 +509,7 @@ test("Space Assistant uses the shared planner, verified leaf worker and Space wo
     artifact_workspace: "Space Assistant workspace",
     decisions_requests: result.gateway.decisions.calls,
     billing_events: result.gateway.decisions.billingEvents.map(event => event.kind),
+    correlated_trace: (correlatedTrace.data ?? []).map(({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id }) => ({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id })),
     external_provider_requests: 0,
   };
 });
@@ -538,6 +554,10 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
   assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
   assert.ok(after.decisions.timeline.findIndex(event => event.kind === "billing_reserve") < after.decisions.timeline.findIndex(event => event.kind === "decision"));
   assert.ok(after.decisions.timeline.findIndex(event => event.kind === "decision") < after.decisions.timeline.findIndex(event => event.kind === "billing_settle"));
+  const correlatedTrace = await waitForCorrelatedAgentActivity(result.goalActivityRunId, "project_assistant");
+  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.goalActivityRunId && row.assistant_scope === "project_assistant" && row.project_id === project.id), JSON.stringify(correlatedTrace));
+  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.goalActivityRunId && row.assistant_scope === "worker" && row.worker_id && row.parent_run_id), JSON.stringify(correlatedTrace));
+  assert.ok(correlatedTrace.data.filter((row) => row.root_run_id === result.goalActivityRunId).every((row) => row.project_id === project.id), JSON.stringify(correlatedTrace));
   const tasks = await jsonRequest(
     spacesBaseUrl,
     `/spaces/${identity.spaceId}/tasks?project_id=${encodeURIComponent(project.id)}`,
@@ -568,6 +588,7 @@ test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped 
     artifact_branch: result.workspaceArtifact.branch,
     external_provider_requests: 0,
     host_evidence_verification: result.goalActivity.goals[0].tasks[0].verification.outcome,
+    correlated_trace: (correlatedTrace.data ?? []).map(({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id }) => ({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id })),
     verification_reason: result.goalActivity.goals[0].tasks[0].verification.reason,
     decisions_requests: after.decisions.calls - before.decisions.calls,
     decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),

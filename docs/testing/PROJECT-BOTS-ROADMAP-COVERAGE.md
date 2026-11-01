@@ -47,9 +47,9 @@ The runtime suite now passes **7/7** after adding an actual 16-sweeper D1 claim 
 
 1. Add member/editor/viewer and archived-project UI journeys; assert hidden or disabled actions match backend authorization.
 2. **Complete for local service topology:** separate Agents/Spaces Wrangler processes now communicate through the local service-binding registry. Deployed binding behavior remains untested.
-3. Inject AgentDO restart during dispatch, blackboard-message recovery and ambiguous external side effects; 1/2/8/32-way concurrent wake-claim races and atomic pre-acceptance wake-policy revocation boundary pass locally, alongside busy responses, expired leases, revoked grants, duplicate request/event creation, and SpaceDO session recovery.
-4. Persist one correlated audit trace distinguishing Space Assistant, Project Assistant invocation, and task/thread worker actions while demonstrating shared planner/worker execution.
-5. Add a separate opt-in accepted worker run using a local/mock reasoning adapter; keep no-model and live-provider acceptance results distinct.
+3. **Passed locally:** injected Agents Worker process restart during dispatch; blackboard-message readback after restart; 1/2/8/32 concurrent wake claims; wake-policy revocation, busy retry, expired leases, revoked grants, duplicate request/event creation, and SpaceDO session recovery. Ambiguous external side effects remain held for review; production provider reconciliation is not covered.
+4. **Passed locally:** Space Assistant and Project Assistant invocations and their delegated worker runs now share a durable `root_run_id` in the builder activity log. Records label `space_assistant`, `project_assistant`, or `worker` and retain parent run / worker IDs for drill-down.
+5. **Passed locally:** accepted worker runs use a deterministic local model adapter; air-gap/no-model and synthetic-model paths are measured separately. Live provider acceptance remains separate and unrun here.
 6. Run deployed acceptance against an isolated test Space and report provider-free tests separately from live model/provider tests.
 
 ## Deterministic local Project Bot completion (2026-11-01)

@@ -64,6 +64,49 @@ describe("SpaceDO — /agent-activity (builder observability surface)", () => {
     expect(listA.json.data[0].project_id).toBe("proj-a");
   });
 
+  it("correlates Space Assistant, Project Assistant, and worker activity by root run", async () => {
+    const rootRunId = "root-run-1";
+    for (const row of [
+      { assistant_scope: "project_assistant", project_id: "proj-a", run_id: rootRunId },
+      { assistant_scope: "worker", project_id: "proj-a", run_id: "worker-run-1", root_run_id: rootRunId, parent_run_id: rootRunId, worker_id: "task-1" },
+      { assistant_scope: "space_assistant", project_id: null, run_id: "root-run-2" },
+    ]) {
+      const { root_run_id: root, ...activity } = row;
+      const result = await call(spaceDO, "/agent-activity", "POST", {
+        space_id: "space1", agent_id: "naelao-agent", event_type: "run_completed",
+        root_run_id: root ?? row.run_id, ...activity,
+      });
+      expect(result.status).toBe(201);
+    }
+
+    const trace = await call(spaceDO, `/agent-activity?root_run_id=${rootRunId}`, "GET");
+    expect(trace.json.count).toBe(2);
+    expect(trace.json.data.map((row: { assistant_scope: string }) => row.assistant_scope).sort()).toEqual(["project_assistant", "worker"]);
+    expect(trace.json.data.find((row: { assistant_scope: string }) => row.assistant_scope === "worker")).toMatchObject({
+      root_run_id: rootRunId, parent_run_id: rootRunId, worker_id: "task-1",
+    });
+  });
+
+  it("rejects an overlong root-run filter rather than broadening the activity query", async () => {
+    const response = await call(spaceDO, `/agent-activity?root_run_id=${"x".repeat(257)}`, "GET");
+    expect(response.status).toBe(400);
+    expect(response.json.error_code).toBe("invalid_root_run_id");
+  });
+
+  it("rejects incomplete or contradictory assistant-scope correlation", async () => {
+    const missingWorkerScope = await call(spaceDO, "/agent-activity", "POST", {
+      space_id: "space1", agent_id: "a1", event_type: "run_completed", assistant_scope: "worker",
+    });
+    expect(missingWorkerScope.status).toBe(400);
+    expect(missingWorkerScope.json.error_code).toBe("incomplete_activity_correlation");
+
+    const spaceWithProject = await call(spaceDO, "/agent-activity", "POST", {
+      space_id: "space1", project_id: "proj-a", agent_id: "a1", event_type: "run_completed", assistant_scope: "space_assistant",
+    });
+    expect(spaceWithProject.status).toBe(400);
+    expect(spaceWithProject.json.error_code).toBe("incomplete_activity_correlation");
+  });
+
   it("respects a limit parameter", async () => {
     for (let i = 0; i < 5; i++) {
       await call(spaceDO, "/agent-activity", "POST", { space_id: "space1", agent_id: "a1", event_type: "run_completed" });
