@@ -2,6 +2,7 @@ import { verifyInternalToken } from "@naelao/http";
 
 let totalRequests = 0;
 let leafWorkerMode = false;
+let dependentTaskMode = false;
 let leafWorkerRequests = 0;
 let decisionCalls = 0;
 let decisionOutcome: "passed" | "uncertain" = "passed";
@@ -18,8 +19,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
     if (url.pathname === "/__test/configure" && request.method === "POST") {
-      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; decisionOutcome?: unknown; resetDecisionTelemetry?: unknown } | null;
+      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; decisionOutcome?: unknown; resetDecisionTelemetry?: unknown } | null;
       leafWorkerMode = body?.leafWorkerMode === true;
+      dependentTaskMode = leafWorkerMode && body?.dependentTaskMode === true;
       leafWorkerRequests = 0;
       if (body?.decisionOutcome === "passed" || body?.decisionOutcome === "uncertain") decisionOutcome = body.decisionOutcome;
       if (body?.resetDecisionTelemetry === true) {
@@ -107,19 +109,30 @@ export default {
     if (leafWorkerMode) {
       const ordinal = ++leafWorkerRequests;
       if (ordinal === 1) {
+        const tasks: Array<Record<string, unknown>> = [{
+          id: "write-report",
+          title: "Write the Project Bot smoke artifact",
+          subtask_spec: "Create reports/blackboard-worker-smoke.txt in the scoped project workspace with the exact content: project bot leaf worker completed. Do not use external services.",
+          assigned_role: "DEV_OPERATOR",
+          acceptance_criteria: ["The Project Bot leaf worker artifact exists in its assigned project workspace branch"],
+          evidence_checks: [{ criterion: "The Project Bot leaf worker artifact exists in its assigned project workspace branch", operation: "workspace.exists:reports/blackboard-worker-smoke.txt" }],
+          file_paths: ["reports/blackboard-worker-smoke.txt"],
+          budget_tokens: 12_000,
+        }];
+        if (dependentTaskMode) tasks.push({
+          id: "write-follow-up",
+          title: "Write the dependent Project Bot follow-up",
+          subtask_spec: "Create reports/blackboard-worker-followup.txt in the scoped project workspace. Do not use external services.",
+          assigned_role: "DEV_OPERATOR",
+          dependencies: ["write-report"],
+          acceptance_criteria: ["The dependent Project Bot follow-up artifact exists in its assigned project workspace branch"],
+          evidence_checks: [{ criterion: "The dependent Project Bot follow-up artifact exists in its assigned project workspace branch", operation: "workspace.exists:reports/blackboard-worker-followup.txt" }],
+          file_paths: ["reports/blackboard-worker-followup.txt"],
+          budget_tokens: 12_000,
+        });
         const plan = {
           objective: "Create and verify the local Project Bot worker report",
-          tasks: [{
-            id: "write-report",
-            title: "Write the Project Bot smoke artifact",
-            subtask_spec: "Create reports/blackboard-worker-smoke.txt in the scoped project workspace with the exact content: project bot leaf worker completed. Do not use external services.",
-            assigned_role: "DEV_OPERATOR",
-            acceptance_criteria: ["The Project Bot leaf worker artifact exists in its assigned project workspace branch"],
-            evidence_checks: [{ criterion: "The Project Bot leaf worker artifact exists in its assigned project workspace branch", operation: "workspace.exists:reports/blackboard-worker-smoke.txt" }],
-            file_paths: ["reports/blackboard-worker-smoke.txt"],
-            // The leaf needs an action turn plus a separate terminal summary turn.
-            budget_tokens: 12_000,
-          }],
+          tasks,
         };
         return Response.json({
           id: `local-test-${totalRequests}`, model,
@@ -131,6 +144,13 @@ export default {
         return Response.json({
           id: `local-test-${totalRequests}`, model,
           choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-smoke.txt", content: "project bot leaf worker completed\n", expectedHash: null }, doing: "Write the smoke report in the assigned project workspace" }) }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
+        });
+      }
+      if (dependentTaskMode && ordinal === 4) {
+        return Response.json({
+          id: `local-test-${totalRequests}`, model,
+          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-followup.txt", content: "dependent worker dispatched after verified prerequisite\n", expectedHash: null }, doing: "Write the follow-up after its prerequisite passed verification" }) }, finish_reason: "stop" }],
           usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
         });
       }

@@ -400,7 +400,7 @@ export default {
         await db.prepare("UPDATE spaces SET config_json=? WHERE id=?")
           .bind(JSON.stringify({ compliance: { airGappedOnly: true } }), TEST_SPACE_ID).run();
         const modelGateway = env.MODEL_GATEWAY as Fetcher | undefined;
-        await modelGateway?.fetch(new Request("http://model/__test/configure", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leafWorkerMode: false }) }));
+        await modelGateway?.fetch(new Request("http://model/__test/configure", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leafWorkerMode: false, dependentTaskMode: false }) }));
       }
       return Response.json({
         sourceProjectId: sourceProject.id,

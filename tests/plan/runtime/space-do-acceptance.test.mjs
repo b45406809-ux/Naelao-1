@@ -599,6 +599,75 @@ test("a cautious Decisions verdict remains visible as review instead of being pr
   };
 });
 
+test("only a verified Project Bot prerequisite dispatches its dependent leaf worker", async () => {
+  const project = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Project Bot Verified Dependency Gate" }
+  );
+  const configure = async (decisionOutcome) => {
+    const response = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ leafWorkerMode: true, dependentTaskMode: true, decisionOutcome, resetDecisionTelemetry: true }),
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+  };
+
+  await configure("passed");
+  const beforePass = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const passed = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: project.id,
+    mockModelRun: true,
+  }, 90_000);
+  const afterPass = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const passedTasks = passed.goalActivity?.goals?.[0]?.tasks ?? [];
+  assert.equal(passed.wake.status, "completed", JSON.stringify({ wake: passed.wake, tasks: passedTasks, dispatch: passed.dispatchResponses, model: afterPass }));
+  assert.deepEqual(passedTasks.map(task => [task.id, task.status, task.verification?.outcome]), [
+    ["write-report", "completed", "passed"],
+    ["write-follow-up", "completed", "passed"],
+  ]);
+  assert.ok(passed.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(passed.workspaceArtifact));
+  assert.equal(afterPass.decisions.calls, 2);
+  assert.deepEqual(afterPass.decisions.billingEvents.map(event => event.kind), ["reserve", "settle", "reserve", "settle"]);
+
+  const reviewProject = await jsonRequest(
+    spacesBaseUrl,
+    `/spaces/${identity.spaceId}/projects`,
+    "POST",
+    { name: "Project Bot Uncertain Dependency Gate" }
+  );
+  await configure("uncertain");
+  const beforeReview = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const review = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+    projectId: reviewProject.id,
+    mockModelRun: true,
+  }, 90_000);
+  const afterReview = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const reviewTasks = review.goalActivity?.goals?.[0]?.tasks ?? [];
+  assert.equal(review.wake.status, "held", JSON.stringify({ wake: review.wake, tasks: reviewTasks }));
+  assert.deepEqual(reviewTasks.map(task => [task.id, task.status, task.verification?.outcome]), [
+    ["write-report", "needs_review", "uncertain"],
+    ["write-follow-up", "blocked", undefined],
+  ]);
+  assert.ok(!review.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(review.workspaceArtifact));
+  assert.equal(afterReview.decisions.calls, 1);
+  assert.deepEqual(afterReview.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
+  assert.ok(afterReview.totalRequests > beforeReview.totalRequests);
+  assert.ok(afterPass.totalRequests > beforePass.totalRequests);
+  metrics.project_bot_dependency_gate = {
+    evidence_class: "integrated-local-synthetic-model",
+    passed_prerequisite: passedTasks[0].verification.outcome,
+    passed_dependent_status: passedTasks[1].status,
+    followup_artifact_after_pass: true,
+    uncertain_prerequisite: reviewTasks[0].verification.outcome,
+    uncertain_dependent_status: reviewTasks[1].status,
+    followup_artifact_after_uncertain: false,
+    external_provider_requests: 0,
+  };
+});
+
 test("concurrent wake sweepers claim one Project Bot event exactly once", async () => {
   const project = await jsonRequest(
     spacesBaseUrl,

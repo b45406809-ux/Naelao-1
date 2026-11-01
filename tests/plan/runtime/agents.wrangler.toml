@@ -45,6 +45,10 @@ service = "naelao-blackboard-artifacts-test"
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-blackboard-agent-scripts-test"
 
+[[kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "naelao-blackboard-agent-cache-test"
+
 [vars]
 PLATFORM_SECRET = "blackboard-integration-test-secret"
 ENVIRONMENT = "test"
