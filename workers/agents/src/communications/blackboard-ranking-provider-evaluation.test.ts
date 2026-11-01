@@ -20,6 +20,7 @@ const LIVE_ENABLED = process.env.NAELAO_RUN_LIVE_BLACKBOARD_RANKING === "true";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const PROVIDER_TIMEOUT_MS = 20_000;
 const QUERIES_PER_PROVIDER_REQUEST = 7;
+const MAX_PROVIDER_REQUESTS = 16;
 
 function expectedCandidates(): Map<string, Set<string>> {
   return getBlackboardCandidateSets(blackboardRankingCards);
@@ -185,9 +186,10 @@ async function requestModelScores(
     } catch (error) {
       if (
         error instanceof Error &&
-        /^(quota_or_rate_limited|credential_or_access_denied|provider_unavailable|provider_error):\d+$/.test(
-          error.message
-        )
+        (error.message === "blackboard_provider_request_budget_exhausted" ||
+          /^(quota_or_rate_limited|credential_or_access_denied|provider_unavailable|provider_error):\d+$/.test(
+            error.message
+          ))
       )
         throw error;
       throw new Error(
@@ -452,8 +454,21 @@ describe("blackboard provider ranking evaluation harness", () => {
           }
           const responses = [];
           const parsed = [];
-          for (const chunk of chunks) {
+          const parseableResponseErrors = new Set([
+            "blackboard_provider_response_invalid_json",
+            "blackboard_provider_response_schema_invalid",
+            "blackboard_provider_query_count_mismatch",
+            "blackboard_provider_query_invalid",
+            "blackboard_provider_candidate_count_mismatch",
+            "blackboard_provider_score_entry_invalid",
+            "blackboard_provider_score_invalid",
+          ]);
+          const requestAndParse = async (
+            chunk: (typeof blackboardRankingQueries)[number][]
+          ): Promise<ReturnType<typeof parseBlackboardRankingScores>> => {
             const response = await requestModelScores(provider, chunk, () => {
+              if (inferenceRequests >= MAX_PROVIDER_REQUESTS)
+                throw new Error("blackboard_provider_request_budget_exhausted");
               inferenceRequests++;
             });
             responses.push(response);
@@ -463,9 +478,23 @@ describe("blackboard provider ranking evaluation harness", () => {
                 return candidates ? [[id, candidates] as const] : [];
               })
             );
-            parsed.push(
-              ...parseBlackboardRankingScores(response.raw, expected)
-            );
+            try {
+              return parseBlackboardRankingScores(response.raw, expected);
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : "";
+              const code = reason.split(":", 1)[0] ?? "";
+              if (chunk.length > 1 && parseableResponseErrors.has(code)) {
+                const middle = Math.ceil(chunk.length / 2);
+                return [
+                  ...(await requestAndParse(chunk.slice(0, middle))),
+                  ...(await requestAndParse(chunk.slice(middle))),
+                ];
+              }
+              throw error;
+            }
+          };
+          for (const chunk of chunks) {
+            parsed.push(...(await requestAndParse(chunk)));
           }
           const response = responses[0];
           if (!response) throw new Error("provider_response_missing");
@@ -538,7 +567,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         evidenceClass: "live-free-tier-model-on-synthetic-hand-labeled-corpus",
         generatedAt: new Date().toISOString(),
         budget: {
-          maxSuccessfulInferenceRequestsPerProvider: 1,
+          maxProviderRequests: MAX_PROVIDER_REQUESTS,
           maxCredentialAccessRetries: 3,
           maxOutputTokens: 2048,
           paidSpendLimitEnforcedUsd: null,
@@ -559,6 +588,6 @@ describe("blackboard provider ranking evaluation harness", () => {
       console.log(`blackboard_provider_ranking=${JSON.stringify(report)}`);
       expect(results).toHaveLength(2);
     },
-    600_000
+    720_000
   );
 });

@@ -67,7 +67,9 @@ export function parseBlackboardRankingScores(
   }
   const input = (parsed as { scores: unknown[] }).scores;
   if (input.length !== expectedCandidates.size)
-    throw new Error("blackboard_provider_query_count_mismatch");
+    throw new Error(
+      `blackboard_provider_query_count_mismatch:${input.length}:${expectedCandidates.size}`
+    );
   const seenQueries = new Set<string>();
   const result: BlackboardProviderScores[] = [];
   for (const entry of input) {
