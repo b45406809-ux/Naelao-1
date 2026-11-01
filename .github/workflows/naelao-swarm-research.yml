@@ -38,6 +38,10 @@ on:
         description: Use configured provider secrets only when free-tier approval variables are true
         type: boolean
         default: false
+      run_live_blackboard_ranking:
+        description: Add one bounded Gemini/GroqCloud model-ranking request per provider after the provider smoke is eligible
+        type: boolean
+        default: false
       gemini_free_tier_confirmed:
         description: Confirm Gemini credentials are authorized for this bounded test-only evaluation
         type: boolean
@@ -81,6 +85,7 @@ jobs:
             src/communications/blackboard-delivery.test.ts \
             src/communications/blackboard-ranking-evaluation.test.ts \
             src/communications/blackboard-ranking-fixtures.test.ts \
+            src/communications/blackboard-ranking-provider-evaluation.test.ts \
             src/communications/heartbeat-scope.test.ts \
             src/voice/planner-turn.test.ts \
             src/agent-run-session-scope.test.ts \
@@ -235,7 +240,7 @@ jobs:
     name: Opt-in free-tier provider smoke comparison
     if: github.event_name == 'workflow_dispatch' && inputs.run_live_free_providers
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Mask provider keys and report presence without revealing values
@@ -267,6 +272,53 @@ jobs:
           GROQ_FREE_MODEL_ID: ${{ inputs.groq_free_model_id }}
           SWARM_PROVIDER_REPORT: swarm-reports/provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
+      - name: Gate model ranking on successful smoke access and remaining quota
+        id: blackboard_gate
+        if: inputs.run_live_blackboard_ranking && inputs.run_live_free_providers
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import fs from 'node:fs';
+          let report;
+          try { report = JSON.parse(fs.readFileSync('swarm-reports/provider-eval.json', 'utf8')); } catch {}
+          for (const [provider, output] of [['gemini', 'gemini_allowed'], ['groqcloud', 'groq_allowed']]) {
+            const result = report?.results?.find(item => item.provider === provider);
+            const allowed = Boolean(result && ['completed', 'partial'].includes(result.state) && result.inferenceRequests > 0 && !String(result.reason ?? '').includes('quota_or_rate_limited'));
+            console.log(`${output}=${allowed}`);
+          }
+          JS
+      - name: Evaluate test-provider ranking against lexical baseline
+        if: inputs.run_live_blackboard_ranking && inputs.run_live_free_providers
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_FREE_TIER_CONFIRMED: ${{ inputs.gemini_free_tier_confirmed }}
+          GROQ_FREE_TIER_CONFIRMED: ${{ inputs.groq_free_tier_confirmed }}
+          GROQ_FREE_MODEL_ID: ${{ inputs.groq_free_model_id }}
+          NAELAO_RUN_LIVE_BLACKBOARD_RANKING: 'true'
+          NAELAO_BLACKBOARD_GEMINI_ALLOWED: ${{ steps.blackboard_gate.outputs.gemini_allowed }}
+          NAELAO_BLACKBOARD_GROQ_ALLOWED: ${{ steps.blackboard_gate.outputs.groq_allowed }}
+          NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/swarm-reports/blackboard-ranking-live.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
+      - name: Publish live ranking outcome without provider response data
+        if: always() && inputs.run_live_blackboard_ranking && inputs.run_live_free_providers
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          let report;
+          try { report = JSON.parse(fs.readFileSync('swarm-reports/blackboard-ranking-live.json', 'utf8')); }
+          catch { report = null; }
+          const lines = ['## Test-only blackboard provider ranking', '', `Commit: \`${process.env.GITHUB_SHA}\``, ''];
+          if (!report) lines.push('No ranking report was produced; inspect the test step outcome.');
+          else for (const result of report.providers) {
+            lines.push(`- ${result.provider} / ${result.model ?? 'unconfigured'}: **${result.state}**${result.reason ? ` (${result.reason})` : ''}; inference requests ${result.inferenceRequests ?? 'unknown'}; latency ${result.latencyMs ?? '—'} ms; tokens ${result.inputTokens ?? '—'} in / ${result.outputTokens ?? '—'} out; provider-reported cost ${result.providerReportedCostUsd ?? 'unavailable'}.`);
+            if (result.baseline && result.modelCandidate) lines.push(`  - MRR ${result.baseline.meanReciprocalRank.toFixed(3)} → ${result.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.baseline.meanRecallAtK.toFixed(3)} → ${result.modelCandidate.meanRecallAtK.toFixed(3)}; nDCG@5 ${result.baseline.meanNdcgAtK.toFixed(3)} → ${result.modelCandidate.meanNdcgAtK.toFixed(3)}.`);
+          }
+          lines.push('', 'Synthetic hand-labeled cases only; this evaluates Gemini/GroqCloud test adapters and does not change OpenRouter Decisions routing. Missing billing receipts remain unknown, not estimated.');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          console.log(lines.join('\n'));
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -292,16 +344,20 @@ jobs:
           PROVIDERS: ${{ needs.free-provider-evaluation.result }}
           LAYA_REQUESTED: ${{ github.event_name == 'push' || inputs.run_laya }}
           PROVIDERS_REQUESTED: ${{ inputs.run_live_free_providers }}
+          BLACKBOARD_REQUESTED: ${{ inputs.run_live_blackboard_ranking }}
           SHA: ${{ github.sha }}
         run: |
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           const read=(p)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}};
           const state=(result,requested)=>result==='skipped'?(requested==='true'?'blocked: prerequisite unavailable':'not run'):result;
-          const rows=[['runtime evidence/dependency/dispatch tests',process.env.RUNTIME],['billing admission/reconciliation tests',process.env.BILLING],['Laya CPU experiment',state(process.env.LAYA,process.env.LAYA_REQUESTED)],['free-tier Gemini/GroqCloud smoke',state(process.env.PROVIDERS,process.env.PROVIDERS_REQUESTED)]];
-          const provider=read('reports/provider-eval.json'), laya=read('reports/laya-report.json'), deterministic=read('reports/deterministic.json');
+          const rankingAsked=process.env.BLACKBOARD_REQUESTED==='true', providersAsked=process.env.PROVIDERS_REQUESTED==='true';
+          const rankingDefault=!rankingAsked?'not run':!providersAsked?'blocked: free-tier provider smoke not enabled':'blocked: report missing';
+          const rows=[['runtime evidence/dependency/dispatch tests',process.env.RUNTIME],['billing admission/reconciliation tests',process.env.BILLING],['Laya CPU experiment',state(process.env.LAYA,process.env.LAYA_REQUESTED)],['free-tier Gemini/GroqCloud smoke',state(process.env.PROVIDERS,process.env.PROVIDERS_REQUESTED)],['test-only blackboard model ranking',rankingDefault]];
+          const provider=read('reports/provider-eval.json'), laya=read('reports/laya-report.json'), deterministic=read('reports/deterministic.json'), blackboardRanking=read('reports/blackboard-ranking-live.json');
           if(provider) rows[3][1]=provider.results.map(r=>`${r.provider}: ${r.state} (${r.reason??'complete'})`).join('; ');
           if(laya) rows[2][1]=`${laya.state}${laya.blocker?`: ${laya.blocker}`:''}`;
+          if(blackboardRanking) rows[4][1]=blackboardRanking.providers.map(r=>`${r.provider}: ${r.state} (${r.reason??'complete'})`).join('; ');
           const table='## Naelao swarm research evaluation\n\nCommit: `'+process.env.SHA+'`\n\n| Batch | Outcome |\n|---|---|\n'+rows.map(r=>`| ${r[0]} | ${r[1]} |`).join('\n')+'\n\nFocused deterministic jobs are required. Provider and Laya jobs are opt-in and do not affect production routing. Artifacts include machine-readable reports; provider reports never include keys or response bodies.\n';
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table); console.log(table); fs.mkdirSync('summary',{recursive:true});
           fs.writeFileSync('summary/swarm-evaluation.json',JSON.stringify({schemaVersion:1,sourceCommit:process.env.SHA,batches:rows.map(([name,outcome])=>({name,outcome})),limitations:deterministic?.limitations??[]},null,2)+'\n');

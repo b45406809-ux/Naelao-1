@@ -12,7 +12,7 @@ jobs:
   free-tier-model-evaluation:
     name: Bounded Gemini and GroqCloud evaluation
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Mask provider keys and record secret presence only
@@ -65,6 +65,21 @@ jobs:
             console.log(`${key}_PLAN_CALLS_ALLOWED=${Boolean(result && result.state === 'completed' && result.validResponseRate === 1 && result.reason == null)}`);
           }
           JS
+      - name: Run bounded model ranking through production blackboard reranker
+        if: always()
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          NAELAO_RUN_LIVE_BLACKBOARD_RANKING: 'true'
+          NAELAO_BLACKBOARD_GEMINI_ALLOWED: ${{ env.GEMINI_PLAN_CALLS_ALLOWED }}
+          NAELAO_BLACKBOARD_GROQ_ALLOWED: ${{ env.GROQ_PLAN_CALLS_ALLOWED }}
+          NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Run real-model planning through the goal DAG and host verifier
         if: always()
         env:
@@ -115,6 +130,20 @@ jobs:
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
           JS
+      - name: Publish blackboard ranking metrics
+        if: always()
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('blackboard-ranking-live.json', 'utf8')); } catch {}
+          console.log('\n## Test-only blackboard model ranking\n');
+          if (!report) console.log('No live ranking report was produced.');
+          else for (const result of report.providers) {
+            console.log(`- **${result.provider}/${result.model ?? 'unconfigured'}:** ${result.state}${result.reason ? ` (${result.reason})` : ''}; calls ${result.inferenceRequests ?? 'unknown'}; latency ${result.latencyMs ?? '—'} ms; tokens ${result.inputTokens ?? '—'}/${result.outputTokens ?? '—'}; provider-reported cost ${result.providerReportedCostUsd ?? 'unavailable'}.`);
+            if (result.baseline && result.modelCandidate) console.log(`  - MRR ${result.baseline.meanReciprocalRank.toFixed(3)} → ${result.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.baseline.meanRecallAtK.toFixed(3)} → ${result.modelCandidate.meanRecallAtK.toFixed(3)}; nDCG@5 ${result.baseline.meanNdcgAtK.toFixed(3)} → ${result.modelCandidate.meanNdcgAtK.toFixed(3)}.`);
+          }
+          console.log('\nSynthetic labels only. Gemini/GroqCloud are test adapters; OpenRouter production routing is unchanged. Cost without a billing receipt remains unknown.');
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -124,4 +153,5 @@ jobs:
             provider-presence.json
             live-goal-plan-benchmark.json
             goal-architecture-benchmark.json
+            blackboard-ranking-live.json
           if-no-files-found: warn
