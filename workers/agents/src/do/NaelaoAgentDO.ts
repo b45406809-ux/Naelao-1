@@ -1804,12 +1804,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       attempt INTEGER, workspace_branch TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_goal_dispatch_outbox_run ON goal_dispatch_outbox(parent_run_id,status,updated_at)`);
-    // A new DO instance cannot inherit an in-flight JavaScript delivery continuation. Anything
-    // left in `delivering` therefore has an ambiguous receipt after reconstruction; hold it for
-    // explicit recovery instead of presenting it as active or reissuing the launch.
-    const reconcileDeliveringOutbox = () => this.ctx.storage.sql.exec(
-      "UPDATE goal_dispatch_outbox SET status='review',updated_at=? WHERE status='delivering'", Date.now()
-    );
+    // A reconstructed DO cannot inherit an in-flight JavaScript delivery continuation. Recover
+    // only the parent runs tied to an outbox that was actually mid-delivery; ordinary durable
+    // runs must survive reconstruction (including hibernation and a second instance reading the
+    // same storage). Treating every `running` row as interrupted here loses valid live work.
+    const reconcileDeliveringOutbox = () => {
+      const now = Date.now();
+      const interrupted = this.ctx.storage.sql.exec(
+        "SELECT DISTINCT parent_run_id FROM goal_dispatch_outbox WHERE status='delivering'"
+      ).toArray() as Array<{ parent_run_id: string }>;
+      this.ctx.storage.sql.exec(
+        "UPDATE goal_dispatch_outbox SET status='review',updated_at=? WHERE status='delivering'", now
+      );
+      for (const { parent_run_id } of interrupted) {
+        this.ctx.storage.sql.exec(
+          `UPDATE run_state SET status='failed', terminal_json=?, updated_at=?
+           WHERE run_id=? AND terminal_json IS NULL`,
+          JSON.stringify({ status: "failed", error: "interrupted_goal_dispatch_requires_review" }), now, parent_run_id
+        );
+        this.ctx.storage.sql.exec(
+          `UPDATE agent_runs SET status='failed', fsm_state='ERROR', error=?, updated_at=?
+           WHERE id=? AND status='running'`,
+          "interrupted_goal_dispatch_requires_review", new Date(now).toISOString(), parent_run_id
+        );
+      }
+    };
     if (typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(reconcileDeliveringOutbox);
     else reconcileDeliveringOutbox();
     // Incremental progress (spec: a parent shouldn't have to wait for a whole child run to
@@ -1828,33 +1847,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     ] as const) {
       try { this.ctx.storage.sql.exec(ddl); } catch { /* already migrated */ }
     }
-
-    // A Durable Object can be reconstructed after its isolate is evicted or its Worker process
-    // dies. Any run left without a terminal record then has no live continuation to resume. Mark
-    // it terminal before serving requests so /active-run cannot report a ghost run as busy for
-    // the five-minute observation lease. Side-effecting dispatches have their own outbox recovery
-    // policy; this terminal marker must never imply that an interrupted action succeeded.
-    const restartNow = Date.now();
-    try {
-      this.ctx.storage.sql.exec(
-        `UPDATE run_state
-         SET status = 'failed',
-             terminal_json = ?,
-             updated_at = ?
-         WHERE terminal_json IS NULL AND status IN ('running', 'cancelling')`,
-        JSON.stringify({ status: "failed", error: "interrupted_by_agent_do_restart" }),
-        restartNow
-      );
-    } catch { /* older partially initialized stores may not have run_state yet */ }
-    try {
-      this.ctx.storage.sql.exec(
-        `UPDATE agent_runs
-         SET status = 'failed', fsm_state = 'ERROR', error = ?, updated_at = ?
-         WHERE status = 'running'`,
-        "interrupted_by_agent_do_restart",
-        new Date(restartNow).toISOString()
-      );
-    } catch { /* agent_runs may not exist in a partially initialized legacy store */ }
 
     this.initialized = true;
   }
