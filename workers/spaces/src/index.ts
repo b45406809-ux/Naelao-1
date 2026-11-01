@@ -1,5 +1,6 @@
 import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
 import { standingBlackboardPeer } from "./blackboard-sharing.js";
+import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
@@ -2054,8 +2055,13 @@ app.put("/internal/spaces/:spaceId/blackboard/policy/:projectId", async c => {
   const denied=await requireManageableAutomationProject(c,space,project); if(denied) return denied;
   let b: { wake_enabled?: unknown }; try { b=JSON.parse(await readBoundedRequestText(c.req.raw,4096)); } catch { return c.json({ error_code:"invalid_policy" },400); }
   if (!b || typeof b.wake_enabled!=="boolean") return c.json({ error_code:"invalid_policy" },400);
-  await c.env.PLATFORM_DB.prepare("INSERT INTO space_blackboard_policies(tenant_id,space_id,project_id,wake_enabled,authorized_user_id,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET wake_enabled=excluded.wake_enabled,authorized_user_id=excluded.authorized_user_id,updated_at=excluded.updated_at")
-    .bind(c.req.header("x-naelao-tenant-id"),space,project,b.wake_enabled ? 1 : 0,c.req.header("x-naelao-user-id"),new Date().toISOString()).run();
+  await persistBlackboardWakePolicy(c.env.PLATFORM_DB, {
+    tenantId:c.req.header("x-naelao-tenant-id")!, spaceId:space, projectId:project,
+    userId:c.req.header("x-naelao-user-id")!, wakeEnabled:b.wake_enabled,
+    updatedAt:new Date().toISOString(), nowSeconds:Math.floor(Date.now()/1000),
+  });
+  // Policy revocation and cancellation of unaccepted wake claims commit together. An already
+  // accepted dispatch is the linearization point and may finish; later events stay disabled.
   return c.json({ wake_enabled:b.wake_enabled });
 });
 app.on(["GET","PUT"], "/internal/spaces/:spaceId/blackboard/sharing/:projectId", async c => {

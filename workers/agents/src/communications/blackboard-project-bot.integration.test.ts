@@ -20,6 +20,7 @@ function makeDatabase() {
       PRIMARY KEY(tenant_id,space_id,project_id));
     CREATE TABLE space_blackboard_wakes(tenant_id TEXT, space_id TEXT, project_id TEXT, event_id TEXT, status TEXT, next_at INTEGER,
       updated_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER,
+      dispatch_accepted INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(tenant_id,space_id,project_id,event_id));
   `);
 
@@ -258,6 +259,44 @@ describe("blackboard event to Project Bot dispatch integration", () => {
       "SELECT status, attempts, lease_until FROM space_blackboard_wakes WHERE project_id=?"
     ).bind("project-1");
     await expect(row.first()).resolves.toEqual({ status: "held", attempts: 1, lease_until: null });
+    database.close();
+  });
+
+  it("blocks dispatch when wake policy is revoked after the initial policy and membership checks", async () => {
+    const { database, platformDb } = makeDatabase();
+    let revoked = false;
+    const env = {
+      PLATFORM_DB: platformDb,
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: {
+        fetch: async (request: Request) => {
+          if (!revoked && new URL(request.url).pathname.endsWith("/assistant-access")) {
+            // Simulate the authorized policy endpoint atomically disabling the policy and
+            // holding unaccepted claims while scopeAccess completes its final membership check.
+            database.exec("BEGIN");
+            database.prepare(`UPDATE space_blackboard_policies SET wake_enabled=0
+              WHERE tenant_id=? AND space_id=? AND project_id=?`)
+              .run("tenant-1", "space-1", "project-1");
+            database.prepare(`UPDATE space_blackboard_wakes SET status='held',lease_until=NULL
+              WHERE tenant_id=? AND space_id=? AND project_id=? AND (status='pending' OR (status='running' AND dispatch_accepted=0))`)
+              .run("tenant-1", "space-1", "project-1");
+            database.exec("COMMIT");
+            revoked = true;
+          }
+          return Response.json({ effective_role: "owner" });
+        },
+      },
+    } as unknown as AgentsEnv;
+    const wake = vi.fn(async () => Response.json({ result: { ok: true } }));
+
+    await sweepBlackboardWakes(env, wake, 300);
+
+    expect(revoked).toBe(true);
+    expect(wake).not.toHaveBeenCalled();
+    const row = platformDb.prepare(
+      "SELECT status, attempts, dispatch_accepted FROM space_blackboard_wakes WHERE project_id=?"
+    ).bind("project-1");
+    await expect(row.first()).resolves.toEqual({ status: "held", attempts: 1, dispatch_accepted: 0 });
     database.close();
   });
 });
