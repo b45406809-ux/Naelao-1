@@ -692,37 +692,34 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
   };
 });
 
-test("32 concurrent wake sweepers claim one Project Bot event exactly once", async () => {
-  const project = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/projects`,
-    "POST",
-    { name: "Concurrent Wake Claim Project" }
-  );
-  const wakeResult = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
-    projectId: project.id,
-    concurrentSweepCount: 32,
-  });
+test("1, 2, 8, and 32 concurrent wake sweepers claim each Project Bot event exactly once", async () => {
+  const contention = [];
+  for (const contenders of [1, 2, 8, 32]) {
+    const project = await jsonRequest(
+      spacesBaseUrl,
+      `/spaces/${identity.spaceId}/projects`,
+      "POST",
+      { name: `Concurrent Wake Claim Project (${contenders})` }
+    );
+    const wakeResult = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
+      projectId: project.id,
+      concurrentSweepCount: contenders,
+    });
 
-  assert.equal(wakeResult.concurrentSweeps.length, 32);
-  assert.ok(
-    wakeResult.concurrentSweeps.every((result) => result.checked <= 1),
-    "each concurrent sweep should inspect at most the one fixture wake"
-  );
-  assert.equal(
-    wakeResult.dispatchResponses.length,
-    1,
-    "only one racing sweeper may dispatch the event"
-  );
-  assert.equal(wakeResult.wake.attempts, 1);
-  assert.equal(wakeResult.wake.status, "held");
-  assert.equal(wakeResult.dispatchResponses[0].status, 403);
-  assert.equal(
-    wakeResult.dispatchResponses[0].body?.error_code,
-    "compliance_violation"
-  );
-  assert.equal(wakeResult.repeatSweep.checked, 0);
-  metrics.blackboard_wake_contention = { contenders: 32, dispatches: wakeResult.dispatchResponses.length, attempts: wakeResult.wake.attempts, repeat_dispatches: wakeResult.repeatSweep.checked };
+    assert.equal(wakeResult.concurrentSweeps.length, contenders);
+    assert.ok(
+      wakeResult.concurrentSweeps.every((result) => result.checked <= 1),
+      `each of ${contenders} concurrent sweeps should inspect at most the one fixture wake`
+    );
+    assert.equal(wakeResult.dispatchResponses.length, 1, `${contenders} sweepers must produce one dispatch`);
+    assert.equal(wakeResult.wake.attempts, 1, `${contenders} sweepers must persist one attempt`);
+    assert.equal(wakeResult.wake.status, "held");
+    assert.equal(wakeResult.dispatchResponses[0].status, 403);
+    assert.equal(wakeResult.dispatchResponses[0].body?.error_code, "compliance_violation");
+    assert.equal(wakeResult.repeatSweep.checked, 0);
+    contention.push({ contenders, dispatches: wakeResult.dispatchResponses.length, attempts: wakeResult.wake.attempts, repeat_dispatches: wakeResult.repeatSweep.checked });
+  }
+  metrics.blackboard_wake_contention = contention;
 });
 
 test("measures 30 local blackboard-to-Project-Bot admission attempts", async () => {
