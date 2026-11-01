@@ -9,6 +9,8 @@ import agentsWorker from "../../../workers/agents/src/index.js";
 import { sweepBlackboardWakes } from "../../../workers/agents/src/communications/blackboard-wake.js";
 import { writeAgentConfig } from "../../../workers/agents/src/script-engine/agent-config.js";
 import { DEFAULT_NAELAO_AGENT } from "../../../workers/agents/src/script-engine/profiles.js";
+import { issueDelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
+import type { DelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
 
 export { NaelaoAgentDO, ConcurrencyDO };
 
@@ -34,6 +36,25 @@ export default {
     // goal is to test the real runtime only after bootstrapping, while module cold-start can be
     // expensive in the four-worker local topology.
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
+    if (url.pathname === "/__test/task-blackboard/publish" && request.method === "POST") {
+      const body = await request.json<{ goalId?: string; runId?: string; projectId?: string; senderTaskId?: string; recipientTaskId?: string }>().catch(() => ({}));
+      if (!/^[a-f0-9]{64}$/.test(body.goalId ?? "") || !body.runId || !body.projectId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.senderTaskId ?? "") || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.recipientTaskId ?? "")) return Response.json({ error: "invalid_test_message_scope" }, { status: 400 });
+      const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+      const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;
+      const stub = namespace.get(namespace.idFromName(doName));
+      const workerId = `${body.goalId}:${body.senderTaskId}`;
+      const contract: DelegationContract = {
+        tenantId: TEST_TENANT_ID, spaceId: TEST_SPACE_ID, projectId: body.projectId, actorId: TEST_USER_ID,
+        agentId: "naelao-agent", rootRunId: body.runId, parentRunId: body.runId, parentDoId: stub.id.toString(), workerId,
+        depth: 2, planner: false, maxTokens: 1000, maxSteps: 10, model: "test-model", role: "worker", callerRole: "owner", maxTier: 2, localOnly: false,
+      };
+      const token = await issueDelegationContract(contract, String(env.PLATFORM_SECRET));
+      const response = await stub.fetch(new Request("http://agent-do/internal/task-blackboard", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contract, token, action: "publish", input: { id: "restart-persistence-check", recipients: [`${body.goalId}:${body.recipientTaskId}`], kind: "finding", text: "Persisted worker handoff for the restart acceptance." } }),
+      }));
+      return Response.json({ status: response.status, body: await response.json().catch(() => null) }, { status: response.status });
+    }
     if (url.pathname === "/__test/goal-activity" && request.method === "GET") {
       const runId = url.searchParams.get("run_id");
       if (!runId || runId.length > 256) return Response.json({ error: "run_id_required" }, { status: 400 });

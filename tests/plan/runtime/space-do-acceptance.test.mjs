@@ -660,6 +660,20 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
   assert.equal(afterPass.decisions.calls, 2);
   assert.deepEqual(afterPass.decisions.billingEvents.map(event => event.kind), ["reserve", "settle", "reserve", "settle"]);
 
+  const message = await jsonRequest(agentsBaseUrl, "/__test/task-blackboard/publish", "POST", {
+    goalId: passed.goalActivity.goals[0].id,
+    runId: passed.goalActivityRunId,
+    projectId: project.id,
+    senderTaskId: "write-report",
+    recipientTaskId: "write-follow-up",
+  });
+  assert.equal(message.status, 200, JSON.stringify(message));
+  assert.equal(message.body?.message?.text, "Persisted worker handoff for the restart acceptance.");
+  const blackboardRestartMs = await restartAgentsWorker();
+  const persistedMessages = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(passed.goalActivityRunId)}`, "GET");
+  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 1, JSON.stringify(persistedMessages));
+  assert.equal(persistedMessages.goals?.[0]?.messages?.[0]?.text, "Persisted worker handoff for the restart acceptance.");
+
   const reviewProject = await jsonRequest(
     spacesBaseUrl,
     `/spaces/${identity.spaceId}/projects`,
@@ -693,6 +707,8 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
     uncertain_dependent_status: reviewTasks[1].status,
     followup_artifact_after_uncertain: false,
     external_provider_requests: 0,
+    blackboard_message_survived_agents_restart: true,
+    blackboard_restart_ms: blackboardRestartMs,
   };
 });
 
