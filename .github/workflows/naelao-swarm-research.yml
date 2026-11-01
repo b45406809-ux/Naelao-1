@@ -74,6 +74,7 @@ jobs:
         env:
           NAELAO_GOAL_BENCHMARK_REPORT: ${{ runner.temp }}/goal-architecture-benchmark.json
           NAELAO_BLACKBOARD_RELEVANCE_REPORT: ${{ runner.temp }}/blackboard-relevance.json
+          NAELAO_BLACKBOARD_CATALOG_SCALE_REPORT: ${{ runner.temp }}/blackboard-catalog-scale.json
         run: |
           set +e
           pnpm --filter @naelao/agents-worker exec vitest run \
@@ -140,6 +141,7 @@ jobs:
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`,'swarm-reports/decision-client-vitest-results.json')}catch{}
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/goal-architecture-benchmark.json`,'swarm-reports/goal-architecture-benchmark.json')}catch{}
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/blackboard-relevance.json`,'swarm-reports/blackboard-relevance.json')}catch{}
+          try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/blackboard-catalog-scale.json`,'swarm-reports/blackboard-catalog-scale.json')}catch{}
           const stress=report.batches[2].generatedGraphStress;
           const provider=report.batches.find(batch=>batch.name==='provider-harness-safety');
           const blackboardBaseline=ranking.lexicalBaseline;

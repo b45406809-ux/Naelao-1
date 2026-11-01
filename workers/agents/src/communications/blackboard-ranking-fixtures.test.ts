@@ -206,7 +206,7 @@ describe("synthetic Space Blackboard relevance corpus", () => {
     expect(evaluation.baseline.cases).toBe(16);
   });
 
-  it("measures candidate recall and ideal reranking ceiling as the catalog grows", () => {
+  it("measures candidate recall and ideal reranking ceiling as the catalog grows", async () => {
     const scaleCounts = [16, 64, 256, 1024];
     const result = scaleCounts.map((size) => {
       const distractors: SharedProjectCard[] = Array.from(
@@ -301,6 +301,9 @@ describe("synthetic Space Blackboard relevance corpus", () => {
       ],
     };
     console.log(`blackboard_catalog_scale=${JSON.stringify(report)}`);
+    const reportPath = process.env.NAELAO_BLACKBOARD_CATALOG_SCALE_REPORT;
+    if (reportPath)
+      await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
     expect(result.map(({ catalogCards }) => catalogCards)).toEqual(scaleCounts);
     for (const scale of result) {
