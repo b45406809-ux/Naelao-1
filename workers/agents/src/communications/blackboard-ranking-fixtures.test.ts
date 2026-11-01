@@ -4,6 +4,7 @@ import { rankSharedCards } from "./blackboard-domain.js";
 import { evaluateBlackboardRankings } from "./blackboard-ranking-evaluation.js";
 import {
   blackboardRankingCards,
+  blackboardRankingHoldoutQueries,
   blackboardRankingQueries,
 } from "./blackboard-ranking-fixtures.js";
 
@@ -49,5 +50,58 @@ describe("synthetic Space Blackboard relevance corpus", () => {
     expect(baseline.candidate.meanReciprocalRank).toBe(1);
     expect(baseline.candidate.meanRecallAtK).toBe(1);
     expect(baseline.candidate.meanNdcgAtK).toBe(1);
+  });
+
+  it("measures lexical recall on a separate query-wording holdout", () => {
+    const cases = blackboardRankingHoldoutQueries.map((query) => {
+      const lexical = rankSharedCards(query.query, blackboardRankingCards).map(
+        ({ card }) => card.projectId
+      );
+      return {
+        id: query.id,
+        relevantProjectIds: query.relevantProjectIds,
+        baselineOrder: lexical,
+        candidateOrder: lexical,
+      };
+    });
+    const evaluation = evaluateBlackboardRankings(cases, {
+      k: 5,
+      seed: 0x484f4c44,
+      bootstrapSamples: 5000,
+    });
+    const relevantCount = blackboardRankingHoldoutQueries.reduce(
+      (sum, query) => sum + query.relevantProjectIds.length,
+      0
+    );
+    const lexicalAnyHits = blackboardRankingHoldoutQueries.reduce(
+      (sum, query) =>
+        sum +
+        query.relevantProjectIds.filter((id) =>
+          rankSharedCards(query.query, blackboardRankingCards).some(
+            ({ card }) => card.projectId === id
+          )
+        ).length,
+      0
+    );
+    const report = {
+      evidenceClass: "synthetic-query-wording-holdout",
+      cardsReusedFromTrainingFixture: blackboardRankingCards.length,
+      queries: cases.length,
+      relevantCardInstances: relevantCount,
+      lexicalRelevantAnyRecall: lexicalAnyHits / relevantCount,
+      lexicalTopFive: evaluation.baseline,
+      limitations: [
+        "Queries were authored separately from relevance-v1, but use the same synthetic card catalog and labels are not independently adjudicated.",
+        "This evaluates lexical retrieval only; it is not a model result or customer traffic estimate.",
+      ],
+    };
+    console.log(`blackboard_holdout_retrieval=${JSON.stringify(report)}`);
+
+    expect(cases).toHaveLength(16);
+    expect(new Set(cases.map(({ id }) => id)).size).toBe(16);
+    expect(relevantCount).toBe(16);
+    expect(lexicalAnyHits).toBeGreaterThanOrEqual(0);
+    expect(lexicalAnyHits).toBeLessThanOrEqual(relevantCount);
+    expect(evaluation.baseline.cases).toBe(16);
   });
 });

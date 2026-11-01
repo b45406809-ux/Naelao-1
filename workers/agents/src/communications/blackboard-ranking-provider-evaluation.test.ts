@@ -9,6 +9,7 @@ import {
 import { evaluateBlackboardRankings } from "./blackboard-ranking-evaluation.js";
 import {
   blackboardRankingCards,
+  blackboardRankingHoldoutQueries,
   blackboardRankingQueries,
 } from "./blackboard-ranking-fixtures.js";
 import {
@@ -31,6 +32,11 @@ const MAX_PROVIDER_REQUESTS = 16;
 const HARD_RANKING_QUERIES = blackboardRankingQueries.filter(
   ({ id }) => id.startsWith("paraphrase-") || id.includes("-vs-")
 );
+const HOLDOUT_RANKING_QUERIES = blackboardRankingHoldoutQueries;
+const LIVE_RANKING_QUERIES = [
+  ...HARD_RANKING_QUERIES,
+  ...HOLDOUT_RANKING_QUERIES,
+];
 
 function expectedCandidates(): Map<string, Set<string>> {
   return getBlackboardCandidateSets(blackboardRankingCards);
@@ -397,6 +403,15 @@ async function writeLiveReport(report: unknown): Promise<void> {
 }
 
 describe("blackboard provider ranking evaluation harness", () => {
+  it("keeps the combined hard-query and holdout run inside the provider request budget", () => {
+    expect(HARD_RANKING_QUERIES).toHaveLength(12);
+    expect(HOLDOUT_RANKING_QUERIES).toHaveLength(16);
+    expect(LIVE_RANKING_QUERIES).toHaveLength(28);
+    expect(
+      Math.ceil(LIVE_RANKING_QUERIES.length / QUERIES_PER_PROVIDER_REQUEST)
+    ).toBeLessThanOrEqual(MAX_PROVIDER_REQUESTS);
+  });
+
   it("keeps the scoring prompt free of relevance labels and bounds model candidates", () => {
     const prompt = buildBlackboardRankingPrompt();
     expect(prompt).toContain('"queryId":"query_001"');
@@ -647,11 +662,11 @@ describe("blackboard provider ranking evaluation harness", () => {
           const chunks: Array<(typeof blackboardRankingQueries)[number][]> = [];
           for (
             let offset = 0;
-            offset < HARD_RANKING_QUERIES.length;
+            offset < LIVE_RANKING_QUERIES.length;
             offset += QUERIES_PER_PROVIDER_REQUEST
           ) {
             chunks.push(
-              HARD_RANKING_QUERIES.slice(
+              LIVE_RANKING_QUERIES.slice(
                 offset,
                 offset + QUERIES_PER_PROVIDER_REQUEST
               )
@@ -723,6 +738,16 @@ describe("blackboard provider ranking evaluation harness", () => {
             parsed,
             HARD_RANKING_QUERIES
           );
+          const holdoutResult = await evaluateProductionReranker(
+            provider,
+            response.model,
+            parsed,
+            HOLDOUT_RANKING_QUERIES
+          );
+          const holdoutExpandedResult = evaluateAllVisibleReranker(
+            parsed,
+            HOLDOUT_RANKING_QUERIES
+          );
           const scoringDiagnostics = summarizeProviderScores(parsed);
           results.push({
             provider,
@@ -767,9 +792,24 @@ describe("blackboard provider ranking evaluation harness", () => {
               stratifiedMetrics: expandedResult.stratifiedMetrics,
               rankingDiagnostics: expandedResult.rankingDiagnostics,
             },
+            queryWordingHoldout: {
+              baseline: holdoutResult.baseline,
+              modelCandidate: holdoutResult.candidate,
+              pairedDelta: holdoutResult.pairedDelta,
+              allVisibleBaseline: holdoutExpandedResult.baseline,
+              allVisibleModelCandidate: holdoutExpandedResult.candidate,
+              allVisiblePairedDelta: holdoutExpandedResult.pairedDelta,
+              queryCount: HOLDOUT_RANKING_QUERIES.length,
+              sharedCardCatalog: blackboardRankingCards.length,
+              labelsIndependentlyAdjudicated: false,
+            },
+            queryWordingHoldoutCoverage:
+              evaluateBlackboardCandidateCoverage(HOLDOUT_RANKING_QUERIES),
             scoringDiagnostics,
             rankingDiagnostics: result.rankingDiagnostics,
-            queries: HARD_RANKING_QUERIES.length,
+            queries: LIVE_RANKING_QUERIES.length,
+            originalHardQueries: HARD_RANKING_QUERIES.length,
+            queryWordingHoldoutQueries: HOLDOUT_RANKING_QUERIES.length,
             cards: blackboardRankingCards.length,
             candidatesPerQueryMaximum: blackboardRankingCards.length,
             searchQueriesEvaluated: HARD_RANKING_QUERIES.length,
@@ -811,7 +851,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         providers: results,
         limitations: [
           "The corpus has 16 synthetic shared-project cards and 12 hard hand-labeled queries (8 paraphrases, 4 multi-project); results are exploratory, not independently validated or representative of user traffic.",
-          `Each provider receives up to 16 visible candidate cards per hard query. The current blackboard.search operation is exercised with a test Decisions adapter that returns precomputed scores from this live batch for its bounded top five; the all-visible candidate-pool ablation uses the same pure reranking comparator. No live OpenRouter Decisions calls occur in this experiment. Provider use is capped at ${MAX_PROVIDER_REQUESTS} direct test-provider requests; schema-invalid output is split into smaller query groups and rate limits stop further calls.`,
+          `Each provider receives up to 16 visible candidate cards for 12 original hard queries and 16 separately authored query-wording holdouts. The current blackboard.search operation is exercised with a test Decisions adapter that returns precomputed scores from this live batch for its bounded top five; the all-visible candidate-pool ablation uses the same pure reranking comparator. No live OpenRouter Decisions calls occur in this experiment. Provider use is capped at ${MAX_PROVIDER_REQUESTS} direct test-provider requests; schema-invalid output is split into smaller query groups and rate limits stop further calls.`,
           "The test uses Gemini and GroqCloud directly and does not alter or replace OpenRouter Decisions production routing.",
           "Provider billing receipts are unavailable in this test; cost is null and is not inferred from token usage.",
           "A free-tier flag is an operator assertion. The harness does not guarantee provider billing or remaining quota; it stops and records provider rate limits.",
