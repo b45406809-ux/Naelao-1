@@ -231,6 +231,59 @@ describe("durable goal DAG", () => {
     await executeGoalDag([task("a"), task("b", ["a"])], restart.host);
     expect(restart.host.fix).not.toHaveBeenCalled();
   });
+  it("caps automatic fixer workers per goal and keeps unfixed task failures escalated", async () => {
+    const f = fixture();
+    f.host.fixerEnabled = true;
+    f.host.maxFixersPerGoal = 1;
+    f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "confirmed test failure" }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: true, output: "repaired" }));
+    const result = await executeGoalDag([task("a"), task("b"), task("c")], f.host);
+
+    expect(f.host.fix).toHaveBeenCalledOnce();
+    expect(Object.keys(result.fixers ?? {})).toEqual(["a"]);
+    expect(Object.values(result.tasks).every(state => state.status === "failed")).toBe(true);
+    expect(result.escalations?.map(item => item.taskId)).toEqual(["a", "b", "c"]);
+    expect(result.maxFixersPerGoal).toBe(1);
+  });
+  it("honors the hard fixer ceiling of two for a larger failed graph", async () => {
+    const f = fixture();
+    f.host.fixerEnabled = true;
+    f.host.maxFixersPerGoal = 2;
+    f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "confirmed test failure" }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: true, output: "repair attempted" }));
+
+    const result = await executeGoalDag([task("a"), task("b"), task("c"), task("d")], f.host);
+
+    expect(f.host.fix).toHaveBeenCalledTimes(2);
+    expect(Object.keys(result.fixers ?? {})).toEqual(["a", "b"]);
+    expect(result.maxFixersPerGoal).toBe(2);
+    expect(result.escalations?.map(item => item.taskId)).toEqual(["a", "b", "c", "d"]);
+  });
+  it("lowers a persisted fixer budget on resume and never exceeds the current host limit", async () => {
+    const f = fixture({
+      fixerEnabled: true,
+      maxFixersPerGoal: 2,
+      tasks: {
+        a: { status: "failed", workerId: "worker:a", result: { id: "worker:a", ok: false, error: "failed" } },
+        b: { status: "failed", workerId: "worker:b", result: { id: "worker:b", ok: false, error: "failed" } },
+      },
+      fixers: { a: { status: "failed", workerId: "worker:a:fix", result: { id: "worker:a:fix", ok: false, error: "repair failed" } } },
+    });
+    f.host.fixerEnabled = true;
+    f.host.maxFixersPerGoal = 1;
+    f.host.fix = vi.fn();
+
+    const result = await executeGoalDag([task("a"), task("b")], f.host);
+
+    expect(f.host.fix).not.toHaveBeenCalled();
+    expect(result.maxFixersPerGoal).toBe(1);
+    expect(Object.keys(result.fixers ?? {})).toEqual(["a"]);
+  });
+  it.each([-1, 3, 1.5])("rejects invalid host fixer budget %s", async maxFixersPerGoal => {
+    const f = fixture();
+    f.host.maxFixersPerGoal = maxFixersPerGoal;
+    await expect(executeGoalDag([task("a")], f.host)).rejects.toThrow("invalid_goal_fixer_limit");
+  });
   it("does not invoke the fixer when a worker's outcome is uncertain", async () => {
     const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" } } });
     f.host.fix = vi.fn();
@@ -253,6 +306,34 @@ describe("durable goal DAG", () => {
     const result = await executeGoalDag([task("a")], f.host);
     expect(result.fixers?.a?.status).toBe("completed");
     expect(f.host.fix).not.toHaveBeenCalled();
+  });
+  it("reconciles a running fixer after the feature flag is disabled without spawning again", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "failed", workerId: "worker:a", result: { id: "worker:a", ok: false, error: "failed" } } }, fixers: { a: { status: "running", workerId: "worker:a:fix" } } });
+    f.host.fixerEnabled = false;
+    f.host.fix = vi.fn();
+    f.host.recover = vi.fn(async () => undefined);
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(f.host.recover).toHaveBeenCalledWith("worker:a:fix");
+    expect(f.host.fix).not.toHaveBeenCalled();
+    expect(result.fixers?.a?.status).toBe("needs_review");
+  });
+  it("does not let a persisted opt-in override a disabled host fixer flag", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "failed", workerId: "worker:a", result: { id: "worker:a", ok: false, error: "failed" } } } });
+    f.host.fixerEnabled = false;
+    f.host.fix = vi.fn();
+
+    const result = await executeGoalDag([task("a")], f.host);
+
+    expect(f.host.fix).not.toHaveBeenCalled();
+    expect(result.fixerEnabled).toBe(false);
+    expect(result.tasks.a?.status).toBe("failed");
+  });
+  it("keeps a recovered fixer waiting on human input in review", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "failed", workerId: "worker:a", result: { id: "worker:a", ok: false, error: "failed" } } }, fixers: { a: { status: "running", workerId: "worker:a:fix" } } });
+    f.host.fixerEnabled = false;
+    f.host.recover = vi.fn(async id => ({ id, ok: false, status: "awaiting_human_input" }));
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(result.fixers?.a?.status).toBe("needs_review");
   });
   it("escalates an uncertain recovered failure without launching a fixer", async () => {
     const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" } } });

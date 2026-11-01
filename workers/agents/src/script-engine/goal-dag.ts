@@ -18,7 +18,9 @@ export interface GoalTaskRuntimeState {
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; dispatchId?: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; verificationRequired?: boolean }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; maxFixersPerGoal?: number; verificationRequired?: boolean }
+/** Automatic repair is an opt-in, host-budgeted path with a hard kernel ceiling. */
+export const MAX_GOAL_FIXERS_PER_RUN = 2;
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -34,6 +36,7 @@ export interface GoalDagHost {
   concurrency: number;
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
+  maxFixersPerGoal?: number;
   verificationRequired?: boolean;
   collectEvidence?(task: GoalTask, workerId: string): Promise<GoalEvidence[]>;
   assessEvidence?(task: GoalTask, evidence: readonly GoalEvidence[], deterministic: { outcome: "passed" | "failed" | "uncertain"; reason: string }): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
@@ -105,8 +108,17 @@ function collectEscalations(tasks: GoalTask[], journal: GoalDagJournal): GoalEsc
 export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Promise<GoalDagJournal> {
   validateGoalDag(tasks);
   if (!Number.isSafeInteger(host.concurrency) || host.concurrency < 1 || host.concurrency > 4) throw new Error("invalid_goal_concurrency");
+  const hostFixerLimit = host.maxFixersPerGoal ?? 1;
+  if (!Number.isSafeInteger(hostFixerLimit) || hostFixerLimit < 0 || hostFixerLimit > MAX_GOAL_FIXERS_PER_RUN) throw new Error("invalid_goal_fixer_limit");
   const loaded = await host.load();
+  const persistedFixerLimit = loaded?.maxFixersPerGoal;
+  if (persistedFixerLimit !== undefined && (!Number.isSafeInteger(persistedFixerLimit) || persistedFixerLimit < 0 || persistedFixerLimit > MAX_GOAL_FIXERS_PER_RUN)) throw new Error("goal_journal_invalid_fixer_limit");
+  const effectiveFixerLimit = persistedFixerLimit === undefined ? hostFixerLimit : Math.min(persistedFixerLimit, hostFixerLimit);
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  // The feature flag is a live host kill switch. Persisted opt-in must not override a
+  // stricter rollout setting when a graph resumes.
+  journal.fixerEnabled = host.fixerEnabled === true;
+  journal.maxFixersPerGoal = effectiveFixerLimit;
   // Worker completions can checkpoint concurrently. Serialize immutable snapshots so a slow
   // earlier write cannot replace a newer journal with stale task states.
   let saveTail: Promise<void> = Promise.resolve();
@@ -188,19 +200,28 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed"));
     if (!ready.length && inFlight.size === 0) {
+      const fixers = journal.fixers ??= {};
+      // Always reconcile an already-running fixer, even if the feature flag was switched
+      // off during an interruption. Recovery observes the existing attempt; it never starts
+      // a replacement. Unknown outcomes are held for review.
+      for (const task of tasks) {
+        const fixer = fixers[task.id];
+        if (fixer?.status !== "running") continue;
+        let recovered: GoalWorkerResult | undefined;
+        try { recovered = await host.recover(fixer.workerId); } catch { /* fail closed below */ }
+        fixer.status = recovered
+          ? recovered.ok ? "completed" : ["outcome_uncertain", "awaiting_planner_input", "awaiting_human_input"].includes(recovered.status ?? "") ? "needs_review" : "failed"
+          : "needs_review";
+        if (recovered) fixer.result = recovered;
+        await save();
+      }
       if (journal.fixerEnabled && host.fix) {
         for (const task of tasks) {
           const state = journal.tasks[task.id]!;
           if (state.status !== "failed" || !state.result || state.result.ok || task.file_paths.length === 0) continue;
-          const fixers = journal.fixers ??= {};
           let fixer = fixers[task.id];
-          if (fixer?.status === "running") {
-            const recovered = await host.recover(fixer.workerId);
-            fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
-            if (recovered) fixer.result = recovered;
-            await save();
-          }
           if (fixer) continue;
+          if (Object.keys(fixers).length >= effectiveFixerLimit) continue;
           fixer = fixers[task.id] = { workerId: `${state.workerId}:fix`, status: "running" };
           await save();
           try {
@@ -208,8 +229,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
             fixer.result = result;
             fixer.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
           } catch {
-            const recovered = await host.recover(fixer.workerId);
-            fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
+            let recovered: GoalWorkerResult | undefined;
+            try { recovered = await host.recover(fixer.workerId); } catch { /* fail closed below */ }
+            fixer.status = recovered
+              ? recovered.ok ? "completed" : ["outcome_uncertain", "awaiting_planner_input", "awaiting_human_input"].includes(recovered.status ?? "") ? "needs_review" : "failed"
+              : "needs_review";
             if (recovered) fixer.result = recovered;
           }
           await save();

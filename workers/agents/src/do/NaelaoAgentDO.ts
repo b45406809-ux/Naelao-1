@@ -3859,6 +3859,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
             taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
+            maxFixersPerGoal: Math.min(2, workerExecutionCapacity),
             verificationRequired: this.env.GOAL_VERIFICATION_REQUIRED === "true",
             ...(this.env.GOAL_VERIFICATION_REQUIRED === "true" && goalVerificationDecision ? { assessEvidence: async (task, evidence, deterministic) => {
               const { assessGoalEvidence } = await import("../script-engine/goal-verification.js");
