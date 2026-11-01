@@ -34,8 +34,8 @@ const HARD_RANKING_QUERIES = blackboardRankingQueries.filter(
 );
 const HOLDOUT_RANKING_QUERIES = blackboardRankingHoldoutQueries;
 const LIVE_RANKING_QUERIES = [
-  ...HARD_RANKING_QUERIES,
   ...HOLDOUT_RANKING_QUERIES,
+  ...HARD_RANKING_QUERIES,
 ];
 
 function expectedCandidates(): Map<string, Set<string>> {
@@ -306,6 +306,65 @@ function evaluateAllVisibleReranker(
   return summarizeOrders(orders, queries, blackboardRankingCards, true);
 }
 
+async function evaluateAvailableProviderScores(
+  provider: string,
+  model: string,
+  scores: ReturnType<typeof parseBlackboardRankingScores>
+) {
+  const scoredQueryIds = new Set(scores.map(({ queryId }) => queryId));
+  const completedHardQueries = HARD_RANKING_QUERIES.filter(({ id }) =>
+    scoredQueryIds.has(id)
+  );
+  const completedHoldoutQueries = HOLDOUT_RANKING_QUERIES.filter(({ id }) =>
+    scoredQueryIds.has(id)
+  );
+  const partialMetrics: Record<string, unknown> = {};
+  if (completedHardQueries.length) {
+    const hard = await evaluateProductionReranker(
+      provider,
+      model,
+      scores,
+      completedHardQueries
+    );
+    const hardExpanded = evaluateAllVisibleReranker(
+      scores,
+      completedHardQueries
+    );
+    partialMetrics.hardQueries = {
+      completed: completedHardQueries.length,
+      baseline: hard.baseline,
+      candidate: hard.candidate,
+      allVisibleBaseline: hardExpanded.baseline,
+      allVisibleCandidate: hardExpanded.candidate,
+    };
+  }
+  if (completedHoldoutQueries.length) {
+    const holdout = await evaluateProductionReranker(
+      provider,
+      model,
+      scores,
+      completedHoldoutQueries
+    );
+    const holdoutExpanded = evaluateAllVisibleReranker(
+      scores,
+      completedHoldoutQueries
+    );
+    partialMetrics.queryWordingHoldout = {
+      completed: completedHoldoutQueries.length,
+      total: HOLDOUT_RANKING_QUERIES.length,
+      baseline: holdout.baseline,
+      candidate: holdout.candidate,
+      allVisibleBaseline: holdoutExpanded.baseline,
+      allVisibleCandidate: holdoutExpanded.candidate,
+    };
+  }
+  return {
+    completedHardQueries: completedHardQueries.length,
+    completedHoldoutQueries: completedHoldoutQueries.length,
+    partialMetrics,
+  };
+}
+
 function summarizeOrders(
   orders: ReadonlyMap<string, readonly string[]>,
   queries: readonly (typeof blackboardRankingQueries)[number][],
@@ -410,6 +469,40 @@ describe("blackboard provider ranking evaluation harness", () => {
     expect(
       Math.ceil(LIVE_RANKING_QUERIES.length / QUERIES_PER_PROVIDER_REQUEST)
     ).toBeLessThanOrEqual(MAX_PROVIDER_REQUESTS);
+  });
+
+  it("evaluates completed holdout queries when later requests are unavailable", async () => {
+    const queries = HOLDOUT_RANKING_QUERIES.slice(0, 2);
+    const partialScores = queries.map((query) => ({
+      queryId: query.id,
+      scores: blackboardRankingCards.map((card) => ({
+        projectId: card.projectId,
+        relevance: query.relevantProjectIds.includes(card.projectId)
+          ? (2 as const)
+          : (0 as const),
+      })),
+    }));
+    const result = await evaluateAvailableProviderScores(
+      "test-provider",
+      "test-model",
+      partialScores
+    );
+    const holdout = result.partialMetrics.queryWordingHoldout as {
+      completed: number;
+      candidate: { meanReciprocalRank: number; meanRecallAtK: number };
+      allVisibleCandidate: {
+        meanReciprocalRank: number;
+        meanRecallAtK: number;
+      };
+    };
+
+    expect(result.completedHoldoutQueries).toBe(2);
+    expect(result.completedHardQueries).toBe(0);
+    expect(holdout.completed).toBe(2);
+    expect(holdout.candidate.meanReciprocalRank).toBeLessThan(1);
+    expect(holdout.candidate.meanRecallAtK).toBeLessThan(1);
+    expect(holdout.allVisibleCandidate.meanReciprocalRank).toBe(1);
+    expect(holdout.allVisibleCandidate.meanRecallAtK).toBe(1);
   });
 
   it("keeps the scoring prompt free of relevance labels and bounds model candidates", () => {
@@ -645,6 +738,8 @@ describe("blackboard provider ranking evaluation harness", () => {
       const results: Array<Record<string, unknown>> = [];
       for (const provider of providers) {
         let inferenceRequests = 0;
+        const responses: Awaited<ReturnType<typeof requestModelScores>>[] = [];
+        const parsed: ReturnType<typeof parseBlackboardRankingScores> = [];
         const enabled =
           process.env[
             `${provider === "gemini" ? "GEMINI" : "GROQ"}_PLAN_CALLS_ALLOWED`
@@ -672,8 +767,6 @@ describe("blackboard provider ranking evaluation harness", () => {
               )
             );
           }
-          const responses = [];
-          const parsed = [];
           const parseableResponseErrors = new Set([
             "blackboard_provider_response_invalid_json",
             "blackboard_provider_response_schema_invalid",
@@ -705,11 +798,13 @@ describe("blackboard provider ranking evaluation harness", () => {
               { allVisibleCards: true }
             );
             try {
-              return restoreBlackboardRankingScoreIds(
+              const validated = restoreBlackboardRankingScoreIds(
                 parseBlackboardRankingScores(response.raw, expected),
                 blackboardRankingCards,
                 chunk
               );
+              parsed.push(...validated);
+              return validated;
             } catch (error) {
               const reason = error instanceof Error ? error.message : "";
               const code = reason.split(":", 1)[0] ?? "";
@@ -724,7 +819,7 @@ describe("blackboard provider ranking evaluation harness", () => {
             }
           };
           for (const chunk of chunks) {
-            parsed.push(...(await requestAndParse(chunk)));
+            await requestAndParse(chunk);
           }
           const response = responses[0];
           if (!response) throw new Error("provider_response_missing");
@@ -803,8 +898,9 @@ describe("blackboard provider ranking evaluation harness", () => {
               sharedCardCatalog: blackboardRankingCards.length,
               labelsIndependentlyAdjudicated: false,
             },
-            queryWordingHoldoutCoverage:
-              evaluateBlackboardCandidateCoverage(HOLDOUT_RANKING_QUERIES),
+            queryWordingHoldoutCoverage: evaluateBlackboardCandidateCoverage(
+              HOLDOUT_RANKING_QUERIES
+            ),
             scoringDiagnostics,
             rankingDiagnostics: result.rankingDiagnostics,
             queries: LIVE_RANKING_QUERIES.length,
@@ -820,15 +916,51 @@ describe("blackboard provider ranking evaluation harness", () => {
             error instanceof Error
               ? error.message.slice(0, 100)
               : "provider_evaluation_failed";
+          const model =
+            responses[0]?.model ??
+            (provider === "gemini"
+              ? GEMINI_MODEL
+              : process.env.GROQ_FREE_MODEL_ID || null);
+          const availableResults = await evaluateAvailableProviderScores(
+            provider,
+            model,
+            parsed
+          );
+          const quotaLimited = reason.startsWith("quota_or_rate_limited");
           results.push({
             provider,
-            model:
-              provider === "gemini"
-                ? GEMINI_MODEL
-                : process.env.GROQ_FREE_MODEL_ID || null,
-            state: inferenceRequests > 0 ? "failed" : "blocked",
+            model,
+            state: quotaLimited
+              ? parsed.length > 0
+                ? "partial_stopped_on_quota"
+                : "stopped_on_quota"
+              : inferenceRequests > 0
+                ? "failed"
+                : "blocked",
             reason,
             inferenceRequests,
+            completedScoredQueries: parsed.length,
+            hardQueriesCompleted: availableResults.completedHardQueries,
+            queryWordingHoldoutCompleted:
+              availableResults.completedHoldoutQueries,
+            partialMetrics: availableResults.partialMetrics,
+            requestLatencyP50Ms: percentile(
+              responses.map(({ latencyMs }) => latencyMs),
+              0.5
+            ),
+            requestLatencyP95Ms: percentile(
+              responses.map(({ latencyMs }) => latencyMs),
+              0.95
+            ),
+            inputTokens: responses.reduce(
+              (total, item) => total + (item.inputTokens ?? 0),
+              0
+            ),
+            outputTokens: responses.reduce(
+              (total, item) => total + (item.outputTokens ?? 0),
+              0
+            ),
+            providerReportedCostUsd: null,
             providerResponseLogged: false,
             durationMs: Date.now() - startedAt,
           });

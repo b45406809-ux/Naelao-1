@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  blackboardOnlyCallsAllowed,
   planningCallsAllowed,
   rankingCallsAllowed,
 } from "./provider-followup-gate.mjs";
@@ -38,6 +39,34 @@ test("missing or incomplete smoke report fails closed", () => {
     GEMINI_PLAN_CALLS_ALLOWED: false,
     GROQ_PLAN_CALLS_ALLOWED: false,
   });
+});
+
+test("blackboard-only profile requires free-tier confirmation, a key and model", () => {
+  assert.deepEqual(
+    blackboardOnlyCallsAllowed({
+      GEMINI_FREE_TIER_CONFIRMED: "true",
+      GEMINI_API_KEYS: "key-a,key-b",
+      GROQ_FREE_TIER_CONFIRMED: "true",
+      GROQ_API_KEYS: "key-c",
+      GROQ_FREE_MODEL_ID: "openai/gpt-oss-20b",
+    }),
+    {
+      GEMINI_PLAN_CALLS_ALLOWED: true,
+      GROQ_PLAN_CALLS_ALLOWED: true,
+    }
+  );
+  assert.deepEqual(
+    blackboardOnlyCallsAllowed({
+      GEMINI_FREE_TIER_CONFIRMED: "false",
+      GEMINI_API_KEYS: "key-a",
+      GROQ_FREE_TIER_CONFIRMED: "true",
+      GROQ_API_KEYS: "key-c",
+    }),
+    {
+      GEMINI_PLAN_CALLS_ALLOWED: false,
+      GROQ_PLAN_CALLS_ALLOWED: false,
+    }
+  );
 });
 
 test("planning-stage gate blocks providers that rate-limited during ranking", () => {

@@ -47,6 +47,28 @@ export function planningCallsAllowed(previous, report) {
   );
 }
 
+export function blackboardOnlyCallsAllowed(environment) {
+  return Object.fromEntries(
+    providers.map(({ envPrefix }) => {
+      const keyText =
+        environment[`${envPrefix}_API_KEYS`] ||
+        environment[`${envPrefix}_API_KEY`] ||
+        "";
+      const hasKey = keyText.split(",").some((key) => key.trim().length > 0);
+      const modelConfigured =
+        envPrefix !== "GROQ" ||
+        (typeof environment.GROQ_FREE_MODEL_ID === "string" &&
+          environment.GROQ_FREE_MODEL_ID.trim().length > 0);
+      return [
+        `${envPrefix}_PLAN_CALLS_ALLOWED`,
+        environment[`${envPrefix}_FREE_TIER_CONFIRMED`] === "true" &&
+          hasKey &&
+          modelConfigured,
+      ];
+    })
+  );
+}
+
 function appendEnvironment(values, path) {
   if (!path) throw new Error("GITHUB_ENV is required");
   fs.appendFileSync(
@@ -67,6 +89,11 @@ if (invokedDirectly) {
       rankingCallsAllowed(readReport(process.env.PROVIDER_SMOKE_REPORT)),
       process.env.GITHUB_ENV
     );
+  } else if (stage === "blackboard-only") {
+    appendEnvironment(
+      blackboardOnlyCallsAllowed(process.env),
+      process.env.GITHUB_ENV
+    );
   } else if (stage === "planning") {
     appendEnvironment(
       planningCallsAllowed(
@@ -77,7 +104,7 @@ if (invokedDirectly) {
     );
   } else {
     throw new Error(
-      "usage: node provider-followup-gate.mjs <ranking|planning>"
+      "usage: node provider-followup-gate.mjs <ranking|blackboard-only|planning>"
     );
   }
 }
