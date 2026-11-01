@@ -311,3 +311,11 @@ Keep prompt contents, credentials, user data, and live customer identifiers out 
 ## Explicitly out of scope for a one-day proof
 
 Passing a bounded test plan does not prove broad model intelligence, zero real-world false acceptance, production scalability, regulatory compliance, marketplace trustworthiness, or availability in every country/provider. External benchmark datasets, large-scale customer load, independent FDE publishing, and every vertical integration require separate evidence and must not be smuggled into a “green CI” claim.
+
+### Follow-up: delegated worker blackboard delivery boundary (2026-11-01)
+
+Added an integration regression that calls the real `task_blackboard.recipients`, `.publish`, and `.read` prebuilt operations through their orchestration hook and the `NaelaoAgentDO` internal route. A three-worker task graph grants the sender access to its dependent worker only. The receiver reads the finding, an unrelated worker sees no message, and an attempted send to that unrelated worker is rejected by the host with HTTP 403. Hostile-looking quoted source text remains explicitly untrusted data.
+
+- Focused blackboard and DAG checks passed **46 tests across 5 files**.
+- The full Agents Vitest suite passed **1,077 tests with 1 skipped across 212 files**; Agents TypeScript checking and `git diff --check` passed.
+- The AgentDO route is real; DO storage is an in-memory transaction test double and membership `scopeAccess` is mocked. This does not prove model interpretation, simultaneous live Worker exchange, wake-driven delivery, or deployed Cloudflare behavior. Batch 3 wake-claim races, interruption recovery, standing-policy revocation, and fixer safety remain open.
