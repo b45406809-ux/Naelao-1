@@ -82,6 +82,33 @@ function rankCardsBm25(query: string, cards: readonly SharedProjectCard[]) {
     );
 }
 
+function rankCardsRrf(
+  query: string,
+  cards: readonly SharedProjectCard[],
+  limit: number
+) {
+  const lexical = rankSharedCards(query, [...cards])
+    .slice(0, limit)
+    .map(({ card }) => card.projectId);
+  const bm25 = rankCardsBm25(query, cards)
+    .slice(0, limit)
+    .map(({ card }) => card.projectId);
+  const candidates = new Set([...lexical, ...bm25]);
+  const reciprocalRank = (ranking: readonly string[], id: string) => {
+    const index = ranking.indexOf(id);
+    return index < 0 ? 0 : 1 / (60 + index + 1);
+  };
+  return [...candidates]
+    .map((projectId) => ({
+      projectId,
+      score:
+        reciprocalRank(lexical, projectId) + reciprocalRank(bm25, projectId),
+    }))
+    .sort((a, b) => b.score - a.score || a.projectId.localeCompare(b.projectId))
+    .slice(0, limit)
+    .map(({ projectId }) => projectId);
+}
+
 describe("synthetic Space Blackboard relevance corpus", () => {
   it("records a reproducible lexical baseline and explicit label-oracle ceiling", async () => {
     const cases = blackboardRankingQueries.map((query) => ({
@@ -203,7 +230,9 @@ describe("synthetic Space Blackboard relevance corpus", () => {
           (sum, query) => sum + query.relevantProjectIds.length,
           0
         );
-        const evaluateStrategy = (strategy: "lexical" | "bm25") => {
+        const evaluateStrategy = (
+          strategy: "lexical" | "bm25" | "reciprocal-rank-fusion"
+        ) => {
           let relevantInstances = 0;
           const cases = blackboardRankingHoldoutQueries.map((query) => {
             const lexical = rankSharedCards(query.query, cards).map(
@@ -214,9 +243,11 @@ describe("synthetic Space Blackboard relevance corpus", () => {
                 ? rankSharedCards(query.query, cards, {
                     includeZeroScore: limit === cards.length,
                   }).map(({ card }) => card.projectId)
-                : rankCardsBm25(query.query, cards).map(
-                    ({ card }) => card.projectId
-                  );
+                : strategy === "bm25"
+                  ? rankCardsBm25(query.query, cards).map(
+                      ({ card }) => card.projectId
+                    )
+                  : rankCardsRrf(query.query, cards, limit);
             const retrieved =
               limit === cards.length
                 ? [...strategyOrder]
@@ -250,6 +281,7 @@ describe("synthetic Space Blackboard relevance corpus", () => {
           candidateLimit: limit,
           lexical: evaluateStrategy("lexical"),
           bm25: evaluateStrategy("bm25"),
+          reciprocalRankFusion: evaluateStrategy("reciprocal-rank-fusion"),
         };
       });
       return { catalogCards: cards.length, candidates };
