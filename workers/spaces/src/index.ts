@@ -1981,7 +1981,9 @@ app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
   const cursor = c.req.query("after") ?? "";
   if (cursor && !/^[A-Za-z0-9._:-]{1,160}$/.test(cursor)) return c.json({ error_code:"invalid_cursor" },400);
   const candidates = [...new Set(visible)].sort().filter(id => id > cursor);
-  const page = candidates.slice(0,100);
+  // Keep the ID list plus tenant/space bindings below Workerd SQLite's bind-variable ceiling.
+  // A 100-ID page creates 102 parameters and fails on the embedded SQLite build used by Workers.
+  const page = candidates.slice(0,90);
   if (!page.length) return c.json({ cards: [], next_cursor: null, truncated: false });
   const placeholders = page.map(() => "?").join(",");
   const cards = await c.env.PLATFORM_DB.prepare(`SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) ORDER BY project_id`).bind(c.req.header("x-naelao-tenant-id"), spaceId, ...page).all<{ project_id: string; summary: string; capabilities_json: string; evidence_json: string; updated_at: string }>();

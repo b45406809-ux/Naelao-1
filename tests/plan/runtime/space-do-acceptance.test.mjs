@@ -990,6 +990,51 @@ test("an expired D1 wake lease is held instead of blindly redispatched", async (
   assert.deepEqual(wakeResult.dispatchResponses, []);
 });
 
+test("real local D1 and SpaceDO blackboard search follows cursors through 100, 1k, and 10k visible cards", async () => {
+  const resultByScale = [];
+  for (const count of [100, 1_000, 10_000]) {
+    const seedStarted = performance.now();
+    const seeded = await jsonRequest(spacesBaseUrl, "/__test/blackboard-scale-seed", "POST", {
+      tenantId: identity.tenantId,
+      spaceId: identity.spaceId,
+      count,
+    }, 120_000);
+    assert.equal(seeded.seeded_projects, count);
+    assert.equal(seeded.seeded_cards, count);
+    const targetProjectId = `00000000-0000-4000-8000-${(count - 1).toString(16).padStart(12, "0")}`;
+    const search = await jsonRequest(agentsBaseUrl, "/__test/blackboard/search-all", "POST", {
+      query: `ref${String(count - 1).padStart(5, "0")}`,
+      projectId: targetProjectId,
+      maxPages: 150,
+    }, 180_000);
+    assert.equal(search.found, true, `last seeded card was not found at ${count}`);
+    assert.equal(search.truncated, false, `search stopped before exhausting cards at ${count}`);
+    assert.equal(search.pages, Math.ceil(count / 90), `cursor/page count drift at ${count}`);
+    const sorted = [...search.page_latencies_ms].sort((a, b) => a - b);
+    const percentile = (p) => sorted[Math.ceil(p * sorted.length) - 1] ?? 0;
+    const measurement = {
+      visible_cards: count,
+      target_position: count,
+      target_found: search.found,
+      pages_followed: search.pages,
+      page_size: 90,
+      end_to_end_ms: search.elapsed_ms,
+      page_latency_p50_ms: percentile(0.5),
+      page_latency_p95_ms: percentile(0.95),
+      seed_ms: Math.round(performance.now() - seedStarted) - search.elapsed_ms,
+      provider_calls: 0,
+      evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
+    };
+    resultByScale.push(measurement);
+  }
+  metrics.benchmarks.push({
+    name: "blackboard-cursor-pagination-local-wrangler",
+    evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
+    query_cases: resultByScale,
+    note: "Each query targets the last lexically ordered card and follows the SDK operation cursor until exhausted; this proves the client loop, not that an LLM autonomously chooses to continue.",
+  });
+});
+
 test("real D1 membership data denies a viewer permission to create Project Bot threads", async () => {
   const started = performance.now();
   const response = await fetch(

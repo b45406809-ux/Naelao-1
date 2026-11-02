@@ -1,0 +1,865 @@
+{
+  "schema_version": 1,
+  "runtime": "local-wrangler",
+  "started_at": "2026-11-02T17:32:46.227Z",
+  "migration_sql_files": 156,
+  "migration_apply_ms": 49804,
+  "worker_start_ms": 10560,
+  "spaces_worker_start_ms": 3031,
+  "model_gateway_start_ms": 1395,
+  "artifact_worker_start_ms": 1449,
+  "agents_worker_start_ms": 4685,
+  "agents_goal_journal_restarts": [
+    {
+      "outcome": "completed",
+      "verification": "passed",
+      "duration_ms": 4057
+    },
+    {
+      "outcome": "needs_review",
+      "verification": "uncertain",
+      "duration_ms": 4405
+    }
+  ],
+  "requests": [
+    {
+      "route": "POST /__test/bootstrap",
+      "status": 200,
+      "duration_ms": 30
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 179
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 240
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/projects/6730e137-60d7-4377-bb63-ded540c6cb94/assistant-access?user_id=owner-blackboard-runtime-test",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/threads",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/sessions",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/threads/74999fdc-bd24-46e1-84b8-d8f083ec4ad8",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/sessions/f8061cd3-a475-4403-9bc9-9b14aff12823",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/threads/74999fdc-bd24-46e1-84b8-d8f083ec4ad8",
+      "status": 200,
+      "duration_ms": 41
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/sessions/f8061cd3-a475-4403-9bc9-9b14aff12823",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 13
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 348
+    },
+    {
+      "route": "POST /__test/space-assistant-goal",
+      "status": 200,
+      "duration_ms": 318
+    },
+    {
+      "route": "GET /__test/agent-activity?root_run_id=space-assistant-runtime%3A52304b57-ec33-4450-89ee-3a698976bf0f",
+      "status": 200,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 630
+    },
+    {
+      "route": "GET /__test/agent-activity?root_run_id=blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/tasks?project_id=4480d08a-3c4d-4e64-9125-6c9068055759",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291",
+      "status": 200,
+      "duration_ms": 18
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/pause-goal-dispatch",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-134978c8fd68fa2aad916a5d0d0bdef9f565c4722aba56fbf7c44fffc1a5f0f1",
+      "status": 200,
+      "duration_ms": 6
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-134978c8fd68fa2aad916a5d0d0bdef9f565c4722aba56fbf7c44fffc1a5f0f1",
+      "status": 200,
+      "duration_ms": 22
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-134978c8fd68fa2aad916a5d0d0bdef9f565c4722aba56fbf7c44fffc1a5f0f1",
+      "status": 200,
+      "duration_ms": 26
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-134978c8fd68fa2aad916a5d0d0bdef9f565c4722aba56fbf7c44fffc1a5f0f1",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/pause-goal-dispatch",
+      "status": 200,
+      "duration_ms": 19
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-134978c8fd68fa2aad916a5d0d0bdef9f565c4722aba56fbf7c44fffc1a5f0f1",
+      "status": 200,
+      "duration_ms": 12
+    },
+    {
+      "route": "GET /__test/active-run",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 648
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-32b603395b4fed14db3c8b16fbd2c8ee128cfa1734065aa189816b8a745d217c",
+      "status": 200,
+      "duration_ms": 20
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 921
+    },
+    {
+      "route": "POST /__test/task-blackboard/publish",
+      "status": 200,
+      "duration_ms": 13
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-eb5baf56a3bed4d4646a4ed3532167fb2632f6312ccad24e2435fd1d89b878b6",
+      "status": 200,
+      "duration_ms": 27
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 678
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 917
+    },
+    {
+      "route": "POST /__test/task-blackboard/read",
+      "status": 200,
+      "duration_ms": 16
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 180
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 149
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 172
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 206
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 139
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 161
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 121
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 126
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 113
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 102
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 6
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 114
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 121
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 129
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 117
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 128
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 114
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 116
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 119
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 134
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 120
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 127
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 128
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 135
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 115
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 109
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 115
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 149
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 128
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 120
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 118
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 128
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 117
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 138
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 106
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 82
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 121
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 68
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 19
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 21
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 59
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 188
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 556
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 8801
+    },
+    {
+      "route": "POST /spaces/:spaceId/threads (viewer denial)",
+      "status": 403,
+      "duration_ms": 7
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "local-blackboard-project-bot-admission",
+      "evidence_class": "integrated-local",
+      "samples": 30,
+      "p50_ms": 120,
+      "p95_ms": 149,
+      "provider_attempts": 0,
+      "terminal_boundary": "air-gap compliance_violation before model/provider execution"
+    },
+    {
+      "name": "blackboard-cursor-pagination-local-wrangler",
+      "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+      "query_cases": [
+        {
+          "visible_cards": 100,
+          "target_position": 100,
+          "target_found": true,
+          "pages_followed": 2,
+          "page_size": 90,
+          "end_to_end_ms": 14,
+          "page_latency_p50_ms": 6,
+          "page_latency_p95_ms": 7,
+          "seed_ms": 27,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+        },
+        {
+          "visible_cards": 1000,
+          "target_position": 1000,
+          "target_found": true,
+          "pages_followed": 12,
+          "page_size": 90,
+          "end_to_end_ms": 180,
+          "page_latency_p50_ms": 14,
+          "page_latency_p95_ms": 19,
+          "seed_ms": 68,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+        },
+        {
+          "visible_cards": 10000,
+          "target_position": 10000,
+          "target_found": true,
+          "pages_followed": 112,
+          "page_size": 90,
+          "end_to_end_ms": 8790,
+          "page_latency_p50_ms": 77,
+          "page_latency_p95_ms": 97,
+          "seed_ms": 567,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+        }
+      ],
+      "note": "Each query targets the last lexically ordered card and follows the SDK operation cursor until exhausted; this proves the client loop, not that an LLM autonomously chooses to continue."
+    }
+  ],
+  "blackboard_dispatch": [
+    {
+      "status": 403,
+      "body": {
+        "error": "This space requires a local model for private execution",
+        "error_code": "compliance_violation"
+      }
+    }
+  ],
+  "blackboard_wake_status": "held",
+  "runtime_restart_ms": 9874,
+  "restart_worker_start": {
+    "spacesWorkerStartMs": 2965,
+    "modelGatewayStartMs": 1366,
+    "artifactWorkerStartMs": 1430,
+    "agentsWorkerStartMs": 4112,
+    "totalWorkerStartMs": 9873
+  },
+  "runtime_restart_count": 1,
+  "project_assistant_mock_run": {
+    "evidence_class": "integrated-local-mock-model",
+    "outcome": "completed",
+    "duration_ms": 348,
+    "model_requests": 1,
+    "model_ids": [
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    ],
+    "external_provider_requests": 0
+  },
+  "space_assistant_verified_worker_run": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "task_status": "completed",
+    "verification": "passed",
+    "artifact_workspace": "Space Assistant workspace",
+    "decisions_requests": 1,
+    "billing_events": [
+      "reserve",
+      "settle"
+    ],
+    "correlated_trace": [
+      {
+        "assistant_scope": "worker",
+        "root_run_id": "space-assistant-runtime:52304b57-ec33-4450-89ee-3a698976bf0f",
+        "parent_run_id": "space-assistant-runtime:52304b57-ec33-4450-89ee-3a698976bf0f",
+        "worker_id": "dce2cf7bcaa0167c913b59f2ba81963c23989bb8584096e0b261f648cb718ff1:write-report",
+        "run_id": "dce2cf7bcaa0167c913b59f2ba81963c23989bb8584096e0b261f648cb718ff1:write-report"
+      },
+      {
+        "assistant_scope": "space_assistant",
+        "root_run_id": "space-assistant-runtime:52304b57-ec33-4450-89ee-3a698976bf0f",
+        "parent_run_id": null,
+        "worker_id": null,
+        "run_id": "space-assistant-runtime:52304b57-ec33-4450-89ee-3a698976bf0f"
+      }
+    ],
+    "external_provider_requests": 0
+  },
+  "project_bot_leaf_worker_run": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "outcome": "completed",
+    "duration_ms": 630,
+    "inference_requests": 4,
+    "task_status": "completed",
+    "artifact_path": "reports/blackboard-worker-smoke.txt",
+    "artifact_branch": "task/bf7ecccb7f8bbb48313159ba23e4dfdb40cf63bccd1f3d4c",
+    "external_provider_requests": 0,
+    "host_evidence_verification": "passed",
+    "correlated_trace": [
+      {
+        "assistant_scope": "worker",
+        "root_run_id": "blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291",
+        "parent_run_id": "blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291",
+        "worker_id": "c9f4f42ae6dd603643159538ab26cb11bc39a2f50451eb7e66031c4bc0359332:write-report",
+        "run_id": "c9f4f42ae6dd603643159538ab26cb11bc39a2f50451eb7e66031c4bc0359332:write-report"
+      },
+      {
+        "assistant_scope": "project_assistant",
+        "root_run_id": "blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291",
+        "parent_run_id": null,
+        "worker_id": null,
+        "run_id": "blackboard-8987d6a145e9c6f697709b33a97163598e75d8764e6e9520035b14542221d291"
+      }
+    ],
+    "verification_reason": "Decision assessment agrees with deterministic host evidence.",
+    "decisions_requests": 1,
+    "decision_billing_events": [
+      "reserve",
+      "settle"
+    ]
+  },
+  "agents_dispatch_crash_recovery": {
+    "evidence_class": "local-wrangler-process-restart",
+    "outbox_before_restart": "delivering",
+    "outbox_after_restart": "review",
+    "task_after_restart": "needs_review",
+    "dependent_after_restart": "blocked",
+    "active_run_after_restart": false,
+    "inference_requests_before_and_after": 1,
+    "worker_launches_after_restart": 0,
+    "restart_ms": 4252,
+    "interrupted_wake_settled": true,
+    "external_provider_requests": 0
+  },
+  "project_bot_uncertain_verification": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "task_status": "needs_review",
+    "verification_outcome": "uncertain",
+    "decisions_requests": 1,
+    "decision_billing_events": [
+      "reserve",
+      "settle"
+    ],
+    "artifact_exists": true,
+    "external_provider_requests": 0
+  },
+  "project_bot_dependency_gate": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "passed_prerequisite": "passed",
+    "passed_dependent_status": "completed",
+    "followup_artifact_after_pass": true,
+    "uncertain_prerequisite": "uncertain",
+    "uncertain_dependent_status": "blocked",
+    "followup_artifact_after_uncertain": false,
+    "external_provider_requests": 0,
+    "blackboard_message_survived_agents_restart": true,
+    "blackboard_restart_ms": 4207
+  },
+  "project_bot_decisions_blackboard_route": {
+    "evidence_class": "four-worker-local-wrangler-with-synthetic-decisions",
+    "classifier_and_verifier_decisions": 3,
+    "model_requests": 6,
+    "billing_events": [
+      "reserve",
+      "settle",
+      "reserve",
+      "settle",
+      "reserve",
+      "settle"
+    ],
+    "routed_edges": [
+      [
+        "write-report",
+        "write-follow-up"
+      ]
+    ],
+    "recipient_read_host_completion": true,
+    "tasks_completed_and_verified": true,
+    "external_provider_requests": 0
+  },
+  "blackboard_wake_contention": [
+    {
+      "contenders": 1,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 2,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 8,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 32,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    }
+  ],
+  "finished_at": "2026-11-02T17:34:34.086Z",
+  "total_duration_ms": 107857
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "experiment": {
+    "name": "blackboard-cursor-pagination-local-wrangler",
+    "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+    "query_cases": [
+      {
+        "visible_cards": 100,
+        "target_position": 100,
+        "target_found": true,
+        "pages_followed": 2,
+        "page_size": 90,
+        "end_to_end_ms": 14,
+        "page_latency_p50_ms": 6,
+        "page_latency_p95_ms": 7,
+        "seed_ms": 27,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+      },
+      {
+        "visible_cards": 1000,
+        "target_position": 1000,
+        "target_found": true,
+        "pages_followed": 12,
+        "page_size": 90,
+        "end_to_end_ms": 180,
+        "page_latency_p50_ms": 14,
+        "page_latency_p95_ms": 19,
+        "seed_ms": 68,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+      },
+      {
+        "visible_cards": 10000,
+        "target_position": 10000,
+        "target_found": true,
+        "pages_followed": 112,
+        "page_size": 90,
+        "end_to_end_ms": 8790,
+        "page_latency_p50_ms": 77,
+        "page_latency_p95_ms": 97,
+        "seed_ms": 567,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation"
+      }
+    ],
+    "note": "Each query targets the last lexically ordered card and follows the SDK operation cursor until exhausted; this proves the client loop, not that an LLM autonomously chooses to continue."
+  },
+  "overall_runtime": {
+    "started_at": "2026-11-02T17:32:46.227Z",
+    "finished_at": "2026-11-02T17:34:34.086Z",
+    "total_duration_ms": 107857,
+    "migration_apply_ms": 49804,
+    "worker_start_ms": 10560
+  },
+  "suite": {
+    "tests": 15,
+    "passed": 15,
+    "failed": 0
+  },
+  "provider_calls": 0
+}

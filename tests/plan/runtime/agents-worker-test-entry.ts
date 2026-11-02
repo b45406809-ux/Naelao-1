@@ -1,16 +1,17 @@
-import { mintInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
+import { mintInternalToken } from "@naelao/http";
+import { sweepBlackboardWakes } from "../../../workers/agents/src/communications/blackboard-wake.js";
 import {
   ConcurrencyDO,
   NaelaoAgentDO,
   wakeAgentGoal,
 } from "../../../workers/agents/src/index.js";
 import agentsWorker from "../../../workers/agents/src/index.js";
-import { sweepBlackboardWakes } from "../../../workers/agents/src/communications/blackboard-wake.js";
 import { writeAgentConfig } from "../../../workers/agents/src/script-engine/agent-config.js";
-import { DEFAULT_NAELAO_AGENT } from "../../../workers/agents/src/script-engine/profiles.js";
 import { issueDelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
 import type { DelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
+import { spaceBlackboard } from "../../../workers/agents/src/script-engine/prebuilt/space-blackboard.js";
+import { DEFAULT_NAELAO_AGENT } from "../../../workers/agents/src/script-engine/profiles.js";
 
 export { NaelaoAgentDO, ConcurrencyDO };
 
@@ -36,6 +37,47 @@ export default {
     // goal is to test the real runtime only after bootstrapping, while module cold-start can be
     // expensive in the four-worker local topology.
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
+    if (url.pathname === "/__test/blackboard/search-all" && request.method === "POST") {
+      const body = await request.json<{ query?: string; projectId?: string; maxPages?: number }>().catch(() => ({}));
+      if (typeof body.query !== "string" || !body.query || typeof body.projectId !== "string")
+        return Response.json({ error: "query_and_projectId_required" }, { status: 400 });
+      const maxPages = typeof body.maxPages === "number" && Number.isInteger(body.maxPages)
+        ? Math.min(200, Math.max(1, body.maxPages))
+        : 200;
+      const context = {
+        env: {
+          tenantId: TEST_TENANT_ID, spaceId: TEST_SPACE_ID, projectId: body.projectId,
+          userId: TEST_USER_ID, platformSecret: String(env.PLATFORM_SECRET), spacesWorker: env.SPACES_WORKER as Fetcher,
+        },
+        run: async () => { throw new Error("unexpected_prebuilt_dispatch"); },
+      } as unknown as import("../../../workers/agents/src/script-engine/prebuilt/index.js").PrebuiltOpContext;
+      const operation = spaceBlackboard.operations["blackboard.search"];
+      const started = performance.now();
+      const pageLatencies: number[] = [];
+      const cursors = new Set<string>();
+      let after: string | undefined;
+      let pages = 0;
+      let found = false;
+      let truncated = false;
+      while (pages < maxPages) {
+        const pageStarted = performance.now();
+        const result = await operation({ query: body.query, ...(after ? { after } : {}) }, context) as {
+          candidates?: Array<{ card?: { projectId?: string } }>;
+          next_cursor?: string | null;
+          truncated?: boolean;
+        };
+        pageLatencies.push(Math.round(performance.now() - pageStarted));
+        pages++;
+        found ||= (result.candidates ?? []).some(candidate => candidate.card?.projectId === body.projectId);
+        truncated = result.truncated === true;
+        const next = result.next_cursor ?? null;
+        if (!next) break;
+        if (cursors.has(next)) return Response.json({ error: "cursor_cycle", pages, next_cursor: next }, { status: 500 });
+        cursors.add(next);
+        after = next;
+      }
+      return Response.json({ found, pages, truncated, elapsed_ms: Math.round(performance.now() - started), page_latencies_ms: pageLatencies });
+    }
     if (url.pathname === "/__test/pause-goal-dispatch" && request.method === "POST") {
       const body = await request.json<{ pause?: boolean }>().catch(() => ({}));
       const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
