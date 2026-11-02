@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "experiment": "explicit-task-peer-blackboard-sharing",
+  "date": "2026-11-02",
+  "evidence_class": "local-unit-and-AgentDO-route-integration",
+  "planner_contract": {
+    "field": "communication_recipients",
+    "maximum_recipients_per_task": 8,
+    "creates_execution_dependency": false,
+    "rejects_unknown_self_duplicate_and_over_limit_ids": true
+  },
+  "scenario": {
+    "tasks": 4,
+    "dag_dependency_recipients": 1,
+    "explicit_non_dependency_peers": 1,
+    "undeclared_isolated_tasks": 1,
+    "authorized_sender_publications": 1,
+    "authorized_recipients_read_finding": 2,
+    "automatic_completion_recipients": 2,
+    "undeclared_peer_publications_denied": 1,
+    "undeclared_peer_readable_messages": 0,
+    "membership_revocation_denied": true
+  },
+  "focused_tests": {
+    "files": 5,
+    "passed": 71,
+    "failed": 0,
+    "agent_worker_typecheck": "passed",
+    "external_provider_calls": 0
+  },
+  "limitations": [
+    "Peer access is a planner-declared, bounded proposal validated and converted to a directed host grant; an independent Decisions AI router does not select these edges yet.",
+    "Workers must query task_blackboard.read; no automatic peer wake or push notification was exercised.",
+    "The route integration uses fake storage, membership fixtures, and a local AgentDO object; Cloudflare multi-isolate deployed behavior was not tested."
+  ]
+}

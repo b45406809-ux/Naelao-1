@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "matched_peer_reuse_synthetic_workload",
+  "evidenceClass": "unit-deterministic-synthetic-worker-action",
+  "taskCount": 2,
+  "dependencyEdges": 0,
+  "expectedResult": "customs duty rate is 15 percent",
+  "direct": {
+    "taskBlackboardEnabled": false,
+    "lookupCalls": 2,
+    "duplicateLookupCalls": 1,
+    "messages": 0,
+    "outcomes": {
+      "lookup": "customs duty rate is 15 percent",
+      "reuse": "customs duty rate is 15 percent"
+    },
+    "allTasksCompleted": true
+  },
+  "blackboard": {
+    "taskBlackboardEnabled": true,
+    "lookupCalls": 1,
+    "duplicateLookupCalls": 0,
+    "messages": 1,
+    "outcomes": {
+      "lookup": "customs duty rate is 15 percent",
+      "reuse": "customs duty rate is 15 percent"
+    },
+    "allTasksCompleted": true
+  },
+  "outcomeMismatch": false,
+  "externalProviderCalls": 0,
+  "limitations": [
+    "The worker action is a deterministic fixture lookup, not a model/tool provider call.",
+    "The board arm simulates a worker waiting for its completion message; automatic message-triggered wake is not implemented."
+  ]
+}

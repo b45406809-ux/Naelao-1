@@ -201,4 +201,116 @@ describe("task blackboard ablation experiment", () => {
       report.targetedMessageBytes
     );
   });
+
+  it("compares a direct duplicate lookup with a peer reusing a completion message", async () => {
+    const expected = "customs duty rate is 15 percent";
+    const tasks: GoalTask[] = [
+      {
+        id: "lookup",
+        title: "Find duty rate",
+        subtask_spec: "Find the customs duty rate in the approved fixture.",
+        assigned_role: "research-worker",
+        file_paths: [],
+        dependencies: [],
+        communication_recipients: ["reuse"],
+        budget_tokens: 128,
+      },
+      {
+        id: "reuse",
+        title: "Answer using shared finding",
+        subtask_spec: "Use a peer finding if one is shared; otherwise perform the same lookup.",
+        assigned_role: "research-worker",
+        file_paths: [],
+        dependencies: [],
+        budget_tokens: 128,
+      },
+    ];
+
+    const executeArm = async (taskBlackboardEnabled: boolean) => {
+      let journal: GoalDagJournal | undefined;
+      let releaseMessage!: () => void;
+      const messagePublished = new Promise<void>((resolve) => {
+        releaseMessage = resolve;
+      });
+      let fixtureLookups = 0;
+      const result = await executeGoalDag(tasks, {
+        concurrency: 2,
+        taskBlackboardEnabled,
+        workerId: (id) => `worker:${id}`,
+        load: async () => journal && structuredClone(journal),
+        save: async (snapshot) => {
+          journal = structuredClone(snapshot);
+          if (snapshot.messages?.some((message) => message.id === "completion:lookup"))
+            releaseMessage();
+        },
+        publish: async () => undefined,
+        recover: async () => undefined,
+        launch: async (task, workerId) => {
+          if (task.id === "lookup") {
+            fixtureLookups++;
+            return { id: workerId, ok: true, output: expected };
+          }
+          if (taskBlackboardEnabled) {
+            await messagePublished;
+            const messages = visibleTaskMessages(
+              journal?.messages ?? [],
+              workerId,
+              new Set(["worker:lookup", "worker:reuse"])
+            );
+            const completion = messages.find((message) => message.id === "completion:lookup");
+            if (completion) {
+              const reused = JSON.parse(completion.text) as { output: string };
+              return {
+                id: workerId,
+                ok: true,
+                output: JSON.parse(reused.output) as string,
+              };
+            }
+          }
+          fixtureLookups++;
+          return { id: workerId, ok: true, output: expected };
+        },
+      });
+      return {
+        taskBlackboardEnabled,
+        lookupCalls: fixtureLookups,
+        duplicateLookupCalls: Math.max(0, fixtureLookups - 1),
+        messages: result.messages?.length ?? 0,
+        outcomes: Object.fromEntries(
+          Object.entries(result.tasks).map(([id, state]) => [id, state.result?.output])
+        ),
+        allTasksCompleted: Object.values(result.tasks).every((state) => state.status === "completed"),
+      };
+    };
+
+    const [direct, shared] = await Promise.all([executeArm(false), executeArm(true)]);
+    const report = {
+      schemaVersion: 1,
+      kind: "matched_peer_reuse_synthetic_workload",
+      evidenceClass: "unit-deterministic-synthetic-worker-action",
+      taskCount: tasks.length,
+      dependencyEdges: 0,
+      expectedResult: expected,
+      direct,
+      blackboard: shared,
+      outcomeMismatch: JSON.stringify(direct.outcomes) !== JSON.stringify(shared.outcomes),
+      externalProviderCalls: 0,
+      limitations: [
+        "The worker action is a deterministic fixture lookup, not a model/tool provider call.",
+        "The board arm simulates a worker waiting for its completion message; automatic message-triggered wake is not implemented.",
+      ],
+    };
+    const reportPath = process.env.NAELAO_BLACKBOARD_PEER_REPORT;
+    if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(`task_blackboard_peer_reuse=${JSON.stringify(report)}`);
+
+    expect(direct.allTasksCompleted).toBe(true);
+    expect(shared.allTasksCompleted).toBe(true);
+    expect(direct.outcomes).toEqual(shared.outcomes);
+    expect(direct.duplicateLookupCalls).toBe(1);
+    expect(shared.duplicateLookupCalls).toBe(0);
+    expect(direct.messages).toBe(0);
+    expect(shared.messages).toBe(1);
+    expect(report.outcomeMismatch).toBe(false);
+  });
 });

@@ -7,7 +7,7 @@ import { containerWorkerConcurrency, validateContainerScope, type ContainerInvoc
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
-import type { GoalTask } from "../script-engine/prebuilt/goal-planner.js";
+import { taskCommunicationRecipients, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
 import { captureWorkerArtifactManifest, collectGoalEvidence, verifyWorkerArtifact, validateGoalEvidenceChecks, type WorkerArtifactManifest } from "../script-engine/goal-evidence.js";
 import { assertWorkspaceFileAllowed } from "../script-engine/workspace-paths.js";
 import { resourceQueuePartition } from "../script-engine/resource-queue-scope.js";
@@ -3794,7 +3794,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const taskId = (id: string) => `${hash}:${id}`;
         const run = (async () => {
           // Explicit IDs keep dependencies tied to this goal instead of unrelated tasks.
-          await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId) })));
+          await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId), communication_recipients: (task.communication_recipients ?? []).map(taskId) })));
           await this.ctx.storage.transaction(async tx => {
             const indexKey = `goal-activity:index:${parentRunId}`;
             const hashes = await tx.get<string[]>(indexKey) ?? [];
@@ -3831,7 +3831,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             tenantId, spaceId, projectId: projectId ?? null, actorId: userId,
             rootRunId: runtimeEnv?.rootRunId ?? parentRunId, parentDoId: this.ctx.id.toString(),
             members: tasks.map(task => taskId(task.id)),
-            grants: tasks.map(task => [taskId(task.id), tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => taskId(candidate.id))]),
+            grants: tasks.map(task => [taskId(task.id), taskCommunicationRecipients(task.id, tasks).map(taskId)]),
           });
           let lastCoordinationSummary = "";
           const publishCoordinationSummary = async (journal: GoalDagJournal) => {

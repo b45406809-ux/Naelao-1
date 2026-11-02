@@ -1,4 +1,4 @@
-import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 import { evaluateGoalEvidence, type GoalEvidence, type GoalEvidenceCheck } from "./goal-evidence.js";
 
@@ -72,7 +72,7 @@ function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJou
   if (!journal.taskBlackboardEnabled) return;
   const state = journal.tasks[task.id]!;
   if (state.status !== "completed") return;
-  const recipients = tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => journal.tasks[candidate.id]!.workerId);
+  const recipients = taskCommunicationRecipients(task.id, tasks).map(recipientId => journal.tasks[recipientId]!.workerId);
   if (!recipients.length || (journal.messages ?? []).some(message => message.id === `completion:${task.id}`)) return;
   let serialized: string;
   try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; }

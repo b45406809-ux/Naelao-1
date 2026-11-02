@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
-import { COORDINATION_PATTERNS, goalPlanner, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { COORDINATION_PATTERNS, goalPlanner, taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
 const task = (id: string, dependencies: string[] = []): GoalTask => ({ id, dependencies, title: id, subtask_spec: `do ${id}`, assigned_role: "schema-validator", file_paths: [`src/${id}.ts`], budget_tokens: 1800 });
 function fixture(initial?: GoalDagJournal) {
@@ -60,6 +60,42 @@ describe("durable goal DAG", () => {
     for (const acceptance_criteria of [[], [""], ["x".repeat(501)], Array(9).fill("criterion"), [42]]) {
       expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria } as GoalTask])).toThrow("invalid acceptance_criteria");
     }
+  });
+  it("permits bounded, directed peer communication without adding DAG dependencies", () => {
+    const tasks: GoalTask[] = [
+      task("inspect"),
+      { ...task("review", ["inspect"]), communication_recipients: ["summarize"] },
+      task("summarize"),
+    ];
+    expect(() => validateGoalDag(tasks)).not.toThrow();
+    expect(tasks[1]?.dependencies).toEqual(["inspect"]);
+    expect(taskCommunicationRecipients("inspect", tasks)).toEqual(["review"]);
+    expect(taskCommunicationRecipients("review", tasks)).toEqual(["summarize"]);
+    expect(taskCommunicationRecipients("summarize", tasks)).toEqual([]);
+    for (const communication_recipients of [["review"], ["missing"], Array(9).fill("summarize"), ["summarize", "summarize"], [42]]) {
+      expect(() => validateGoalDag([
+        task("inspect"),
+        { ...task("review"), communication_recipients } as GoalTask,
+        task("summarize"),
+      ])).toThrow("invalid communication_recipients");
+    }
+  });
+  it("publishes completion to an explicitly granted peer without making it a dependency", async () => {
+    const f = fixture();
+    const tasks: GoalTask[] = [
+      { ...task("source"), communication_recipients: ["peer"] },
+      task("dependent", ["source"]),
+      task("peer"),
+    ];
+    const result = await executeGoalDag(tasks, f.host);
+    expect(tasks[2]?.dependencies).toEqual([]);
+    expect(result.messages).toContainEqual(
+      expect.objectContaining({
+        id: "completion:source",
+        sender: "worker:source",
+        recipients: ["worker:dependent", "worker:peer"],
+      })
+    );
   });
   it("blocks dependent work when verification fails and does not run a worker-failure fixer", async () => {
     const f = fixture(); f.host.fixerEnabled = true;

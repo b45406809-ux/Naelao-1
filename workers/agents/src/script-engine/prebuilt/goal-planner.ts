@@ -38,7 +38,19 @@ export interface GoalTask {
   priority?: number;
   file_paths: string[];
   dependencies?: string[];
+  /** Explicit, bounded blackboard peers; these do not create execution dependencies. */
+  communication_recipients?: string[];
   budget_tokens: number;
+}
+
+/** Directed host grant set: DAG successors plus explicitly selected peer recipients. */
+export function taskCommunicationRecipients(taskId: string, tasks: readonly GoalTask[]): string[] {
+  const task = tasks.find((candidate) => candidate.id === taskId);
+  if (!task) throw new Error(`unknown goal task '${taskId}'`);
+  return [...new Set([
+    ...tasks.filter((candidate) => candidate.dependencies?.includes(taskId)).map((candidate) => candidate.id),
+    ...(task.communication_recipients ?? []),
+  ])];
 }
 
 export function validateGoalDag(tasks: GoalTask[]): void {
@@ -59,6 +71,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (task.runtime_resource_key !== undefined && (typeof task.runtime_resource_key !== "string" || !/^runtime\.[a-z-]+\.[a-f0-9]{40}$/.test(task.runtime_resource_key))) throw new Error(`task '${task.id}' has an invalid runtime_resource_key`);
     if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
+    if (task.communication_recipients !== undefined && (!Array.isArray(task.communication_recipients) || task.communication_recipients.length > 8 || task.communication_recipients.some(id => typeof id !== "string" || !ids.has(id) || id === task.id) || new Set(task.communication_recipients).size !== task.communication_recipients.length)) throw new Error(`task '${task.id}' has invalid communication_recipients`);
   }
   const visiting = new Set<string>(), visited = new Set<string>();
   const byId = new Map(tasks.map((task) => [task.id, task]));
@@ -100,6 +113,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
+      ...(Array.isArray(task.communication_recipients) ? { communication_recipients: task.communication_recipients.map(String) } : {}),
       budget_tokens: Math.min(planBudget, requestedBudget),
     };
   });
@@ -109,7 +123,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), communication_recipients? (up to 8 explicit task IDs allowed to receive/read this task's blackboard messages; does not imply execution dependency), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };
