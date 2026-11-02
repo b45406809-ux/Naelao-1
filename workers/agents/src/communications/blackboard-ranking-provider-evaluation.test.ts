@@ -32,12 +32,16 @@ const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const PROVIDER_TIMEOUT_MS = 20_000;
 const REPEATABILITY_REPEATS = 3;
 const REPEATABILITY_MAX_OUTPUT_TOKENS = 4096;
+const REPEATABILITY_QUERIES_PER_REQUEST = 8;
 const QUERIES_PER_PROVIDER_REQUEST = 2;
 const MAX_PROVIDER_REQUESTS = 16;
 const HARD_RANKING_QUERIES = blackboardRankingQueries.filter(
   ({ id }) => id.startsWith("paraphrase-") || id.includes("-vs-")
 );
 const HOLDOUT_RANKING_QUERIES = blackboardRankingHoldoutQueries;
+const REPEATABILITY_MAX_REQUESTS =
+  REPEATABILITY_REPEATS *
+  Math.ceil(HOLDOUT_RANKING_QUERIES.length / REPEATABILITY_QUERIES_PER_REQUEST);
 const LIVE_RANKING_QUERIES = [
   ...HOLDOUT_RANKING_QUERIES,
   ...HARD_RANKING_QUERIES,
@@ -1112,7 +1116,7 @@ describe("blackboard provider ranking evaluation harness", () => {
         const result: Record<string, unknown> = {
           provider,
           state: "blocked",
-          maxRequests: REPEATABILITY_REPEATS,
+        maxRequests: REPEATABILITY_MAX_REQUESTS,
           repeatsRequested: REPEATABILITY_REPEATS,
           labelsIndependentlyAdjudicated: false,
         };
@@ -1123,24 +1127,34 @@ describe("blackboard provider ranking evaluation harness", () => {
         }
         for (let repeat = 0; repeat < REPEATABILITY_REPEATS; repeat++) {
           try {
-            const response = await requestModelScores(
-              provider,
-              HOLDOUT_RANKING_QUERIES,
-              () => {
-                if (attempts >= REPEATABILITY_REPEATS)
-                  throw new Error("blackboard_repeatability_request_budget_exhausted");
-                attempts++;
-              },
-              true,
-              REPEATABILITY_MAX_OUTPUT_TOKENS
-            );
-            const parsed = restoreBlackboardRankingScoreIds(
-              parseBlackboardRankingScores(response.raw, expected),
-              blackboardRankingCards,
-              HOLDOUT_RANKING_QUERIES
-            );
-            responses.push(response);
-            runs.push(parsed);
+            const repeatScores: ReturnType<typeof parseBlackboardRankingScores> = [];
+            for (let offset = 0; offset < HOLDOUT_RANKING_QUERIES.length; offset += REPEATABILITY_QUERIES_PER_REQUEST) {
+              const chunk = HOLDOUT_RANKING_QUERIES.slice(offset, offset + REPEATABILITY_QUERIES_PER_REQUEST);
+              const response = await requestModelScores(
+                provider,
+                chunk,
+                () => {
+                  if (attempts >= REPEATABILITY_MAX_REQUESTS)
+                    throw new Error("blackboard_repeatability_request_budget_exhausted");
+                  attempts++;
+                },
+                true,
+                REPEATABILITY_MAX_OUTPUT_TOKENS
+              );
+              const chunkExpected = getBlackboardPromptCandidateSets(
+                blackboardRankingCards,
+                chunk,
+                { allVisibleCards: true }
+              );
+              const parsed = restoreBlackboardRankingScoreIds(
+                parseBlackboardRankingScores(response.raw, chunkExpected),
+                blackboardRankingCards,
+                chunk
+              );
+              responses.push(response);
+              repeatScores.push(...parsed);
+            }
+            runs.push(repeatScores);
           } catch (error) {
             const message = error instanceof Error ? error.message : "provider_evaluation_failed";
             result.reason = message.slice(0, 100);
@@ -1185,6 +1199,8 @@ describe("blackboard provider ranking evaluation harness", () => {
         cardCount: blackboardRankingCards.length,
         candidateScoresPerRepeat: HOLDOUT_RANKING_QUERIES.length * blackboardRankingCards.length,
         repeatCapPerProvider: REPEATABILITY_REPEATS,
+        queriesPerRequest: REPEATABILITY_QUERIES_PER_REQUEST,
+        maxRequestsPerProvider: REPEATABILITY_MAX_REQUESTS,
         maxOutputTokensPerRequest: REPEATABILITY_MAX_OUTPUT_TOKENS,
         providers: providerResults,
         limitations: [
