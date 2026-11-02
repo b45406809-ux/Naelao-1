@@ -1,0 +1,15 @@
+{
+  "seed": "evidence-matrix-v1-fixed",
+  "evidenceClass": "unit-deterministic-host-verifier",
+  "validCases": 100,
+  "negativeScopeCases": 100,
+  "negativeMutationCases": 100,
+  "negativePathCases": 100,
+  "falseAcceptances": 0,
+  "falseRejections": 0,
+  "scopeMismatchStorageReads": 0,
+  "invalidPathHostCalls": 0,
+  "invalidPathManifestPortCalls": 0,
+  "totalCases": 400,
+  "durationMs": 52.4
+}
