@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "evidence_class": "seeded-host-policy-property-test",
+  "seed": "0x51acede",
+  "plans": 1000,
+  "candidate_edges": 41361,
+  "dependency_edges": 2973,
+  "accepted_peer_edges": 3490,
+  "invariant_violations": 0,
+  "checked_invariants": [
+    "peer edges point forward in task order",
+    "peer edges do not duplicate direct or transitive dependency paths",
+    "accepted edges are unique",
+    "accepted edges have at least one proposal with confidence >= 0.8",
+    "peer fan-out per sender is at most 8",
+    "dependency plus peer successors per sender are at most 12",
+    "accepted peer edges per goal are at most 24",
+    "stored recipients exactly match accepted host edges",
+    "reapplying the same proposals is stable"
+  ],
+  "limitations": [
+    "Synthetic weighted-random task graphs and proposals; this is not a model accuracy benchmark.",
+    "The property test validates host graph policy, not Cloudflare multi-isolate storage contention or live provider behavior."
+  ]
+}

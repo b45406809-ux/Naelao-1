@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "kind": "goal_orchestration_architecture_benchmark",
+  "dataset": "9 repository-authored synthetic task graphs, repeated 3 times",
+  "execution": {
+    "runtime": "production executeGoalDag + validateGoalDag + collectGoalEvidence + evaluateGoalEvidence",
+    "worker": "in-memory dispatch adapter with deterministic fixtures",
+    "persistence": "in-memory journal adapter",
+    "externalWrites": 0,
+    "providerCalls": 0,
+    "modelSpendUsd": 0
+  },
+  "counts": {
+    "runs": 27,
+    "oracleCorrectRuns": 27,
+    "tasks": 54,
+    "completedAndVerified": 24,
+    "failed": 6,
+    "needsReview": 9,
+    "blocked": 15,
+    "unverifiedFalseAcceptances": 0,
+    "dependencyDispatchViolations": 0,
+    "duplicateDispatches": 0,
+    "evidenceChecks": 33,
+    "recoveredLostAcknowledgements": 3,
+    "unknownEffectsHeldForReview": 3
+  },
+  "concurrency": {
+    "configuredLimit": 2,
+    "observedPeak": 2
+  },
+  "generatedGraphStress": {
+    "graphs": 64,
+    "tasks": 313,
+    "dependencyEdges": 270,
+    "dependencyDispatchViolations": 0,
+    "concurrencyViolations": 0,
+    "resourceLockViolations": 0,
+    "unverifiedCompletions": 0,
+    "incorrectFailureContainment": 0,
+    "maxObservedConcurrency": 3
+  },
+  "orchestrationLatencyMs": {
+    "p50": 1.558,
+    "p95": 4.047,
+    "max": 6.342
+  },
+  "scenarioResults": [
+    {
+      "name": "verified-sequential-chain",
+      "expectedStatusesMatched": true,
+      "durationMs": 6.342
+    },
+    {
+      "name": "injected-worker-claim-with-valid-host-proof",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.501
+    },
+    {
+      "name": "success-claim-with-missing-artifact",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.401
+    },
+    {
+      "name": "failed-independent-host-check",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.766
+    },
+    {
+      "name": "worker-failure-blocks-descendants",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.792
+    },
+    {
+      "name": "decision-model-can-veto-but-not-grant",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.558
+    },
+    {
+      "name": "lost-ack-recovered-without-replay",
+      "expectedStatusesMatched": true,
+      "durationMs": 4.047
+    },
+    {
+      "name": "unknown-effect-held-for-review",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.354
+    },
+    {
+      "name": "independent-work-respects-concurrency-cap",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.723
+    },
+    {
+      "name": "verified-sequential-chain",
+      "expectedStatusesMatched": true,
+      "durationMs": 3.447
+    },
+    {
+      "name": "injected-worker-claim-with-valid-host-proof",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.637
+    },
+    {
+      "name": "success-claim-with-missing-artifact",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.607
+    },
+    {
+      "name": "failed-independent-host-check",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.398
+    },
+    {
+      "name": "worker-failure-blocks-descendants",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.257
+    },
+    {
+      "name": "decision-model-can-veto-but-not-grant",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.297
+    },
+    {
+      "name": "lost-ack-recovered-without-replay",
+      "expectedStatusesMatched": true,
+      "durationMs": 2.838
+    },
+    {
+      "name": "unknown-effect-held-for-review",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.268
+    },
+    {
+      "name": "independent-work-respects-concurrency-cap",
+      "expectedStatusesMatched": true,
+      "durationMs": 2.584
+    },
+    {
+      "name": "verified-sequential-chain",
+      "expectedStatusesMatched": true,
+      "durationMs": 2.595
+    },
+    {
+      "name": "injected-worker-claim-with-valid-host-proof",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.257
+    },
+    {
+      "name": "success-claim-with-missing-artifact",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.362
+    },
+    {
+      "name": "failed-independent-host-check",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.405
+    },
+    {
+      "name": "worker-failure-blocks-descendants",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.214
+    },
+    {
+      "name": "decision-model-can-veto-but-not-grant",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.441
+    },
+    {
+      "name": "lost-ack-recovered-without-replay",
+      "expectedStatusesMatched": true,
+      "durationMs": 2.549
+    },
+    {
+      "name": "unknown-effect-held-for-review",
+      "expectedStatusesMatched": true,
+      "durationMs": 1.281
+    },
+    {
+      "name": "independent-work-respects-concurrency-cap",
+      "expectedStatusesMatched": true,
+      "durationMs": 2.604
+    }
+  ],
+  "limitations": [
+    "Synthetic tasks and in-memory worker, workspace and journal adapters; these numbers do not measure deployed Cloudflare or provider latency.",
+    "No LLM planner or worker inference was called in this benchmark. The preceding live provider evaluation measured verifier decisions separately.",
+    "Small regression benchmark, not a statistical estimate of user task success or production reliability."
+  ]
+}

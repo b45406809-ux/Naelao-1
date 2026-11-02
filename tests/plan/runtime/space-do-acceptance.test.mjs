@@ -764,8 +764,9 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
   assert.equal(message.body?.message?.text, "Persisted worker handoff for the restart acceptance.");
   const blackboardRestartMs = await restartAgentsWorker();
   const persistedMessages = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(passed.goalActivityRunId)}`, "GET");
-  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 1, JSON.stringify(persistedMessages));
-  assert.equal(persistedMessages.goals?.[0]?.messages?.[0]?.text, "Persisted worker handoff for the restart acceptance.");
+  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 2, JSON.stringify(persistedMessages));
+  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.text === "Persisted worker handoff for the restart acceptance."));
+  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.id === "completion:write-report" && item.kind === "completion"));
 
   const reviewProject = await jsonRequest(
     spacesBaseUrl,
@@ -802,6 +803,47 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
     external_provider_requests: 0,
     blackboard_message_survived_agents_restart: true,
     blackboard_restart_ms: blackboardRestartMs,
+  };
+});
+
+test("metered Decisions peer routing grants a finding, wakes an independent worker, and exposes the scoped read route", async () => {
+  const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", { name: "Project Bot Decisions Blackboard Route" });
+  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ leafWorkerMode: true, sharePeerTasks: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
+  });
+  assert.equal(configure.status, 200, await configure.clone().text());
+  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", { projectId: project.id, mockModelRun: true }, 120_000);
+  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+  const goal = result.goalActivity?.goals?.[0];
+  assert.equal(result.wake.status, "completed", JSON.stringify({ wake: result.wake, goal, dispatch: result.dispatchResponses }));
+  assert.deepEqual(goal?.tasks?.map(task => [task.id, task.status, task.verification?.outcome]), [
+    ["write-report", "completed", "passed"],
+    ["write-follow-up", "completed", "passed"],
+  ]);
+  assert.deepEqual(goal?.tasks?.map(task => task.communication_recipients), [["write-follow-up"], []]);
+  assert.ok(goal?.messages?.some(message => message.id === "completion:write-report" && message.kind === "completion"), JSON.stringify(goal?.messages));
+  assert.ok(result.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(result.workspaceArtifact));
+  const recipientRead = await jsonRequest(agentsBaseUrl, "/__test/task-blackboard/read", "POST", {
+    goalId: goal.id, runId: result.goalActivityRunId, projectId: project.id,
+    senderTaskId: "write-report", recipientTaskId: "write-follow-up",
+  });
+  assert.ok(recipientRead.messages?.some(message => message.id === "completion:write-report" && message.kind === "completion"), JSON.stringify(recipientRead));
+  assert.equal(after.decisions.calls - before.decisions.calls, 3, "one batched peer classification plus one metered evidence decision per task");
+  assert.deepEqual(after.decisions.billingEvents.map(event => event.kind), ["reserve", "settle", "reserve", "settle", "reserve", "settle"]);
+  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "billing_reserve") < after.decisions.timeline.findIndex(event => event.kind === "decision"));
+  const modelRequests = after.totalRequests - before.totalRequests;
+  assert.ok(modelRequests >= 4, `planner and both independent workers should execute through the normal runtime: ${modelRequests}`);
+  metrics.project_bot_decisions_blackboard_route = {
+    evidence_class: "four-worker-local-wrangler-with-synthetic-decisions",
+    classifier_and_verifier_decisions: after.decisions.calls - before.decisions.calls,
+    model_requests: modelRequests,
+    billing_events: after.decisions.billingEvents.map(event => event.kind),
+    routed_edges: goal.tasks.filter(task => task.communication_recipients.length).flatMap(task => task.communication_recipients.map(recipient => [task.id, recipient])),
+    recipient_read_host_completion: recipientRead.messages.some(message => message.id === "completion:write-report"),
+    tasks_completed_and_verified: goal.tasks.every(task => task.status === "completed" && task.verification?.outcome === "passed"),
+    external_provider_requests: 0,
   };
 });
 

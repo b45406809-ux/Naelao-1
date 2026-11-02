@@ -66,7 +66,7 @@ describe("task blackboard ablation experiment", () => {
     const graphs = generatedGraphs();
     const report = {
       schemaVersion: 1,
-      kind: "task_blackboard_visibility_ablation",
+      kind: "task_blackboard_coordination_ablation",
       evidenceClass: "unit-deterministic-synthetic-graph",
       seed: "0x4e41454c",
       graphs: graphs.length,
@@ -77,6 +77,13 @@ describe("task blackboard ablation experiment", () => {
       targetedMessageBytes: 0,
       naiveBroadcastBytes: 0,
       targetedBoardMessages: 0,
+      directRequiredInputs: 0,
+      targetedBoardRequiredInputs: 0,
+      directMissingInputs: 0,
+      targetedBoardMissingInputs: 0,
+      simulatedDuplicateWorkUnits: 0,
+      directTasksWithAllInputs: 0,
+      targetedBoardTasksWithAllInputs: 0,
       directVsTargetedPayloadMismatches: 0,
       crossRecipientMessageLeaks: 0,
       completionStatusMismatches: 0,
@@ -98,6 +105,8 @@ describe("task blackboard ablation experiment", () => {
       const members = new Set(tasks.map((task) => `worker:${task.id}`));
       for (const task of tasks) {
         const expectedDependencies = [...(task.dependencies ?? [])].sort();
+        report.directRequiredInputs += expectedDependencies.length;
+        report.targetedBoardRequiredInputs += expectedDependencies.length;
         const directValues = direct.handoffs.get(task.id) as Array<{
           taskId: string;
           output: string;
@@ -117,6 +126,19 @@ describe("task blackboard ablation experiment", () => {
           JSON.stringify(expectedDependencies)
         )
           report.directVsTargetedPayloadMismatches++;
+        const directInputs = new Set(directValues.map((value) => value.taskId));
+        const boardInputs = new Set(boardValues.map((value) => value.taskId));
+        const missingDirect = expectedDependencies.filter(
+          (id) => !directInputs.has(id)
+        ).length;
+        const missingBoard = expectedDependencies.filter(
+          (id) => !boardInputs.has(id)
+        ).length;
+        report.directMissingInputs += missingDirect;
+        report.targetedBoardMissingInputs += missingBoard;
+        report.simulatedDuplicateWorkUnits += missingDirect + missingBoard;
+        if (missingDirect === 0) report.directTasksWithAllInputs++;
+        if (missingBoard === 0) report.targetedBoardTasksWithAllInputs++;
         report.directHandoffBytes += byteLength(directValues);
         report.targetedBoardHandoffBytes += byteLength(boardValues);
 
@@ -168,8 +190,120 @@ describe("task blackboard ablation experiment", () => {
     expect(report.completionStatusMismatches).toBe(0);
     expect(report.targetedBoardMessages).toBe(report.dependencyEdges);
     expect(report.targetedBoardHandoffBytes).toBe(report.directHandoffBytes);
+    expect(report.directRequiredInputs).toBe(report.dependencyEdges);
+    expect(report.targetedBoardRequiredInputs).toBe(report.dependencyEdges);
+    expect(report.directMissingInputs).toBe(0);
+    expect(report.targetedBoardMissingInputs).toBe(0);
+    expect(report.directTasksWithAllInputs).toBe(report.tasks);
+    expect(report.targetedBoardTasksWithAllInputs).toBe(report.tasks);
+    expect(report.simulatedDuplicateWorkUnits).toBe(0);
     expect(report.naiveBroadcastBytes).toBeGreaterThanOrEqual(
       report.targetedMessageBytes
     );
+  });
+
+  it("compares a direct duplicate lookup with a peer reusing a completion message", async () => {
+    const expected = "customs duty rate is 15 percent";
+    const tasks: GoalTask[] = [
+      {
+        id: "lookup",
+        title: "Find duty rate",
+        subtask_spec: "Find the customs duty rate in the approved fixture.",
+        assigned_role: "research-worker",
+        file_paths: [],
+        dependencies: [],
+        communication_recipients: ["reuse"],
+        budget_tokens: 128,
+      },
+      {
+        id: "reuse",
+        title: "Answer using shared finding",
+        subtask_spec: "Use a peer finding if one is shared; otherwise perform the same lookup.",
+        assigned_role: "research-worker",
+        file_paths: [],
+        dependencies: [],
+        budget_tokens: 128,
+      },
+    ];
+
+    const executeArm = async (taskBlackboardEnabled: boolean) => {
+      let journal: GoalDagJournal | undefined;
+      let fixtureLookups = 0;
+      let completionAvailableAtRecipientLaunch = false;
+      const result = await executeGoalDag(tasks, {
+        concurrency: 2,
+        taskBlackboardEnabled,
+        workerId: (id) => `worker:${id}`,
+        load: async () => journal && structuredClone(journal),
+        save: async (snapshot) => { journal = structuredClone(snapshot); },
+        publish: async () => undefined,
+        recover: async () => undefined,
+        launch: async (task, workerId) => {
+          if (task.id === "lookup") {
+            fixtureLookups++;
+            return { id: workerId, ok: true, output: expected };
+          }
+          if (taskBlackboardEnabled) {
+            const messages = visibleTaskMessages(
+              journal?.messages ?? [],
+              workerId,
+              new Set(["worker:lookup", "worker:reuse"])
+            );
+            const completion = messages.find((message) => message.id === "completion:lookup");
+            completionAvailableAtRecipientLaunch = Boolean(completion);
+            if (completion) {
+              const reused = JSON.parse(completion.text) as { output: string };
+              return {
+                id: workerId,
+                ok: true,
+                output: JSON.parse(reused.output) as string,
+              };
+            }
+          }
+          fixtureLookups++;
+          return { id: workerId, ok: true, output: expected };
+        },
+      });
+      return {
+        taskBlackboardEnabled,
+        lookupCalls: fixtureLookups,
+        duplicateLookupCalls: Math.max(0, fixtureLookups - 1),
+        messages: result.messages?.length ?? 0,
+        completionAvailableAtRecipientLaunch,
+        outcomes: Object.fromEntries(
+          Object.entries(result.tasks).map(([id, state]) => [id, state.result?.output])
+        ),
+        allTasksCompleted: Object.values(result.tasks).every((state) => state.status === "completed"),
+      };
+    };
+
+    const [direct, shared] = await Promise.all([executeArm(false), executeArm(true)]);
+    const report = {
+      schemaVersion: 1,
+      kind: "matched_peer_reuse_synthetic_workload",
+      evidenceClass: "unit-deterministic-synthetic-worker-action",
+      taskCount: tasks.length,
+      dependencyEdges: 0,
+      expectedResult: expected,
+      direct,
+      blackboard: shared,
+      outcomeMismatch: JSON.stringify(direct.outcomes) !== JSON.stringify(shared.outcomes),
+      externalProviderCalls: 0,
+      automaticRecipientWake: shared.completionAvailableAtRecipientLaunch,
+      limitations: ["The worker action is a deterministic fixture lookup, not a model/tool provider call; peer routing was injected as a fixture rather than selected by a live Decisions model."],
+    };
+    const reportPath = process.env.NAELAO_BLACKBOARD_PEER_REPORT;
+    if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(`task_blackboard_peer_reuse=${JSON.stringify(report)}`);
+
+    expect(direct.allTasksCompleted).toBe(true);
+    expect(shared.allTasksCompleted).toBe(true);
+    expect(direct.outcomes).toEqual(shared.outcomes);
+    expect(direct.duplicateLookupCalls).toBe(1);
+    expect(shared.duplicateLookupCalls).toBe(0);
+    expect(shared.completionAvailableAtRecipientLaunch).toBe(true);
+    expect(direct.messages).toBe(0);
+    expect(shared.messages).toBe(1);
+    expect(report.outcomeMismatch).toBe(false);
   });
 });

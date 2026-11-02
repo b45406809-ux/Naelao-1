@@ -7,6 +7,7 @@ let spaceAssistantMode = false;
 let leafWorkerRequests = 0;
 let decisionCalls = 0;
 let decisionOutcome: "passed" | "uncertain" = "passed";
+let sharePeerTasks = false;
 let decisionGeneration = 0;
 const billingReservations = new Map<string, { tenantId: string; status: "reserved" | "settled" | "uncertain"; runId: string; maxCredits: number }>();
 const billingEvents: Array<{ kind: "reserve" | "settle"; outcome?: string; credits?: number }> = [];
@@ -22,10 +23,11 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
     if (url.pathname === "/__test/configure" && request.method === "POST") {
-      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; spaceAssistantMode?: unknown; decisionOutcome?: unknown; resetDecisionTelemetry?: unknown } | null;
+      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; spaceAssistantMode?: unknown; decisionOutcome?: unknown; sharePeerTasks?: unknown; resetDecisionTelemetry?: unknown } | null;
       leafWorkerMode = body?.leafWorkerMode === true;
       dependentTaskMode = leafWorkerMode && body?.dependentTaskMode === true;
       spaceAssistantMode = leafWorkerMode && body?.spaceAssistantMode === true;
+      sharePeerTasks = leafWorkerMode && body?.sharePeerTasks === true;
       leafWorkerRequests = 0;
       if (body?.decisionOutcome === "passed" || body?.decisionOutcome === "uncertain") decisionOutcome = body.decisionOutcome;
       if (body?.resetDecisionTelemetry === true) {
@@ -85,19 +87,33 @@ export default {
     }
     if (url.pathname === "/api/alpha/decisions" && request.method === "POST") {
       if (request.headers.get("authorization") !== "Bearer test-only-decisions-token") return Response.json({ error: "test_decision_auth_missing" }, { status: 401 });
-      const body = await request.json().catch(() => null) as { model?: unknown; questions?: Record<string, { type?: unknown; criteria?: Record<string, unknown> }> } | null;
+      const body = await request.json().catch(() => null) as { model?: unknown; questions?: Record<string, { type?: unknown; criteria?: Record<string, unknown> }>; state?: unknown } | null;
       const model = typeof body?.model === "string" ? body.model : "";
-      const criterion = body?.questions?.decision;
-      if (model !== "cloudflare/clef-flash" || criterion?.type !== "choice" || !criterion.criteria || typeof criterion.criteria !== "object") return Response.json({ error: "test_decision_request_invalid" }, { status: 400 });
-      const allowed = Object.keys(criterion.criteria);
-      if (!allowed.includes("passed") || !allowed.includes("uncertain")) return Response.json({ error: "test_decision_criteria_invalid" }, { status: 400 });
+      const questions = body?.questions;
+      if (model !== "cloudflare/clef-flash" || !questions || typeof questions !== "object" || !Object.keys(questions).length) return Response.json({ error: "test_decision_request_invalid" }, { status: 400 });
+      const isVerification = Object.keys(questions).length === 1 && Object.hasOwn(questions, "decision");
+      if (isVerification) {
+        const criterion = questions.decision;
+        if (criterion?.type !== "choice" || !criterion.criteria || typeof criterion.criteria !== "object") return Response.json({ error: "test_decision_request_invalid" }, { status: 400 });
+        const allowed = Object.keys(criterion.criteria);
+        if (!allowed.includes("passed") || !allowed.includes("uncertain")) return Response.json({ error: "test_decision_criteria_invalid" }, { status: 400 });
+      } else {
+        if (!sharePeerTasks || Object.keys(questions).some(key => !/^pair_\d+$/.test(key) || questions[key]?.type !== "choice" || !questions[key]?.criteria || !Object.hasOwn(questions[key]!.criteria!, "share") || !Object.hasOwn(questions[key]!.criteria!, "none"))) return Response.json({ error: "test_task_communication_request_invalid" }, { status: 400 });
+      }
       decisionCalls++;
       const generationId = `gen-runtime-${++decisionGeneration}`;
       decisionTimeline.push({ kind: "decision", ordinal: decisionCalls });
+      const answers = isVerification
+        ? { decision: { type: "choice", choice: decisionOutcome, probabilities: Object.fromEntries(Object.keys(questions.decision!.criteria!).map(key => [key, key === decisionOutcome ? 1 : 0])), confidence: 1 } }
+        : Object.fromEntries(Object.entries(questions).map(([key, question]) => {
+          const criteria = Object.keys(question.criteria!);
+          const choice = sharePeerTasks ? "share" : "none";
+          return [key, { type: "choice", choice, probabilities: Object.fromEntries(criteria.map(item => [item, item === choice ? 1 : 0])), confidence: 1 }];
+        }));
       return Response.json({
         id: generationId,
         model,
-        answers: { decision: { type: "choice", choice: decisionOutcome, probabilities: Object.fromEntries(allowed.map(key => [key, key === decisionOutcome ? 1 : 0])), confidence: 1 } },
+        answers,
         usage: { input_tokens: 48, output_tokens: 4, cost: 0.000000052 },
       });
     }
@@ -179,6 +195,16 @@ export default {
           file_paths: ["reports/blackboard-worker-followup.txt"],
           budget_tokens: 12_000,
         });
+        if (sharePeerTasks) tasks.push({
+          id: "write-follow-up",
+          title: "Reuse the independent Project Bot report finding",
+          subtask_spec: "Read the authorized task blackboard message from write-report, then create reports/blackboard-worker-followup.txt in the scoped project workspace. Do not use external services.",
+          assigned_role: "DEV_OPERATOR",
+          acceptance_criteria: ["The independent Project Bot follow-up artifact exists in its assigned project workspace branch"],
+          evidence_checks: [{ criterion: "The independent Project Bot follow-up artifact exists in its assigned project workspace branch", operation: "workspace.exists:reports/blackboard-worker-followup.txt" }],
+          file_paths: ["reports/blackboard-worker-followup.txt"],
+          budget_tokens: 12_000,
+        });
         const plan = {
           objective: "Create and verify the local Project Bot worker report",
           tasks,
@@ -197,10 +223,10 @@ export default {
           usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
         });
       }
-      if (dependentTaskMode && ordinal === 4) {
+      if ((dependentTaskMode || sharePeerTasks) && ordinal === 4) {
         return Response.json({
           id: `local-test-${totalRequests}`, model,
-          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-followup.txt", content: "dependent worker dispatched after verified prerequisite\n", expectedHash: null }, doing: "Write the follow-up after its prerequisite passed verification" }) }, finish_reason: "stop" }],
+          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: "reports/blackboard-worker-followup.txt", content: sharePeerTasks ? "follow-up reused the host-authorized report completion\n" : "dependent worker dispatched after verified prerequisite\n", expectedHash: null }, doing: "Write the follow-up after the report task completed" }) }, finish_reason: "stop" }],
           usage: { prompt_tokens: 60, completion_tokens: 20, total_tokens: 80 },
         });
       }

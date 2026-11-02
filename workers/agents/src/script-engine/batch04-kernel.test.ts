@@ -131,8 +131,14 @@ describe("Batch 04 universal kernel", () => {
   });
 
   it("executes planner DAG requests through the public Bash CLI boundary", async () => {
-    const executeGoalDag = vi.fn(async () => ({ tasks: { write: { status: "completed" as const, workerId: "worker:write" } } }));
-    const plan = { objective: "write a report", tasks: [{ id: "write", title: "Write report", subtask_spec: "Create report.txt", assigned_role: "DEV_OPERATOR", acceptance_criteria: ["artifact exists"], evidence_checks: [{ criterion: "artifact exists", operation: "workspace.exists:report.txt" }], file_paths: ["report.txt"], budget_tokens: 128 }] };
+    const executeGoalDag = vi.fn(async () => ({ tasks: {
+      write: { status: "completed" as const, workerId: "worker:write" },
+      review: { status: "completed" as const, workerId: "worker:review" },
+    } }));
+    const plan = { objective: "write a report", tasks: [
+      { id: "write", title: "Write report", subtask_spec: "Create report.txt", assigned_role: "DEV_OPERATOR", acceptance_criteria: ["artifact exists"], evidence_checks: [{ criterion: "artifact exists", operation: "workspace.exists:report.txt" }], file_paths: ["report.txt"], communication_recipients: ["review"], budget_tokens: 128 },
+      { id: "review", title: "Review report", subtask_spec: "Review report.txt", assigned_role: "REVIEWER", file_paths: ["report.txt"], budget_tokens: 128 },
+    ] };
     const env: ScriptEngineEnv = {
       scriptsBucket: { list: vi.fn(async () => ({ objects: [], truncated: false })) } as unknown as R2Bucket,
       spaceId: "s", agentId: "a", tenantId: "t", workerTokenBudget: 256,
@@ -141,7 +147,11 @@ describe("Batch 04 universal kernel", () => {
     const tools = new ScriptToolSurface(env, ["goal-planner"], { plannerScope: "project" });
     const command = `naelao goal plan --json '${JSON.stringify(plan)}'`;
     await expect(tools.run("Bash", { command, doing: "Plan and delegate the report" })).resolves.toMatchObject({ ok: true });
-    expect(executeGoalDag).toHaveBeenCalledWith("write a report", [expect.objectContaining({ id: "write", file_paths: ["report.txt"], budget_tokens: 128 })]);
+    expect(executeGoalDag).toHaveBeenCalledWith("write a report", [
+      expect.objectContaining({ id: "write", file_paths: ["report.txt"], budget_tokens: 128 }),
+      expect.objectContaining({ id: "review", file_paths: ["report.txt"], budget_tokens: 128 }),
+    ]);
+    expect(executeGoalDag.mock.calls[0]?.[1][0]).not.toHaveProperty("communication_recipients");
     expect(tools.availableOperations()).not.toContain("engine.plan_and_delegate_goal");
   });
 

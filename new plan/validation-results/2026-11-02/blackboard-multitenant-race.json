@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "experiment": "seeded-multi-tenant-blackboard-race",
+  "seed": "0x51ace",
+  "evidence_class": "local-route-test-with-serialized-storage-model",
+  "tenants": 24,
+  "tenant_scopes": 24,
+  "shared_space_ids": 4,
+  "shared_project_ids": 5,
+  "concurrent_publish_attempts": 24,
+  "grant_allowed": 12,
+  "grant_denied": 12,
+  "publish_results_matching_policy": 24,
+  "concurrent_recipient_reads": 24,
+  "recipient_reads_matching_policy": 24,
+  "cross_tenant_tampered_reads": 24,
+  "cross_tenant_reads_denied": 24,
+  "cross_tenant_message_leaks": 0,
+  "denied_publish_persisted": 0,
+  "storage_model": "one local AgentDO route with a serialized transaction emulator",
+  "limitations": "Does not reproduce separate Cloudflare isolates, live D1/DO latency, or production membership service behavior."
+}

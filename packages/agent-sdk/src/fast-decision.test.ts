@@ -240,6 +240,50 @@ describe("typed fast decisions", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("selects only confident, acyclic peer-sharing edges from a bounded plan", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { criteria: Record<string, unknown> }>; state: { candidate_pairs: unknown[] } };
+      expect(Object.keys(body.questions)).toEqual(["pair_0", "pair_1"]); // A->B is already a dependency.
+      expect(body.state.candidate_pairs).toEqual([{ senderId: "a", recipientId: "c" }, { senderId: "b", recipientId: "c" }]);
+      const criteria = Object.keys(body.questions.pair_0!.criteria);
+      const probabilities = (selected: string) => Object.fromEntries(criteria.map(key => [key, key === selected ? 0.95 : 0.05]));
+      return Response.json({ model: CLEF_FLASH_MODEL, answers: {
+        pair_0: { type: "choice", choice: "share", probabilities: probabilities("share"), confidence: 0.94 },
+        pair_1: { type: "choice", choice: "share", probabilities: probabilities("share"), confidence: 0.65 },
+      }, usage: { input_tokens: 80, output_tokens: 6 } });
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyTaskCommunication!({ tasks: [
+      { id: "a", title: "Research", description: "Find source data." },
+      { id: "b", title: "Validate", description: "Validate source data.", dependencies: ["a"] },
+      { id: "c", title: "Synthesize", description: "Write synthesis." },
+    ] })).resolves.toEqual([{ senderId: "a", recipientId: "c", confidence: 0.94, provider: "openrouter", model: CLEF_FLASH_MODEL }]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("caps an all-share 12-task response to 24 edges and eight recipients per sender", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+      expect(Object.keys(body.questions)).toHaveLength(66);
+      const answers = Object.fromEntries(Object.keys(body.questions).map(key => [key, { type: "choice", choice: "share", probabilities: { none: 0.01, share: 0.99 }, confidence: 0.99 }]));
+      return Response.json({ model: CLEF_FLASH_MODEL, answers, usage: { input_tokens: 100, output_tokens: 20 } });
+    });
+    const tasks = Array.from({ length: 12 }, (_, index) => ({ id: `task-${index}`, title: "Task", description: "Independent work." }));
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    const edges = await client.classifyTaskCommunication!({ tasks });
+    expect(edges).toHaveLength(24);
+    for (const id of tasks.map(task => task.id)) expect(edges.filter(edge => edge.senderId === id).length).toBeLessThanOrEqual(8);
+    expect(edges.every(edge => tasks.findIndex(task => task.id === edge.senderId) < tasks.findIndex(task => task.id === edge.recipientId))).toBe(true);
+  });
+
+  it("rejects malformed task identity and dependency input before making a provider call", async () => {
+    const fetcher = vi.fn();
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyTaskCommunication!({ tasks: [{ id: undefined as unknown as string, title: "bad", description: "bad" }] })).rejects.toThrow("system_one_task_communication_invalid");
+    await expect(client.classifyTaskCommunication!({ tasks: [{ id: "a", title: "A", description: "task", dependencies: ["missing"] }] })).rejects.toThrow("system_one_task_communication_invalid");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("recommends a bounded task-specific subset of configured worker capabilities", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { state: { task: string }; questions: Record<string, { instructions: string }> };

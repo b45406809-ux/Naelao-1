@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "evidence_class": "four-worker-local-wrangler-with-synthetic-decisions",
+  "recorded_at": "2026-11-02",
+  "runtime_acceptance": {
+    "tests_passed": 14,
+    "tests_failed": 0,
+    "migration_sql_files": 156,
+    "migration_apply_ms": 51119,
+    "initial_worker_start_ms": 10101,
+    "test_runner_duration_ms": 112856,
+    "external_provider_requests": 0
+  },
+  "peer_routing": {
+    "tasks": 2,
+    "selected_edges": [
+      {
+        "sender": "write-report",
+        "recipient": "write-follow-up"
+      }
+    ],
+    "decisions_requests": 3,
+    "decisions_breakdown": {
+      "peer_routing_classification": 1,
+      "host_evidence_assessment": 2
+    },
+    "provider_model_requests": 6,
+    "billing_events": [
+      "reserve",
+      "settle",
+      "reserve",
+      "settle",
+      "reserve",
+      "settle"
+    ],
+    "recipient_read_host_completion": true,
+    "tasks_completed_and_verified": true
+  },
+  "local_admission_latency_ms": {
+    "samples": 30,
+    "p50": 135,
+    "p95": 166,
+    "provider_attempts": 0,
+    "measurement_note": "Local Wrangler/D1 admission fixture only; the air-gap case denies before model execution."
+  },
+  "limitations": [
+    "Decisions answers came from a deterministic local test endpoint; no live model quality result is claimed.",
+    "This validates host grant, durable completion, and recipient read mechanics, not production Cloudflare latency or contention.",
+    "No production deployment or external provider call was performed."
+  ]
+}

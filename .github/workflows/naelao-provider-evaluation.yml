@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   free-tier-model-evaluation:
-    name: Bounded Gemini and GroqCloud evaluation
+    name: Bounded live model evaluation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,6 +21,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         shell: bash
         run: |
           node --input-type=module <<'JS'
@@ -28,8 +29,8 @@ jobs:
           const parse = (value = '') => [...new Set(value.split(',').map(item => item.trim()).filter(Boolean))];
           const gemini = parse(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY);
           const groq = parse(process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY);
-          for (const key of [...gemini, ...groq]) process.stdout.write(`::add-mask::${key}\n`);
-          fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, keyValuesLogged: false }) + '\n');
+          for (const key of [...gemini, ...groq, process.env.OPENROUTER_API_KEY].filter(Boolean)) process.stdout.write(`::add-mask::${key}\n`);
+          fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, openrouterConfigured: Boolean(process.env.OPENROUTER_API_KEY), keyValuesLogged: false }) + '\n');
           JS
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -41,6 +42,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -54,13 +56,24 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
           node infra/scripts/provider-followup-gate.mjs ranking
+      - name: Admit an explicitly tagged blackboard-only evaluation
+        if: ${{ startsWith(github.ref_name, 'provider-eval-blackboard-only-') }}
+        env:
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+        run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -73,12 +86,12 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
       - name: Run real-model planning through the goal DAG and host verifier
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -90,7 +103,28 @@ jobs:
           NAELAO_RUN_LIVE_ARCH_BENCHMARK: 'true'
           NAELAO_LIVE_ARCH_REPORT: live-goal-plan-benchmark.json
           NAELAO_GOAL_BENCHMARK_REPORT: goal-architecture-benchmark.json
+          NAELAO_MAX_LIVE_PLAN_CASES: ${{ startsWith(github.ref_name, 'provider-eval-heldout-') && '12' || startsWith(github.ref_name, 'provider-eval-repeatability-') && '8' || '4' }}
+          NAELAO_PLAN_REPEATS: ${{ startsWith(github.ref_name, 'provider-eval-repeatability-') && '2' || '1' }}
+          NAELAO_PLAN_HOLDOUT_ONLY: ${{ startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || 'false' }}
+          NAELAO_RUN_LIVE_OPENROUTER_DECISIONS: ${{ startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || 'false' }}
+          NAELAO_LIVE_OPENROUTER_REPORT: live-openrouter-decisions.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
+          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
         run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
+      - name: Run test-only peer-routing decision evaluation
+        if: ${{ startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          NAELAO_RUN_LIVE_PEER_ROUTING: 'true'
+          NAELAO_PEER_ROUTING_REPORT: peer-routing-model-evaluation.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/blackboard-peer-routing-provider-evaluation.test.ts --reporter=verbose
       - name: Publish measured metrics
         if: always()
         run: |
@@ -100,7 +134,7 @@ jobs:
           try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); }
           catch { report = null; }
           const lines = ['## Naelao live model evaluation', '', `Commit: \`${process.env.GITHUB_SHA}\``, `Tag: \`${process.env.GITHUB_REF_NAME}\``, ''];
-          if (!report) lines.push('Evaluation report was not produced.');
+          if (!report) lines.push(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Provider smoke stage skipped for the blackboard-only test profile.' : process.env.GITHUB_REF_NAME.startsWith('provider-eval-planning-only-') ? 'Provider comparison skipped for the planning-only test profile.' : 'Evaluation report was not produced.');
           else {
             lines.push('| Provider / model | State | Quality outcome | Inference calls | Valid response | Valid accuracy | Strict accuracy | False accepts | p50 / p95 ms | Est. paid $ / 1k cases |', '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|');
             for (const result of report.results) {
@@ -120,10 +154,33 @@ jobs:
           import fs from 'node:fs';
           let report; try { report = JSON.parse(fs.readFileSync('live-goal-plan-benchmark.json', 'utf8')); } catch {}
           console.log('\n## Live model planning through Naelao goal runtime\n');
-          if (!report) console.log('No live planning report was produced.');
+          if (!report) console.log(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Planning stage skipped for the blackboard-only test profile.' : 'No live planning report was produced.');
           else {
-            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|');
-            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            console.log('| Provider/model | State | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Rubric, all cases | Rubric, heldout | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
+            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.state} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.satisfiedRubricCriteria ?? 0}/${item.requiredRubricCriteria ?? 0} (${item.semanticRubricCoverage == null ? '—' : `${(item.semanticRubricCoverage * 100).toFixed(1)}%`}) | ${item.heldoutMetrics?.rubricSatisfied ?? 0}/${item.heldoutMetrics?.rubricRequired ?? 0} (${item.heldoutMetrics?.rubricCoverage == null ? '—' : `${(item.heldoutMetrics.rubricCoverage * 100).toFixed(1)}%`}) | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            for (const item of report.results) if (item.heldoutMetrics) console.log(`  - ${item.provider} heldout objectives: ${item.heldoutMetrics.objectives}; attempted ${item.heldoutMetrics.attemptedRequests}; valid plans/DAGs/host verified ${item.heldoutMetrics.validPlans}/${item.heldoutMetrics.validGraphs}/${item.heldoutMetrics.hostVerifiedFixtures}.`);
+            for (const item of report.results) if (item.repeatability) for (const [kind, metric] of Object.entries(item.repeatability)) console.log(`  - ${item.provider} ${kind} stability: ${metric.stableObjectives}/${metric.completedObjectives} completed objectives across ${metric.repeatsPerObjective} runs; ${metric.stabilityRate == null ? 'incomplete' : `${(metric.stabilityRate * 100).toFixed(1)}%`}.`);
+            for (const item of report.results) for (const sample of item.cases ?? []) if (sample.semanticRubric) console.log(`  - ${item.provider}/${sample.id}: semantic rubric ${sample.semanticRubric.satisfied}/${sample.semanticRubric.required}; missing ${sample.semanticRubric.missing.join(', ') || 'none'}.`);
+            console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
+          }
+          JS
+      - name: Publish peer-routing metrics
+        if: always() && startsWith(github.ref_name, 'provider-eval-peer-routing-')
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('peer-routing-model-evaluation.json', 'utf8')); } catch {}
+          console.log('\n## Test-only peer-sharing decision quality\n');
+          if (!report) console.log('No peer-routing report was produced.');
+          else {
+            console.log(`Fixed synthetic holdout: ${report.datasetScenarios} scenarios, ${report.candidatePairs} candidate pairs; host confidence gate ${report.hostConfidenceThreshold}; request cap ${report.requestCapPerProvider} per provider.`);
+            console.log('\n| Provider/model | State | Calls | Valid decisions | Raw accuracy / precision / recall / F1 | Host-gated accuracy / precision / recall / F1 | Latency | Tokens in/out | Reported cost |\n|---|---|---:|---:|---|---|---:|---:|---:|');
+            for (const item of report.results) {
+              const raw = item.rawDecisionMetrics; const gated = item.hostThresholdMetrics;
+              console.log(`| ${item.provider}/${item.model} | ${item.state}${item.reason ? ` (${item.reason})` : ''} | ${item.requests} | ${item.validUniqueDecisions ?? 0}/${report.candidatePairs} | ${raw ? `${(raw.accuracy*100).toFixed(1)}% / ${(raw.precision*100).toFixed(1)}% / ${(raw.recall*100).toFixed(1)}% / ${(raw.f1*100).toFixed(1)}%` : '—'} | ${gated ? `${(gated.accuracy*100).toFixed(1)}% / ${(gated.precision*100).toFixed(1)}% / ${(gated.recall*100).toFixed(1)}% / ${(gated.f1*100).toFixed(1)}%` : '—'} | ${item.latencyMs ?? '—'} ms | ${item.usage?.inputTokens ?? '—'}/${item.usage?.outputTokens ?? '—'} | ${item.usage?.providerReportedCostUsd ?? 'unknown'} |`);
+              for (const threshold of item.thresholdSweep ?? []) console.log(`  - ${item.provider} threshold ${threshold.threshold}: accuracy ${(threshold.accuracy*100).toFixed(1)}%, precision ${(threshold.precision*100).toFixed(1)}%, recall ${(threshold.recall*100).toFixed(1)}%, F1 ${(threshold.f1*100).toFixed(1)}%.`);
+              if (item.decisionVectorSha256) console.log(`  - ${item.provider} decision vector fingerprint: ${item.decisionVectorSha256}.`);
+            }
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
           JS
@@ -139,11 +196,27 @@ jobs:
             console.log(`- **${result.provider}/${result.model ?? 'unconfigured'}:** ${result.state}${result.reason ? ` (${result.reason})` : ''}; calls ${result.inferenceRequests ?? 'unknown'}; request latency p50/p95 ${result.requestLatencyP50Ms ?? '—'}/${result.requestLatencyP95Ms ?? '—'} ms; tokens ${result.inputTokens ?? '—'}/${result.outputTokens ?? '—'}; provider-reported cost ${result.providerReportedCostUsd ?? 'unavailable'}.`);
             if (result.baseline && result.modelCandidate) console.log(`  - On ${result.queries} queries: MRR ${result.baseline.meanReciprocalRank.toFixed(3)} → ${result.modelCandidate.meanReciprocalRank.toFixed(3)} (Δ ${result.pairedDelta.meanReciprocalRank.toFixed(3)}); Recall@5 ${result.baseline.meanRecallAtK.toFixed(3)} → ${result.modelCandidate.meanRecallAtK.toFixed(3)} (Δ ${result.pairedDelta.meanRecallAtK.toFixed(3)}); nDCG@5 ${result.baseline.meanNdcgAtK.toFixed(3)} → ${result.modelCandidate.meanNdcgAtK.toFixed(3)} (Δ ${result.pairedDelta.meanNdcgAtK.toFixed(3)}).`);
             if (result.expandedCandidatePool) console.log(`  - All-visible pool ablation, same query/cards: MRR ${result.expandedCandidatePool.baseline.meanReciprocalRank.toFixed(3)} → ${result.expandedCandidatePool.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.expandedCandidatePool.baseline.meanRecallAtK.toFixed(3)} → ${result.expandedCandidatePool.modelCandidate.meanRecallAtK.toFixed(3)}; nDCG@5 ${result.expandedCandidatePool.baseline.meanNdcgAtK.toFixed(3)} → ${result.expandedCandidatePool.modelCandidate.meanNdcgAtK.toFixed(3)}.`);
+            if (result.queryWordingHoldout) console.log(`  - Separate query-wording holdout (n=${result.queryWordingHoldout.queryCount}, labels not independently adjudicated): bounded search MRR ${result.queryWordingHoldout.baseline.meanReciprocalRank.toFixed(3)} → ${result.queryWordingHoldout.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.queryWordingHoldout.baseline.meanRecallAtK.toFixed(3)} → ${result.queryWordingHoldout.modelCandidate.meanRecallAtK.toFixed(3)}; all-visible MRR ${result.queryWordingHoldout.allVisibleBaseline.meanReciprocalRank.toFixed(3)} → ${result.queryWordingHoldout.allVisibleModelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.queryWordingHoldout.allVisibleBaseline.meanRecallAtK.toFixed(3)} → ${result.queryWordingHoldout.allVisibleModelCandidate.meanRecallAtK.toFixed(3)}; changed top-five orders ${result.queryWordingHoldout.rankingDiagnostics.queriesWithChangedTopFive}/${result.queryWordingHoldout.queryCount}.`);
+            if (result.partialMetrics?.queryWordingHoldout) console.log(`  - Partial holdout after provider stop (${result.partialMetrics.queryWordingHoldout.completed}/${result.partialMetrics.queryWordingHoldout.total} queries): bounded MRR ${result.partialMetrics.queryWordingHoldout.baseline.meanReciprocalRank.toFixed(3)} → ${result.partialMetrics.queryWordingHoldout.candidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.partialMetrics.queryWordingHoldout.baseline.meanRecallAtK.toFixed(3)} → ${result.partialMetrics.queryWordingHoldout.candidate.meanRecallAtK.toFixed(3)}; all-visible MRR ${result.partialMetrics.queryWordingHoldout.allVisibleBaseline.meanReciprocalRank.toFixed(3)} → ${result.partialMetrics.queryWordingHoldout.allVisibleCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${result.partialMetrics.queryWordingHoldout.allVisibleBaseline.meanRecallAtK.toFixed(3)} → ${result.partialMetrics.queryWordingHoldout.allVisibleCandidate.meanRecallAtK.toFixed(3)}; changed top-five orders ${result.partialMetrics.queryWordingHoldout.rankingDiagnostics.queriesWithChangedTopFive}/${result.partialMetrics.queryWordingHoldout.completed}.`);
             if (result.expandedCandidatePool?.stratifiedMetrics) for (const [stratum, metrics] of Object.entries(result.expandedCandidatePool.stratifiedMetrics)) console.log(`  - All-visible ${stratum} (n=${metrics.cases}): MRR ${metrics.baseline.meanReciprocalRank.toFixed(3)} → ${metrics.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${metrics.baseline.meanRecallAtK.toFixed(3)} → ${metrics.modelCandidate.meanRecallAtK.toFixed(3)}; nDCG@5 ${metrics.baseline.meanNdcgAtK.toFixed(3)} → ${metrics.modelCandidate.meanNdcgAtK.toFixed(3)}.`);
             if (result.scoringDiagnostics && result.rankingDiagnostics) console.log(`  - Score distribution 0/1/2: ${result.scoringDiagnostics.distribution.unrelated}/${result.scoringDiagnostics.distribution.possible}/${result.scoringDiagnostics.distribution.strong}; varied-score queries ${result.scoringDiagnostics.queriesWithScoreVariation}/${result.queries}; changed top-five orders ${result.rankingDiagnostics.queriesWithChangedTopFive}/${result.queries}.`);
             if (result.stratifiedMetrics) for (const [stratum, metrics] of Object.entries(result.stratifiedMetrics)) console.log(`  - ${stratum} (n=${metrics.cases}): MRR ${metrics.baseline.meanReciprocalRank.toFixed(3)} → ${metrics.modelCandidate.meanReciprocalRank.toFixed(3)}; Recall@5 ${metrics.baseline.meanRecallAtK.toFixed(3)} → ${metrics.modelCandidate.meanRecallAtK.toFixed(3)}; nDCG@5 ${metrics.baseline.meanNdcgAtK.toFixed(3)} → ${metrics.modelCandidate.meanNdcgAtK.toFixed(3)}.`);
           }
           console.log('\nSynthetic labels only. Gemini/GroqCloud are test adapters; OpenRouter production routing is unchanged. Cost without a billing receipt remains unknown.');
+          JS
+      - name: Publish OpenRouter Decisions comparison
+        if: always()
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('live-openrouter-decisions.json', 'utf8')); } catch {}
+          console.log('\n## OpenRouter Decisions evidence holdout\n');
+          if (!report) console.log(process.env.GITHUB_REF_NAME.startsWith('provider-eval-heldout-') ? 'No OpenRouter Decisions report was produced.' : 'Skipped outside the explicitly tagged held-out profile.');
+          else {
+            console.log(`- State: ${report.state}; model: ${report.model}; requests: ${report.metrics?.inferenceRequests ?? 0}/${report.maxRequests}; correct: ${report.metrics?.expectedMatches ?? 0}/${report.metrics?.validResponses ?? 0}; false accepts: ${report.metrics?.falseAcceptances ?? '—'}; p50/p95: ${report.metrics?.p50LatencyMs ?? '—'}/${report.metrics?.p95LatencyMs ?? '—'} ms; returned cost: ${report.metrics?.returnedCostUsd ?? 'unknown'} (${report.metrics?.costReceiptCount ?? 0} receipts).`);
+            if (report.reason) console.log(`- Reason: ${report.reason}`);
+          }
+          console.log('\nOpenRouter is the configured Decisions route. This test profile does not change production routing.');
           JS
       - uses: actions/upload-artifact@v4
         if: always()
@@ -155,4 +228,6 @@ jobs:
             live-goal-plan-benchmark.json
             goal-architecture-benchmark.json
             blackboard-ranking-live.json
+            live-openrouter-decisions.json
+            peer-routing-model-evaluation.json
           if-no-files-found: warn

@@ -264,3 +264,93 @@ export const blackboardRankingQueries: Array<
     relevantProjectIds: ["security"],
   },
 ];
+
+/**
+ * Second-pass authored queries kept separate from v1. These are a regression
+ * holdout for query wording only; they share the synthetic card catalog and
+ * labels are not independently adjudicated.
+ */
+export const blackboardRankingHoldoutQueries: Array<
+  Pick<BlackboardRankingCase, "id" | "relevantProjectIds"> & { query: string }
+> = [
+  {
+    id: "holdout-border-code",
+    query: "An import is stopped at the border; could the declared code be wrong?",
+    relevantProjectIds: ["customs"],
+  },
+  {
+    id: "holdout-acquisition-exit",
+    query: "In this company purchase, what happens if either party exits early?",
+    relevantProjectIds: ["contracts"],
+  },
+  {
+    id: "holdout-referral-handoff",
+    query: "Assemble chart context for the specialist receiving this patient referral.",
+    relevantProjectIds: ["clinic-admin"],
+  },
+  {
+    id: "holdout-ci-regression",
+    query: "The merge broke CI; find the change and prove the repair with tests.",
+    relevantProjectIds: ["coding"],
+  },
+  {
+    id: "holdout-unmatched-close",
+    query: "Month-end books do not match the supplier bills; reconcile the amounts.",
+    relevantProjectIds: ["invoices"],
+  },
+  {
+    id: "holdout-first-week-hire",
+    query: "Coordinate applicant conversations and prepare the new hire's first week.",
+    relevantProjectIds: ["recruiting"],
+  },
+  {
+    id: "holdout-missing-parcel",
+    query: "A buyer says the parcel never arrived and wants their money back.",
+    relevantProjectIds: ["support"],
+  },
+  {
+    id: "holdout-renewal-risk",
+    query: "Which accounts may lapse soon, and what should the team follow up on?",
+    relevantProjectIds: ["sales"],
+  },
+  {
+    id: "holdout-rental-repair",
+    query: "The heating is broken; check the rental terms and route a repair.",
+    relevantProjectIds: ["property"],
+  },
+  {
+    id: "holdout-brand-review",
+    query: "Check this ad against brand style and get approval before it goes live.",
+    relevantProjectIds: ["marketing"],
+  },
+  {
+    id: "holdout-bid-policy",
+    query: "Compare the bids and choose an option that follows purchasing rules.",
+    relevantProjectIds: ["procurement"],
+  },
+  {
+    id: "holdout-account-compromise",
+    query: "An account may be compromised; find the response procedure and build a timeline.",
+    relevantProjectIds: ["security"],
+  },
+  {
+    id: "holdout-reproducible-lit-review",
+    query: "Find prior studies with citations for a reproducible lab writeup.",
+    relevantProjectIds: ["research"],
+  },
+  {
+    id: "holdout-syllabus-quiz",
+    query: "Use the school's approved course material to draft a learning check.",
+    relevantProjectIds: ["education"],
+  },
+  {
+    id: "holdout-transit-exception",
+    query: "A shipment is late in transit; get the carrier status and next action.",
+    relevantProjectIds: ["logistics"],
+  },
+  {
+    id: "holdout-issuer-comparison",
+    query: "Compare two stocks using annual reports and cite the supporting figures.",
+    relevantProjectIds: ["finance-research"],
+  },
+];

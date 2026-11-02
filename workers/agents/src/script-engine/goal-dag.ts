@@ -1,4 +1,4 @@
-import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 import { evaluateGoalEvidence, type GoalEvidence, type GoalEvidenceCheck } from "./goal-evidence.js";
 
@@ -72,7 +72,7 @@ function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJou
   if (!journal.taskBlackboardEnabled) return;
   const state = journal.tasks[task.id]!;
   if (state.status !== "completed") return;
-  const recipients = tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => journal.tasks[candidate.id]!.workerId);
+  const recipients = taskCommunicationRecipients(task.id, tasks).map(recipientId => journal.tasks[recipientId]!.workerId);
   if (!recipients.length || (journal.messages ?? []).some(message => message.id === `completion:${task.id}`)) return;
   let serialized: string;
   try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; }
@@ -198,7 +198,12 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         await host.publish(task, journal.tasks[task.id]!);
       }
     }
-    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed"));
+    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending"
+      && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed")
+      // A host-selected peer edge is a message-availability barrier, not a success
+      // dependency: the recipient wakes after the sender reaches any terminal state.
+      && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
+        .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
     if (!ready.length && inFlight.size === 0) {
       const fixers = journal.fixers ??= {};
       // Always reconcile an already-running fixer, even if the feature flag was switched

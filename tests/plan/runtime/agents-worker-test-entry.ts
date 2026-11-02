@@ -65,6 +65,23 @@ export default {
       }));
       return Response.json({ status: response.status, body: await response.json().catch(() => null) }, { status: response.status });
     }
+    if (url.pathname === "/__test/task-blackboard/read" && request.method === "POST") {
+      const body = await request.json<{ goalId?: string; runId?: string; projectId?: string; senderTaskId?: string; recipientTaskId?: string }>().catch(() => ({}));
+      if (!/^[a-f0-9]{64}$/.test(body.goalId ?? "") || !body.runId || !body.projectId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.senderTaskId ?? "") || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(body.recipientTaskId ?? "")) return Response.json({ error: "invalid_test_message_scope" }, { status: 400 });
+      const doName = await getDOName("agent", `${TEST_SPACE_ID}:naelao-agent`, TEST_TENANT_ID, String(env.PLATFORM_SECRET));
+      const namespace = env.NAELAO_AGENT_DO as DurableObjectNamespace;
+      const stub = namespace.get(namespace.idFromName(doName));
+      const contract: DelegationContract = {
+        tenantId: TEST_TENANT_ID, spaceId: TEST_SPACE_ID, projectId: body.projectId, actorId: TEST_USER_ID,
+        agentId: "naelao-agent", rootRunId: body.runId, parentRunId: body.runId, parentDoId: stub.id.toString(), workerId: `${body.goalId}:${body.recipientTaskId}`,
+        depth: 2, planner: false, maxTokens: 1000, maxSteps: 10, model: "test-model", role: "worker", callerRole: "owner", maxTier: 2, localOnly: false,
+      };
+      const token = await issueDelegationContract(contract, String(env.PLATFORM_SECRET));
+      const response = await stub.fetch(new Request("http://agent-do/internal/task-blackboard", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contract, token, action: "read" }),
+      }));
+      return Response.json(await response.json().catch(() => null), { status: response.status });
+    }
     if (url.pathname === "/__test/goal-activity" && request.method === "GET") {
       const runId = url.searchParams.get("run_id");
       if (!runId || runId.length > 256) return Response.json({ error: "run_id_required" }, { status: 400 });
