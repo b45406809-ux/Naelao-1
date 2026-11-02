@@ -66,7 +66,7 @@ describe("task blackboard ablation experiment", () => {
     const graphs = generatedGraphs();
     const report = {
       schemaVersion: 1,
-      kind: "task_blackboard_visibility_ablation",
+      kind: "task_blackboard_coordination_ablation",
       evidenceClass: "unit-deterministic-synthetic-graph",
       seed: "0x4e41454c",
       graphs: graphs.length,
@@ -77,6 +77,13 @@ describe("task blackboard ablation experiment", () => {
       targetedMessageBytes: 0,
       naiveBroadcastBytes: 0,
       targetedBoardMessages: 0,
+      directRequiredInputs: 0,
+      targetedBoardRequiredInputs: 0,
+      directMissingInputs: 0,
+      targetedBoardMissingInputs: 0,
+      simulatedDuplicateWorkUnits: 0,
+      directTasksWithAllInputs: 0,
+      targetedBoardTasksWithAllInputs: 0,
       directVsTargetedPayloadMismatches: 0,
       crossRecipientMessageLeaks: 0,
       completionStatusMismatches: 0,
@@ -98,6 +105,8 @@ describe("task blackboard ablation experiment", () => {
       const members = new Set(tasks.map((task) => `worker:${task.id}`));
       for (const task of tasks) {
         const expectedDependencies = [...(task.dependencies ?? [])].sort();
+        report.directRequiredInputs += expectedDependencies.length;
+        report.targetedBoardRequiredInputs += expectedDependencies.length;
         const directValues = direct.handoffs.get(task.id) as Array<{
           taskId: string;
           output: string;
@@ -117,6 +126,19 @@ describe("task blackboard ablation experiment", () => {
           JSON.stringify(expectedDependencies)
         )
           report.directVsTargetedPayloadMismatches++;
+        const directInputs = new Set(directValues.map((value) => value.taskId));
+        const boardInputs = new Set(boardValues.map((value) => value.taskId));
+        const missingDirect = expectedDependencies.filter(
+          (id) => !directInputs.has(id)
+        ).length;
+        const missingBoard = expectedDependencies.filter(
+          (id) => !boardInputs.has(id)
+        ).length;
+        report.directMissingInputs += missingDirect;
+        report.targetedBoardMissingInputs += missingBoard;
+        report.simulatedDuplicateWorkUnits += missingDirect + missingBoard;
+        if (missingDirect === 0) report.directTasksWithAllInputs++;
+        if (missingBoard === 0) report.targetedBoardTasksWithAllInputs++;
         report.directHandoffBytes += byteLength(directValues);
         report.targetedBoardHandoffBytes += byteLength(boardValues);
 
@@ -168,6 +190,13 @@ describe("task blackboard ablation experiment", () => {
     expect(report.completionStatusMismatches).toBe(0);
     expect(report.targetedBoardMessages).toBe(report.dependencyEdges);
     expect(report.targetedBoardHandoffBytes).toBe(report.directHandoffBytes);
+    expect(report.directRequiredInputs).toBe(report.dependencyEdges);
+    expect(report.targetedBoardRequiredInputs).toBe(report.dependencyEdges);
+    expect(report.directMissingInputs).toBe(0);
+    expect(report.targetedBoardMissingInputs).toBe(0);
+    expect(report.directTasksWithAllInputs).toBe(report.tasks);
+    expect(report.targetedBoardTasksWithAllInputs).toBe(report.tasks);
+    expect(report.simulatedDuplicateWorkUnits).toBe(0);
     expect(report.naiveBroadcastBytes).toBeGreaterThanOrEqual(
       report.targetedMessageBytes
     );

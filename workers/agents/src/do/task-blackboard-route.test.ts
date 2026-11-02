@@ -491,4 +491,191 @@ describe("task blackboard durable object route", () => {
       },
     ]);
   });
+
+  it("preserves seeded tenant, project, and recipient grants during concurrent cross-tenant traffic", async () => {
+    const secret = "test-secret";
+    const parentDoId = "parent-multi-tenant";
+    const data = new Map<string, unknown>();
+    const tx = {
+      get: async (key: string) => data.get(key),
+      put: async (key: string, value: unknown) => {
+        data.set(key, value);
+      },
+    };
+    let tail: Promise<void> = Promise.resolve();
+    const storage = {
+      get: tx.get,
+      put: tx.put,
+      transaction: async <T>(
+        operation: (transaction: typeof tx) => Promise<T>
+      ): Promise<T> => {
+        const previous = tail;
+        let release!: () => void;
+        tail = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await previous;
+        try {
+          return await operation(tx);
+        } finally {
+          release();
+        }
+      },
+    };
+    const instance = new NaelaoAgentDO(
+      { storage, id: { toString: () => parentDoId } } as never,
+      { PLATFORM_SECRET: secret } as never
+    );
+    (instance as unknown as { ensureInit(): void }).ensureInit = () => {};
+
+    let seed = 0x51ace;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x1_0000_0000;
+    };
+    const tenants = await Promise.all(
+      Array.from({ length: 24 }, async (_, index) => {
+        const hash = (index + 1).toString(16).padStart(64, "0");
+        const sender = `${hash}:sender`;
+        const recipient = `${hash}:recipient`;
+        const tenantId = `tenant-${index}`;
+        const spaceId = `space-${Math.floor(random() * 4)}`;
+        const projectId = `project-${Math.floor(random() * 5)}`;
+        const actorId = `owner-${index}`;
+        const rootRunId = `root-${index}`;
+        const allowed = random() >= 0.5;
+        data.set(`task-blackboard:scope:${hash}`, {
+          tenantId,
+          spaceId,
+          projectId,
+          actorId,
+          rootRunId,
+          parentDoId,
+          members: [sender, recipient],
+          grants: [
+            [sender, allowed ? [recipient] : []],
+            [recipient, []],
+          ],
+        });
+        const contract: DelegationContract = {
+          tenantId,
+          spaceId,
+          projectId,
+          actorId,
+          agentId: `project-assistant-${index}`,
+          rootRunId,
+          parentRunId: `run-${index}`,
+          parentDoId,
+          workerId: sender,
+          depth: 2,
+          planner: false,
+          maxTokens: 100,
+          maxSteps: 1,
+          model: "test/local",
+          role: "worker",
+          callerRole: "editor",
+          maxTier: 1,
+          localOnly: true,
+        };
+        return {
+          hash,
+          sender,
+          recipient,
+          allowed,
+          contract,
+          token: await issueDelegationContract(contract, secret),
+          text: `private-tenant-${index}`,
+        };
+      })
+    );
+
+    const request = (
+      contract: DelegationContract,
+      token: string,
+      action: "read" | "publish",
+      input?: Record<string, unknown>
+    ) =>
+      instance.fetch(
+        new Request("http://agent/internal/task-blackboard", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            contract,
+            token,
+            action,
+            ...(input ? { input } : {}),
+          }),
+        })
+      );
+
+    const writes = await Promise.all(
+      tenants.map((tenant) =>
+        request(tenant.contract, tenant.token, "publish", {
+          id: `message-${tenant.hash}`,
+          recipients: [tenant.recipient],
+          kind: "finding",
+          text: tenant.text,
+        })
+      )
+    );
+    for (const [index, response] of writes.entries()) {
+      const tenant = tenants[index];
+      if (!tenant) throw new Error(`tenant fixture missing at ${index}`);
+      expect(response.status, `tenant ${index} grant result`).toBe(
+        tenant.allowed ? 200 : 403
+      );
+    }
+
+    const reads = await Promise.all(
+      tenants.map(async (tenant) => {
+        const recipientContract = {
+          ...tenant.contract,
+          workerId: tenant.recipient,
+        };
+        const recipientToken = await issueDelegationContract(
+          recipientContract,
+          secret
+        );
+        return request(recipientContract, recipientToken, "read");
+      })
+    );
+    for (const [index, response] of reads.entries()) {
+      const tenant = tenants[index];
+      if (!tenant) throw new Error(`tenant fixture missing at ${index}`);
+      const payload = (await response.json()) as {
+        messages: Array<{ text: string }>;
+      };
+      expect(response.status).toBe(200);
+      expect(payload.messages.map((message) => message.text)).toEqual(
+        tenant.allowed ? [tenant.text] : []
+      );
+      for (const [otherIndex, tenant] of tenants.entries())
+        if (otherIndex !== index)
+          expect(
+            payload.messages.some((message) => message.text === tenant.text)
+          ).toBe(false);
+    }
+
+    const crossTenant = await Promise.all(
+      tenants.map(async (tenant, index) => {
+        const other = tenants[(index + 1) % tenants.length];
+        if (!other) throw new Error(`cross-tenant fixture missing at ${index}`);
+        const forged = { ...tenant.contract, workerId: other.sender };
+        return request(
+          forged,
+          await issueDelegationContract(forged, secret),
+          "read"
+        );
+      })
+    );
+    expect(crossTenant.every((response) => response.status === 403)).toBe(true);
+    for (const tenant of tenants) {
+      const messages = data.get(`task-blackboard:messages:${tenant.hash}`) as
+        | Array<{ text: string }>
+        | undefined;
+      expect((messages ?? []).map((message) => message.text)).toEqual(
+        tenant.allowed ? [tenant.text] : []
+      );
+    }
+  });
 });
