@@ -1,0 +1,564 @@
+{
+  "schemaVersion": 1,
+  "kind": "matched_blackboard_task_outcome_ablation",
+  "evidenceClass": "local-goal-dag-with-deterministic-worker-and-verifier-fixtures",
+  "policyArms": [
+    "no_board",
+    "targeted",
+    "broadcast"
+  ],
+  "groups": 2,
+  "consumersPerGroup": 3,
+  "tasksPerRun": 8,
+  "repeats": 3,
+  "concurrency": 4,
+  "taskObjectivesMatchedAcrossArms": true,
+  "targetedRecipientsPerSource": 2,
+  "broadcastRecipientsPerSource": 6,
+  "results": {
+    "no_board": {
+      "summary": {
+        "elapsedMs": {
+          "samples": [
+            9.77,
+            6.03,
+            5.85
+          ],
+          "mean": 7.216666666666666,
+          "p50": 6.03,
+          "p95": 9.77
+        },
+        "completedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "verifiedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerModelCalls": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerInputTokensEstimated": {
+          "samples": [
+            420,
+            420,
+            420
+          ],
+          "mean": 420,
+          "p50": 420,
+          "p95": 420
+        },
+        "workerOutputTokensEstimated": {
+          "samples": [
+            80,
+            80,
+            80
+          ],
+          "mean": 80,
+          "p50": 80,
+          "p95": 80
+        },
+        "totalTokensEstimated": {
+          "samples": [
+            500,
+            500,
+            500
+          ],
+          "mean": 500,
+          "p50": 500,
+          "p95": 500
+        },
+        "fixtureLookupCalls": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "duplicateLookupCalls": {
+          "samples": [
+            6,
+            6,
+            6
+          ],
+          "mean": 6,
+          "p50": 6,
+          "p95": 6
+        },
+        "boardMessages": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        },
+        "visibleMessageBytesAcrossWorkers": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        },
+        "verificationFailures": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        }
+      },
+      "samples": [
+        {
+          "mode": "no_board",
+          "elapsedMs": 9.77,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 420,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 500,
+          "fixtureLookupCalls": 8,
+          "duplicateLookupCalls": 6,
+          "boardMessages": 0,
+          "visibleMessageBytesAcrossWorkers": 0,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "no_board",
+          "elapsedMs": 6.03,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 420,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 500,
+          "fixtureLookupCalls": 8,
+          "duplicateLookupCalls": 6,
+          "boardMessages": 0,
+          "visibleMessageBytesAcrossWorkers": 0,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "no_board",
+          "elapsedMs": 5.85,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 420,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 500,
+          "fixtureLookupCalls": 8,
+          "duplicateLookupCalls": 6,
+          "boardMessages": 0,
+          "visibleMessageBytesAcrossWorkers": 0,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        }
+      ]
+    },
+    "targeted": {
+      "summary": {
+        "elapsedMs": {
+          "samples": [
+            4.76,
+            4.28,
+            3.65
+          ],
+          "mean": 4.2299999999999995,
+          "p50": 4.28,
+          "p95": 4.76
+        },
+        "completedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "verifiedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerModelCalls": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerInputTokensEstimated": {
+          "samples": [
+            560,
+            560,
+            560
+          ],
+          "mean": 560,
+          "p50": 560,
+          "p95": 560
+        },
+        "workerOutputTokensEstimated": {
+          "samples": [
+            80,
+            80,
+            80
+          ],
+          "mean": 80,
+          "p50": 80,
+          "p95": 80
+        },
+        "totalTokensEstimated": {
+          "samples": [
+            640,
+            640,
+            640
+          ],
+          "mean": 640,
+          "p50": 640,
+          "p95": 640
+        },
+        "fixtureLookupCalls": {
+          "samples": [
+            4,
+            4,
+            4
+          ],
+          "mean": 4,
+          "p50": 4,
+          "p95": 4
+        },
+        "duplicateLookupCalls": {
+          "samples": [
+            2,
+            2,
+            2
+          ],
+          "mean": 2,
+          "p50": 2,
+          "p95": 2
+        },
+        "boardMessages": {
+          "samples": [
+            2,
+            2,
+            2
+          ],
+          "mean": 2,
+          "p50": 2,
+          "p95": 2
+        },
+        "visibleMessageBytesAcrossWorkers": {
+          "samples": [
+            736,
+            736,
+            736
+          ],
+          "mean": 736,
+          "p50": 736,
+          "p95": 736
+        },
+        "verificationFailures": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        }
+      },
+      "samples": [
+        {
+          "mode": "targeted",
+          "elapsedMs": 4.76,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 560,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 640,
+          "fixtureLookupCalls": 4,
+          "duplicateLookupCalls": 2,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 736,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "targeted",
+          "elapsedMs": 4.28,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 560,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 640,
+          "fixtureLookupCalls": 4,
+          "duplicateLookupCalls": 2,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 736,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "targeted",
+          "elapsedMs": 3.65,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 560,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 640,
+          "fixtureLookupCalls": 4,
+          "duplicateLookupCalls": 2,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 736,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        }
+      ]
+    },
+    "broadcast": {
+      "summary": {
+        "elapsedMs": {
+          "samples": [
+            4.05,
+            4.02,
+            4.35
+          ],
+          "mean": 4.14,
+          "p50": 4.05,
+          "p95": 4.35
+        },
+        "completedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "verifiedTasks": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerModelCalls": {
+          "samples": [
+            8,
+            8,
+            8
+          ],
+          "mean": 8,
+          "p50": 8,
+          "p95": 8
+        },
+        "workerInputTokensEstimated": {
+          "samples": [
+            840,
+            840,
+            840
+          ],
+          "mean": 840,
+          "p50": 840,
+          "p95": 840
+        },
+        "workerOutputTokensEstimated": {
+          "samples": [
+            80,
+            80,
+            80
+          ],
+          "mean": 80,
+          "p50": 80,
+          "p95": 80
+        },
+        "totalTokensEstimated": {
+          "samples": [
+            920,
+            920,
+            920
+          ],
+          "mean": 920,
+          "p50": 920,
+          "p95": 920
+        },
+        "fixtureLookupCalls": {
+          "samples": [
+            2,
+            2,
+            2
+          ],
+          "mean": 2,
+          "p50": 2,
+          "p95": 2
+        },
+        "duplicateLookupCalls": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        },
+        "boardMessages": {
+          "samples": [
+            2,
+            2,
+            2
+          ],
+          "mean": 2,
+          "p50": 2,
+          "p95": 2
+        },
+        "visibleMessageBytesAcrossWorkers": {
+          "samples": [
+            1702,
+            1702,
+            1702
+          ],
+          "mean": 1702,
+          "p50": 1702,
+          "p95": 1702
+        },
+        "verificationFailures": {
+          "samples": [
+            0,
+            0,
+            0
+          ],
+          "mean": 0,
+          "p50": 0,
+          "p95": 0
+        }
+      },
+      "samples": [
+        {
+          "mode": "broadcast",
+          "elapsedMs": 4.05,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 840,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 920,
+          "fixtureLookupCalls": 2,
+          "duplicateLookupCalls": 0,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 1702,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "broadcast",
+          "elapsedMs": 4.02,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 840,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 920,
+          "fixtureLookupCalls": 2,
+          "duplicateLookupCalls": 0,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 1702,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        },
+        {
+          "mode": "broadcast",
+          "elapsedMs": 4.35,
+          "completedTasks": 8,
+          "verifiedTasks": 8,
+          "workerModelCalls": 8,
+          "workerInputTokensEstimated": 840,
+          "workerOutputTokensEstimated": 80,
+          "totalTokensEstimated": 920,
+          "fixtureLookupCalls": 2,
+          "duplicateLookupCalls": 0,
+          "boardMessages": 2,
+          "visibleMessageBytesAcrossWorkers": 1702,
+          "verificationFailures": 0,
+          "externalProviderCalls": 0,
+          "billedCostUsd": null
+        }
+      ]
+    }
+  },
+  "interpretation": {
+    "duplicateLookupUnits": "fixture lookups beyond one source lookup per group; deterministic duplicate-work proxy",
+    "tokenUnits": "estimated as ceil(UTF-8 JSON bytes / 4), not provider tokenizer counts",
+    "modelCalls": "synthetic worker invocations, one per task; no external model provider was called",
+    "cost": "null because there are no provider billing receipts; synthetic deterministic execution is not a cash-cost benchmark",
+    "verifiedCompletion": "each task result checked by GoalDagHost.verify against a fixed expected fixture value"
+  },
+  "limitations": [
+    "This exercises the actual Goal DAG scheduling, message creation, recipient visibility, and host verification with deterministic fixture workers; it does not use live Gemini, GroqCloud, or OpenRouter worker models.",
+    "The broadcast arm is an explicit synthetic all-peers recipient policy; production host routing does not automatically broadcast every task result.",
+    "Token counts are byte-based estimates and do not model a tokenizer, hidden system prompts, provider caching, or model reasoning.",
+    "Three local repetitions provide a small runtime comparison, not a production latency distribution or evidence of cost savings."
+  ]
+}

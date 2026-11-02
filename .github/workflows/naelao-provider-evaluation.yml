@@ -42,7 +42,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
-        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -56,7 +56,7 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
@@ -73,7 +73,7 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
         run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -86,7 +86,7 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
@@ -109,8 +109,21 @@ jobs:
             src/communications/blackboard-ranking-provider-evaluation.test.ts \
             src/script-engine/blackboard-peer-routing-provider-evaluation.test.ts \
             --reporter=verbose
+      - name: Run matched live-provider blackboard task outcomes
+        if: ${{ startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') }}
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          NAELAO_RUN_LIVE_BLACKBOARD_TASK_OUTCOME: 'true'
+          NAELAO_BLACKBOARD_LIVE_TASK_OUTCOME_REPORT: ${{ github.workspace }}/blackboard-outcome-provider-evaluation.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/blackboard-task-outcome-provider-evaluation.test.ts --reporter=verbose
       - name: Run real-model planning through the goal DAG and host verifier
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-outcome-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -223,6 +236,22 @@ jobs:
           }
           console.log('\nProvider repeatability is not a correctness benchmark. Production OpenRouter routing is unchanged.');
           JS
+      - name: Publish blackboard task outcome metrics
+        if: always() && startsWith(github.ref_name, 'provider-eval-blackboard-outcome-')
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('blackboard-outcome-provider-evaluation.json', 'utf8')); } catch {}
+          console.log('\n## Matched live-provider task outcomes\n');
+          if (!report) console.log('No live-provider task outcome report was produced.');
+          else for (const provider of report.providers) {
+            console.log(`### ${provider.provider}/${provider.model ?? 'unconfigured'} — ${provider.state}; requests ${provider.requests ?? 0}/${provider.requestCap ?? report.maxCallsPerProvider}`);
+            for (const arm of provider.results ?? []) console.log(`- ${arm.mode}: ${arm.state}; verified ${arm.verifiedTasks ?? 0}/${arm.taskCount ?? 4}; worker calls ${arm.providerCalls ?? 0}; fixture lookups ${arm.fixtureLookups ?? 0} (duplicates ${arm.duplicateLookups ?? 0}); tokens in/out ${arm.inputTokens ?? 0}/${arm.outputTokens ?? 0}; total latency ${arm.totalElapsedMs ?? '—'} ms; provider cost ${arm.providerReportedCostUsd ?? 'unknown'} (${arm.costReceiptCount ?? 0} receipts).`);
+            for (const reason of provider.results?.flatMap(arm => arm.requestFailures ?? []) ?? []) console.log(`- Stopped because of provider response: ${reason}`);
+          }
+          console.log(`\nProduction routing unchanged. Labels: ${report?.labels ?? 'not reported'}.`);
+          for (const limitation of report?.limitations ?? []) console.log(`- ${limitation}`);
+          JS
       - name: Publish blackboard ranking metrics
         if: always()
         run: |
@@ -271,4 +300,5 @@ jobs:
             live-openrouter-decisions.json
             peer-routing-model-evaluation.json
             peer-routing-repeatability.json
+            blackboard-outcome-provider-evaluation.json
           if-no-files-found: warn

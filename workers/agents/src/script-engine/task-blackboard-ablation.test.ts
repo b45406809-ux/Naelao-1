@@ -6,6 +6,7 @@ import { visibleTaskMessages } from "./task-blackboard.js";
 
 const byteLength = (value: unknown) =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const estimateTokens = (value: unknown) => Math.ceil(byteLength(value) / 4);
 
 function generatedGraphs(seed = 0x4e41454c, count = 100): GoalTask[][] {
   let state = seed >>> 0;
@@ -305,5 +306,188 @@ describe("task blackboard ablation experiment", () => {
     expect(direct.messages).toBe(0);
     expect(shared.messages).toBe(1);
     expect(report.outcomeMismatch).toBe(false);
+  });
+
+  it("compares no-board, targeted-board, and broadcast coordination on matched verified tasks", async () => {
+    // Keep the real GoalDag under both its 12-task and 8-recipient host ceilings.
+    const groups = 2;
+    const consumersPerGroup = 3;
+    const repeats = 3;
+    const tasks: GoalTask[] = [];
+    const expectedByTask = new Map<string, string>();
+    for (let group = 0; group < groups; group++) {
+      const source = `g${group}-source`;
+      const expected = `verified finding ${group}: source value ${100 + group}`;
+      expectedByTask.set(source, expected);
+      const consumers = Array.from({ length: consumersPerGroup }, (_, index) => `g${group}-consumer-${index}`);
+      tasks.push({
+        id: source,
+        title: `Read source value for group ${group}`,
+        subtask_spec: `Retrieve and report the approved fixture value for group ${group}.`,
+        assigned_role: "research-worker",
+        file_paths: [],
+        dependencies: [],
+        communication_recipients: consumers.slice(0, 2),
+        budget_tokens: 128,
+      });
+      for (let index = 0; index < consumersPerGroup; index++) {
+        const id = consumers[index]!;
+        expectedByTask.set(id, expected);
+        tasks.push({
+          id,
+          title: `Answer using group ${group} source value`,
+          subtask_spec: `Report the approved fixture value for group ${group}; reuse a visible peer finding when available.`,
+          assigned_role: "research-worker",
+          file_paths: [],
+          dependencies: [],
+          budget_tokens: 128,
+        });
+      }
+    }
+
+    const runArm = async (mode: "no_board" | "targeted" | "broadcast") => {
+      const armTasks = structuredClone(tasks);
+      if (mode === "broadcast") {
+        for (const task of armTasks) {
+          if (task.id.endsWith("-source"))
+            task.communication_recipients = armTasks.filter(candidate => !candidate.id.endsWith("-source")).map(candidate => candidate.id);
+        }
+      }
+      let journal: GoalDagJournal | undefined;
+      let workerModelCalls = 0;
+      let workerInputTokensEstimated = 0;
+      let workerOutputTokensEstimated = 0;
+      let fixtureLookups = 0;
+      const started = performance.now();
+      const result = await executeGoalDag(armTasks, {
+        concurrency: 4,
+        taskBlackboardEnabled: mode !== "no_board",
+        workerId: id => `worker:${id}`,
+        load: async () => journal && structuredClone(journal),
+        save: async snapshot => { journal = structuredClone(snapshot); },
+        publish: async () => undefined,
+        recover: async () => undefined,
+        verify: async (task, workerResult) => {
+          const passed = workerResult.output === expectedByTask.get(task.id);
+          return { outcome: passed ? "passed" : "failed", reason: passed ? "Fixture output matched expected task result." : "Fixture output did not match expected task result." };
+        },
+        launch: async (task, workerId, handoffs) => {
+          workerModelCalls++;
+          const members = new Set(armTasks.map(candidate => `worker:${candidate.id}`));
+          const visible = mode === "no_board" ? [] : visibleTaskMessages(journal?.messages ?? [], workerId, members);
+          const promptShape = { task: { id: task.id, title: task.title, subtask_spec: task.subtask_spec }, handoffs, visibleMessages: visible.map(({ sender, kind, text }) => ({ sender, kind, text })) };
+          workerInputTokensEstimated += estimateTokens(promptShape);
+          const expected = expectedByTask.get(task.id)!;
+          let output: string;
+          if (task.id.endsWith("-source")) {
+            fixtureLookups++;
+            // Keep the simulated external lookup latency explicit and identical in every arm.
+            await new Promise(resolve => setTimeout(resolve, 2));
+            output = expected;
+          } else {
+            const groupPrefix = task.id.split("-").slice(0, 1).join("-");
+            const message = visible.find(item => item.id === `completion:${groupPrefix}-source`);
+            if (message) {
+              const decoded = JSON.parse(message.text) as { output: string };
+              output = JSON.parse(decoded.output) as string;
+            } else {
+              fixtureLookups++;
+              await new Promise(resolve => setTimeout(resolve, 2));
+              output = expected;
+            }
+          }
+          workerOutputTokensEstimated += estimateTokens(output);
+          return { id: workerId, ok: true, output };
+        },
+      });
+      const elapsedMs = Number((performance.now() - started).toFixed(2));
+      const completed = Object.values(result.tasks).filter(state => state.status === "completed").length;
+      const verificationsPassed = Object.values(result.tasks).filter(state => state.verification?.outcome === "passed").length;
+      const groupCount = groups;
+      const duplicateLookupCalls = Math.max(0, fixtureLookups - groupCount);
+      const messages = result.messages ?? [];
+      return {
+        mode,
+        elapsedMs,
+        completedTasks: completed,
+        verifiedTasks: verificationsPassed,
+        workerModelCalls,
+        workerInputTokensEstimated,
+        workerOutputTokensEstimated,
+        totalTokensEstimated: workerInputTokensEstimated + workerOutputTokensEstimated,
+        fixtureLookupCalls: fixtureLookups,
+        duplicateLookupCalls,
+        boardMessages: messages.length,
+        visibleMessageBytesAcrossWorkers: armTasks.reduce((sum, task) => {
+          if (mode === "no_board") return sum;
+          const visible = visibleTaskMessages(messages, `worker:${task.id}`, new Set(armTasks.map(candidate => `worker:${candidate.id}`)));
+          return sum + byteLength(visible.map(({ id, text }) => ({ id, text })));
+        }, 0),
+        verificationFailures: Object.values(result.tasks).filter(state => state.verification?.outcome !== "passed").length,
+        externalProviderCalls: 0,
+        billedCostUsd: null as number | null,
+      };
+    };
+
+    const modes = ["no_board", "targeted", "broadcast"] as const;
+    const runs = Object.fromEntries(modes.map(mode => [mode, [] as Awaited<ReturnType<typeof runArm>>[]])) as Record<typeof modes[number], Awaited<ReturnType<typeof runArm>>[]>;
+    for (let repeat = 0; repeat < repeats; repeat++) {
+      for (const mode of modes) runs[mode].push(await runArm(mode));
+    }
+    const summarize = (samples: Awaited<ReturnType<typeof runArm>>[]) => {
+      const keys = ["elapsedMs", "completedTasks", "verifiedTasks", "workerModelCalls", "workerInputTokensEstimated", "workerOutputTokensEstimated", "totalTokensEstimated", "fixtureLookupCalls", "duplicateLookupCalls", "boardMessages", "visibleMessageBytesAcrossWorkers", "verificationFailures"] as const;
+      return Object.fromEntries(keys.map(key => {
+        const values = samples.map(item => item[key] as number);
+        const sorted = [...values].sort((a, b) => a - b);
+        return [key, { samples: values, mean: values.reduce((sum, value) => sum + value, 0) / values.length, p50: sorted[Math.floor((sorted.length - 1) * 0.5)], p95: sorted[Math.ceil((sorted.length - 1) * 0.95)] }];
+      }));
+    };
+    const report = {
+      schemaVersion: 1,
+      kind: "matched_blackboard_task_outcome_ablation",
+      evidenceClass: "local-goal-dag-with-deterministic-worker-and-verifier-fixtures",
+      policyArms: ["no_board", "targeted", "broadcast"],
+      groups,
+      consumersPerGroup,
+      tasksPerRun: tasks.length,
+      repeats,
+      concurrency: 4,
+      taskObjectivesMatchedAcrossArms: true,
+      targetedRecipientsPerSource: 2,
+      broadcastRecipientsPerSource: tasks.length - groups,
+      results: Object.fromEntries(modes.map(mode => [mode, { summary: summarize(runs[mode]), samples: runs[mode] }])),
+      interpretation: {
+        duplicateLookupUnits: "fixture lookups beyond one source lookup per group; deterministic duplicate-work proxy",
+        tokenUnits: "estimated as ceil(UTF-8 JSON bytes / 4), not provider tokenizer counts",
+        modelCalls: "synthetic worker invocations, one per task; no external model provider was called",
+        cost: "null because there are no provider billing receipts; synthetic deterministic execution is not a cash-cost benchmark",
+        verifiedCompletion: "each task result checked by GoalDagHost.verify against a fixed expected fixture value",
+      },
+      limitations: [
+        "This exercises the actual Goal DAG scheduling, message creation, recipient visibility, and host verification with deterministic fixture workers; it does not use live Gemini, GroqCloud, or OpenRouter worker models.",
+        "The broadcast arm is an explicit synthetic all-peers recipient policy; production host routing does not automatically broadcast every task result.",
+        "Token counts are byte-based estimates and do not model a tokenizer, hidden system prompts, provider caching, or model reasoning.",
+        "Three local repetitions provide a small runtime comparison, not a production latency distribution or evidence of cost savings.",
+      ],
+    };
+    const path = process.env.NAELAO_BLACKBOARD_TASK_OUTCOME_REPORT;
+    if (path) await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(`blackboard_task_outcome_ablation=${JSON.stringify(report)}`);
+
+    for (const mode of modes) {
+      for (const sample of runs[mode]) {
+        expect(sample.completedTasks).toBe(tasks.length);
+        expect(sample.verifiedTasks).toBe(tasks.length);
+        expect(sample.verificationFailures).toBe(0);
+        expect(sample.workerModelCalls).toBe(tasks.length);
+        expect(sample.externalProviderCalls).toBe(0);
+      }
+    }
+    expect(runs.no_board[0]?.duplicateLookupCalls).toBe(groups * consumersPerGroup);
+    expect(runs.targeted[0]?.duplicateLookupCalls).toBe(groups);
+    expect(runs.broadcast[0]?.duplicateLookupCalls).toBe(0);
+    expect(runs.broadcast[0]?.visibleMessageBytesAcrossWorkers).toBeGreaterThan(runs.targeted[0]?.visibleMessageBytesAcrossWorkers ?? 0);
+    expect(runs.no_board.map(item => item.verifiedTasks)).toEqual(runs.targeted.map(item => item.verifiedTasks));
+    expect(runs.targeted.map(item => item.verifiedTasks)).toEqual(runs.broadcast.map(item => item.verifiedTasks));
   });
 });
