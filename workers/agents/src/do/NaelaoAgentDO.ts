@@ -1034,6 +1034,7 @@ export interface AgentDOEnv {
   GOAL_VERIFICATION_TEST_MODE?: string;
   /** Opt in new goal runs to durable, task-scoped completion messages. */
   TASK_BLACKBOARD_ENABLED?: string;
+  TASK_BLACKBOARD_DECISION_TEST_MODE?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
   TASK_FIXER_ENABLED?: string;
   GOAL_VERIFICATION_SHADOW_ENABLED?: string;
@@ -3807,9 +3808,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             // A planner can describe work, but only the host Decisions service can
             // propose peer grants. Persist the selection once so retries/restarts do
             // not reroute an already-dispatched goal.
-            if (!prior && enabled && userId && this.env.TASK_BLACKBOARD_ENABLED === "true" && runtimeEnv?.fastDecision?.classifyTaskCommunication) {
+            const taskCommunicationDecision = runtimeEnv?.fastDecision ?? (
+              this.env.ENVIRONMENT === "test" && this.env.TASK_BLACKBOARD_ENABLED === "true" && this.env.TASK_BLACKBOARD_DECISION_TEST_MODE === "true"
+                ? runtimeEnv?.testGoalVerificationDecision
+                : undefined
+            );
+            if (!prior && enabled && userId && this.env.TASK_BLACKBOARD_ENABLED === "true" && taskCommunicationDecision?.classifyTaskCommunication) {
               try {
-                const proposed = await runtimeEnv.fastDecision.classifyTaskCommunication({
+                const proposed = await taskCommunicationDecision.classifyTaskCommunication({
                   tasks: tasks.map(task => ({ id: task.id, title: task.title.slice(0, 200), description: task.subtask_spec.slice(0, 2_000), dependencies: task.dependencies ?? [] })),
                 });
                 selectedEdges = applyGoalCommunicationEdges(tasks, proposed);
