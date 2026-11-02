@@ -135,7 +135,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       let assessment;
       if (journal.verificationRequired) {
         const evidence = await (host.collectEvidence?.(task, state.workerId) ?? Promise.resolve([]));
-        const deterministic = evaluateGoalEvidence(task.acceptance_criteria ?? [], evidence);
+        let deterministic = evaluateGoalEvidence(task.acceptance_criteria ?? [], evidence);
+        const pendingHumanReview = (task.human_review_required ?? []).some(criterion =>
+          !evidence.some(item => item.criterion === criterion && item.source === "human_review" && item.outcome === "passed")
+        );
+        if (deterministic.outcome === "passed" && pendingHumanReview) {
+          deterministic = { outcome: "uncertain", reason: "Required human review is pending" };
+        }
         const modelAssessment = deterministic.outcome === "passed" && host.assessEvidence ? await host.assessEvidence(task, evidence, deterministic) : undefined;
         assessment = !modelAssessment
           ? deterministic

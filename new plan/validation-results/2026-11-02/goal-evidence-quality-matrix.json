@@ -1,0 +1,103 @@
+{
+  "seed": "goal-evidence-quality-v1-fixed",
+  "evidenceClass": "local-goal-dag-host-collector-with-synthetic-decision-adapter",
+  "labelsIndependentlyAdjudicated": false,
+  "casesPerKind": 60,
+  "falseAcceptances": 0,
+  "falseRejections": 0,
+  "reviewExpected": 360,
+  "reviewObserved": 360,
+  "decisionCallsOnDeterministicUncertainty": 0,
+  "workerClaimFalseAcceptances": 0,
+  "dependentTasksLaunchedAfterReview": 0,
+  "resultsByKind": {
+    "current_artifact": {
+      "expected": "passed",
+      "actual": {
+        "passed": 60,
+        "failed": 0,
+        "uncertain": 0
+      },
+      "decisionCalls": 60
+    },
+    "wrong_branch": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "stale_artifact": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "missing_artifact": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "worker_injection": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "human_review_pending": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "human_judgment_with_artifact": {
+      "expected": "uncertain",
+      "actual": {
+        "passed": 0,
+        "failed": 0,
+        "uncertain": 60
+      },
+      "decisionCalls": 0
+    },
+    "human_review_approved": {
+      "expected": "passed",
+      "actual": {
+        "passed": 60,
+        "failed": 0,
+        "uncertain": 0
+      },
+      "decisionCalls": 60
+    }
+  },
+  "totalCases": 480,
+  "totalDecisionCalls": 120,
+  "durationMs": 112.8,
+  "interpretation": {
+    "labels": "Fixed, authored fixtures; not independently adjudicated domain outcomes.",
+    "expectedPassCases": 120,
+    "expectedReviewCases": 360,
+    "decisionAdapter": "Deterministic test double that selects passed only after independent evidence passes; model accuracy is not measured.",
+    "humanApproval": "human_review_approved cases simulate a host-authored approval receipt; this does not test production approval identity/signature validation."
+  },
+  "limitations": [
+    "This measures host artifact scope/freshness gates and Goal DAG review/dependency enforcement, not the accuracy of Clef Flash, OpenRouter, Gemini, or GroqCloud.",
+    "Injection cases prove worker success claims do not substitute for absent host evidence; they do not test a malicious document through a live model judge.",
+    "Explicit human_review_required criteria remain in review even when an artifact check passes; the kernel does not infer that a criterion is subjective when authors omit this declaration.",
+    "The simulated human-review receipt is host-fixture data, not a live authenticated human approval action."
+  ]
+}
