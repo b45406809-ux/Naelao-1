@@ -136,8 +136,9 @@ jobs:
           console.log('\n## Live model planning through Naelao goal runtime\n');
           if (!report) console.log(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Planning stage skipped for the blackboard-only test profile.' : 'No live planning report was produced.');
           else {
-            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|');
-            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Semantic rubric coverage | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|');
+            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.satisfiedRubricCriteria ?? 0}/${item.requiredRubricCriteria ?? 0} (${item.semanticRubricCoverage == null ? '—' : `${(item.semanticRubricCoverage * 100).toFixed(1)}%`}) | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            for (const item of report.results) for (const sample of item.cases ?? []) if (sample.semanticRubric) console.log(`  - ${item.provider}/${sample.id}: semantic rubric ${sample.semanticRubric.satisfied}/${sample.semanticRubric.required}; missing ${sample.semanticRubric.missing.join(', ') || 'none'}.`);
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
           JS
