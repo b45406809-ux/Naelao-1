@@ -178,6 +178,8 @@ jobs:
             for (const item of report.results) {
               const raw = item.rawDecisionMetrics; const gated = item.hostThresholdMetrics;
               console.log(`| ${item.provider}/${item.model} | ${item.state}${item.reason ? ` (${item.reason})` : ''} | ${item.requests} | ${item.validUniqueDecisions ?? 0}/${report.candidatePairs} | ${raw ? `${(raw.accuracy*100).toFixed(1)}% / ${(raw.precision*100).toFixed(1)}% / ${(raw.recall*100).toFixed(1)}% / ${(raw.f1*100).toFixed(1)}%` : '—'} | ${gated ? `${(gated.accuracy*100).toFixed(1)}% / ${(gated.precision*100).toFixed(1)}% / ${(gated.recall*100).toFixed(1)}% / ${(gated.f1*100).toFixed(1)}%` : '—'} | ${item.latencyMs ?? '—'} ms | ${item.usage?.inputTokens ?? '—'}/${item.usage?.outputTokens ?? '—'} | ${item.usage?.providerReportedCostUsd ?? 'unknown'} |`);
+              for (const threshold of item.thresholdSweep ?? []) console.log(`  - ${item.provider} threshold ${threshold.threshold}: accuracy ${(threshold.accuracy*100).toFixed(1)}%, precision ${(threshold.precision*100).toFixed(1)}%, recall ${(threshold.recall*100).toFixed(1)}%, F1 ${(threshold.f1*100).toFixed(1)}%.`);
+              if (item.decisionVectorSha256) console.log(`  - ${item.provider} decision vector fingerprint: ${item.decisionVectorSha256}.`);
             }
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }

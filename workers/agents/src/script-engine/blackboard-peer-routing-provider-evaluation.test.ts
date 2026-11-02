@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { applyGoalCommunicationEdges } from "./goal-communication.js";
 import type { GoalTask } from "./prebuilt/goal-planner.js";
@@ -27,7 +28,7 @@ function scenarios(): Scenario[] {
       ["inspect-trace", "Inspect the parser stack trace", "Use the same parser timeout trace to identify the likely failing function."],
       ["regression-test", "Write a regression test", "Create a test for the exact CSV parser timeout and its failing input."],
       ["readme-edit", "Update the README examples", "Clarify installation examples in the project README; this is unrelated to the parser failure."],
-    ], [["repro-timeout", "inspect-trace"], ["repro-timeout", "regression-test"]]),
+    ], [["repro-timeout", "inspect-trace"], ["repro-timeout", "regression-test"], ["inspect-trace", "regression-test"]]),
     create("permit-budget", [
       ["permit-fees", "Find Region X permit fees", "Extract current permit fee amounts from the approved Region X source."],
       ["project-budget", "Estimate the permit budget", "Estimate this project's Region X permit budget using the current permit fee amounts."],
@@ -39,7 +40,7 @@ function scenarios(): Scenario[] {
       ["shipment-reconcile", "Reconcile delivery date", "Compare the supplier's promised delivery date with the shipment tracking snapshot to determine whether a follow-up is needed."],
       ["invoice-count", "Count invoice records", "Count records in the unrelated sample invoices CSV."],
       ["email-quote", "Draft a delivery status summary", "Draft a status summary from the supplier email and shipment tracking data, without sending a message."],
-    ], [["email-date", "shipment-reconcile"], ["email-date", "email-quote"]]),
+    ], [["email-date", "shipment-reconcile"], ["email-date", "email-quote"], ["shipment-reconcile", "email-quote"]]),
   ];
 }
 
@@ -56,6 +57,8 @@ function scoreDecisions(expected: boolean[], predicted: boolean[]) {
   return { cases: expected.length, truePositive, falsePositive, falseNegative, trueNegative, accuracy: expected.length ? (truePositive + trueNegative) / expected.length : 0, precision, recall, f1: precision + recall ? 2 * precision * recall / (precision + recall) : 0 };
 }
 
+function digest(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16); }
+
 function extractJson(text: string): unknown {
   const trimmed = text.trim();
   const json = trimmed.startsWith("```") ? trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "") : trimmed;
@@ -65,6 +68,7 @@ function extractJson(text: string): unknown {
 describe("test-only model evaluation of host-selected peer sharing", () => {
   it("scores pair metrics and abstains on missing or low-confidence proposals", () => {
     expect(scoreDecisions([true, false, true], [true, true, false])).toMatchObject({ truePositive: 1, falsePositive: 1, falseNegative: 1, accuracy: 1 / 3, precision: 0.5, recall: 0.5, f1: 0.5 });
+    expect(digest([true, false])).toHaveLength(16);
     const rows = [{ senderId: "a", recipientId: "b", confidence: 0.99 }, { senderId: "a", recipientId: "c", confidence: 0.79 }];
     const tasks: GoalTask[] = ["a", "b", "c"].map(id => ({ id, title: id, subtask_spec: id, assigned_role: "RESEARCHER", file_paths: [], dependencies: [], budget_tokens: 1 }));
     const accepted = applyGoalCommunicationEdges(tasks, rows.filter(row => row.confidence >= 0.8).map(row => ({ ...row, provider: "deterministic" as const })));
@@ -125,7 +129,7 @@ describe("test-only model evaluation of host-selected peer sharing", () => {
         byKey.set(key, { share: decision.share, confidence: decision.confidence });
       }
       const rawPredictions = allPairs.map(pair => byKey.get(`${pair.scenarioId}\0${pair.senderId}\0${pair.recipientId}`)?.share ?? false);
-      const acceptedPredictions = allPairs.map(pair => { const row = byKey.get(`${pair.scenarioId}\0${pair.senderId}\0${pair.recipientId}`); return Boolean(row?.share && row.confidence >= 0.8); });
+      const predictionsAt = (threshold: number) => allPairs.map(pair => { const row = byKey.get(`${pair.scenarioId}\0${pair.senderId}\0${pair.recipientId}`); return Boolean(row?.share && row.confidence >= threshold); });
       let offset = 0;
       const acceptedEdges: Array<{ senderId: string; recipientId: string }> = [];
       const acceptedCounts = { truePositive: 0, falsePositive: 0, falseNegative: 0, trueNegative: 0 };
@@ -160,13 +164,15 @@ describe("test-only model evaluation of host-selected peer sharing", () => {
       result.invalidRows = invalidRows;
       result.rawDecisionMetrics = scoreDecisions(expected, rawPredictions);
       result.hostThresholdMetrics = { ...acceptedCounts, accuracy: allPairs.length ? (acceptedCounts.truePositive + acceptedCounts.trueNegative) / allPairs.length : 0, precision: acceptedPrecision, recall: acceptedRecall, f1: acceptedPrecision + acceptedRecall ? 2 * acceptedPrecision * acceptedRecall / (acceptedPrecision + acceptedRecall) : 0 };
+      result.thresholdSweep = [0.8, 0.9, 0.95].map(threshold => ({ threshold, ...scoreDecisions(expected, predictionsAt(threshold)) }));
+      result.decisionVectorSha256 = digest(allPairs.map(pair => { const row = byKey.get(`${pair.scenarioId}\0${pair.senderId}\0${pair.recipientId}`); return { scenarioId: pair.scenarioId, senderId: pair.senderId, recipientId: pair.recipientId, share: row?.share ?? null, confidence: row?.confidence ?? null }; }));
       result.hostAcceptedEdges = acceptedEdges.length;
       result.hostEdgeList = acceptedEdges;
       result.usage = { inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null, providerReportedCostUsd: Number.isFinite(Number(body?.usage?.cost)) ? Number(body.usage.cost) : null };
       result.outputLogged = false;
       results.push(result);
     }
-    const report = { schemaVersion: 1, kind: "test_only_peer_routing_model_evaluation", sourceProviderCallsAreTestOnly: true, productionDecisionsRoute: "OpenRouter via SystemOneDecisionClient; unchanged", requestCapPerProvider: 1, datasetScenarios: dataset.length, candidatePairs: allPairs.length, hostConfidenceThreshold: 0.8, results, limitations: ["Four small synthetic scenarios with authored binary labels; not representative of user workloads or model-calibrated confidence.", "This calls provider APIs directly as test adapters; it does not exercise the production OpenRouter Decisions endpoint.", "The test applies Naelao's actual host edge validator after the test-only response adapter; worker actions/outcomes and cost savings were not measured.", "Free-tier calls have no trusted billing receipt here; unknown cost remains unknown. Only the first configured key slot is used and quota errors stop the provider evaluation."] };
+    const report = { schemaVersion: 1, kind: "test_only_peer_routing_model_evaluation", labelSetVersion: "v2-adjudicated-after-pilot-2026-11-02", sourceProviderCallsAreTestOnly: true, productionDecisionsRoute: "OpenRouter via SystemOneDecisionClient; unchanged", requestCapPerProvider: 1, datasetScenarios: dataset.length, candidatePairs: allPairs.length, hostConfidenceThreshold: 0.8, results, limitations: ["Four small synthetic scenarios with authored binary labels; two labels were revised after the first pilot because the task wording showed clear reuse utility. The v2 results are exploratory and not an untouched holdout.", "This calls provider APIs directly as test adapters; it does not exercise the production OpenRouter Decisions endpoint.", "The test applies Naelao's actual host edge validator after the test-only response adapter; worker actions/outcomes and cost savings were not measured.", "Free-tier calls have no trusted billing receipt here; unknown cost remains unknown. Only the first configured key slot is used and quota errors stop the provider evaluation."] };
     const path = process.env.NAELAO_PEER_ROUTING_REPORT;
     if (path) await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`peer_routing_model_evaluation=${JSON.stringify(report)}`);
