@@ -42,7 +42,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
-        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -56,7 +56,7 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
@@ -73,7 +73,7 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
         run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -86,7 +86,7 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
@@ -128,8 +128,8 @@ jobs:
           NAELAO_RUN_LIVE_OPENROUTER_DECISIONS: ${{ startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || 'false' }}
           NAELAO_LIVE_OPENROUTER_REPORT: live-openrouter-decisions.json
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
-          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
+          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && 'false' || env.GEMINI_GOAL_CALLS_ALLOWED }}
+          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') && 'false' || env.GROQ_GOAL_CALLS_ALLOWED }}
         run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
       - name: Run test-only peer-routing decision evaluation
         if: ${{ startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
