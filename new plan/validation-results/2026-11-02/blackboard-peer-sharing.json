@@ -35,7 +35,7 @@
     "agents_files": 6,
     "agents_passed": 75,
     "decisions_sdk_files": 1,
-    "decisions_sdk_passed": 30,
+    "decisions_sdk_passed": 32,
     "failed": 0,
     "agents_typecheck": "passed",
     "agent_sdk_typecheck": "passed",

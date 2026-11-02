@@ -39,5 +39,10 @@ describe("host selected task communication", () => {
     expect(mixedEdges).toHaveLength(2);
     expect(mixed[0]?.communication_recipients).toHaveLength(2);
     expect(mixedEdges.length + 9).toBeLessThanOrEqual(12); // The DAG's 12-task ceiling bounds the complete recipient set.
+    const graph: GoalTask[] = Array.from({ length: 12 }, (_, index) => ({ id: `task-${index}`, title: "Task", subtask_spec: "Work", assigned_role: "RESEARCHER", file_paths: [], dependencies: [], budget_tokens: 100 }));
+    const allPairs = graph.flatMap((sender, from) => graph.slice(from + 1).map(recipient => ({ senderId: sender.id, recipientId: recipient.id, confidence: 0.9, provider: "openrouter" as const })));
+    const capped = applyGoalCommunicationEdges(graph, allPairs);
+    expect(capped).toHaveLength(24);
+    expect(graph.every(item => (item.communication_recipients?.length ?? 0) <= 8)).toBe(true);
   });
 });

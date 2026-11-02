@@ -592,13 +592,14 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     if (!Array.isArray(input.tasks) || input.tasks.length > 12) throw new Error("system_one_task_communication_invalid");
     const ids = new Set<string>();
     for (const task of input.tasks) {
-      if (!task || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.id) || ids.has(task.id)
+      if (!task || typeof task.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.id) || ids.has(task.id)
         || typeof task.title !== "string" || task.title.length > 200
         || typeof task.description !== "string" || task.description.length > 2_000
         || (task.dependencies !== undefined && (!Array.isArray(task.dependencies) || task.dependencies.length > 12 || task.dependencies.some((id: unknown) => typeof id !== "string"))))
         throw new Error("system_one_task_communication_invalid");
       ids.add(task.id);
     }
+    if (input.tasks.some(task => (task.dependencies ?? []).some((id: string) => !ids.has(id) || id === task.id))) throw new Error("system_one_task_communication_invalid");
     if (input.tasks.length < 2) return [];
     const position = new Map(input.tasks.map((task, index) => [task.id, index]));
     const hasDependencyPath = (from: string, to: string): boolean => {
