@@ -8,6 +8,15 @@ let leafWorkerRequests = 0;
 let decisionCalls = 0;
 let decisionOutcome: "passed" | "uncertain" = "passed";
 let sharePeerTasks = false;
+let loadTaskCount = 0;
+let loadInferenceDelayMs = 0;
+let activeLoadInferenceRequests = 0;
+let maxLoadInferenceConcurrency = 0;
+let loadInputTokens = 0;
+let loadOutputTokens = 0;
+let loadPathMatchFailures = 0;
+const loadWrittenPaths = new Set<string>();
+const loadRequestTrace: Array<{ ordinal: number; tools: string[]; paths: string[]; selected_path?: string }> = [];
 let decisionGeneration = 0;
 const billingReservations = new Map<string, { tenantId: string; status: "reserved" | "settled" | "uncertain"; runId: string; maxCredits: number }>();
 const billingEvents: Array<{ kind: "reserve" | "settle"; outcome?: string; credits?: number }> = [];
@@ -23,12 +32,24 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/__runtime_ready") return Response.json({ ok: true });
     if (url.pathname === "/__test/configure" && request.method === "POST") {
-      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; spaceAssistantMode?: unknown; decisionOutcome?: unknown; sharePeerTasks?: unknown; resetDecisionTelemetry?: unknown } | null;
+      const body = await request.json().catch(() => null) as { leafWorkerMode?: unknown; dependentTaskMode?: unknown; spaceAssistantMode?: unknown; decisionOutcome?: unknown; sharePeerTasks?: unknown; loadTaskCount?: unknown; loadInferenceDelayMs?: unknown; resetDecisionTelemetry?: unknown } | null;
       leafWorkerMode = body?.leafWorkerMode === true;
+      loadTaskCount = Number.isSafeInteger(body?.loadTaskCount) && Number(body?.loadTaskCount) >= 1 && Number(body?.loadTaskCount) <= 8 ? Number(body?.loadTaskCount) : 0;
+      loadInferenceDelayMs = Number.isSafeInteger(body?.loadInferenceDelayMs) && Number(body?.loadInferenceDelayMs) >= 0 && Number(body?.loadInferenceDelayMs) <= 250 ? Number(body?.loadInferenceDelayMs) : 0;
+      if (loadTaskCount) leafWorkerMode = true;
       dependentTaskMode = leafWorkerMode && body?.dependentTaskMode === true;
       spaceAssistantMode = leafWorkerMode && body?.spaceAssistantMode === true;
       sharePeerTasks = leafWorkerMode && body?.sharePeerTasks === true;
       leafWorkerRequests = 0;
+      if (body?.resetDecisionTelemetry === true) {
+        activeLoadInferenceRequests = 0;
+        maxLoadInferenceConcurrency = 0;
+        loadInputTokens = 0;
+        loadOutputTokens = 0;
+        loadPathMatchFailures = 0;
+        loadWrittenPaths.clear();
+        loadRequestTrace.length = 0;
+      }
       if (body?.decisionOutcome === "passed" || body?.decisionOutcome === "uncertain") decisionOutcome = body.decisionOutcome;
       if (body?.resetDecisionTelemetry === true) {
         decisionCalls = 0;
@@ -42,7 +63,11 @@ export default {
       return Response.json({ ok: true });
     }
     if (url.pathname === "/__test/metrics" && request.method === "GET") {
-      return Response.json({ totalRequests, modelCounts: Object.fromEntries(modelCounts), requests: requestMetrics.slice(-20), decisions: { calls: decisionCalls, billingEvents: billingEvents.slice(), timeline: decisionTimeline.slice() }, llmUsage: {
+      const decisionReservationStatuses = [...billingReservations.values()].reduce<Record<string, number>>((counts, reservation) => {
+        counts[reservation.status] = (counts[reservation.status] ?? 0) + 1;
+        return counts;
+      }, {});
+      return Response.json({ totalRequests, modelCounts: Object.fromEntries(modelCounts), requests: requestMetrics.slice(-20), load: { configured_task_count: loadTaskCount, inference_delay_ms: loadInferenceDelayMs, max_concurrent_inference_requests: maxLoadInferenceConcurrency, input_tokens_reported: loadInputTokens, output_tokens_reported: loadOutputTokens, path_match_failures: loadPathMatchFailures, request_trace: loadRequestTrace.slice() }, decisions: { calls: decisionCalls, billingEvents: billingEvents.slice(), reservation_status_counts: decisionReservationStatuses, timeline: decisionTimeline.slice() }, llmUsage: {
         reservations: [...llmTokenReservations.values()].map(({ tenantId: _tenantId, ...row }) => row),
         settlements: [...llmTokenSettlements.entries()].map(([runId, settlement]) => ({ runId, ...settlement })),
       } });
@@ -169,6 +194,69 @@ export default {
       tool_names: tools.flatMap((tool) => tool && typeof tool === "object" && typeof (tool as Record<string, unknown>).name === "string" ? [(tool as Record<string, unknown>).name as string] : []),
       content_chars: messages.reduce((total, message) => total + (message && typeof message === "object" && typeof (message as Record<string, unknown>).content === "string" ? ((message as Record<string, unknown>).content as string).length : 0), 0),
     });
+    if (loadTaskCount > 0) {
+      activeLoadInferenceRequests++;
+      maxLoadInferenceConcurrency = Math.max(maxLoadInferenceConcurrency, activeLoadInferenceRequests);
+      if (loadInferenceDelayMs) await new Promise(resolve => setTimeout(resolve, loadInferenceDelayMs));
+      activeLoadInferenceRequests--;
+      const ordinal = ++leafWorkerRequests;
+      if (ordinal === 1) {
+        const tasks = Array.from({ length: loadTaskCount }, (_, index) => {
+          const taskId = `load-task-${index + 1}`;
+          const artifactPath = `reports/${taskId}.txt`;
+          return {
+            id: taskId,
+            title: `Write the bounded load artifact ${index + 1}`,
+            subtask_spec: `Create ${artifactPath} in the assigned worker branch with the exact content: local load task ${index + 1} completed. Do not use external services.`,
+            assigned_role: "DEV_OPERATOR",
+            acceptance_criteria: [`${artifactPath} exists in its assigned worker branch`],
+            evidence_checks: [{ criterion: `${artifactPath} exists in its assigned worker branch`, operation: `workspace.exists:${artifactPath}` }],
+            file_paths: [artifactPath],
+            budget_tokens: 12_000,
+          };
+        });
+        const plan = { objective: "Run bounded independent workers to measure local end-to-end load and metering", tasks };
+        loadInputTokens += 120;
+        loadOutputTokens += 40;
+        return Response.json({
+          id: `local-load-${totalRequests}`, model,
+          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Bash", params: { command: `naelao goal plan --json '${JSON.stringify(plan)}'`, doing: "Plan a bounded local load experiment" } }) }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 120, completion_tokens: 40, total_tokens: 160 },
+        });
+      }
+      const combined = messages.map(message => message && typeof message === "object" ? JSON.stringify(message) : "").join("\n");
+      const paths = [...new Set([...combined.matchAll(/reports\/load-task-[1-8]\.txt/g)].map(match => match[0]))];
+      // Prompts can contain both the current task and already-completed sibling
+      // summaries. Select the first path not yet written in its isolated branch.
+      const artifactPath = paths.find(path => !loadWrittenPaths.has(path));
+      const toolNames = tools.flatMap(tool => tool && typeof tool === "object" ? [
+        ...("name" in tool && typeof (tool as Record<string, unknown>).name === "string" ? [(tool as Record<string, unknown>).name as string] : []),
+        ...("function" in tool && tool.function && typeof tool.function === "object" && "name" in tool.function && typeof tool.function.name === "string" ? [tool.function.name] : []),
+      ] : []);
+      loadRequestTrace.push({ ordinal, tools: toolNames.slice(0, 20), paths, ...(artifactPath ? { selected_path: artifactPath } : {}) });
+      if (!artifactPath) {
+        if (paths.length === 0) loadPathMatchFailures++;
+        loadInputTokens += 48;
+        loadOutputTokens += 16;
+        return Response.json({
+          id: `local-load-${totalRequests}`, model,
+          choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "answer", text: paths.length ? "All assigned local load artifacts were written." : "Load worker task path was not present in its assigned task." }) }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 48, completion_tokens: 16, total_tokens: 64 },
+        });
+      }
+      // Model requests from concurrent workers are interleaved. Key fixture progress
+      // by task artifact instead of request ordinal so one worker's turns cannot
+      // consume another worker's planned write, and retries cannot repeat a write.
+      loadWrittenPaths.add(artifactPath);
+      loadInputTokens += 80;
+      loadOutputTokens += 24;
+      const taskNumber = artifactPath.match(/load-task-(\d+)/)?.[1] ?? "unknown";
+      return Response.json({
+        id: `local-load-${totalRequests}`, model,
+        choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify({ action: "run", name: "Write", params: { path: artifactPath, content: `local load task ${taskNumber} completed\n`, expectedHash: null }, doing: "Write the isolated worker artifact" }) }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 80, completion_tokens: 24, total_tokens: 104 },
+      });
+    }
     if (leafWorkerMode) {
       const ordinal = ++leafWorkerRequests;
       if (ordinal === 1) {

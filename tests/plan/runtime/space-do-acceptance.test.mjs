@@ -847,6 +847,108 @@ test("metered Decisions peer routing grants a finding, wakes an independent work
   };
 });
 
+test("bounded end-to-end task load records verified completion, concurrency, and synthetic metering", async () => {
+  const scenarios = [];
+  const sampleCount = 3;
+  const inferenceDelayMs = 25;
+  for (const taskCount of [1, 2, 3, 6]) {
+    const runs = [];
+    for (let sample = 0; sample < sampleCount; sample++) {
+      const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", {
+        name: `Local end-to-end load ${taskCount} workers sample ${sample + 1}`,
+      });
+      const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ loadTaskCount: taskCount, loadInferenceDelayMs: inferenceDelayMs, decisionOutcome: "passed", resetDecisionTelemetry: true }),
+      });
+      assert.equal(configure.status, 200, await configure.clone().text());
+      const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+      const started = performance.now();
+      const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", { projectId: project.id, mockModelRun: true }, 180_000);
+      const durationMs = Math.round(performance.now() - started);
+      const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
+      const tasks = result.goalActivity?.goals?.[0]?.tasks ?? [];
+      assert.equal(result.wake.status, "completed", JSON.stringify({ taskCount, wake: result.wake, tasks, load: after.load, dispatch: result.dispatchResponses }));
+      assert.equal(tasks.length, taskCount, JSON.stringify({ taskCount, tasks }));
+      assert.ok(tasks.every(task => task.status === "completed" && task.verification?.outcome === "passed"), JSON.stringify({ taskCount, tasks }));
+      const modelRequestCount = after.totalRequests - before.totalRequests;
+      // The Project Bot may take more than one semantic turn around task dispatch
+      // and workers may need a final answer turn after writing. Capture that real
+      // count instead of assuming one request per task plus one planner request.
+      assert.ok(modelRequestCount >= taskCount + 1 && modelRequestCount <= taskCount * 4 + 4,
+        JSON.stringify({ taskCount, modelRequestCount, requests: after.requests }));
+      assert.equal(after.load.path_match_failures, 0, JSON.stringify(after.load));
+      assert.ok(after.load.max_concurrent_inference_requests <= 3, JSON.stringify({ taskCount, load: after.load }));
+      assert.equal(after.decisions.calls, taskCount, JSON.stringify(after.decisions));
+      const reserveCount = after.decisions.billingEvents.filter(event => event.kind === "reserve").length;
+      const settlementEvents = after.decisions.billingEvents.filter(event => event.kind === "settle");
+      assert.ok(reserveCount >= taskCount && settlementEvents.length === reserveCount, JSON.stringify(after.decisions.billingEvents));
+      assert.ok(settlementEvents.every(event => event.outcome === "confirmed" || event.outcome === "uncertain"), JSON.stringify(after.decisions.billingEvents));
+      assert.ok(settlementEvents.filter(event => event.outcome === "confirmed").length >= taskCount, JSON.stringify(after.decisions.billingEvents));
+      const syntheticModelTokens = after.load.input_tokens_reported + after.load.output_tokens_reported;
+      assert.ok(syntheticModelTokens > 0, JSON.stringify(after.load));
+      const workerEvents = tasks.flatMap(task => [
+        { at: task.runtime?.startedAt, delta: 1 },
+        { at: task.runtime?.completedAt, delta: -1 },
+      ]).filter(event => Number.isFinite(event.at)).sort((a, b) => a.at - b.at || a.delta - b.delta);
+      let activeWorkers = 0;
+      let maxConcurrentWorkers = 0;
+      for (const event of workerEvents) {
+        activeWorkers += event.delta;
+        maxConcurrentWorkers = Math.max(maxConcurrentWorkers, activeWorkers);
+      }
+      const run = {
+        requested_workers: taskCount,
+        completed_and_verified_workers: tasks.filter(task => task.status === "completed" && task.verification?.outcome === "passed").length,
+        duration_ms: durationMs,
+        model_requests: modelRequestCount,
+        model_input_tokens_reported_by_synthetic_gateway: after.load.input_tokens_reported,
+        model_output_tokens_reported_by_synthetic_gateway: after.load.output_tokens_reported,
+        model_tokens_per_verified_task: Number((syntheticModelTokens / taskCount).toFixed(2)),
+        max_concurrent_worker_tasks: maxConcurrentWorkers,
+        decisions_requests: after.decisions.calls,
+        decisions_reservations: reserveCount,
+        decisions_confirmed_settlements: settlementEvents.filter(event => event.outcome === "confirmed").length,
+        decisions_uncertain_settlements: settlementEvents.filter(event => event.outcome === "uncertain").length,
+        decision_reservations_still_uncertain: after.decisions.reservation_status_counts.uncertain ?? 0,
+        decision_reservations_still_reserved: after.decisions.reservation_status_counts.reserved ?? 0,
+        synthetic_decision_credits: settlementEvents.reduce((sum, event) => sum + (event.credits ?? 0), 0),
+        max_concurrent_model_requests: after.load.max_concurrent_inference_requests,
+        controlled_model_response_delay_ms: inferenceDelayMs,
+        provider_cost_usd: null,
+        provider_cost_note: "No external provider was called; local synthetic model and billing endpoints do not establish cash cost.",
+      };
+      runs.push(run);
+    }
+    const durations = runs.map(run => run.duration_ms).sort((a, b) => a - b);
+    scenarios.push({
+      workers_per_goal: taskCount,
+      repetitions: sampleCount,
+      verified_completion_rate: runs.reduce((sum, run) => sum + run.completed_and_verified_workers, 0) / (taskCount * sampleCount),
+      end_to_end_p50_ms: durations[Math.floor(durations.length / 2)] ?? 0,
+      end_to_end_max_ms: durations.at(-1) ?? 0,
+      max_observed_concurrent_worker_tasks: Math.max(...runs.map(run => run.max_concurrent_worker_tasks)),
+      max_observed_model_request_concurrency: Math.max(...runs.map(run => run.max_concurrent_model_requests)),
+      model_tokens_per_verified_task_mean: Number((runs.reduce((sum, run) => sum + run.model_tokens_per_verified_task, 0) / sampleCount).toFixed(2)),
+      model_tokens_reported_mean: Number((runs.reduce((sum, run) => sum + run.model_input_tokens_reported_by_synthetic_gateway + run.model_output_tokens_reported_by_synthetic_gateway, 0) / sampleCount).toFixed(2)),
+      decisions_reservations: runs.reduce((sum, run) => sum + run.decisions_reservations, 0),
+      decisions_uncertain_settlements: runs.reduce((sum, run) => sum + run.decisions_uncertain_settlements, 0),
+      final_uncertain_reservations: runs.reduce((sum, run) => sum + run.decision_reservations_still_uncertain, 0),
+      final_reserved_reservations: runs.reduce((sum, run) => sum + run.decision_reservations_still_reserved, 0),
+      synthetic_decision_credits: runs.reduce((sum, run) => sum + run.synthetic_decision_credits, 0),
+      provider_cost_usd: null,
+      runs,
+    });
+  }
+  metrics.benchmarks.push({
+    name: "end-to-end-local-task-load-and-metering",
+    evidence_class: "four-worker-local-wrangler-real-d1-durable-objects-r2-with-synthetic-model-and-billing",
+    model_response_delay_ms: inferenceDelayMs,
+    scenarios,
+    note: "Each DAG uses the real Project Bot wake, planner/worker dispatch, Durable Object queue, host evidence verification, and local synthetic billing endpoints. The model gateway adds a fixed 25 ms delay to requests. Three repetitions per size are descriptive only: observed worker and model request concurrency remained 1, so this measures serialized throughput, not parallel or high-volume capacity. Model tokens and decision credits are synthetic fixture usage; no external provider or production billing service is contacted, and provider cash cost is unknown, not zero.",
+  });
+});
+
 test("1, 2, 8, and 32 concurrent wake sweepers claim each Project Bot event exactly once", async () => {
   const contention = [];
   for (const contenders of [1, 2, 8, 32]) {
