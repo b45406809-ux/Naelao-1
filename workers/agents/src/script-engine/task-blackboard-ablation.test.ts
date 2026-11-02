@@ -461,7 +461,7 @@ describe("task blackboard ablation experiment", () => {
         tokenUnits: "estimated as ceil(UTF-8 JSON bytes / 4), not provider tokenizer counts",
         modelCalls: "synthetic worker invocations, one per task; no external model provider was called",
         cost: "null because there are no provider billing receipts; synthetic deterministic execution is not a cash-cost benchmark",
-        verifiedCompletion: "each task result checked by GoalDagHost.verify against a fixed expected fixture value",
+        verifiedCompletion: "each task result checked by an injected deterministic Goal DAG verifier callback against a fixed expected fixture value",
       },
       limitations: [
         "This exercises the actual Goal DAG scheduling, message creation, recipient visibility, and host verification with deterministic fixture workers; it does not use live Gemini, GroqCloud, or OpenRouter worker models.",

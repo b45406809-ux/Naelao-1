@@ -10,6 +10,10 @@ const PROVIDER_TIMEOUT_MS = 15_000;
 const expectedAnswer = "17.25 percent";
 const sourceFixture = "tariff_schedule.csv: commodity=industrial-pump; duty_rate=17.25 percent";
 
+function verifiesExpectedRate(answer: string): boolean {
+  return /^(?:17\.25|17\.250)\s*(?:percent|%)\.?$/i.test(answer.trim());
+}
+
 type Provider = "gemini" | "groqcloud";
 type ProviderResponse = { text: string; model: string; latencyMs: number; inputTokens: number | null; outputTokens: number | null; reportedCostUsd: number | null };
 
@@ -48,7 +52,12 @@ async function requestProvider(provider: Provider, model: string, key: string, p
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
           body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_completion_tokens: 256, reasoning_effort: "low", response_format: { type: "json_object" } }),
         });
-    if (!response.ok) throw new Error(response.status === 429 ? "quota_or_rate_limited" : response.status === 413 ? "request_too_large" : response.status === 401 || response.status === 403 ? "credential_or_access_denied" : `provider_http_${response.status}`);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null) as { error?: { code?: unknown; type?: unknown } } | null;
+      const safeCode = [errorBody?.error?.code, errorBody?.error?.type]
+        .find(value => typeof value === "string" && /^[a-z0-9_-]{1,48}$/i.test(value));
+      throw new Error(response.status === 429 ? "quota_or_rate_limited" : response.status === 413 ? "request_too_large" : response.status === 401 || response.status === 403 ? "credential_or_access_denied" : `provider_http_${response.status}${safeCode ? `_${safeCode}` : ""}`);
+    }
     const body = await response.json() as Record<string, any>;
     const content = gemini
       ? body.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("")
@@ -99,7 +108,7 @@ async function executeArm(provider: Provider, model: string, key: string, mode: 
     recover: async () => undefined,
     verify: async (_task, workerResult) => {
       const answer = typeof workerResult.output === "string" ? workerResult.output : "";
-      const passed = /17(?:\.25|\.3|\.250)?\s*(?:percent|%)/i.test(answer);
+      const passed = verifiesExpectedRate(answer);
       return { outcome: passed ? "passed" : "failed", reason: passed ? "Output includes the expected tariff rate." : "Output did not include the expected tariff rate." };
     },
     launch: async (task, workerId): Promise<GoalWorkerResult> => {
@@ -164,6 +173,15 @@ async function executeArm(provider: Provider, model: string, key: string, mode: 
 }
 
 describe("test-only live provider blackboard outcome comparison", () => {
+  it("accepts only the exact tariff rate, not nearby values or negated claims", () => {
+    expect(verifiesExpectedRate("17.25 percent")).toBe(true);
+    expect(verifiesExpectedRate("17.250%")).toBe(true);
+    expect(verifiesExpectedRate("17.3 percent")).toBe(false);
+    expect(verifiesExpectedRate("17 percent")).toBe(false);
+    expect(verifiesExpectedRate("not 17.25 percent")).toBe(false);
+    expect(verifiesExpectedRate("The duty rate is 17.25 percent.")).toBe(false);
+  });
+
   it("parses provider usage and fails closed on quota errors without logging response bodies", async () => {
     try {
       vi.stubGlobal("fetch", async () => Response.json({
@@ -174,6 +192,8 @@ describe("test-only live provider blackboard outcome comparison", () => {
       expect(parsed).toMatchObject({ text: expectedAnswer, model: "test-model", inputTokens: 31, outputTokens: 7, reportedCostUsd: null });
       vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ secret: "provider response body must not be retained" }), { status: 429 }));
       await expect(requestProvider("gemini", "test-model", "test-key", "synthetic prompt")).rejects.toThrow("quota_or_rate_limited");
+      vi.stubGlobal("fetch", async () => Response.json({ error: { code: "unsupported_value", message: "Do not retain this message." } }, { status: 400 }));
+      await expect(requestProvider("gemini", "test-model", "test-key", "synthetic prompt")).rejects.toThrow("provider_http_400_unsupported_value");
     } finally { vi.unstubAllGlobals(); }
   });
 
