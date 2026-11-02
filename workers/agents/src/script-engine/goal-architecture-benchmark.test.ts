@@ -29,12 +29,17 @@ function fingerprintPlan(tasks: Array<Pick<GoalTask, "id" | "title" | "subtask_s
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 16);
 }
 
-function measureRepeatability(objectiveIds: string[], cases: Array<{ id: string; repeat?: number; planFingerprint?: string }>, repeats: number) {
+function fingerprintPlanTopology(tasks: GoalTask[]) {
+  const dependencyCounts = tasks.map(item => item.dependencies?.length ?? 0).sort((a, b) => a - b);
+  return createHash("sha256").update(JSON.stringify({ taskCount: tasks.length, dependencyCounts })).digest("hex").slice(0, 16);
+}
+
+function measureSignatureStability(objectiveIds: string[], cases: Array<Record<string, unknown>>, repeats: number, signatureKey: string) {
   const byObjective = objectiveIds.map(id => {
-    const runs = cases.filter(item => item.id === id && item.planFingerprint);
+    const runs = cases.filter(item => item.id === id && typeof item[signatureKey] === "string");
     const complete = runs.length === repeats;
-    const distinctFingerprints = new Set(runs.map(item => item.planFingerprint)).size;
-    return { id, complete, runs: runs.length, distinctFingerprints, stable: complete && distinctFingerprints === 1 };
+    const distinctSignatures = new Set(runs.map(item => item[signatureKey])).size;
+    return { id, complete, runs: runs.length, distinctSignatures, stable: complete && distinctSignatures === 1 };
   });
   const completeObjectives = byObjective.filter(item => item.complete).length;
   const stableObjectives = byObjective.filter(item => item.stable).length;
@@ -44,7 +49,7 @@ function measureRepeatability(objectiveIds: string[], cases: Array<{ id: string;
     expectedRuns: objectiveIds.length * repeats,
     completedObjectives: completeObjectives,
     stableObjectives,
-    exactStabilityRate: completeObjectives === objectiveIds.length && objectiveIds.length > 0 ? stableObjectives / objectiveIds.length : null,
+    stabilityRate: completeObjectives === objectiveIds.length && objectiveIds.length > 0 ? stableObjectives / objectiveIds.length : null,
     byObjective,
   };
 }
@@ -268,14 +273,14 @@ describe("goal architecture benchmark", () => {
   });
 
   it("measures exact plan repeatability only when every requested repeat returned a valid graph", () => {
-    expect(measureRepeatability(["stable", "changed", "missing"], [
-      { id: "stable", repeat: 1, planFingerprint: "same" }, { id: "stable", repeat: 2, planFingerprint: "same" },
-      { id: "changed", repeat: 1, planFingerprint: "one" }, { id: "changed", repeat: 2, planFingerprint: "two" },
-      { id: "missing", repeat: 1, planFingerprint: "one" },
-    ], 2)).toMatchObject({ objectives: 3, repeatsPerObjective: 2, expectedRuns: 6, completedObjectives: 2, stableObjectives: 1, exactStabilityRate: null });
-    expect(measureRepeatability(["stable"], [
-      { id: "stable", repeat: 1, planFingerprint: "same" }, { id: "stable", repeat: 2, planFingerprint: "same" },
-    ], 2).exactStabilityRate).toBe(1);
+    expect(measureSignatureStability(["stable", "changed", "missing"], [
+      { id: "stable", exact: "same" }, { id: "stable", exact: "same" },
+      { id: "changed", exact: "one" }, { id: "changed", exact: "two" },
+      { id: "missing", exact: "one" },
+    ], 2, "exact")).toMatchObject({ objectives: 3, repeatsPerObjective: 2, expectedRuns: 6, completedObjectives: 2, stableObjectives: 1, stabilityRate: null });
+    expect(measureSignatureStability(["stable"], [
+      { id: "stable", exact: "same" }, { id: "stable", exact: "same" },
+    ], 2, "exact").stabilityRate).toBe(1);
   });
 
   it("measures verified completion, failure containment, recovery and dispatch isolation", async () => {
@@ -457,6 +462,8 @@ describe("goal architecture benchmark", () => {
         providerResult.validGraphs = Number(providerResult.validGraphs) + 1;
         const rubric = scorePlanRubric(tasks, objective.rubric);
         const planFingerprint = fingerprintPlan(tasks);
+        const topologyFingerprint = fingerprintPlanTopology(tasks);
+        const rubricOutcomeFingerprint = createHash("sha256").update(JSON.stringify([...rubric.missing].sort())).digest("hex").slice(0, 16);
         providerResult.satisfiedRubricCriteria = Number(providerResult.satisfiedRubricCriteria ?? 0) + rubric.satisfied;
         providerResult.requiredRubricCriteria = Number(providerResult.requiredRubricCriteria ?? 0) + rubric.required;
         const workspace = new Set<string>();
@@ -484,7 +491,7 @@ describe("goal architecture benchmark", () => {
         const executionMs = Number((performance.now() - executeStarted).toFixed(1));
         const verified = tasks.every(item => execution.tasks[item.id]?.status === "completed" && execution.tasks[item.id]?.verification?.outcome === "passed");
         if (verified) providerResult.verifiedFixtureRuns = Number(providerResult.verifiedFixtureRuns) + 1;
-        cases.push({ id: objective.id, repeat, planFingerprint, state: verified ? "plan_graph_host_verified" : "execution_not_verified", attempted: true, validPlan: true, validGraph: true, taskCount: tasks.length, dependencyEdges: tasks.reduce((sum, item) => sum + (item.dependencies?.length ?? 0), 0), semanticRubric: rubric, planLatencyMs: latencyMs, fixtureExecutionMs: executionMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
+        cases.push({ id: objective.id, repeat, planFingerprint, topologyFingerprint, rubricOutcomeFingerprint, state: verified ? "plan_graph_host_verified" : "execution_not_verified", attempted: true, validPlan: true, validGraph: true, taskCount: tasks.length, dependencyEdges: tasks.reduce((sum, item) => sum + (item.dependencies?.length ?? 0), 0), semanticRubric: rubric, planLatencyMs: latencyMs, fixtureExecutionMs: executionMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
       }
       const completedCases = cases.filter(item => item.state === "plan_graph_host_verified");
       const heldoutCases = cases.filter(item => heldoutIds.has(String(item.id)));
@@ -508,7 +515,11 @@ describe("goal architecture benchmark", () => {
           rubricRequired: heldoutRubricCases.reduce((sum, item) => sum + item.required, 0),
           rubricCoverage: heldoutRubricCases.reduce((sum, item) => sum + item.required, 0) ? heldoutRubricCases.reduce((sum, item) => sum + item.satisfied, 0) / heldoutRubricCases.reduce((sum, item) => sum + item.required, 0) : null,
         },
-        repeatability: holdoutOnly || repeatCount > 1 ? measureRepeatability([...heldoutIds], cases as Array<{ id: string; repeat?: number; planFingerprint?: string }>, repeatCount) : undefined,
+        repeatability: holdoutOnly || repeatCount > 1 ? {
+          exactPlan: measureSignatureStability([...heldoutIds], cases, repeatCount, "planFingerprint"),
+          coarseTopology: measureSignatureStability([...heldoutIds], cases, repeatCount, "topologyFingerprint"),
+          rubricOutcome: measureSignatureStability([...heldoutIds], cases, repeatCount, "rubricOutcomeFingerprint"),
+        } : undefined,
         planLatencyP50Ms: summaryPercentile(planLatencies, 0.5), planLatencyP95Ms: summaryPercentile(planLatencies, 0.95),
         fixtureExecutionLatencyP50Ms: summaryPercentile(executionLatencies, 0.5), fixtureExecutionLatencyP95Ms: summaryPercentile(executionLatencies, 0.95),
         inputTokens: cases.reduce((sum, item) => sum + (Number(item.inputTokens) || 0), 0),
