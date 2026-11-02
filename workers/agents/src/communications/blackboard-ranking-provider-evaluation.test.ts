@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { PrebuiltOpContext } from "../script-engine/prebuilt/index.js";
 import { spaceBlackboard } from "../script-engine/prebuilt/space-blackboard.js";
@@ -25,8 +26,12 @@ import {
 } from "./blackboard-ranking-provider-evaluation.js";
 
 const LIVE_ENABLED = process.env.NAELAO_RUN_LIVE_BLACKBOARD_RANKING === "true";
+const REPEATABILITY_ENABLED =
+  process.env.NAELAO_RUN_LIVE_BLACKBOARD_REPEATABILITY === "true";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const PROVIDER_TIMEOUT_MS = 20_000;
+const REPEATABILITY_REPEATS = 3;
+const REPEATABILITY_MAX_OUTPUT_TOKENS = 4096;
 const QUERIES_PER_PROVIDER_REQUEST = 2;
 const MAX_PROVIDER_REQUESTS = 16;
 const HARD_RANKING_QUERIES = blackboardRankingQueries.filter(
@@ -66,7 +71,8 @@ async function requestModelScores(
   provider: "gemini" | "groqcloud",
   queries: readonly (typeof blackboardRankingQueries)[number][],
   onRequestAttempt: () => void,
-  allVisibleCards = false
+  allVisibleCards = false,
+  maxOutputTokens = 2048
 ): Promise<{
   model: string;
   latencyMs: number;
@@ -125,7 +131,7 @@ async function requestModelScores(
                 body: JSON.stringify({
                   contents: [{ parts: [{ text: prompt }] }],
                   generationConfig: {
-                    maxOutputTokens: 2048,
+                    maxOutputTokens,
                     temperature: 0,
                     responseMimeType: "application/json",
                   },
@@ -142,7 +148,7 @@ async function requestModelScores(
               body: JSON.stringify({
                 model,
                 messages: [{ role: "user", content: prompt }],
-                max_completion_tokens: 2048,
+                max_completion_tokens: maxOutputTokens,
                 reasoning_effort: "low",
                 response_format: { type: "json_object" },
               }),
@@ -462,6 +468,72 @@ async function writeLiveReport(report: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
 }
 
+async function writeRepeatabilityReport(report: unknown): Promise<void> {
+  const path = process.env.NAELAO_BLACKBOARD_REPEATABILITY_REPORT;
+  if (!path) return;
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
+}
+
+function compareRepeatedScores(
+  runs: readonly ReturnType<typeof parseBlackboardRankingScores>[]
+) {
+  const valid = runs.map((scores) => new Map(
+    scores.map((query) => [
+      query.queryId,
+      new Map(query.scores.map(({ projectId, relevance }) => [projectId, relevance])),
+    ])
+  ));
+  const pairCount = valid.length * (valid.length - 1) / 2;
+  let comparableScoreCells = 0;
+  let exactScoreMatches = 0;
+  let comparableTopFive = 0;
+  let exactTopFiveMatches = 0;
+  const queryIds = HOLDOUT_RANKING_QUERIES.map(({ id }) => id);
+  const projectIds = blackboardRankingCards.map(({ projectId }) => projectId);
+  for (let leftIndex = 0; leftIndex < valid.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < valid.length; rightIndex++) {
+      const left = valid[leftIndex];
+      const right = valid[rightIndex];
+      if (!left || !right) continue;
+      for (const queryId of queryIds) {
+        const leftScores = left.get(queryId);
+        const rightScores = right.get(queryId);
+        if (!leftScores || !rightScores) continue;
+        for (const projectId of projectIds) {
+          const a = leftScores.get(projectId);
+          const b = rightScores.get(projectId);
+          if (a === undefined || b === undefined) continue;
+          comparableScoreCells++;
+          if (a === b) exactScoreMatches++;
+        }
+        const query = HOLDOUT_RANKING_QUERIES.find(({ id }) => id === queryId);
+        if (!query) continue;
+        const leftTopFive = rerankAllVisibleBlackboardCards(
+          query.query, blackboardRankingCards, leftScores
+        ).slice(0, 5);
+        const rightTopFive = rerankAllVisibleBlackboardCards(
+          query.query, blackboardRankingCards, rightScores
+        ).slice(0, 5);
+        comparableTopFive++;
+        if (leftTopFive.join("\0") === rightTopFive.join("\0")) exactTopFiveMatches++;
+      }
+    }
+  }
+  return {
+    validRepeats: valid.length,
+    repeatPairs: pairCount,
+    scoreCellsCompared: comparableScoreCells,
+    exactScoreAgreement: comparableScoreCells ? exactScoreMatches / comparableScoreCells : null,
+    topFiveOrdersCompared: comparableTopFive,
+    exactTopFiveOrderAgreement: comparableTopFive ? exactTopFiveMatches / comparableTopFive : null,
+    completeScoreVectors: valid.map((run) => createHash("sha256").update(JSON.stringify(
+      queryIds.map((queryId) => projectIds.map((projectId) => run.get(queryId)?.get(projectId) ?? null))
+    )).digest("hex")),
+  };
+}
+
 describe("blackboard provider ranking evaluation harness", () => {
   it("keeps the combined hard-query and holdout run inside the provider request budget", () => {
     expect(HARD_RANKING_QUERIES).toHaveLength(12);
@@ -470,6 +542,25 @@ describe("blackboard provider ranking evaluation harness", () => {
     expect(
       Math.ceil(LIVE_RANKING_QUERIES.length / QUERIES_PER_PROVIDER_REQUEST)
     ).toBeLessThanOrEqual(MAX_PROVIDER_REQUESTS);
+  });
+
+  it("computes repeatability over every holdout query and visible card", () => {
+    const makeRun = (reverse = false) => HOLDOUT_RANKING_QUERIES.map((query) => ({
+      queryId: query.id,
+      scores: blackboardRankingCards.map((card) => ({
+        projectId: card.projectId,
+        relevance: (reverse
+          ? query.relevantProjectIds.includes(card.projectId) ? 0 : 2
+          : query.relevantProjectIds.includes(card.projectId) ? 2 : 0) as 0 | 2,
+      })),
+    }));
+    const identical = compareRepeatedScores([makeRun(), makeRun()]);
+    expect(identical.scoreCellsCompared).toBe(16 * 16);
+    expect(identical.exactScoreAgreement).toBe(1);
+    expect(identical.exactTopFiveOrderAgreement).toBe(1);
+    const divergent = compareRepeatedScores([makeRun(), makeRun(true)]);
+    expect(divergent.exactScoreAgreement).toBe(0);
+    expect(divergent.completeScoreVectors[0]).not.toBe(divergent.completeScoreVectors[1]);
   });
 
   it("evaluates completed holdout queries when later requests are unavailable", async () => {
@@ -999,5 +1090,114 @@ describe("blackboard provider ranking evaluation harness", () => {
       expect(results).toHaveLength(2);
     },
     720_000
+  );
+
+  it.skipIf(!REPEATABILITY_ENABLED)(
+    "measures repeated Gemini and GroqCloud rankings on the full query-wording holdout",
+    async () => {
+      const providers = ["gemini", "groqcloud"] as const;
+      const providerResults: Array<Record<string, unknown>> = [];
+      const expected = getBlackboardPromptCandidateSets(
+        blackboardRankingCards,
+        HOLDOUT_RANKING_QUERIES,
+        { allVisibleCards: true }
+      );
+      for (const provider of providers) {
+        let attempts = 0;
+        const responses: Awaited<ReturnType<typeof requestModelScores>>[] = [];
+        const runs: ReturnType<typeof parseBlackboardRankingScores>[] = [];
+        const enabled = process.env[
+          `${provider === "gemini" ? "GEMINI" : "GROQ"}_FREE_TIER_CONFIRMED`
+        ] === "true";
+        const result: Record<string, unknown> = {
+          provider,
+          state: "blocked",
+          maxRequests: REPEATABILITY_REPEATS,
+          repeatsRequested: REPEATABILITY_REPEATS,
+          labelsIndependentlyAdjudicated: false,
+        };
+        if (!enabled) {
+          result.reason = "free_tier_not_confirmed";
+          providerResults.push(result);
+          continue;
+        }
+        for (let repeat = 0; repeat < REPEATABILITY_REPEATS; repeat++) {
+          try {
+            const response = await requestModelScores(
+              provider,
+              HOLDOUT_RANKING_QUERIES,
+              () => {
+                if (attempts >= REPEATABILITY_REPEATS)
+                  throw new Error("blackboard_repeatability_request_budget_exhausted");
+                attempts++;
+              },
+              true,
+              REPEATABILITY_MAX_OUTPUT_TOKENS
+            );
+            const parsed = restoreBlackboardRankingScoreIds(
+              parseBlackboardRankingScores(response.raw, expected),
+              blackboardRankingCards,
+              HOLDOUT_RANKING_QUERIES
+            );
+            responses.push(response);
+            runs.push(parsed);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "provider_evaluation_failed";
+            result.reason = message.slice(0, 100);
+            result.state = message.startsWith("quota_or_rate_limited")
+              ? runs.length ? "partial_stopped_on_quota" : "stopped_on_quota"
+              : runs.length ? "partial" : attempts ? "failed" : "blocked";
+            break;
+          }
+        }
+        if (runs.length) {
+          const consistency = compareRepeatedScores(runs);
+          const metrics = runs.map((scores) => ({
+            completedQueries: scores.length,
+            ranking: evaluateAllVisibleReranker(scores, HOLDOUT_RANKING_QUERIES).candidate,
+          }));
+          result.model = responses[0]?.model ?? null;
+          result.state = runs.length === REPEATABILITY_REPEATS ? "completed" : result.state;
+          result.inferenceRequests = attempts;
+          result.validRepeats = runs.length;
+          result.latencyMs = responses.map(({ latencyMs }) => latencyMs);
+          result.latencyP50Ms = percentile(responses.map(({ latencyMs }) => latencyMs), 0.5);
+          result.latencyP95Ms = percentile(responses.map(({ latencyMs }) => latencyMs), 0.95);
+          result.inputTokens = responses.reduce((sum, item) => sum + (item.inputTokens ?? 0), 0);
+          result.outputTokens = responses.reduce((sum, item) => sum + (item.outputTokens ?? 0), 0);
+          result.keySlots = [...new Set(responses.map(({ keySlot }) => keySlot))];
+          result.providerReportedCostUsd = null;
+          result.metricsByRepeat = metrics;
+          result.consistency = consistency;
+        } else {
+          result.inferenceRequests = attempts;
+          result.providerResponseLogged = false;
+        }
+        providerResults.push(result);
+      }
+      const report = {
+        schemaVersion: 1,
+        kind: "test_only_blackboard_ranking_repeatability",
+        productionRouting: "OpenRouter unchanged",
+        dataset: "16 separately-authored synthetic holdout queries x 16 synthetic cards",
+        labelSource: "authored synthetic relevance labels; not independently adjudicated",
+        queryCount: HOLDOUT_RANKING_QUERIES.length,
+        cardCount: blackboardRankingCards.length,
+        candidateScoresPerRepeat: HOLDOUT_RANKING_QUERIES.length * blackboardRankingCards.length,
+        repeatCapPerProvider: REPEATABILITY_REPEATS,
+        maxOutputTokensPerRequest: REPEATABILITY_MAX_OUTPUT_TOKENS,
+        providers: providerResults,
+        limitations: [
+          "Agreement measures provider repeatability, not correctness or calibration; labels have not been independently adjudicated.",
+          "Direct Gemini and GroqCloud calls are test-only and do not evaluate or replace production OpenRouter routing.",
+          "Free-tier billing is not independently confirmed by this harness; cost is unknown without provider billing receipts.",
+          "Peer-sharing routing repeatability is not measured by this report.",
+        ],
+      };
+      await writeRepeatabilityReport(report);
+      console.log(`blackboard_ranking_repeatability=${JSON.stringify(report)}`);
+      expect(providerResults).toHaveLength(2);
+    },
+    240_000
   );
 });

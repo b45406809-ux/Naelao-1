@@ -90,8 +90,27 @@ jobs:
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
+      - name: Run capped blackboard ranking and routing repeatability
+        if: ${{ startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') }}
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          NAELAO_RUN_LIVE_BLACKBOARD_REPEATABILITY: 'true'
+          NAELAO_BLACKBOARD_REPEATABILITY_REPORT: ${{ github.workspace }}/blackboard-ranking-repeatability.json
+          NAELAO_RUN_LIVE_PEER_ROUTING_REPEATABILITY: 'true'
+          NAELAO_PEER_ROUTING_REPEATABILITY_REPORT: ${{ github.workspace }}/peer-routing-repeatability.json
+        run: |
+          pnpm --filter @naelao/agents-worker exec vitest run \
+            src/communications/blackboard-ranking-provider-evaluation.test.ts \
+            src/script-engine/blackboard-peer-routing-provider-evaluation.test.ts \
+            --reporter=verbose
       - name: Run real-model planning through the goal DAG and host verifier
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') && !startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -184,6 +203,26 @@ jobs:
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
           JS
+      - name: Publish repeatability metrics
+        if: always() && startsWith(github.ref_name, 'provider-eval-blackboard-repeatability-')
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          const read = path => { try { return JSON.parse(fs.readFileSync(path, 'utf8')); } catch { return null; } };
+          console.log('\n## Repeated ranking and peer-routing decisions\n');
+          for (const [path, label] of [['blackboard-ranking-repeatability.json', 'Blackboard ranking'], ['peer-routing-repeatability.json', 'Peer routing']]) {
+            const report = read(path);
+            console.log(`### ${label}`);
+            if (!report) { console.log('No report was produced.'); continue; }
+            console.log(`Dataset: ${report.dataset}; labels independently adjudicated: ${report.labelSource === 'independently_adjudicated' || report.labelsIndependentlyAdjudicated === true}.`);
+            for (const item of report.providers ?? report.results ?? []) {
+              if (item.consistency) console.log(`- ${item.provider}/${item.model ?? 'unconfigured'}: ${item.state}; valid repeats ${item.validRepeats ?? 0}/${item.repeatsRequested ?? item.maxRequests}; exact score agreement ${item.consistency.exactScoreAgreement == null ? '—' : `${(item.consistency.exactScoreAgreement * 100).toFixed(1)}%`}; exact top-five order agreement ${item.consistency.exactTopFiveOrderAgreement == null ? '—' : `${(item.consistency.exactTopFiveOrderAgreement * 100).toFixed(1)}%`}; p50/p95 ${item.latencyP50Ms ?? '—'}/${item.latencyP95Ms ?? '—'} ms; tokens in/out ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'}; cost ${item.providerReportedCostUsd ?? 'unknown'}.`);
+              else console.log(`- ${item.provider}/${item.model ?? 'unconfigured'}: ${item.state}; valid repeats ${item.validRepeats ?? 0}/${item.repeatCap ?? item.repeatsRequested}; host-gated decision agreement ${item.hostGatedRepeatAgreement == null ? '—' : `${(item.hostGatedRepeatAgreement * 100).toFixed(1)}%`}; p50/p95 ${item.latencyP50Ms ?? '—'}/${item.latencyP95Ms ?? '—'} ms; tokens in/out ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'}; cost ${item.providerReportedCostUsd ?? 'unknown'}${item.reason ? `; reason ${item.reason}` : ''}.`);
+            }
+            for (const limitation of report.limitations ?? []) console.log(`  - ${limitation}`);
+          }
+          console.log('\nProvider repeatability is not a correctness benchmark. Production OpenRouter routing is unchanged.');
+          JS
       - name: Publish blackboard ranking metrics
         if: always()
         run: |
@@ -228,6 +267,8 @@ jobs:
             live-goal-plan-benchmark.json
             goal-architecture-benchmark.json
             blackboard-ranking-live.json
+            blackboard-ranking-repeatability.json
             live-openrouter-decisions.json
             peer-routing-model-evaluation.json
+            peer-routing-repeatability.json
           if-no-files-found: warn
