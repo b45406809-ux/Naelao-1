@@ -12,6 +12,12 @@ function scorePlanRubric(tasks: Array<{ title: string; subtask_spec: string }>, 
   return { required: criteria.length, satisfied: criteria.length - missing.length, coverage: criteria.length ? (criteria.length - missing.length) / criteria.length : 1, missing };
 }
 
+function planningReportState(cases: Array<{ state: string }>, expectedCaseCount: number, quotaStopped: boolean) {
+  if (quotaStopped) return "partial_stopped_on_quota";
+  if (cases.length === expectedCaseCount && cases.every(item => item.state === "plan_graph_host_verified")) return "completed";
+  return cases.some(item => item.state === "plan_graph_host_verified" || item.state === "execution_not_verified") ? "partial" : "failed";
+}
+
 type Scenario = {
   name: string;
   tasks: GoalTask[];
@@ -223,6 +229,13 @@ describe("goal architecture benchmark", () => {
     ], criteria)).toEqual({ required: 2, satisfied: 1, coverage: 0.5, missing: ["independent-check"] });
   });
 
+  it("does not label timed-out or invalid planner cases as a completed benchmark", () => {
+    expect(planningReportState([{ state: "plan_graph_host_verified" }, { state: "request_failed" }], 2, false)).toBe("partial");
+    expect(planningReportState([{ state: "plan_graph_host_verified" }], 2, true)).toBe("partial_stopped_on_quota");
+    expect(planningReportState([{ state: "plan_graph_host_verified" }, { state: "plan_graph_host_verified" }], 2, false)).toBe("completed");
+    expect(planningReportState([{ state: "request_failed" }], 1, false)).toBe("failed");
+  });
+
   it("measures verified completion, failure containment, recovery and dispatch isolation", async () => {
     const runs = [];
     for (let repeat = 0; repeat < 3; repeat++) {
@@ -429,7 +442,7 @@ describe("goal architecture benchmark", () => {
       const executionLatencies = completedCases.map(item => Number(item.fixtureExecutionMs));
       results.push({
         ...providerResult,
-        state: stopped ? "partial_stopped_on_quota" : "completed",
+        state: planningReportState(cases, caseLimit, stopped),
         validPlanRate: Number(providerResult.requests) ? Number(providerResult.validPlans) / Number(providerResult.requests) : null,
         validGraphRate: Number(providerResult.validPlans) ? Number(providerResult.validGraphs) / Number(providerResult.validPlans) : null,
         verifiedFixtureRate: Number(providerResult.validGraphs) ? Number(providerResult.verifiedFixtureRuns) / Number(providerResult.validGraphs) : null,
