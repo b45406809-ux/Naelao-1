@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   free-tier-model-evaluation:
-    name: Bounded Gemini and GroqCloud evaluation
+    name: Bounded live model evaluation
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,6 +21,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         shell: bash
         run: |
           node --input-type=module <<'JS'
@@ -28,8 +29,8 @@ jobs:
           const parse = (value = '') => [...new Set(value.split(',').map(item => item.trim()).filter(Boolean))];
           const gemini = parse(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY);
           const groq = parse(process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY);
-          for (const key of [...gemini, ...groq]) process.stdout.write(`::add-mask::${key}\n`);
-          fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, keyValuesLogged: false }) + '\n');
+          for (const key of [...gemini, ...groq, process.env.OPENROUTER_API_KEY].filter(Boolean)) process.stdout.write(`::add-mask::${key}\n`);
+          fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, openrouterConfigured: Boolean(process.env.OPENROUTER_API_KEY), keyValuesLogged: false }) + '\n');
           JS
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -41,7 +42,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
-        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -55,7 +56,7 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
@@ -72,7 +73,7 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
         run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -85,7 +86,7 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
@@ -102,8 +103,12 @@ jobs:
           NAELAO_RUN_LIVE_ARCH_BENCHMARK: 'true'
           NAELAO_LIVE_ARCH_REPORT: live-goal-plan-benchmark.json
           NAELAO_GOAL_BENCHMARK_REPORT: goal-architecture-benchmark.json
-          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
-          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
+          NAELAO_MAX_LIVE_PLAN_CASES: ${{ startsWith(github.ref_name, 'provider-eval-heldout-') && '12' || '4' }}
+          NAELAO_RUN_LIVE_OPENROUTER_DECISIONS: ${{ startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || 'false' }}
+          NAELAO_LIVE_OPENROUTER_REPORT: live-openrouter-decisions.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
+          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
         run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
       - name: Publish measured metrics
         if: always()
@@ -136,8 +141,9 @@ jobs:
           console.log('\n## Live model planning through Naelao goal runtime\n');
           if (!report) console.log(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Planning stage skipped for the blackboard-only test profile.' : 'No live planning report was produced.');
           else {
-            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Semantic rubric coverage | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|');
-            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.satisfiedRubricCriteria ?? 0}/${item.requiredRubricCriteria ?? 0} (${item.semanticRubricCoverage == null ? '—' : `${(item.semanticRubricCoverage * 100).toFixed(1)}%`}) | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Rubric, all cases | Rubric, heldout | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
+            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.satisfiedRubricCriteria ?? 0}/${item.requiredRubricCriteria ?? 0} (${item.semanticRubricCoverage == null ? '—' : `${(item.semanticRubricCoverage * 100).toFixed(1)}%`}) | ${item.heldoutMetrics?.rubricSatisfied ?? 0}/${item.heldoutMetrics?.rubricRequired ?? 0} (${item.heldoutMetrics?.rubricCoverage == null ? '—' : `${(item.heldoutMetrics.rubricCoverage * 100).toFixed(1)}%`}) | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            for (const item of report.results) if (item.heldoutMetrics) console.log(`  - ${item.provider} heldout objectives: ${item.heldoutMetrics.objectives}; attempted ${item.heldoutMetrics.attemptedRequests}; valid plans/DAGs/host verified ${item.heldoutMetrics.validPlans}/${item.heldoutMetrics.validGraphs}/${item.heldoutMetrics.hostVerifiedFixtures}.`);
             for (const item of report.results) for (const sample of item.cases ?? []) if (sample.semanticRubric) console.log(`  - ${item.provider}/${sample.id}: semantic rubric ${sample.semanticRubric.satisfied}/${sample.semanticRubric.required}; missing ${sample.semanticRubric.missing.join(', ') || 'none'}.`);
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
@@ -162,6 +168,20 @@ jobs:
           }
           console.log('\nSynthetic labels only. Gemini/GroqCloud are test adapters; OpenRouter production routing is unchanged. Cost without a billing receipt remains unknown.');
           JS
+      - name: Publish OpenRouter Decisions comparison
+        if: always()
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('live-openrouter-decisions.json', 'utf8')); } catch {}
+          console.log('\n## OpenRouter Decisions evidence holdout\n');
+          if (!report) console.log(process.env.GITHUB_REF_NAME.startsWith('provider-eval-heldout-') ? 'No OpenRouter Decisions report was produced.' : 'Skipped outside the explicitly tagged held-out profile.');
+          else {
+            console.log(`- State: ${report.state}; model: ${report.model}; requests: ${report.metrics?.inferenceRequests ?? 0}/${report.maxRequests}; correct: ${report.metrics?.expectedMatches ?? 0}/${report.metrics?.validResponses ?? 0}; false accepts: ${report.metrics?.falseAcceptances ?? '—'}; p50/p95: ${report.metrics?.p50LatencyMs ?? '—'}/${report.metrics?.p95LatencyMs ?? '—'} ms; returned cost: ${report.metrics?.returnedCostUsd ?? 'unknown'} (${report.metrics?.costReceiptCount ?? 0} receipts).`);
+            if (report.reason) console.log(`- Reason: ${report.reason}`);
+          }
+          console.log('\nOpenRouter is the configured Decisions route. This test profile does not change production routing.');
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -172,4 +192,5 @@ jobs:
             live-goal-plan-benchmark.json
             goal-architecture-benchmark.json
             blackboard-ranking-live.json
+            live-openrouter-decisions.json
           if-no-files-found: warn
