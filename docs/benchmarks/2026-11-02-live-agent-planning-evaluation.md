@@ -77,6 +77,21 @@ The held-out workflow attempted to read the standard GitHub Actions secret `OPEN
 
 The provider-evaluation workflow concluded success because it produced valid reports and the planner evaluations passed their host-path checks; that green workflow conclusion does not mean the OpenRouter comparison ran.
 
+## Repeated held-out planning and stability
+
+Two explicitly tagged runs repeated each of the eight held-out objectives twice per test model (16 requests per model per run): [first run 41466816121](https://github.com/b45406809-ux/Naelao-1/actions/runs/41466816121) and [topology-aware run 41467242085](https://github.com/b45406809-ux/Naelao-1/actions/runs/41467242085). The second run added separate exact-plan, coarse-topology, and lexical-rubric-outcome fingerprints.
+
+| Provider / model | First run: valid plan / DAG / host fixture | Second run: valid plan / DAG / host fixture | Second run: complete repeat pairs | Exact text stable | Coarse topology stable | Rubric outcome stable | Second run latency p50 / p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Gemini `gemini-3.5-flash-lite` | 16/16 / 16/16 / 16/16 | 13/16 / 13/16 / 13/16 | 6/8 | 0/6 | 5/6 (83.3%) | 6/6 (100%) | 5,596 / 9,784 ms |
+| GroqCloud `openai/gpt-oss-20b` | 16/16 / 16/16 / 16/16 | 16/16 / 15/16 / 15/16 | 7/8 | 0/7 | 5/7 (71.4%) | 7/7 (100%) | 667 / 2,251 ms |
+
+Gemini had three request timeouts in the second run; GroqCloud returned one graph rejected by the host DAG validator. Among completed repeat pairs, neither model reproduced an identical full task graph. Most did reproduce the coarse task-count/dependency-count shape and all reproduced the same two rubric outcomes. The topology measure is intentionally coarse; it does not show that task meanings or execution quality were equivalent. Incomplete pairs are excluded from the stability denominators, so rates are not reported as full-dataset estimates.
+
+The largest observed mismatch is latency variance: Gemini's second-run p95 reached 9.8 seconds, close to the 12-second request timeout, compared with 2.25 seconds for GroqCloud. This is an exploratory sample of 8 objectives and 2 repetitions, not a reliability distribution. It suggests the next useful experiment is a larger fixed prompt set with randomized provider order, per-case semantic adjudication, and measured timeout/retry behavior. No retries or alternate-key rotation were used here.
+
+Although both tagged Actions workflows concluded success, the second provider report was `partial` for each model: Gemini had timed-out calls and GroqCloud had an invalid DAG. The successful workflow conclusion means the experiment ran and published its results; it does not mean the model evaluation was complete or that the models passed every case.
+
 ## Revised next experiment
 
 The eight newly authored planning holdouts are complete. Next, run a blinded, independently adjudicated task-quality evaluation with real worker outputs and persistent storage, then repeat the OpenRouter Decisions comparison when `OPENROUTER_API_KEY` is available to Actions. Do not treat mocked fixture success or lexical rubric coverage as proof of end-to-end task correctness.
