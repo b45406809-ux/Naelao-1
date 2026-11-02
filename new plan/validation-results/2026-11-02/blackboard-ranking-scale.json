@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "blackboard_page_order_scale_experiment",
+  "recorded_at": "2026-11-02",
+  "evidence_class": "unit_synthetic_card_corpus",
+  "page_size": 100,
+  "query_count_per_scale": 100,
+  "metrics": [
+    {
+      "cards": 100,
+      "queries": 100,
+      "first_page_exact_recall": 1.0,
+      "all_visible_top1_exact_recall": 1.0,
+      "mean_pages_to_target": 1.0,
+      "first_page_rank_ms_p50": 0.073,
+      "first_page_rank_ms_p95": 0.156,
+      "all_visible_rank_ms_p50": 0.072,
+      "all_visible_rank_ms_p95": 0.226
+    },
+    {
+      "cards": 1000,
+      "queries": 100,
+      "first_page_exact_recall": 0.1,
+      "all_visible_top1_exact_recall": 1.0,
+      "mean_pages_to_target": 5.5,
+      "first_page_rank_ms_p50": 0.046,
+      "first_page_rank_ms_p95": 0.113,
+      "all_visible_rank_ms_p50": 0.483,
+      "all_visible_rank_ms_p95": 0.776
+    },
+    {
+      "cards": 10000,
+      "queries": 100,
+      "first_page_exact_recall": 0.01,
+      "all_visible_top1_exact_recall": 1.0,
+      "mean_pages_to_target": 50.5,
+      "first_page_rank_ms_p50": 0.054,
+      "first_page_rank_ms_p95": 0.163,
+      "all_visible_rank_ms_p50": 6.016,
+      "all_visible_rank_ms_p95": 8.676
+    }
+  ],
+  "repeatability": {
+    "local_runs": 2,
+    "all_visible_10k_p95_ms_range": [8.676, 9.148],
+    "first_page_10k_p95_ms_range": [0.110, 0.163],
+    "note": "Two runs of the same test in one local environment; descriptive only."
+  },
+  "result": "A single initial 100-card page is strongly page-order-sensitive in this synthetic corpus. The all-visible lexical scorer ranks the exact target first, but its timings exclude project visibility resolution, D1 fetches, serialization, and provider calls.",
+  "limitations": [
+    "Synthetic sorted IDs and exact lexical labels; no D1, model, provider, user workload, or production latency is measured.",
+    "The first-page arm models one current blackboard.cards page; callers can request later pages using next_cursor.",
+    "All-visible recall is a lexical ranking ceiling, not an independent relevance or user-utility score.",
+    "Single local run; reported milliseconds are descriptive and hardware-dependent."
+  ]
+}
