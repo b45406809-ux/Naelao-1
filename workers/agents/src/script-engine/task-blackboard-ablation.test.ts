@@ -228,21 +228,14 @@ describe("task blackboard ablation experiment", () => {
 
     const executeArm = async (taskBlackboardEnabled: boolean) => {
       let journal: GoalDagJournal | undefined;
-      let releaseMessage!: () => void;
-      const messagePublished = new Promise<void>((resolve) => {
-        releaseMessage = resolve;
-      });
       let fixtureLookups = 0;
+      let completionAvailableAtRecipientLaunch = false;
       const result = await executeGoalDag(tasks, {
         concurrency: 2,
         taskBlackboardEnabled,
         workerId: (id) => `worker:${id}`,
         load: async () => journal && structuredClone(journal),
-        save: async (snapshot) => {
-          journal = structuredClone(snapshot);
-          if (snapshot.messages?.some((message) => message.id === "completion:lookup"))
-            releaseMessage();
-        },
+        save: async (snapshot) => { journal = structuredClone(snapshot); },
         publish: async () => undefined,
         recover: async () => undefined,
         launch: async (task, workerId) => {
@@ -251,13 +244,13 @@ describe("task blackboard ablation experiment", () => {
             return { id: workerId, ok: true, output: expected };
           }
           if (taskBlackboardEnabled) {
-            await messagePublished;
             const messages = visibleTaskMessages(
               journal?.messages ?? [],
               workerId,
               new Set(["worker:lookup", "worker:reuse"])
             );
             const completion = messages.find((message) => message.id === "completion:lookup");
+            completionAvailableAtRecipientLaunch = Boolean(completion);
             if (completion) {
               const reused = JSON.parse(completion.text) as { output: string };
               return {
@@ -276,6 +269,7 @@ describe("task blackboard ablation experiment", () => {
         lookupCalls: fixtureLookups,
         duplicateLookupCalls: Math.max(0, fixtureLookups - 1),
         messages: result.messages?.length ?? 0,
+        completionAvailableAtRecipientLaunch,
         outcomes: Object.fromEntries(
           Object.entries(result.tasks).map(([id, state]) => [id, state.result?.output])
         ),
@@ -295,10 +289,8 @@ describe("task blackboard ablation experiment", () => {
       blackboard: shared,
       outcomeMismatch: JSON.stringify(direct.outcomes) !== JSON.stringify(shared.outcomes),
       externalProviderCalls: 0,
-      limitations: [
-        "The worker action is a deterministic fixture lookup, not a model/tool provider call.",
-        "The board arm simulates a worker waiting for its completion message; automatic message-triggered wake is not implemented.",
-      ],
+      automaticRecipientWake: shared.completionAvailableAtRecipientLaunch,
+      limitations: ["The worker action is a deterministic fixture lookup, not a model/tool provider call; peer routing was injected as a fixture rather than selected by a live Decisions model."],
     };
     const reportPath = process.env.NAELAO_BLACKBOARD_PEER_REPORT;
     if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -309,6 +301,7 @@ describe("task blackboard ablation experiment", () => {
     expect(direct.outcomes).toEqual(shared.outcomes);
     expect(direct.duplicateLookupCalls).toBe(1);
     expect(shared.duplicateLookupCalls).toBe(0);
+    expect(shared.completionAvailableAtRecipientLaunch).toBe(true);
     expect(direct.messages).toBe(0);
     expect(shared.messages).toBe(1);
     expect(report.outcomeMismatch).toBe(false);

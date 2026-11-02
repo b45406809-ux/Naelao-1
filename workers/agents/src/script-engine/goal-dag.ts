@@ -198,7 +198,12 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         await host.publish(task, journal.tasks[task.id]!);
       }
     }
-    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed"));
+    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending"
+      && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed")
+      // A host-selected peer edge is a message-availability barrier, not a success
+      // dependency: the recipient wakes after the sender reaches any terminal state.
+      && (!journal.taskBlackboardEnabled || tasks.filter(sender => sender.communication_recipients?.includes(task.id))
+        .every(sender => !["pending", "running", "verifying"].includes(journal.tasks[sender.id]!.status))));
     if (!ready.length && inFlight.size === 0) {
       const fixers = journal.fixers ??= {};
       // Always reconcile an already-running fixer, even if the feature flag was switched

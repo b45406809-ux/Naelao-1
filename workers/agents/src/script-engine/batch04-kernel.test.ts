@@ -148,9 +148,10 @@ describe("Batch 04 universal kernel", () => {
     const command = `naelao goal plan --json '${JSON.stringify(plan)}'`;
     await expect(tools.run("Bash", { command, doing: "Plan and delegate the report" })).resolves.toMatchObject({ ok: true });
     expect(executeGoalDag).toHaveBeenCalledWith("write a report", [
-      expect.objectContaining({ id: "write", file_paths: ["report.txt"], communication_recipients: ["review"], budget_tokens: 128 }),
+      expect.objectContaining({ id: "write", file_paths: ["report.txt"], budget_tokens: 128 }),
       expect.objectContaining({ id: "review", file_paths: ["report.txt"], budget_tokens: 128 }),
     ]);
+    expect(executeGoalDag.mock.calls[0]?.[1][0]).not.toHaveProperty("communication_recipients");
     expect(tools.availableOperations()).not.toContain("engine.plan_and_delegate_goal");
   });
 

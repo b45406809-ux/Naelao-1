@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendAuthenticatedTaskMessage, authorizeTaskMessaging, createDurableTaskMessageStore, createTaskMessage, readAuthenticatedTaskMessages, visibleTaskMessages, type TaskMessage, type TaskMessageStore } from "./task-blackboard.js";
+import { appendAuthenticatedTaskMessage, appendHostTaskMessage, authorizeTaskMessaging, createDurableTaskMessageStore, createTaskMessage, readAuthenticatedTaskMessages, visibleTaskMessages, type TaskMessage, type TaskMessageStore } from "./task-blackboard.js";
 import { issueDelegationContract, type DelegationContract } from "./delegation-contract.js";
 
 describe("task blackboard message boundaries", () => {
@@ -39,6 +39,17 @@ describe("task blackboard message boundaries", () => {
     await expect(appendAuthenticatedTaskMessage({ ...params, contract: { ...contract, workerId: "worker:c" } })).rejects.toThrow();
     await expect(readAuthenticatedTaskMessages({ ...params, scope: { ...scope, rootRunId: "other" } })).rejects.toThrow("scope_denied");
     expect(await readAuthenticatedTaskMessages(params)).toEqual([first]);
+  });
+  it("publishes completion through the same durable grant boundary and deduplicates retries", async () => {
+    const identity = { tenantId: "t", spaceId: "s", projectId: "p", rootRunId: "r", parentDoId: "parent" };
+    const scope = { ...identity, members, recipientGrants: new Map([["worker:a", new Set(["worker:b"]) ]]) };
+    let saved: TaskMessage[] = [];
+    const store: TaskMessageStore = { async transact(operation) { const update = operation(saved); saved = update.messages; return update.result; } };
+    const params = { store, scope, sender: "worker:a", input: { id: "completion:task-a", recipients: ["worker:b"], kind: "completion", text: JSON.stringify({ output: "done" }) }, now: 123 };
+    const first = await appendHostTaskMessage(params);
+    expect(await appendHostTaskMessage({ ...params, now: 456 })).toEqual(first);
+    expect(visibleTaskMessages(saved, "worker:b", members)).toEqual([first]);
+    await expect(appendHostTaskMessage({ ...params, input: { ...params.input, recipients: ["worker:c"] } })).rejects.toThrow("recipient_denied");
   });
   it("stores each goal under a separate host-selected durable transaction key", async () => {
     const values = new Map<string, unknown>();

@@ -104,6 +104,29 @@ export async function appendAuthenticatedTaskMessage(params: {
   });
 }
 
+/** Host-authored completion publication uses the same scope grants and idempotent store as workers. */
+export async function appendHostTaskMessage(params: {
+  store: TaskMessageStore;
+  scope: TaskBlackboardScope;
+  sender: string;
+  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown };
+  now: number;
+}): Promise<TaskMessage> {
+  const { sender, scope } = params;
+  const message = createTaskMessage(params.input, sender, scope.members, params.now);
+  authorizeTaskMessaging({ ...scope, workerId: sender }, scope, message.recipients);
+  return params.store.transact(messages => {
+    const existing = messages.find(item => item.id === message.id);
+    if (existing) {
+      if (existing.sender !== message.sender || existing.kind !== message.kind || existing.text !== message.text
+          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)) throw new Error("task_blackboard_id_conflict");
+      return { messages, result: existing };
+    }
+    if (messages.length >= 500) throw new Error("task_blackboard_capacity_exceeded");
+    return { messages: [...messages, message], result: message };
+  });
+}
+
 export async function readAuthenticatedTaskMessages(params: {
   contract: DelegationContract; token: string; secret: string; scope: TaskBlackboardScope; store: TaskMessageStore;
 }): Promise<TaskMessage[]> {

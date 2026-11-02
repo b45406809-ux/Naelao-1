@@ -1,13 +1,21 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "experiment": "explicit-task-peer-blackboard-sharing",
   "date": "2026-11-02",
   "evidence_class": "local-unit-and-AgentDO-route-integration",
-  "planner_contract": {
-    "field": "communication_recipients",
-    "maximum_recipients_per_task": 8,
-    "creates_execution_dependency": false,
-    "rejects_unknown_self_duplicate_and_over_limit_ids": true
+  "routing": {
+    "owner": "host-Decisions-service",
+    "feature_flag": "TASK_BLACKBOARD_ENABLED=true",
+    "planner_may_select_recipients": false,
+    "policy_code": "task_blackboard_peer_routing_v1",
+    "minimum_confidence": 0.8,
+    "maximum_peer_recipients_per_task": 8,
+    "maximum_total_recipients_per_task": 11,
+    "maximum_edges_per_goal": 24,
+    "forward_order_only": true,
+    "existing_dependencies_excluded": true,
+    "decision_client_unit_tested": true,
+    "live_decisions_provider_called": false
   },
   "scenario": {
     "tasks": 4,
@@ -17,20 +25,25 @@
     "authorized_sender_publications": 1,
     "authorized_recipients_read_finding": 2,
     "automatic_completion_recipients": 2,
+    "automatic_recipient_wake_after_sender_terminal": true,
+    "completion_persisted_to_worker_message_store": true,
     "undeclared_peer_publications_denied": 1,
     "undeclared_peer_readable_messages": 0,
     "membership_revocation_denied": true
   },
   "focused_tests": {
-    "files": 5,
-    "passed": 71,
+    "agents_files": 6,
+    "agents_passed": 75,
+    "decisions_sdk_files": 1,
+    "decisions_sdk_passed": 30,
     "failed": 0,
-    "agent_worker_typecheck": "passed",
+    "agents_typecheck": "passed",
+    "agent_sdk_typecheck": "passed",
     "external_provider_calls": 0
   },
   "limitations": [
-    "Peer access is a planner-declared, bounded proposal validated and converted to a directed host grant; an independent Decisions AI router does not select these edges yet.",
-    "Workers must query task_blackboard.read; no automatic peer wake or push notification was exercised.",
+    "The Decisions API adapter was tested with a mocked response; no live model selection, latency, or spend was measured.",
+    "Recipients wake after the selected sender reaches a terminal state; live push interruption of an already-running recipient is not implemented by this flow.",
     "The route integration uses fake storage, membership fixtures, and a local AgentDO object; Cloudflare multi-isolate deployed behavior was not tested."
   ]
 }

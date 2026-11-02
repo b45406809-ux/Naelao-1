@@ -4,6 +4,7 @@ import { issueDelegationContract, type DelegationContract } from "./delegation-c
 import { ScriptToolSurface } from "./tool-surface.js";
 import { executeGoalDag, type GoalDagJournal } from "./goal-dag.js";
 import { taskCommunicationRecipients, type GoalTask } from "./prebuilt/goal-planner.js";
+import { appendHostTaskMessage, createDurableTaskMessageStore } from "./task-blackboard.js";
 
 const SECRET = "task-blackboard-integration-secret";
 const GOAL_HASH = "b".repeat(64);
@@ -141,7 +142,15 @@ describe("task blackboard operation to host integration", () => {
       workerId: id => `${GOAL_HASH}:${id}`,
       load: async () => savedJournal && structuredClone(savedJournal),
       save: async journal => { savedJournal = structuredClone(journal); },
-      publish: async () => undefined,
+      publish: async (task, state) => {
+        if (state.status !== "completed") return;
+        const recipients = taskCommunicationRecipients(task.id, tasks).map(id => `${GOAL_HASH}:${id}`);
+        if (!recipients.length) return;
+        await appendHostTaskMessage({ store: createDurableTaskMessageStore(storage as never, GOAL_HASH),
+          scope: { tenantId: TENANT, spaceId: SPACE, projectId: "project-integration", rootRunId: "root-integration", parentDoId: PARENT_DO_ID,
+            members: new Set(members), recipientGrants: new Map(grants.map(([id, allowed]) => [id, new Set(allowed)])) },
+          sender: `${GOAL_HASH}:${task.id}`, input: { id: `completion:${task.id}`, recipients, kind: "completion", text: JSON.stringify({ output: state.result?.output ?? null, truncated: false }) }, now: Date.now() });
+      },
       recover: async () => undefined,
       launch: async (task, workerId) => {
         launchOrder.push(task.id);
@@ -188,13 +197,15 @@ describe("task blackboard operation to host integration", () => {
     expect(launchOrder.indexOf("inspect")).toBeLessThan(launchOrder.indexOf("verify"));
     expect(senderPublication).toMatchObject({ untrusted: true, message: { sender, recipients: [recipient, peer] } });
     expect(unauthorizedSend).toMatchObject({ ok: false, error: expect.stringContaining("task_blackboard_request_failed_403") });
-    expect(recipientRead).toMatchObject({ untrusted: true, messages: [expect.objectContaining({ id: "inspection-finding-1", text })] });
-    expect(peerRead).toMatchObject({ untrusted: true, messages: [expect.objectContaining({ id: "inspection-finding-1", text })] });
+    expect(recipientRead?.messages).toContainEqual(expect.objectContaining({ id: "inspection-finding-1", text }));
+    expect(recipientRead?.messages).toContainEqual(expect.objectContaining({ id: "completion:inspect", kind: "completion" }));
+    expect(peerRead?.messages).toContainEqual(expect.objectContaining({ id: "inspection-finding-1", text }));
+    expect(peerRead?.messages).toContainEqual(expect.objectContaining({ id: "completion:inspect", kind: "completion" }));
     expect(unrelatedRead?.messages).toEqual([]);
 
     memberRole = null;
     const revoked = await recipientSurface.run("task_blackboard.read", {});
     expect(revoked).toMatchObject({ ok: false, error: expect.stringContaining("task_blackboard_request_failed_403") });
-    expect(values.get(`task-blackboard:messages:${GOAL_HASH}`)).toEqual([expect.objectContaining({ id: "inspection-finding-1" })]);
+    expect(values.get(`task-blackboard:messages:${GOAL_HASH}`)).toEqual(expect.arrayContaining([expect.objectContaining({ id: "inspection-finding-1" }), expect.objectContaining({ id: "completion:inspect" })]));
   });
 });

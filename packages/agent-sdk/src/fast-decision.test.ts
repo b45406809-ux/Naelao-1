@@ -240,6 +240,27 @@ describe("typed fast decisions", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("selects only confident, acyclic peer-sharing edges from a bounded plan", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { criteria: Record<string, unknown> }>; state: { candidate_pairs: unknown[] } };
+      expect(Object.keys(body.questions)).toEqual(["pair_0", "pair_1"]); // A->B is already a dependency.
+      expect(body.state.candidate_pairs).toEqual([{ senderId: "a", recipientId: "c" }, { senderId: "b", recipientId: "c" }]);
+      const criteria = Object.keys(body.questions.pair_0!.criteria);
+      const probabilities = (selected: string) => Object.fromEntries(criteria.map(key => [key, key === selected ? 0.95 : 0.05]));
+      return Response.json({ model: CLEF_FLASH_MODEL, answers: {
+        pair_0: { type: "choice", choice: "share", probabilities: probabilities("share"), confidence: 0.94 },
+        pair_1: { type: "choice", choice: "share", probabilities: probabilities("share"), confidence: 0.65 },
+      }, usage: { input_tokens: 80, output_tokens: 6 } });
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyTaskCommunication!({ tasks: [
+      { id: "a", title: "Research", description: "Find source data." },
+      { id: "b", title: "Validate", description: "Validate source data.", dependencies: ["a"] },
+      { id: "c", title: "Synthesize", description: "Write synthesis." },
+    ] })).resolves.toEqual([{ senderId: "a", recipientId: "c", confidence: 0.94, provider: "openrouter", model: CLEF_FLASH_MODEL }]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("recommends a bounded task-specific subset of configured worker capabilities", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { state: { task: string }; questions: Record<string, { instructions: string }> };

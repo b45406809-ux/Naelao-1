@@ -764,8 +764,9 @@ test("only a verified Project Bot prerequisite dispatches its dependent leaf wor
   assert.equal(message.body?.message?.text, "Persisted worker handoff for the restart acceptance.");
   const blackboardRestartMs = await restartAgentsWorker();
   const persistedMessages = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(passed.goalActivityRunId)}`, "GET");
-  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 1, JSON.stringify(persistedMessages));
-  assert.equal(persistedMessages.goals?.[0]?.messages?.[0]?.text, "Persisted worker handoff for the restart acceptance.");
+  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 2, JSON.stringify(persistedMessages));
+  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.text === "Persisted worker handoff for the restart acceptance."));
+  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.id === "completion:write-report" && item.kind === "completion"));
 
   const reviewProject = await jsonRequest(
     spacesBaseUrl,

@@ -38,12 +38,12 @@ export interface GoalTask {
   priority?: number;
   file_paths: string[];
   dependencies?: string[];
-  /** Explicit, bounded blackboard peers; these do not create execution dependencies. */
+  /** Host-selected, bounded blackboard peers; planner input for this field is discarded. */
   communication_recipients?: string[];
   budget_tokens: number;
 }
 
-/** Directed host grant set: DAG successors plus explicitly selected peer recipients. */
+/** Directed host grant set: DAG successors plus Decisions-selected peer recipients. */
 export function taskCommunicationRecipients(taskId: string, tasks: readonly GoalTask[]): string[] {
   const task = tasks.find((candidate) => candidate.id === taskId);
   if (!task) throw new Error(`unknown goal task '${taskId}'`);
@@ -82,6 +82,15 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     visiting.delete(id); visited.add(id);
   };
   for (const id of ids) visit(id);
+  const communicationVisiting = new Set<string>(), communicationVisited = new Set<string>();
+  const visitCommunication = (id: string): void => {
+    if (communicationVisiting.has(id)) throw new Error("goal plan contains a communication cycle");
+    if (communicationVisited.has(id)) return;
+    communicationVisiting.add(id);
+    for (const recipient of byId.get(id)?.communication_recipients ?? []) visitCommunication(recipient);
+    communicationVisiting.delete(id); communicationVisited.add(id);
+  };
+  for (const id of ids) visitCommunication(id);
 }
 
 function parseTasks(value: unknown, planBudget: number): GoalTask[] {
@@ -113,7 +122,8 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
-      ...(Array.isArray(task.communication_recipients) ? { communication_recipients: task.communication_recipients.map(String) } : {}),
+      // Peer grants are selected by the host Decisions service after planning. Ignore
+      // planner/model-supplied recipients so a plan cannot grant its own access.
       budget_tokens: Math.min(planBudget, requestedBudget),
     };
   });
@@ -123,7 +133,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), communication_recipients? (up to 8 explicit task IDs allowed to receive/read this task's blackboard messages; does not imply execution dependency), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host Decisions service may grant bounded one-way peer blackboard sharing; the planner cannot choose recipients, and sharing never creates execution dependencies or grants authority. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };

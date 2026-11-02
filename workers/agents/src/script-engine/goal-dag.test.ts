@@ -97,6 +97,33 @@ describe("durable goal DAG", () => {
       })
     );
   });
+  it("wakes a peer recipient only after its sender has finished and published the durable message", async () => {
+    const f = fixture();
+    f.host.concurrency = 3;
+    let finishSender!: () => void;
+    let senderStarted!: () => void;
+    const senderGate = new Promise<void>(resolve => { finishSender = resolve; });
+    const senderStartedGate = new Promise<void>(resolve => { senderStarted = resolve; });
+    let completionPublished = false;
+    const order: string[] = [];
+    f.host.publish = vi.fn(async (item, state) => { if (item.id === "sender" && state.status === "completed") completionPublished = true; });
+    f.host.launch = vi.fn(async (item, id) => {
+      order.push(item.id);
+      if (item.id === "sender") { senderStarted(); await senderGate; return { id, ok: true, output: "finding" }; }
+      if (item.id === "recipient") expect(completionPublished).toBe(true);
+      return { id, ok: true };
+    });
+    const tasks = [{ ...task("sender"), communication_recipients: ["recipient"] }, task("independent"), task("recipient")];
+    const run = executeGoalDag(tasks, f.host);
+    await senderStartedGate;
+    await Promise.resolve();
+    expect(order).not.toContain("recipient");
+    finishSender();
+    const result = await run;
+    expect(order).toContain("recipient");
+    expect(result.tasks.recipient?.status).toBe("completed");
+    expect(tasks[2]?.dependencies).toEqual([]);
+  });
   it("blocks dependent work when verification fails and does not run a worker-failure fixer", async () => {
     const f = fixture(); f.host.fixerEnabled = true;
     f.host.verify = vi.fn(async () => ({ outcome: "failed" as const, reason: "missing evidence" }));

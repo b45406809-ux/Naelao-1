@@ -7,7 +7,8 @@ import { containerWorkerConcurrency, validateContainerScope, type ContainerInvoc
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
-import { taskCommunicationRecipients, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
+import { applyGoalCommunicationEdges } from "../script-engine/goal-communication.js";
+import { taskCommunicationRecipients, validateGoalDag, type GoalTask } from "../script-engine/prebuilt/goal-planner.js";
 import { captureWorkerArtifactManifest, collectGoalEvidence, verifyWorkerArtifact, validateGoalEvidenceChecks, type WorkerArtifactManifest } from "../script-engine/goal-evidence.js";
 import { assertWorkspaceFileAllowed } from "../script-engine/workspace-paths.js";
 import { resourceQueuePartition } from "../script-engine/resource-queue-scope.js";
@@ -3793,6 +3794,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (active) return active;
         const taskId = (id: string) => `${hash}:${id}`;
         const run = (async () => {
+          const prior = await this.ctx.storage.get<GoalDagJournal>(key);
+          const taskBlackboardEnabled = this.env.TASK_BLACKBOARD_ENABLED !== "false";
+          const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : taskBlackboardEnabled;
+          const routingKey = `goal-task-communication:${hash}`;
+          const storedRouting = await this.ctx.storage.get<unknown>(routingKey);
+          let selectedEdges: Array<{ senderId: string; recipientId: string }> = Array.isArray(storedRouting)
+            ? storedRouting.filter((edge): edge is { senderId: string; recipientId: string } => !!edge && typeof edge === "object" && typeof (edge as { senderId?: unknown }).senderId === "string" && typeof (edge as { recipientId?: unknown }).recipientId === "string")
+            : [];
+          if (storedRouting === undefined) {
+            selectedEdges = [];
+            // A planner can describe work, but only the host Decisions service can
+            // propose peer grants. Persist the selection once so retries/restarts do
+            // not reroute an already-dispatched goal.
+            if (!prior && enabled && userId && this.env.TASK_BLACKBOARD_ENABLED === "true" && runtimeEnv?.fastDecision?.classifyTaskCommunication) {
+              try {
+                const proposed = await runtimeEnv.fastDecision.classifyTaskCommunication({
+                  tasks: tasks.map(task => ({ id: task.id, title: task.title.slice(0, 200), description: task.subtask_spec.slice(0, 2_000), dependencies: task.dependencies ?? [] })),
+                });
+                selectedEdges = applyGoalCommunicationEdges(tasks, proposed);
+              } catch { /* Decisions failure means no optional peer grants; DAG dependencies remain. */ }
+            }
+            await this.ctx.storage.put(routingKey, selectedEdges);
+          } else if (!Array.isArray(storedRouting) || selectedEdges.length !== storedRouting.length) {
+            selectedEdges = [];
+            await this.ctx.storage.put(routingKey, selectedEdges);
+          }
+          if (selectedEdges.length) {
+            try { selectedEdges = applyGoalCommunicationEdges(tasks, selectedEdges.map(edge => ({ ...edge, confidence: 1, provider: "deterministic" as const }))); }
+            catch { selectedEdges = []; for (const task of tasks) task.communication_recipients = []; await this.ctx.storage.put(routingKey, selectedEdges); }
+          }
+          else for (const task of tasks) task.communication_recipients = [];
+          // Validate the host-selected graph before persistence or granting any access.
+          validateGoalDag(tasks);
           // Explicit IDs keep dependencies tied to this goal instead of unrelated tasks.
           await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId), communication_recipients: (task.communication_recipients ?? []).map(taskId) })));
           await this.ctx.storage.transaction(async tx => {
@@ -3804,11 +3838,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const ownerHashes = await tx.get<string[]>(ownerIndexKey) ?? [];
               if (!ownerHashes.includes(hash)) await tx.put(ownerIndexKey, [...ownerHashes, hash].slice(-50));
             }
-            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies ?? [] })) });
+            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies ?? [], communication_recipients: task.communication_recipients ?? [] })) });
           });
-          const prior = await this.ctx.storage.get<GoalDagJournal>(key);
-          const taskBlackboardEnabled = this.env.TASK_BLACKBOARD_ENABLED !== "false";
-          const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : taskBlackboardEnabled;
           // Resolve the account's current execution ceiling once per goal. If billing is
           // unavailable, use the free-plan ceiling; worker fan-out must never fail open.
           let planTier = "free";
@@ -4078,6 +4109,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               } catch { /* runtime telemetry must not affect task completion */ }
             },
             publish: async (task, state) => {
+              if (enabled && userId && state.status === "completed") {
+                const recipients = taskCommunicationRecipients(task.id, tasks).map(taskId);
+                if (recipients.length) {
+                  const savedScope = await this.ctx.storage.get<{ tenantId: string; spaceId: string; projectId: string | null; actorId: string; rootRunId: string; parentDoId: string; members: string[]; grants: Array<[string, string[]]> }>(`task-blackboard:scope:${hash}`);
+                  if (!savedScope) throw new Error("task_blackboard_scope_unavailable");
+                  const { appendHostTaskMessage, createDurableTaskMessageStore } = await import("../script-engine/task-blackboard.js");
+                  let serialized: string;
+                  try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; } catch { serialized = '"[unavailable: non-serializable output]"'; }
+                  let output = serialized.slice(0, 3_000);
+                  while (JSON.stringify({ output, truncated: serialized.length > output.length }).length > 4_000) output = output.slice(0, -100);
+                  const scope = { tenantId: savedScope.tenantId, spaceId: savedScope.spaceId,
+                    ...(savedScope.projectId ? { projectId: savedScope.projectId } : {}), rootRunId: savedScope.rootRunId,
+                    parentDoId: savedScope.parentDoId, members: new Set(savedScope.members),
+                    recipientGrants: new Map(savedScope.grants.map(([id, allowed]) => [id, new Set(allowed)])) };
+                  await appendHostTaskMessage({ store: createDurableTaskMessageStore(this.ctx.storage, hash), scope,
+                    sender: taskId(task.id), input: { id: `completion:${task.id}`, recipients, kind: "completion",
+                      text: JSON.stringify({ output, truncated: serialized.length > output.length }) }, now: Date.now() });
+                }
+              }
               const response = await this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/tasks/${encodeURIComponent(taskId(task.id))}`, {
                 method: "PATCH", headers: await this.internalHeaders(tenantId, { "content-type": "application/json", ...(userId ? { "x-naelao-user-id": userId, "x-naelao-role": runtimeEnv?.effectiveRole ?? "viewer" } : {}) }),
                 body: JSON.stringify({ status: state.status === "running" || state.status === "verifying" ? "in_progress" : state.status === "completed" ? "completed" : state.status === "pending" ? "pending" : "blocked", verification_status: state.verification?.outcome ?? (state.status === "verifying" ? "verifying" : state.status === "needs_review" ? "review" : null), verification_reason: state.verification?.reason?.slice(0, 240) ?? null }),
@@ -4770,7 +4820,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const goals = [];
     for (const hash of hashes.slice(history ? -20 : -10)) {
       if (!/^[a-f0-9]{64}$/.test(hash)) continue;
-      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[] }> }>(`goal-activity:metadata:${hash}`);
+      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[]; communication_recipients?: string[] }> }>(`goal-activity:metadata:${hash}`);
       if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
       // Goal DAG journals are projected into SQLite by the durable scheduler. Older
       // K/V-backed journals remain readable during migration, but a K/V-only lookup makes
@@ -4799,7 +4849,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const state = journal.tasks[task.id];
         const dispatch = dispatchByTask.get(`${hash}:${task.id}`);
         const status = state?.status === "running" && dispatch?.status === "review" ? "needs_review" : state?.status ?? "pending";
-        return { ...task, status, workerId: state?.workerId,
+        return { ...task, communication_recipients: task.communication_recipients ?? [], status, workerId: state?.workerId,
           ...(dispatch && ["intent", "delivering", "acknowledged", "uncertain", "review"].includes(dispatch.status) ? { dispatch: { status: dispatch.status, ...(Number.isSafeInteger(dispatch.attempt) && (dispatch.attempt ?? 0) > 0 ? { attempt: dispatch.attempt } : {}) } } : {}),
           ...(state?.verification ? { verification: { outcome: state.verification.outcome, reason: state.verification.reason.slice(0, 300) } } : {}),
           ...(state?.runtime ? { runtime: state.runtime } : {}) };
