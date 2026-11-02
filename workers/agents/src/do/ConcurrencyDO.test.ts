@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
+import { containerRuntimeResourceKey, containerWorkerConcurrency, resolveContainerCapabilities, type InstalledContainer } from "../script-engine/container-policy.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 
 function harness() {
@@ -96,7 +97,7 @@ function harness() {
     },
   };
   const ctx = { storage: { sql, transaction: async <T>(fn: (tx: { get: <V>(key: string) => Promise<V | undefined>; put: (key: string, value: unknown) => Promise<void> }) => Promise<T>) => fn({ get: async <V>(key: string) => durable.get(key) as V | undefined, put: async (key, value) => { durable.set(key, structuredClone(value)); } }), getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
-  return { instance: new ConcurrencyDO(ctx as never, { PLATFORM_SECRET: "resource-queue-test-secret" }), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
+  return { instance: new ConcurrencyDO(ctx as never, { PLATFORM_SECRET: "resource-queue-test-secret" }), restart: () => new ConcurrencyDO(ctx as never, { PLATFORM_SECRET: "resource-queue-test-secret" }), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
 }
 
 describe("ConcurrencyDO file mutexes", () => {
@@ -166,6 +167,70 @@ describe("ConcurrencyDO file mutexes", () => {
 });
 
 describe("ConcurrencyDO shared resource queue", () => {
+  it("selects authorized runtimes, lets distinct containers overlap, and serializes workers on one container", async () => {
+    const h = harness();
+    const owner = { tenantId: "tenant", spaceId: "space", projectId: "project", userId: "owner" };
+    const install = (installationId: string, binary: string): InstalledContainer => ({
+      ...owner, installationId, extensionId: `ext_${binary}`, scope: "PROJECT_SHARED",
+      contract: { schemaVersion: "1.0", kind: "container", id: `runtime_${binary}`, version: "1.0.0",
+        permissions: [{ scope: "PROJECT_SHARED", actions: ["execute"], resource: "container" }], capabilityRequirements: [], lifecycle: {},
+        image: "registry.example/runtime@sha256:" + "a".repeat(64), resources: { memoryMb: 1024, cpuCores: 0.25, timeoutSeconds: 30 },
+        exportedBinaries: [binary], networkPolicy: "none" },
+    });
+    const ocr = install("install-ocr", "ocr");
+    const browser = install("install-browser", "browser");
+    const selectedOcr = resolveContainerCapabilities(["ocr"], [ocr, browser], owner);
+    const selectedBrowser = resolveContainerCapabilities(["browser"], [ocr, browser], owner);
+    expect(selectedOcr?.installationId).toBe("install-ocr");
+    expect(selectedBrowser?.installationId).toBe("install-browser");
+    const ocrResource = await containerRuntimeResourceKey(selectedOcr!, owner.userId);
+    const browserResource = await containerRuntimeResourceKey(selectedBrowser!, owner.userId);
+    expect(ocrResource).not.toBe(browserResource);
+
+    const request = async (resource: string, holder: string, capacity = 1, instance = h.instance) => {
+      const response = await instance.fetch(new Request("http://do/resource-queue/request", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resource, holder, capacity }),
+      }));
+      return response.json<{ acquired?: boolean; token?: number; active?: number; position?: number }>();
+    };
+    const release = async (resource: string, holder: string, token: number) => h.instance.fetch(new Request("http://do/resource-queue/release", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource, holder, token }),
+    }));
+    const firstOcr = await request(ocrResource, "worker-ocr-a");
+    expect(firstOcr.acquired).toBe(true);
+    expect(await request(ocrResource, "worker-ocr-b")).toMatchObject({ acquired: false, active: 1, position: 1 });
+    const browserLease = await request(browserResource, "worker-browser");
+    expect(browserLease.acquired).toBe(true); // a distinct installed container does not queue behind OCR
+
+    // A DO eviction/reconstruction must preserve the queue lease and prevent duplicate use.
+    const resumed = await request(ocrResource, "worker-ocr-c", 1, h.restart());
+    expect(resumed).toMatchObject({ acquired: false, active: 1, position: 2 });
+    await release(ocrResource, "worker-ocr-a", firstOcr.token!);
+    expect(await request(ocrResource, "worker-ocr-b")).toMatchObject({ acquired: true });
+  });
+
+  it("grants intra-installation parallelism only for declared isolated worker branches", async () => {
+    const h = harness();
+    const owner = { tenantId: "tenant", spaceId: "space", projectId: "project", userId: "owner" };
+    const item: InstalledContainer = { ...owner, installationId: "parallel-install", extensionId: "ext_parallel", scope: "PROJECT_SHARED",
+      contract: { schemaVersion: "1.0", kind: "container", id: "parallel", version: "1.0.0", permissions: [{ scope: "PROJECT_SHARED", actions: ["execute"], resource: "container" }], capabilityRequirements: [], lifecycle: {},
+        image: "registry.example/runtime@sha256:" + "a".repeat(64), resources: { memoryMb: 1024, cpuCores: 0.25, timeoutSeconds: 30 }, exportedBinaries: ["ocr"], networkPolicy: "none",
+        parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 3 } },
+    };
+    const key = await containerRuntimeResourceKey(item, owner.userId);
+    const capacity = containerWorkerConcurrency(item, true);
+    expect(capacity).toBe(3);
+    expect(containerWorkerConcurrency(item, false)).toBe(1);
+    const request = (holder: string, slots: number) => h.instance.fetch(new Request("http://do/resource-queue/request", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: key, holder, capacity: slots }),
+    })).then(response => response.json<{ acquired?: boolean; active?: number; capacity?: number }>());
+    expect(await request("branch-a", capacity)).toMatchObject({ acquired: true });
+    expect(await request("branch-b", capacity)).toMatchObject({ acquired: true });
+    expect(await request("branch-c", capacity)).toMatchObject({ acquired: true });
+    expect(await request("branch-d", capacity)).toMatchObject({ acquired: false, active: 3, capacity: 3 });
+  });
+
   it("grants FIFO order, renews leases, and removes cancelled waiters", async () => {
     const h = harness();
     const call = async (action: string, holder: string, token?: number) => {

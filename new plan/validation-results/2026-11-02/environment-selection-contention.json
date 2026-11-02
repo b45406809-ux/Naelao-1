@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "environment_selection_contention",
+  "evidenceClass": "local-worker-tests-with-in-memory-durable-object-storage-shim",
+  "commitBeforeThisExperiment": "47168b4757d209199685c1bc9d509b4b4758cf2b",
+  "suite": {
+    "files": 8,
+    "passed": 143,
+    "failed": 0,
+    "typescriptCheck": "passed",
+    "fullAgentsWorkerSuite": {
+      "filesPassed": 222,
+      "testsPassed": 1139,
+      "testsSkipped": 7,
+      "testsFailed": 0,
+      "durationSeconds": 84.25
+    }
+  },
+  "selectionAndScheduling": {
+    "distinctInstalledRuntimes": {
+      "capabilities": ["ocr", "browser"],
+      "selectedInstallations": 2,
+      "distinctResourceKeys": true,
+      "simultaneousLeases": 2,
+      "result": "passed"
+    },
+    "sameInstalledRuntime": {
+      "capacity": 1,
+      "activeLeases": 1,
+      "nextWorkerQueuePosition": 1,
+      "result": "passed"
+    },
+    "restartRecovery": {
+      "testDoReconstructed": true,
+      "durableLeasePreserved": true,
+      "nextWorkerQueuePositionAfterRestart": 2,
+      "queuedWorkerAcquiredAfterRelease": true,
+      "result": "passed"
+    },
+    "declaredWorkerBranchIsolation": {
+      "declaredMaximum": 3,
+      "isolatedBranchesAdmitted": 3,
+      "fourthBranchRejected": true,
+      "withoutIsolationCapacity": 1,
+      "result": "passed"
+    }
+  },
+  "existingCoverage": {
+    "prewarmAndWarmReuse": "passed; bounded 5000ms specialist reuse lease",
+    "idleHibernation": "passed; container hibernates at 60000ms",
+    "workspaceScopeIsolation": "passed; Space Assistant, extension, and project prefixes differ",
+    "branchScopedPrewarmRehydrateExecute": "passed",
+    "workspaceWriteHashes": "passed in ToolSandboxDO suite",
+    "resourceBurst": "passed; capacity 3 remained bounded under 30 queued contenders"
+  },
+  "codeChange": {
+    "summary": "Extracted host-derived container runtime resource-key construction from NaelaoAgentDO into container policy and tested installation identity and scope behavior.",
+    "behaviorChange": "none intended; preserves the prior SHA-256-derived naming scheme"
+  },
+  "limitations": [
+    "No live Cloudflare deployment or real container image was started.",
+    "No Modal, local tunnel, macOS, or Windows execution environment was tested.",
+    "Durable Object restart behavior used an in-memory storage shim, not Cloudflare's deployed persistence layer.",
+    "No execution latency distribution or provider cost was measured.",
+    "Multiple installed runtimes exporting the same capability fail closed as ambiguous; installed application/login state is not yet catalogued for automatic choice.",
+    "This test does not establish filesystem isolation between concurrent real container branches; it verifies policy, distinct branch addressing, lock admission, and workspace prefixes separately."
+  ]
+}

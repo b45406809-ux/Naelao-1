@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerWorkerConcurrency, resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
+import { containerRuntimeResourceKey, containerWorkerConcurrency, resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
 
 const installation = (overrides: Partial<InstalledContainer> = {}): InstalledContainer => ({
   tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-a", extensionId: "media_tools",
@@ -45,6 +45,18 @@ describe("container capability resolution", () => {
   it("rejects ambiguous capability matches instead of choosing an arbitrary image", () => {
     expect(() => resolveContainerCapabilities(["pdf.ocr"], [installation(), installation({ installationId: "install-b" })], owner))
       .toThrow("container_capability_ambiguous");
+  });
+
+  it("assigns stable, scope-correct locks to selected container installations", async () => {
+    const selected = resolveContainerCapabilities(["pdf.ocr"], [installation()], owner)!;
+    const first = await containerRuntimeResourceKey(selected, owner.userId);
+    expect(await containerRuntimeResourceKey(selected, owner.userId)).toBe(first);
+    expect(first).toMatch(/^runtime\.project\.[a-f0-9]{40}$/);
+    expect(await containerRuntimeResourceKey(installation({ installationId: "install-b" }), owner.userId)).not.toBe(first);
+    expect(await containerRuntimeResourceKey(installation({ scope: "SPACE_SHARED", projectId: undefined }), owner.userId))
+      .toMatch(/^runtime\.space\.[a-f0-9]{40}$/);
+    expect(await containerRuntimeResourceKey(installation({ scope: "SPACE_USER", projectId: undefined, userId: "another-user" }), owner.userId))
+      .not.toBe(await containerRuntimeResourceKey(installation({ scope: "SPACE_USER", projectId: undefined, userId: owner.userId }), owner.userId));
   });
 
   it("rejects malformed requirements and leaves empty requirements unresolved", () => {

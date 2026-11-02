@@ -12,6 +12,19 @@ export interface InstalledContainer {
   installationId: string; extensionId: string; contract: ContainerContract; scope?: InstallationScope | undefined;
   sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
+/** Stable host-derived lock id for one installed runtime in its owning scope. */
+export async function containerRuntimeResourceKey(item: InstalledContainer, userId: string): Promise<string> {
+  if (!item.installationId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(item.installationId)) throw new Error("container_installation_required");
+  const scope = item.scope ?? "PROJECT_BOUND";
+  const scopeKey = ["SPACE_SHARED", "SPACE_ASSISTANT"].includes(scope) ? "space"
+    : scope === "SPACE_USER" ? "user"
+    : scope === "PROJECT_USER" ? "project-user" : "project";
+  const ownerKey = scopeKey === "user" || scopeKey === "project-user" ? item.userId ?? userId : "_";
+  const material = JSON.stringify([item.installationId, ownerKey]);
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material)))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return `runtime.${scopeKey}.${digest.slice(0, 40)}`;
+}
 /** The installed contract can request concurrency, but the host enables it only when each
  *  worker has a distinct project branch that maps to its own Container DO instance. */
 export function containerWorkerConcurrency(item: InstalledContainer | undefined, hasIsolatedWorkerBranch: boolean): number {

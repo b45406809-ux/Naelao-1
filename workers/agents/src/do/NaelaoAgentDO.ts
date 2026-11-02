@@ -94,7 +94,7 @@ import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../sc
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
-import { resolveContainerBinary, resolveContainerCapabilities, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
+import { resolveContainerBinary, resolveContainerCapabilities, containerRuntimeResourceKey, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
 import { deployedContainerCatalogue, deployedDynamicImages } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
@@ -2837,13 +2837,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const unique = resolveContainerCapabilities([capability], installations, owner);
             if (unique?.installationId === installation.installationId) {
               candidates.set(capability, { capability, description: `Container '${installation.extensionId}/${installation.contract.id}' provides command '${capability}'. Declared capabilities: ${installation.contract.capabilityRequirements.join(", ") || "none"}.` .slice(0, 500) });
-              const scope = installation.scope ?? "PROJECT_BOUND";
-              const scopeKey = ["SPACE_SHARED", "SPACE_ASSISTANT"].includes(scope) ? "space"
-                : scope === "SPACE_USER" ? "user"
-                : ["PROJECT_USER"].includes(scope) ? "project-user" : "project";
-              const ownerKey = scopeKey === "user" ? (installation.userId ?? userId) ?? "_" : scopeKey === "project-user" ? (installation.userId ?? userId) ?? "_" : "_";
-              const runtimeId = await workflowHash(JSON.stringify([installation.installationId, ownerKey]));
-              resourceKeys.set(capability, `runtime.${scopeKey}.${runtimeId.slice(0, 40)}`);
+              resourceKeys.set(capability, await containerRuntimeResourceKey(installation, userId));
             }
           } catch { /* ambiguous installed providers are intentionally omitted */ }
         }
