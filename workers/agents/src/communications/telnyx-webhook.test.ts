@@ -50,7 +50,7 @@ describe("Telnyx extension ingress", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects public Telnyx extension calls without entering the owner voice bridge", async () => {
+  it("admits public Telnyx extension calls without entering the owner voice bridge", async () => {
     const f = fixture();
     f.db.db.exec(readFileSync(new URL("../../../../infra/migrations/0137_telnyx_ingress_receipts.sql", import.meta.url), "utf8"));
     f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access")
@@ -81,9 +81,11 @@ describe("Telnyx extension ingress", () => {
     expect(await result.json()).toEqual({ accepted: true });
     expect(carrier).toHaveBeenCalledTimes(1);
     const [url, init] = carrier.mock.calls[0]!;
-    expect(String(url)).toContain("/calls/v3%3Apublic-call-control/actions/hangup");
+    expect(String(url)).toContain("/calls/v3%3Apublic-call-control/actions/answer");
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toMatchObject({ command_id: expect.stringContaining("reject") });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ command_id: expect.stringContaining("extension_answer") });
+    expect(await f.db.prepare("SELECT binding_id,state FROM assistant_telnyx_extension_calls WHERE call_control_id='v3:public-call-control'").first())
+      .toMatchObject({ binding_id: "public-extension", state: "answering" });
     expect(await f.db.prepare("SELECT call_control_id FROM assistant_telnyx_live_calls").first()).toBeNull();
     expect(await f.db.prepare("SELECT id FROM assistant_live_calls WHERE status='connected'").first()).toBeNull();
   });

@@ -9459,7 +9459,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
-      channel: "phone", messageId: event?.id ?? "validation", instanceId: row.installation_id,
+      channel: "phone", messageId: event?.id ?? "validation", ...(event?.type ? { inboundEvent: event.type } : {}), instanceId: row.installation_id,
       scriptSha256: row.handler_sha256,
     });
     if (!handler || handler.knowledgeCollections.length)
@@ -9578,7 +9578,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
+    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
   }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
@@ -9602,7 +9602,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId || (instance.project_id ?? null) !== (input.projectId ?? null)
       || !(input.projectId ? ["PROJECT_BOUND", "PROJECT_SHARED"] : input.channel === "phone" ? ["SPACE_SHARED"] : []).includes(instance.scope ?? "")) return null;
     const declaration = installation.manifest.channels?.find(item => item.kind === "channel" && item.provider === input.channel && item.context === "channel_only");
-    if (!declaration || !declaration.inboundEvents?.includes("message.received") || !declaration.outboundEvents?.includes("message.reply")
+    const inboundEvent = input.inboundEvent ?? "message.received";
+    if (!declaration || !declaration.inboundEvents?.includes(inboundEvent) || !declaration.outboundEvents?.includes("message.reply")
+      || (inboundEvent.startsWith("call.") && !declaration.outboundEvents?.includes("voice.reply"))
       || (declaration.permissions?.length ?? 0) !== 0 || (declaration.capabilityRequirements?.length ?? 0) !== 0) return null;
     const path = declaration.handlerScript?.match(/^\.\/([A-Za-z0-9._-]{1,128})\.(?:ts|js)$/);
     if (!path) return null;
