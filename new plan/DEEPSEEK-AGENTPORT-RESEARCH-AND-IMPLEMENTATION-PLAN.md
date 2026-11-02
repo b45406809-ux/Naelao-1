@@ -39,18 +39,47 @@ The design target remains Naelao as a general AI OS. Naelao should preserve its 
 
 ## AgentPort: product definition
 
-**AgentPort is Naelao’s provider-neutral identity and authorized-service access layer for agents.** It gives an assistant or external agent a stable, scoped identity plus approved communication channels and service credentials. It is not a business wallet, an anti-bot bypass, or a universal guarantee that every website permits automated accounts.
+**AgentPort is Naelao’s identity, account-provisioning, and authorized-service access layer for agents.** The product hypothesis is an identity cloud for AI agents: create an accountable agent principal, provision supported agent-owned endpoints/accounts, connect explicitly authorized service accounts, and manage the full lifecycle through one API/SDK, MCP server, or CLI. It is closer to “Composio for agent-owned accounts” than a replacement tool-calling library. It is not a business wallet, an anti-bot bypass, a claim of agent legal personhood, or a guarantee that every website permits autonomous accounts. Provider adapters remain replaceable, but **Cloudflare Email Service is the selected and sole planned email transport for Naelao-managed agent inboxes**; AgentMail is not a planned dependency or selectable first-party backend.
 
-The user’s YC framing—“Stripe for AI agent identities”—is a useful product hypothesis: a developer can provision and manage an agent principal, then attach authorized service identities through one API, MCP server, or CLI. In Naelao, AgentPort should be available through the default product and SDK, while most domain-specific behavior and provider integrations remain extensions. External developers may call a separately authenticated AgentPort API/MCP/CLI without running the full Naelao planner.
+The user’s YC framing—“Stripe for AI agent identities”—and the newer “AgentOS Identity Cloud” description are product hypotheses to validate. Within Naelao, the AgentPort controls should be available in Launchpad and through the SDK, while most provider-specific behavior remains extensions. External developers should eventually call AgentPort without running the full Naelao planner. B2B agent fleets are the first target; consumer universal-account creation is not the MVP.
 
 Keep these concepts distinct in the data model and UI:
 
-1. **Naelao agent principal:** stable Naelao-issued ID, owner, assistant/worker type, Space/project scope, lifecycle, and audit lineage.
-2. **Communication endpoints:** email identity, phone number, SMS/MMS/call capability, and WhatsApp channel binding. Endpoints are provider-backed and region/consent/plan constrained.
-3. **Connected service accounts:** OAuth/API connections or explicitly approved service accounts such as a CRM, cloud account, or merchant service. Credentials remain in the host vault and are exposed to a call only as an operation, never as raw secrets.
-4. **Payment identity/authority:** an optional adapter-backed wallet or payment authorization with a separate budget and approval policy. It is not a Naelao stored-value balance or business wallet.
+1. **Agent principal:** stable Naelao-issued ID, accountable owner/organization, agent runtime and key references, assistant/worker type, scope, lifecycle, and audit lineage.
+2. **Provisioned agent identities:** Cloudflare-backed email addresses/inboxes, phone numbers, and provider-approved messaging identities provisioned for the agent, with ownership and portability rules.
+3. **Connected user/organization accounts:** OAuth/API connections, delegated seats, or explicitly approved service accounts. The account owner and the agent principal remain distinct; credentials stay in Vault and are exposed as narrow operations, never raw secrets.
+4. **Agent authority and KYA record:** current delegation, purpose, scopes, expiry, spend/action limits, owner approval evidence, provider constraints, key status, and revocation state.
+5. **Optional payment authority:** an adapter-backed wallet/payment authorization with a separate budget and approval policy. It is not a Naelao stored-value balance or business wallet.
 
-AgentPort handles **identity, authorization, and lifecycle**. Extensions decide domain behavior and expose narrow tasks such as “read order status” or “create a draft purchase request.” Connectors implement vendor-specific auth/API behavior. The agent’s normal planner/worker architecture remains responsible for work selection; AgentPort is a capability provider, not another autonomous agent runtime.
+AgentPort handles **identity, authorized provisioning, authorization, and lifecycle**. Extensions decide domain behavior and expose narrow tasks such as “read order status” or “create a draft purchase request.” Connectors implement vendor-specific auth/API behavior. The planner/worker architecture remains responsible for work selection; AgentPort is a capability provider and identity control plane, not another agent runtime.
+
+### Agent-owned accounts vs. connected human accounts
+
+The distinction must be clear in product copy and records:
+
+| Access mode | What Naelao provides | Example | Product boundary |
+|---|---|---|---|
+| **Native provisioning** | AgentPort creates/assigns the endpoint from a provider or service Naelao operates | Cloudflare Email Service alias on a verified Naelao/tenant domain; a supported leased phone number | Agent identity is separate; provider/region verification and lifecycle rules still apply |
+| **Partner provisioning** | An authorized provider API creates a separate agent/service identity | A telecom number, provider-supported subaccount, or approved business messaging identity | Requires provider contract/API, KYC/KYB where required, and lifecycle acceptance |
+| **Managed onboarding** | The owner signs in, creates/claims an account, or completes provider verification; AgentPort then binds a permitted credential/connection | OAuth consent or a provider-allowed delegated account | This is a connected account, not an account Naelao secretly created for the agent |
+
+Composio already supports multiple connected accounts, aliases, selection, scoped sessions, and credential handling. Therefore AgentPort is not differentiated by “many accounts” or token storage alone. Its proposed distinction is provisioning agent-specific identities where supported, stable agent principals and KYA/authority lifecycle across runtimes, unified lifecycle for native communication identities plus connections, and provider-published provisioning capabilities. See [Composio connected accounts](https://docs.composio.dev/docs/auth-configuration/connected-accounts) and [multiple connected accounts](https://docs.composio.dev/docs/authentication/managing-multiple-connected-accounts).
+
+### KYA: Know Your Agent
+
+Treat **Know Your Agent (KYA)** as an emerging ecosystem term and a Naelao trust profile, not a settled universal certification or replacement for KYC/KYB. Visa describes KYA as vetting trusted AI partners; Mastercard's Agent Pay Trust Framework groups trust around identity, intent, controls, trusted execution, and intelligence. The plan should interoperate with evolving provider/network schemes instead of claiming Naelao invented or controls a global KYA standard. See [Visa's KYA overview](https://corporate.visa.com/en/sites/visa-perspectives/security-trust/trust-is-ultimate-currency.html) and [Mastercard's Agent Pay Trust Framework](https://www.mastercard.com/global/en/news-and-trends/Insights/2026/mastercard-agentic-commerce-trust-white-paper.html).
+
+Naelao's KYA record should answer, with privacy-preserving evidence:
+
+- **Which agent is this?** Stable principal ID, public verification key or equivalent, issuer, runtime/deployment identity where available, key rotation and revocation status.
+- **Who is accountable for it?** The owner or organization, verified at the level required for the requested service. KYC/KYB applies to people/organizations when law or provider policy requires it; it is separate from the agent's own identifier.
+- **Who delegated what, to whom, and for how long?** A signed/versioned mandate binds parent principal → agent/worker → specific service/action scopes, audience, limits, expiry, and revocation. Delegation to workers is narrower than the parent grant and cannot amplify authority.
+- **What was authorized?** For consequential actions, preserve a tamper-evident, minimal record of user intent, approved terms/amount/recipient, applicable policy version, execution ID and outcome. This is an authorization receipt, not a transcript dump.
+- **What executed and under which controls?** Record the selected connector/operation, approval result, budget reservation/settlement, host policy checks, provider response class and evidence references.
+- **Can a relying service verify the agent?** Support signed agent requests/key discovery such as Web Bot Auth where applicable, plus provider/network-specific profiles when available. Web Bot Auth verifies cryptographic request origin/key possession; by itself it does not prove owner KYC, user consent, legal authority, or that a destination permits the request. See [Cloudflare Web Bot Auth](https://developers.cloudflare.com/bots/reference/bot-verification/web-bot-auth/) and [Cloudflare's agentic Internet overview](https://blog.cloudflare.com/the-agentic-internet/).
+- **What is its current risk and history?** Provide revocation, abuse signals, delivery/account-health state, and policy violations with provenance and retention controls. Do not publish raw PII or sensitive operational history by default.
+
+KYA verification levels should be capability-specific (for example, public agent signature only; owner-authenticated; verified organization; regulated-provider verified). No “KYA verified” badge should imply every connected service or action is lawful, approved, or risk-free. Payment-network identity and intent standards (Visa Trusted Agent Protocol, Mastercard Agent Pay/Verifiable Intent, Google AP2, and other emerging protocols) remain adapters gated on published specs, partner access, and acceptance tests.
 
 ## Verified provider facts and current Naelao position
 
@@ -58,9 +87,18 @@ AgentPort handles **identity, authorization, and lifecycle**. Extensions decide 
 
 - Cloudflare Email Service combines outbound sending and inbound Email Routing/Worker processing. Current Cloudflare pricing documentation says inbound Email Routing is unlimited on Free and Paid Workers plans; outbound arbitrary-recipient sending requires Workers Paid, includes 3,000 emails/month per account, then costs $0.35 per 1,000 accepted emails. Sending to verified account destinations is free. Email Routing Worker execution is billed at Workers rates. See [Cloudflare Email Service pricing](https://developers.cloudflare.com/email-service/platform/pricing/) and the [Email Sending Workers API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/).
 - Cloudflare’s Agent email guide documents inbound messages routed to an agent session and outbound replies through Email Service. A Cloudflare zone/domain, DNS/MX configuration, sender verification, Worker bindings, and deliverability controls are still required; this is not automatically a hosted mailbox per agent. See [Cloudflare Agents email channel](https://developers.cloudflare.com/agents/agent-class/communication-channels/email/) and [routing email](https://developers.cloudflare.com/email-service/get-started/route-emails/).
-- AgentMail provides API-managed inboxes, sending/receiving, webhooks, SDKs, and MCP. Its current pricing page advertises Free: 3 inboxes/3,000 emails per month/100 per day; Developer: $20/month for 10 inboxes/10,000 emails; and extra inboxes at $2/month plus $2/month per additional 1,000 monthly emails. See [AgentMail pricing](https://www.agentmail.to/pricing) and its [API introduction](https://www.agentmail.to/docs/introduction).
-- This is not a direct price-equivalent comparison: Cloudflare is attractive when Naelao already has a configured domain, Cloudflare Workers account, and can own its routing/deliverability setup; AgentMail offers a more turnkey agent-inbox service and domain/inbox abstraction, with priced capacity and provider dependence. Cloudflare has lower marginal send cost on a paid Workers plan at the stated volume; AgentMail reduces setup and inbox operations. Naelao should keep both behind one email adapter and choose by deployment/tenant policy rather than removing a working provider.
-- Repository evidence: Naelao already has Cloudflare inbound parsing/routing and outbound Email Service code, per-agent/task address identity work, and an AgentMail REST client path. Email rollout depends on `EMAIL_INGRESS_DOMAIN`, sending-domain/binding configuration and/or AgentMail API credentials; code presence does not mean the domains or production delivery have been accepted live. Current code evidence is recorded in `new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md` under Tasks 31–32 and the channel/email implementation entries.
+- The product decision is to use Cloudflare Email Service for Naelao-managed AgentPort email and **remove the AgentMail dependency and existing AgentMail-specific implementation path after a repository inventory and safe migration**. The earlier comparison treated AgentMail as a possible turnkey backend; that is superseded by this decision. It may remain only as historical research in this document, not a runtime fallback or selectable provider.
+- Cloudflare does not provide a complete mailbox product merely by enabling Email Routing. Naelao must build the agent-facing inbox layer: provision an address/alias on a verified Naelao-managed or tenant-owned domain; route inbound MIME through Cloudflare Email Routing to a host Worker; authenticate, deduplicate, size-limit, classify and persist messages; expose bounded list/read/search/thread/reply/send operations through AgentPort SDK/API/MCP/CLI; and maintain delivery receipts, abuse controls, quotas, retention, export and deletion. Keep message bodies/attachments in approved storage with tenant-scoped references; do not put raw email, OTPs or attachments in prompts, blackboards or audit events by default.
+- Implement AgentMail-like usability as Naelao product behavior over Cloudflare primitives: per-agent address identity, durable inbox/thread view, inbound event wakeup, drafts and owner approval where required, send/reply, attachment handling, delivery state, filters, rate limits, audit and lifecycle controls. This is a Naelao inbox service, not a claim that Cloudflare Email Routing itself creates independent IMAP mailboxes. Prefer addresses/subdomains under a managed Naelao domain for the first onboarding; support tenant domains after DNS ownership, MX impact, SPF/DKIM/DMARC, deliverability and migration flows are proven.
+- Pricing is materially lower for outbound at the current published Cloudflare rates when the platform already pays for Workers and domain setup, but it is not free: Paid Workers, account-level included send quota, additional accepted-message charges, Worker execution, storage, observability, domain reputation and abuse/support costs all count. Inbound route availability does not guarantee deliverability or a per-agent mailbox. Enforce per-space/per-agent quotas over the shared account pool and meter true marginal costs.
+- Repository evidence: Naelao already has Cloudflare inbound parsing/routing and outbound Email Service code, per-agent/task address identity work, and an AgentMail REST client path. Email rollout depends on `EMAIL_INGRESS_DOMAIN`, sending-domain/binding configuration and verified sender setup; code presence does not mean domains or production delivery have passed live acceptance. Inventory every AgentMail adapter, connector catalogue entry, secret/config, test, UI and documentation reference. Before removing code, export/migrate any live inbox state, confirm addresses and DNS ownership can be retained or communicate that addresses may change, test inbound/outbound and replies through Cloudflare, preserve audit/retention, and keep a time-bounded rollback. AgentMail-owned domains are not assumed portable. If no live production inboxes depend on it, remove the adapter and stale configuration/tests/docs in one migration after Cloudflare acceptance.
+
+### Agent identity infrastructure and market position
+
+- Initial segment: organizations and FDEs operating multiple assistants/workers. Price hypotheses include per-active-agent platform fees, channel/number rental, usage, managed onboarding and governance; validate willingness to pay and gross margin before using projections. An illustrative `500 agents × ($5 platform + $2 average usage) = $3,500 monthly gross revenue` is arithmetic only, not a forecast and excludes provider, storage, support, abuse, tax and acquisition costs.
+- The difference from Composio is not merely “separate connections” or an API-token vault: Composio already offers multiple connected accounts and scoped use. AgentPort's hypothesis is lifecycle-managed agent principals, native provisioning of supported agent-owned channels, delegated authority/KYA evidence, portability between Naelao and external runtimes, and a provider catalog where approved services publish provisioning/identity capabilities.
+- Portability means stable agent identity and exportable policy/audit metadata while each provider credential stays in its provider's allowed storage and can be revoked/reconnected. Do not promise that a phone number, domain address, WhatsApp identity, reputation or third-party account can always transfer; each provider controls portability.
+- The long-term “account marketplace” is an opt-in provider ecosystem, not a promise Naelao can sign agents up everywhere. Native provisioning, authorized partner provisioning and owner-led managed onboarding remain distinct paths. KYC/KYB belongs to the accountable human/organization when required; KYA identifies the agent and records its mandate, intent and execution provenance.
 
 ### Wallets and x402
 
@@ -90,8 +128,8 @@ Naelao planner/worker OR external agent
                   └─ invokes provider adapter using vault-held credentials
                            │
        ┌───────────────────┼──────────────────────┐
-       Email adapter     Telecom adapter      Service-account adapters
-    Cloudflare/AgentMail Twilio/Telnyx/WA       OAuth/API/approved browser
+       Cloudflare Email adapter   Telecom adapter      Service-account adapters
+       inbox + routing       Twilio/Telnyx/WA          OAuth/API/approved browser
                            │
               Optional payment adapter (future)
                   x402 / Cloudflare Wallets when GA
@@ -119,7 +157,7 @@ Do not start these implementation phases until the current broad Naelao experime
 
 ### Phase 0 — baseline and test-gated design
 
-- Inventory current assistant email/phone identities, AgentMail and Cloudflare email routes, phone provider bindings, credential vault, project/Space scope, existing `ctx.connector`, MCP, API and CLI patterns.
+- Inventory current assistant email/phone identities, Cloudflare email routes and every AgentMail code/config/UI/docs path, phone provider bindings, credential vault, project/Space scope, existing `ctx.connector`, MCP, API and CLI patterns. Record whether any live addresses, inbox contents or callbacks depend on AgentMail before decommissioning.
 - Draw state and data-flow maps for: provision → verify → attach → send/receive → approval → disable/revoke → retention/delete.
 - Measure provider cost, first-provision latency, webhook delivery/retry behavior, and provider-call failure/uncertain-outcome recovery using mocked and opt-in live accounts.
 - Exit gate: no duplicate identity stores without a documented ownership reason; tests establish tenant isolation, revoked-token behavior, replay safety and credential non-disclosure for existing paths.
@@ -142,8 +180,11 @@ Do not start these implementation phases until the current broad Naelao experime
 
 ### Phase 3 — unify current email and phone under adapters
 
-- Define provider-neutral email and telecom interfaces; wrap existing Cloudflare Email Service, AgentMail, Twilio, Telnyx and WhatsApp implementations rather than replacing them.
-- Email selection: Cloudflare-native path for configured Cloudflare domains and cost-sensitive platform-managed routing; AgentMail for turnkey hosted inbox/domain requirements or customer-selected provider. Surface quotas, pricing, verification prerequisites, and domain ownership explicitly.
+- Define provider-neutral email and telecom contracts, but make Cloudflare Email Service the sole Naelao-managed email transport. Do not retain AgentMail as a fallback or first-party selector. Keep the provider boundary only to support future migration if Naelao later changes this decision.
+- Build AgentPort inbox behavior above Cloudflare: per-agent address allocation; inbound routing and durable message/thread records; safe MIME/attachment handling; list/search/read/reply/send; drafts and approvals; event wakeup; delivery and bounce state; per-agent/space quotas; abuse/suppression controls; retention, export and deletion. This supplies AgentMail-like product functionality while Cloudflare supplies transport primitives.
+- Make Cloudflare setup explicit: managed or tenant-verified domain, ownership proof, Email Routing/MX configuration, verified sending domain, SPF/DKIM/DMARC, account-level send-pool allocation, and test messages. A routing alias alone must not be labeled a mailbox. Surface cost, quota and deliverability prerequisites.
+- Decommission AgentMail only after Phase 0 inventory and Cloudflare acceptance: preserve or export messages/audit, map/reissue addresses where possible, notify affected owners where addresses change, verify ingress/egress/reply and deduplication, then remove the direct REST client, secret bindings, connector entry, tests and stale docs. Keep a bounded rollback window for routing cutover; never assume a provider-owned domain/address is portable.
+- Reuse existing Twilio, Telnyx and WhatsApp implementations for their channels; email and telecom lifecycle records stay separate AgentPort endpoint types.
 - Make lifecycle UI operate on AgentPort endpoint records: provision/attach, status, test, policy, pause, detach/release, cost/usage, audit. Reuse current Assistant Mailbox/Phone UI components but label endpoints by agent/scope.
 - Keep owner assistant calls and extension-owned customer calls separate identities and execution contexts. Continue to require customer-facing behavior to come from template-installed extensions.
 - Exit gate: provider mock contract suite plus opt-in end-to-end inbound/outbound email and phone tests; preserve existing production callbacks through migration.
@@ -155,6 +196,14 @@ Do not start these implementation phases until the current broad Naelao experime
 - No stealth human impersonation, CAPTCHA bypass, anti-bot circumvention, shared credential scraping, or automated creation of accounts the provider does not permit.
 - Treat Amazon as blocked from autonomous signup/browse/buy until documented provider authorization/current policy and supported integration are confirmed; test an approved API path first.
 - Exit gate: provider-by-provider permission matrix with legal/product owner signoff; acceptance tests cover revocation, deprovisioning, account lockout and account-owner alerts.
+
+### Phase 4B — KYA and portable agent identity
+
+- Define a versioned KYA profile (not a universal certification): stable agent principal/key; accountable owner/organization evidence; signed, scoped, expiring and revocable delegation; declared purpose and audience; user intent/approval receipt for consequential actions; execution provenance; policy and usage status; and privacy/retention rules.
+- Delegate capabilities down the assistant → planner/worker chain without privilege amplification. Verify principal, key status, grant, purpose, provider policy, action limit and expiry at invocation time; stale or revoked KYA evidence fails closed.
+- Publish verification levels per capability and disclose exactly what each proves. Web Bot Auth proves signed request/key possession, not owner KYC, consent or destination permission. Integrate Visa/Mastercard/Google or other protocols only through reviewed adapters after current specification, partner access and tests.
+- Provide portability through principal IDs, policy/export records and reconnection workflows. Credentials stay vaulted and provider-bound; endpoint transfer is best-effort and only when that provider permits it.
+- Exit gate: delegation/revocation/property tests, key rotation and stale-credential tests, audit/consent evidence review, privacy threat model and a relying-party interoperability test. Do not badge an agent “verified” globally.
 
 ### Phase 5 — external AgentPort developer surfaces
 
@@ -197,7 +246,7 @@ Do not aggregate Cloudflare email routing as “a mailbox” if only an alias/ev
 1. Which Naelao principal owns an identity: Space assistant, project assistant, a specific worker, or a separate external agent? Recommended default: assistant principal; workers use delegated short-lived grants from their parent and never own persistent third-party credentials by default.
 2. Whether AgentPort becomes a team-maintained first-party extension with a small host protocol, or a native dashboard surface backed by SDK methods. Recommended: host primitives + team-owned extension/UI, avoiding a hard-coded provider catalog in the kernel.
 3. Whether Naelao manages a shared Cloudflare email domain or requires tenant/FDE-owned domains. Decide after domain, reputation, abuse, and unit-cost tests.
-4. Whether direct AgentMail should be a selectable first-party adapter or an optional Composio/MCP connector. Current direct REST client exists; keep it behind adapter either way.
+4. Cloudflare shared domain versus tenant-owned domains and inbox address portability. Decide after domain, reputation, abuse and unit-cost tests.
 5. Cloudflare Wallets API availability and x402 support are moving targets; re-check official docs and account eligibility before payment implementation.
 6. Which external service providers have an approved agent signup / delegated-account path. Amazon is not assumed eligible.
 
@@ -207,8 +256,11 @@ Do not aggregate Cloudflare email routing as “a mailbox” if only an alias/ev
 - [Cloudflare Email Service pricing](https://developers.cloudflare.com/email-service/platform/pricing/)
 - [Cloudflare Email Service send API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
 - [Cloudflare Agents email channel](https://developers.cloudflare.com/agents/agent-class/communication-channels/email/)
-- [AgentMail pricing](https://www.agentmail.to/pricing)
-- [AgentMail introduction](https://www.agentmail.to/docs/introduction)
+- [Composio connected accounts](https://docs.composio.dev/docs/auth-configuration/connected-accounts)
+- [Composio multiple connected accounts](https://docs.composio.dev/docs/authentication/managing-multiple-connected-accounts)
+- [Cloudflare Web Bot Auth](https://developers.cloudflare.com/bots/reference/bot-verification/web-bot-auth/)
+- [Visa KYA overview](https://corporate.visa.com/en/sites/visa-perspectives/security-trust/trust-is-ultimate-currency.html)
+- [Mastercard Agent Pay Trust Framework](https://www.mastercard.com/global/en/news-and-trends/Insights/2026/mastercard-agentic-commerce-trust-white-paper.html)
 - [Cloudflare Wallets docs](https://developers.cloudflare.com/wallets/)
 - [Cloudflare Wallets announcement](https://blog.cloudflare.com/wallets/)
 - [Cloudflare Monetization Gateway beta](https://blog.cloudflare.com/monetization-gateway-beta/)
