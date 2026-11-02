@@ -20,13 +20,13 @@
       "summary": {
         "elapsedMs": {
           "samples": [
-            9.77,
-            6.03,
-            5.85
+            6.06,
+            5.68,
+            5.61
           ],
-          "mean": 7.216666666666666,
-          "p50": 6.03,
-          "p95": 9.77
+          "mean": 5.783333333333332,
+          "p50": 5.68,
+          "p95": 6.06
         },
         "completedTasks": {
           "samples": [
@@ -142,7 +142,7 @@
       "samples": [
         {
           "mode": "no_board",
-          "elapsedMs": 9.77,
+          "elapsedMs": 6.06,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -159,7 +159,7 @@
         },
         {
           "mode": "no_board",
-          "elapsedMs": 6.03,
+          "elapsedMs": 5.68,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -176,7 +176,7 @@
         },
         {
           "mode": "no_board",
-          "elapsedMs": 5.85,
+          "elapsedMs": 5.61,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -197,13 +197,13 @@
       "summary": {
         "elapsedMs": {
           "samples": [
-            4.76,
-            4.28,
-            3.65
+            3.89,
+            3.98,
+            3.51
           ],
-          "mean": 4.2299999999999995,
-          "p50": 4.28,
-          "p95": 4.76
+          "mean": 3.793333333333333,
+          "p50": 3.89,
+          "p95": 3.98
         },
         "completedTasks": {
           "samples": [
@@ -319,7 +319,7 @@
       "samples": [
         {
           "mode": "targeted",
-          "elapsedMs": 4.76,
+          "elapsedMs": 3.89,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -336,7 +336,7 @@
         },
         {
           "mode": "targeted",
-          "elapsedMs": 4.28,
+          "elapsedMs": 3.98,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -353,7 +353,7 @@
         },
         {
           "mode": "targeted",
-          "elapsedMs": 3.65,
+          "elapsedMs": 3.51,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -374,13 +374,13 @@
       "summary": {
         "elapsedMs": {
           "samples": [
-            4.05,
-            4.02,
-            4.35
+            3.82,
+            3.99,
+            3.55
           ],
-          "mean": 4.14,
-          "p50": 4.05,
-          "p95": 4.35
+          "mean": 3.7866666666666666,
+          "p50": 3.82,
+          "p95": 3.99
         },
         "completedTasks": {
           "samples": [
@@ -496,7 +496,7 @@
       "samples": [
         {
           "mode": "broadcast",
-          "elapsedMs": 4.05,
+          "elapsedMs": 3.82,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -513,7 +513,7 @@
         },
         {
           "mode": "broadcast",
-          "elapsedMs": 4.02,
+          "elapsedMs": 3.99,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -530,7 +530,7 @@
         },
         {
           "mode": "broadcast",
-          "elapsedMs": 4.35,
+          "elapsedMs": 3.55,
           "completedTasks": 8,
           "verifiedTasks": 8,
           "workerModelCalls": 8,
@@ -553,7 +553,7 @@
     "tokenUnits": "estimated as ceil(UTF-8 JSON bytes / 4), not provider tokenizer counts",
     "modelCalls": "synthetic worker invocations, one per task; no external model provider was called",
     "cost": "null because there are no provider billing receipts; synthetic deterministic execution is not a cash-cost benchmark",
-    "verifiedCompletion": "each task result checked by GoalDagHost.verify against a fixed expected fixture value"
+    "verifiedCompletion": "each task result checked by an injected deterministic Goal DAG verifier callback against a fixed expected fixture value"
   },
   "limitations": [
     "This exercises the actual Goal DAG scheduling, message creation, recipient visibility, and host verification with deterministic fixture workers; it does not use live Gemini, GroqCloud, or OpenRouter worker models.",

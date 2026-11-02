@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "live_provider_blackboard_task_outcome_summary",
+  "workflowRun": "https://github.com/b45406809-ux/Naelao-1/actions/runs/41502425898",
+  "commit": "94f331d9976d356196bc2334c249e37ebf44681f",
+  "evidenceClass": "test-only-provider-calls-through-local-goal-dag-with-strict-fixture-answer-check",
+  "taskSet": "four matched industrial-pump tariff research tasks",
+  "policyArms": ["no_board", "targeted", "broadcast"],
+  "maxCallsPerProvider": 12,
+  "fixtureLookupCallsPerArm": { "no_board": 4, "targeted": 2, "broadcast": 1 },
+  "duplicateFixtureLookupsPerArm": { "no_board": 3, "targeted": 1, "broadcast": 0 },
+  "providers": {
+    "gemini/gemini-3.5-flash-lite": {
+      "state": "completed",
+      "requests": 12,
+      "verifiedTasksPerArm": { "no_board": "4/4", "targeted": "4/4", "broadcast": "4/4" },
+      "inputTokensPerArm": { "no_board": 387, "targeted": 361, "broadcast": 348 },
+      "outputTokensPerArm": { "no_board": 48, "targeted": 44, "broadcast": 48 },
+      "totalTokensPerArm": { "no_board": 435, "targeted": 405, "broadcast": 396 },
+      "requestLatencyMsPerArm": {
+        "no_board": [571.2, 743.0, 666.3, 637.6],
+        "targeted": [553.1, 534.1, 506.7, 524.9],
+        "broadcast": [522.0, 497.6, 460.5, 530.2]
+      },
+      "armElapsedMs": { "no_board": 2621.4, "targeted": 2120.8, "broadcast": 2011.8 },
+      "providerCostReceipt": null
+    },
+    "groqcloud/openai/gpt-oss-20b": {
+      "state": "completed",
+      "requests": 12,
+      "verifiedTasksPerArm": { "no_board": "4/4", "targeted": "4/4", "broadcast": "4/4" },
+      "inputTokensPerArm": { "no_board": 735, "targeted": 715, "broadcast": 705 },
+      "outputTokensPerArm": { "no_board": 171, "targeted": 189, "broadcast": 293 },
+      "totalTokensPerArm": { "no_board": 906, "targeted": 904, "broadcast": 998 },
+      "requestLatencyMsPerArm": {
+        "no_board": [260.4, 162.1, 224.4, 288.5],
+        "targeted": [260.5, 284.2, 261.9, 282.5],
+        "broadcast": [348.5, 249.6, 297.9, 440.5]
+      },
+      "armElapsedMs": { "no_board": 936.3, "targeted": 1090.4, "broadcast": 1337.7 },
+      "providerCostReceipt": null
+    }
+  },
+  "productionOpenRouterCalls": 0,
+  "externalConnectorCalls": 0,
+  "labelSource": "fixed authored tariff fixture; not independent adjudication",
+  "limitations": [
+    "Single sequential pass per provider and policy; four calls per arm are not enough for a robust latency or quality distribution.",
+    "The source fixture is local. This does not measure real connector use, external effects, or independently labeled task accuracy.",
+    "Provider costs were not returned, so cost per task is unknown. Token totals are provider-reported usage only.",
+    "The initial run on commit 402df761 used a permissive verifier and a GroqCloud HTTP 400; its apparent passes are invalidated. The strict run above is the accepted measurement.",
+    "The workflow success verifies harness completion, not general model quality or production readiness."
+  ]
+}
