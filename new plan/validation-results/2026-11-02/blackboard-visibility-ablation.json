@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "kind": "task_blackboard_visibility_ablation",
+  "evidenceClass": "unit-deterministic-synthetic-graph",
+  "seed": "0x4e41454c",
+  "graphs": 100,
+  "tasks": 701,
+  "dependencyEdges": 595,
+  "directHandoffBytes": 80518,
+  "targetedBoardHandoffBytes": 80518,
+  "targetedMessageBytes": 81173,
+  "naiveBroadcastBytes": 368311,
+  "targetedBoardMessages": 595,
+  "directVsTargetedPayloadMismatches": 0,
+  "crossRecipientMessageLeaks": 0,
+  "completionStatusMismatches": 0,
+  "elapsedMs": 145.94,
+  "byteUnits": "UTF-8 bytes, not model tokens",
+  "externalProviderCalls": 0
+}
