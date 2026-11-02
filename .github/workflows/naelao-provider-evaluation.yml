@@ -42,7 +42,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
-        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') }}
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -56,7 +56,7 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
@@ -73,7 +73,7 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
         run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -86,12 +86,12 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') && !startsWith(github.ref_name, 'provider-eval-heldout-') && !startsWith(github.ref_name, 'provider-eval-repeatability-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
       - name: Run real-model planning through the goal DAG and host verifier
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -112,6 +112,19 @@ jobs:
           GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
           GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || startsWith(github.ref_name, 'provider-eval-heldout-') && 'true' || startsWith(github.ref_name, 'provider-eval-repeatability-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
         run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
+      - name: Run test-only peer-routing decision evaluation
+        if: ${{ startsWith(github.ref_name, 'provider-eval-peer-routing-') }}
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          NAELAO_RUN_LIVE_PEER_ROUTING: 'true'
+          NAELAO_PEER_ROUTING_REPORT: peer-routing-model-evaluation.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/blackboard-peer-routing-provider-evaluation.test.ts --reporter=verbose
       - name: Publish measured metrics
         if: always()
         run: |
@@ -148,6 +161,24 @@ jobs:
             for (const item of report.results) if (item.heldoutMetrics) console.log(`  - ${item.provider} heldout objectives: ${item.heldoutMetrics.objectives}; attempted ${item.heldoutMetrics.attemptedRequests}; valid plans/DAGs/host verified ${item.heldoutMetrics.validPlans}/${item.heldoutMetrics.validGraphs}/${item.heldoutMetrics.hostVerifiedFixtures}.`);
             for (const item of report.results) if (item.repeatability) for (const [kind, metric] of Object.entries(item.repeatability)) console.log(`  - ${item.provider} ${kind} stability: ${metric.stableObjectives}/${metric.completedObjectives} completed objectives across ${metric.repeatsPerObjective} runs; ${metric.stabilityRate == null ? 'incomplete' : `${(metric.stabilityRate * 100).toFixed(1)}%`}.`);
             for (const item of report.results) for (const sample of item.cases ?? []) if (sample.semanticRubric) console.log(`  - ${item.provider}/${sample.id}: semantic rubric ${sample.semanticRubric.satisfied}/${sample.semanticRubric.required}; missing ${sample.semanticRubric.missing.join(', ') || 'none'}.`);
+            console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
+          }
+          JS
+      - name: Publish peer-routing metrics
+        if: always() && startsWith(github.ref_name, 'provider-eval-peer-routing-')
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('peer-routing-model-evaluation.json', 'utf8')); } catch {}
+          console.log('\n## Test-only peer-sharing decision quality\n');
+          if (!report) console.log('No peer-routing report was produced.');
+          else {
+            console.log(`Fixed synthetic holdout: ${report.datasetScenarios} scenarios, ${report.candidatePairs} candidate pairs; host confidence gate ${report.hostConfidenceThreshold}; request cap ${report.requestCapPerProvider} per provider.`);
+            console.log('\n| Provider/model | State | Calls | Valid decisions | Raw accuracy / precision / recall / F1 | Host-gated accuracy / precision / recall / F1 | Latency | Tokens in/out | Reported cost |\n|---|---|---:|---:|---|---|---:|---:|---:|');
+            for (const item of report.results) {
+              const raw = item.rawDecisionMetrics; const gated = item.hostThresholdMetrics;
+              console.log(`| ${item.provider}/${item.model} | ${item.state}${item.reason ? ` (${item.reason})` : ''} | ${item.requests} | ${item.validUniqueDecisions ?? 0}/${report.candidatePairs} | ${raw ? `${(raw.accuracy*100).toFixed(1)}% / ${(raw.precision*100).toFixed(1)}% / ${(raw.recall*100).toFixed(1)}% / ${(raw.f1*100).toFixed(1)}%` : '—'} | ${gated ? `${(gated.accuracy*100).toFixed(1)}% / ${(gated.precision*100).toFixed(1)}% / ${(gated.recall*100).toFixed(1)}% / ${(gated.f1*100).toFixed(1)}%` : '—'} | ${item.latencyMs ?? '—'} ms | ${item.usage?.inputTokens ?? '—'}/${item.usage?.outputTokens ?? '—'} | ${item.usage?.providerReportedCostUsd ?? 'unknown'} |`);
+            }
             console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
           }
           JS
@@ -196,4 +227,5 @@ jobs:
             goal-architecture-benchmark.json
             blackboard-ranking-live.json
             live-openrouter-decisions.json
+            peer-routing-model-evaluation.json
           if-no-files-found: warn
