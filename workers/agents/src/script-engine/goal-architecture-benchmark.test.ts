@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CLEF_FLASH_MODEL, SystemOneDecisionClient } from "@naelao/agent-sdk";
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal, type GoalTaskState } from "./goal-dag.js";
@@ -16,6 +17,36 @@ function planningReportState(cases: Array<{ state: string }>, expectedCaseCount:
   if (quotaStopped) return "partial_stopped_on_quota";
   if (cases.length === expectedCaseCount && cases.every(item => item.state === "plan_graph_host_verified")) return "completed";
   return cases.some(item => item.state === "plan_graph_host_verified" || item.state === "execution_not_verified") ? "partial" : "failed";
+}
+
+function fingerprintPlan(tasks: Array<Pick<GoalTask, "id" | "title" | "subtask_spec" | "dependencies">>) {
+  const canonical = tasks.map(item => ({
+    id: item.id,
+    title: item.title.trim(),
+    subtask_spec: item.subtask_spec.trim(),
+    dependencies: [...(item.dependencies ?? [])],
+  }));
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 16);
+}
+
+function measureRepeatability(objectiveIds: string[], cases: Array<{ id: string; repeat?: number; planFingerprint?: string }>, repeats: number) {
+  const byObjective = objectiveIds.map(id => {
+    const runs = cases.filter(item => item.id === id && item.planFingerprint);
+    const complete = runs.length === repeats;
+    const distinctFingerprints = new Set(runs.map(item => item.planFingerprint)).size;
+    return { id, complete, runs: runs.length, distinctFingerprints, stable: complete && distinctFingerprints === 1 };
+  });
+  const completeObjectives = byObjective.filter(item => item.complete).length;
+  const stableObjectives = byObjective.filter(item => item.stable).length;
+  return {
+    objectives: objectiveIds.length,
+    repeatsPerObjective: repeats,
+    expectedRuns: objectiveIds.length * repeats,
+    completedObjectives: completeObjectives,
+    stableObjectives,
+    exactStabilityRate: completeObjectives === objectiveIds.length && objectiveIds.length > 0 ? stableObjectives / objectiveIds.length : null,
+    byObjective,
+  };
 }
 
 type Scenario = {
@@ -236,6 +267,17 @@ describe("goal architecture benchmark", () => {
     expect(planningReportState([{ state: "request_failed" }], 1, false)).toBe("failed");
   });
 
+  it("measures exact plan repeatability only when every requested repeat returned a valid graph", () => {
+    expect(measureRepeatability(["stable", "changed", "missing"], [
+      { id: "stable", repeat: 1, planFingerprint: "same" }, { id: "stable", repeat: 2, planFingerprint: "same" },
+      { id: "changed", repeat: 1, planFingerprint: "one" }, { id: "changed", repeat: 2, planFingerprint: "two" },
+      { id: "missing", repeat: 1, planFingerprint: "one" },
+    ], 2)).toMatchObject({ objectives: 3, repeatsPerObjective: 2, expectedRuns: 6, completedObjectives: 2, stableObjectives: 1, exactStabilityRate: null });
+    expect(measureRepeatability(["stable"], [
+      { id: "stable", repeat: 1, planFingerprint: "same" }, { id: "stable", repeat: 2, planFingerprint: "same" },
+    ], 2).exactStabilityRate).toBe(1);
+  });
+
   it("measures verified completion, failure containment, recovery and dispatch isolation", async () => {
     const runs = [];
     for (let repeat = 0; repeat < 3; repeat++) {
@@ -307,8 +349,14 @@ describe("goal architecture benchmark", () => {
       { id: "margin-report", text: "From synthetic revenue and cost rows, plan a gross-margin calculation and an independent recomputation. Show the formula; do not move money.", rubric: [{ id: "calculate-margin", pattern: /margin|revenue|cost/i }, { id: "independent-recomputation", pattern: /independent|recomput|cross.?check|validat|verify/i }] },
     ];
     const requestedCases = Number.parseInt(process.env.NAELAO_MAX_LIVE_PLAN_CASES ?? "4", 10);
+    const requestedRepeats = Number.parseInt(process.env.NAELAO_PLAN_REPEATS ?? "1", 10);
+    const repeatCount = Number.isSafeInteger(requestedRepeats) ? Math.max(1, Math.min(3, requestedRepeats)) : 1;
+    const holdoutOnly = process.env.NAELAO_PLAN_HOLDOUT_ONLY === "true";
     const caseLimit = Number.isSafeInteger(requestedCases) ? Math.max(1, Math.min(objectives.length, requestedCases)) : 4;
-    const heldoutIds = new Set(objectives.slice(4, caseLimit).map(item => item.id));
+    const selectedObjectives = (holdoutOnly ? objectives.slice(4) : objectives).slice(0, caseLimit);
+    const caseCount = selectedObjectives.length;
+    const expectedCaseCount = caseCount * repeatCount;
+    const heldoutIds = new Set(selectedObjectives.filter(item => holdoutOnly || objectives.indexOf(item) >= 4).map(item => item.id));
     const providers = [
       { id: "gemini", model: "gemini-3.5-flash-lite", key: (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "").split(",")[0]?.trim(), url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent", confirmed: process.env.GEMINI_FREE_TIER_CONFIRMED === "true", allowed: process.env.GEMINI_GOAL_CALLS_ALLOWED === "true" },
       { id: "groqcloud", model: process.env.GROQ_FREE_MODEL_ID || "openai/gpt-oss-20b", key: (process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || "").split(",")[0]?.trim(), url: "https://api.groq.com/openai/v1/chat/completions", confirmed: process.env.GROQ_FREE_TIER_CONFIRMED === "true", allowed: process.env.GROQ_GOAL_CALLS_ALLOWED === "true" },
@@ -331,12 +379,14 @@ describe("goal architecture benchmark", () => {
         results.push({ ...providerResult, state: "blocked", reason: "test_key_missing", cases });
         continue;
       }
-      for (let index = 0; index < caseLimit; index++) {
-        if (stopped) { cases.push({ id: objectives[index]!.id, state: "not_run_after_provider_stop", attempted: false }); continue; }
+      for (let repeat = 1; repeat <= repeatCount; repeat++) for (let index = 0; index < caseCount; index++) {
+        const objective = selectedObjectives[index]!;
+        const objectiveIndex = objectives.indexOf(objective);
+        if (stopped) { cases.push({ id: objective.id, repeat, state: "not_run_after_provider_stop", attempted: false }); continue; }
         const prompt = [
           "Create a task graph for the objective below. Return JSON only with this exact top-level shape: {\"tasks\":[{\"id\":\"short-id\",\"title\":\"...\",\"subtask_spec\":\"...\",\"dependencies\":[\"prior-task-id\"]}]}.",
           "Use 1 to 4 tasks. IDs must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}. Dependencies must refer only to earlier tasks. Every task must contribute to the objective. Do not include tools, models, permissions, file paths, acceptance criteria, or external side effects; the host supplies these.",
-          `Objective: ${objectives[index].text}`,
+          `Objective: ${objective.text}`,
         ].join("\n");
         const started = performance.now();
         providerResult.requests = Number(providerResult.requests) + 1;
@@ -350,22 +400,22 @@ describe("goal architecture benchmark", () => {
               : JSON.stringify({ model: provider.model, messages: [{ role: "user", content: prompt }], max_completion_tokens: 512, reasoning_effort: "low", response_format: { type: "json_object" } }),
           });
         } catch (error) {
-          cases.push({ id: objectives[index]!.id, state: "request_failed", attempted: true, failure: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network_error", latencyMs: Number((performance.now() - started).toFixed(1)) });
+          cases.push({ id: objective.id, repeat, state: "request_failed", attempted: true, failure: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network_error", latencyMs: Number((performance.now() - started).toFixed(1)) });
           continue;
         }
         const latencyMs = Number((performance.now() - started).toFixed(1));
         if (response.status === 429) {
-          cases.push({ id: objectives[index]!.id, state: "provider_stopped", attempted: true, failure: "quota_or_rate_limited", httpStatus: 429, latencyMs });
+          cases.push({ id: objective.id, repeat, state: "provider_stopped", attempted: true, failure: "quota_or_rate_limited", httpStatus: 429, latencyMs });
           stopped = true;
           continue;
         }
         if (!response.ok) {
-          cases.push({ id: objectives[index]!.id, state: "request_failed", attempted: true, failure: response.status === 401 || response.status === 403 ? "credential_or_access_denied" : "provider_error", httpStatus: response.status, latencyMs });
+          cases.push({ id: objective.id, repeat, state: "request_failed", attempted: true, failure: response.status === 401 || response.status === 403 ? "credential_or_access_denied" : "provider_error", httpStatus: response.status, latencyMs });
           continue;
         }
         let body: any;
         try { body = await response.json(); } catch {
-          cases.push({ id: objectives[index]!.id, state: "invalid_response", attempted: true, latencyMs });
+          cases.push({ id: objective.id, repeat, state: "invalid_response", attempted: true, latencyMs });
           continue;
         }
         const rawText = provider.id === "gemini"
@@ -373,16 +423,16 @@ describe("goal architecture benchmark", () => {
           : body?.choices?.[0]?.message?.content ?? "";
         let parsed: unknown;
         try { parsed = JSON.parse(rawText); } catch {
-          cases.push({ id: objectives[index]!.id, state: "invalid_plan_json", attempted: true, latencyMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
+          cases.push({ id: objective.id, repeat, state: "invalid_plan_json", attempted: true, latencyMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
           continue;
         }
         const rawTasks = (parsed as { tasks?: unknown })?.tasks;
         if (rawText.length > 16_000 || !Array.isArray(rawTasks) || rawTasks.length < 1 || rawTasks.length > 4) {
-          cases.push({ id: objectives[index]!.id, state: "invalid_plan_shape", attempted: true, latencyMs });
+          cases.push({ id: objective.id, repeat, state: "invalid_plan_shape", attempted: true, latencyMs });
           continue;
         }
         providerResult.validPlans = Number(providerResult.validPlans) + 1;
-        const caseId = `live-${provider.id}-${index + 1}`;
+        const caseId = `live-${provider.id}-${objectiveIndex + 1}-r${repeat}`;
         const hostCriteria = "Host captured this task output";
         let tasks: GoalTask[] = [];
         try {
@@ -401,11 +451,12 @@ describe("goal architecture benchmark", () => {
           });
           validateGoalDag(tasks);
         } catch {
-          cases.push({ id: objectives[index]!.id, state: "invalid_goal_graph", attempted: true, validPlan: true, taskCount: tasks.length, latencyMs });
+          cases.push({ id: objective.id, repeat, state: "invalid_goal_graph", attempted: true, validPlan: true, taskCount: tasks.length, latencyMs });
           continue;
         }
         providerResult.validGraphs = Number(providerResult.validGraphs) + 1;
-        const rubric = scorePlanRubric(tasks, objectives[index]!.rubric);
+        const rubric = scorePlanRubric(tasks, objective.rubric);
+        const planFingerprint = fingerprintPlan(tasks);
         providerResult.satisfiedRubricCriteria = Number(providerResult.satisfiedRubricCriteria ?? 0) + rubric.satisfied;
         providerResult.requiredRubricCriteria = Number(providerResult.requiredRubricCriteria ?? 0) + rubric.required;
         const workspace = new Set<string>();
@@ -433,7 +484,7 @@ describe("goal architecture benchmark", () => {
         const executionMs = Number((performance.now() - executeStarted).toFixed(1));
         const verified = tasks.every(item => execution.tasks[item.id]?.status === "completed" && execution.tasks[item.id]?.verification?.outcome === "passed");
         if (verified) providerResult.verifiedFixtureRuns = Number(providerResult.verifiedFixtureRuns) + 1;
-        cases.push({ id: objectives[index]!.id, state: verified ? "plan_graph_host_verified" : "execution_not_verified", attempted: true, validPlan: true, validGraph: true, taskCount: tasks.length, dependencyEdges: tasks.reduce((sum, item) => sum + (item.dependencies?.length ?? 0), 0), semanticRubric: rubric, planLatencyMs: latencyMs, fixtureExecutionMs: executionMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
+        cases.push({ id: objective.id, repeat, planFingerprint, state: verified ? "plan_graph_host_verified" : "execution_not_verified", attempted: true, validPlan: true, validGraph: true, taskCount: tasks.length, dependencyEdges: tasks.reduce((sum, item) => sum + (item.dependencies?.length ?? 0), 0), semanticRubric: rubric, planLatencyMs: latencyMs, fixtureExecutionMs: executionMs, inputTokens: Number(body?.usageMetadata?.promptTokenCount ?? body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount ?? body?.usage?.completion_tokens) || null });
       }
       const completedCases = cases.filter(item => item.state === "plan_graph_host_verified");
       const heldoutCases = cases.filter(item => heldoutIds.has(String(item.id)));
@@ -442,7 +493,7 @@ describe("goal architecture benchmark", () => {
       const executionLatencies = completedCases.map(item => Number(item.fixtureExecutionMs));
       results.push({
         ...providerResult,
-        state: planningReportState(cases, caseLimit, stopped),
+        state: planningReportState(cases, expectedCaseCount, stopped),
         validPlanRate: Number(providerResult.requests) ? Number(providerResult.validPlans) / Number(providerResult.requests) : null,
         validGraphRate: Number(providerResult.validPlans) ? Number(providerResult.validGraphs) / Number(providerResult.validPlans) : null,
         verifiedFixtureRate: Number(providerResult.validGraphs) ? Number(providerResult.verifiedFixtureRuns) / Number(providerResult.validGraphs) : null,
@@ -457,6 +508,7 @@ describe("goal architecture benchmark", () => {
           rubricRequired: heldoutRubricCases.reduce((sum, item) => sum + item.required, 0),
           rubricCoverage: heldoutRubricCases.reduce((sum, item) => sum + item.required, 0) ? heldoutRubricCases.reduce((sum, item) => sum + item.satisfied, 0) / heldoutRubricCases.reduce((sum, item) => sum + item.required, 0) : null,
         },
+        repeatability: holdoutOnly || repeatCount > 1 ? measureRepeatability([...heldoutIds], cases as Array<{ id: string; repeat?: number; planFingerprint?: string }>, repeatCount) : undefined,
         planLatencyP50Ms: summaryPercentile(planLatencies, 0.5), planLatencyP95Ms: summaryPercentile(planLatencies, 0.95),
         fixtureExecutionLatencyP50Ms: summaryPercentile(executionLatencies, 0.5), fixtureExecutionLatencyP95Ms: summaryPercentile(executionLatencies, 0.95),
         inputTokens: cases.reduce((sum, item) => sum + (Number(item.inputTokens) || 0), 0),
@@ -466,17 +518,20 @@ describe("goal architecture benchmark", () => {
       });
     }
     const report = {
-      schemaVersion: 1, kind: "live_model_planning_to_host_verification_benchmark", dataset: `${caseLimit} task objectives per configured provider (4 prior baseline objectives plus up to 8 newly authored held-out objectives)`,
-      heldoutObjectiveIds: objectives.slice(4, caseLimit).map(item => item.id),
+      schemaVersion: 1, kind: "live_model_planning_to_host_verification_benchmark", dataset: `${caseCount} task objectives per configured provider; ${repeatCount} run(s) each${holdoutOnly ? ", heldout-only profile" : ""}`,
+      heldoutObjectiveIds: [...heldoutIds],
+      expectedRequestsPerProvider: expectedCaseCount,
+      repeatCount,
+      holdoutOnly,
       providerCallsAreTestOnly: true,
       results,
-      limitations: ["The model generated task graphs; production goal validation, executeGoalDag, and host evidence evaluation ran. Worker outputs, workspace writes and persistence were mocked in memory.", "Semantic coverage is a small lexical rubric authored independently from each model response; it does not establish factual correctness or robust semantic quality.", "This measures plan JSON/schema validity, rubric coverage and host orchestration compatibility, not deployed Cloudflare reliability.", "One request per objective; exploratory sample, not a statistical guarantee. Provider stops on 429 and uses only the first configured key slot."],
+      limitations: ["The model generated task graphs; production goal validation, executeGoalDag, and host evidence evaluation ran. Worker outputs, workspace writes and persistence were mocked in memory.", "Semantic coverage is a small lexical rubric authored independently from each model response; it does not establish factual correctness or robust semantic quality.", "This measures plan JSON/schema validity, rubric coverage and host orchestration compatibility, not deployed Cloudflare reliability.", `${repeatCount} request(s) per objective; exact fingerprints measure textual graph stability, not semantic equivalence. Provider stops on 429 and uses only the first configured key slot.`],
     };
     const reportPath = process.env.NAELAO_LIVE_ARCH_REPORT;
     if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`live_model_planning_benchmark=${JSON.stringify(report)}`);
     expect(results.every(result => result.provider)).toBe(true);
-  }, 120_000);
+  }, 300_000);
 
   it.skipIf(process.env.NAELAO_RUN_LIVE_OPENROUTER_DECISIONS !== "true")("compares the configured OpenRouter Decisions route on the shared evidence holdout", async () => {
     const cases = [
