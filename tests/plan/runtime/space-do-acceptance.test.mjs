@@ -990,7 +990,7 @@ test("an expired D1 wake lease is held instead of blindly redispatched", async (
   assert.deepEqual(wakeResult.dispatchResponses, []);
 });
 
-test("real local D1 and SpaceDO blackboard search follows cursors through 100, 1k, and 10k visible cards", async () => {
+test("real local D1 and SpaceDO blackboard search compares cursor traversal with one visibility snapshot", async () => {
   const resultByScale = [];
   for (const count of [100, 1_000, 10_000]) {
     const seedStarted = performance.now();
@@ -1010,6 +1010,16 @@ test("real local D1 and SpaceDO blackboard search follows cursors through 100, 1
     assert.equal(search.found, true, `last seeded card was not found at ${count}`);
     assert.equal(search.truncated, false, `search stopped before exhausting cards at ${count}`);
     assert.equal(search.pages, Math.ceil(count / 90), `cursor/page count drift at ${count}`);
+    const snapshot = await jsonRequest(spacesBaseUrl, "/__test/blackboard-scale-search-snapshot", "POST", {
+      tenantId: identity.tenantId,
+      spaceId: identity.spaceId,
+      userId: identity.userId,
+      query: `ref${String(count - 1).padStart(5, "0")}`,
+      projectId: targetProjectId,
+    }, 120_000);
+    assert.equal(snapshot.found, true, `snapshot path did not find last target at ${count}`);
+    assert.ok(snapshot.visible_project_count >= count);
+    assert.ok(snapshot.visible_card_count >= count);
     const sorted = [...search.page_latencies_ms].sort((a, b) => a - b);
     const percentile = (p) => sorted[Math.ceil(p * sorted.length) - 1] ?? 0;
     const measurement = {
@@ -1021,9 +1031,17 @@ test("real local D1 and SpaceDO blackboard search follows cursors through 100, 1
       end_to_end_ms: search.elapsed_ms,
       page_latency_p50_ms: percentile(0.5),
       page_latency_p95_ms: percentile(0.95),
+      snapshot_elapsed_ms: snapshot.elapsed_ms,
+      snapshot_visibility_ms: snapshot.visibility_ms,
+      snapshot_card_query_ms: snapshot.card_query_ms,
+      snapshot_intersect_ms: snapshot.intersect_ms,
+      snapshot_cards_scanned: snapshot.cards_scanned,
+      snapshot_visible_project_count: snapshot.visible_project_count,
+      cursor_over_snapshot_speedup: Number((search.elapsed_ms / Math.max(snapshot.elapsed_ms, 1)).toFixed(2)),
       seed_ms: Math.round(performance.now() - seedStarted) - search.elapsed_ms,
       provider_calls: 0,
       evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
+      comparison_evidence_class: snapshot.evidence_class,
     };
     resultByScale.push(measurement);
   }
@@ -1031,7 +1049,7 @@ test("real local D1 and SpaceDO blackboard search follows cursors through 100, 1
     name: "blackboard-cursor-pagination-local-wrangler",
     evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
     query_cases: resultByScale,
-    note: "Each query targets the last lexically ordered card and follows the SDK operation cursor until exhausted; this proves the client loop, not that an LLM autonomously chooses to continue.",
+    note: "Each target is the last seeded card. Cursor arm follows the production SDK operation cursor to exhaustion. Snapshot arm is a test-only comparator: it resolves visible projects once and intersects one D1 card scan before returning only a match result; it is not an implemented production endpoint and does not establish full ranking semantics.",
   });
 });
 

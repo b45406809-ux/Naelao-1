@@ -1,4 +1,5 @@
 import { getDOName } from "@naelao/crypto";
+import { mintInternalToken } from "@naelao/http";
 import spacesWorker, { SpaceDO as BaseSpaceDO } from "../../../workers/spaces/src/index.js";
 
 /** Test-only bulk fixture seeding keeps the scale experiment on the real local SpaceDO. */
@@ -77,6 +78,53 @@ export default {
         await db.batch(statements);
       }
       return Response.json({ seeded_projects: projects.seeded_projects, seeded_cards: count });
+    }
+    if (url.pathname === "/__test/blackboard-scale-search-snapshot" && request.method === "POST") {
+      const body = await request.json<{ tenantId?: string; spaceId?: string; userId?: string; query?: string; projectId?: string }>().catch(() => ({}));
+      const tenantId = body.tenantId ?? "";
+      const spaceId = body.spaceId ?? "";
+      const userId = body.userId ?? "";
+      const query = body.query ?? "";
+      const projectId = body.projectId ?? "";
+      if (!/^[A-Za-z0-9._:-]{1,160}$/.test(tenantId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(userId) || !query || query.length > 100 || !/^[0-9a-f-]{36}$/i.test(projectId))
+        return Response.json({ error_code: "invalid_scale_search" }, { status: 400 });
+
+      // Experimental path: use the real authenticated project listing once, then intersect the
+      // card query with that visibility set before reporting a match. No card content is returned.
+      const started = performance.now();
+      const visibilityStarted = performance.now();
+      const projectResponse = await spacesWorker.fetch(new Request(`http://spaces/spaces/${encodeURIComponent(spaceId)}/projects`, {
+        headers: {
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-user-id": userId,
+          "x-naelao-role": "owner",
+          "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET), tenantId),
+        },
+      }), env as never, ctx);
+      if (!projectResponse.ok) return Response.json({ error_code: "visibility_resolution_failed", status: projectResponse.status }, { status: 503 });
+      const projectPayload = await projectResponse.json() as { data?: Array<{ id?: string }> };
+      const visibleIds = new Set((projectPayload.data ?? []).flatMap(project => typeof project.id === "string" ? [project.id] : []));
+      const visibilityMs = Math.round(performance.now() - visibilityStarted);
+
+      const cardsStarted = performance.now();
+      const db = env.PLATFORM_DB as D1Database;
+      const cards = await db.prepare("SELECT project_id,summary FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? ORDER BY project_id")
+        .bind(tenantId, spaceId).all<{ project_id: string; summary: string }>();
+      const cardQueryMs = Math.round(performance.now() - cardsStarted);
+      const matchStarted = performance.now();
+      const visibleCardCount = cards.results.reduce((count, card) => count + Number(visibleIds.has(card.project_id)), 0);
+      const found = cards.results.some(card => card.project_id === projectId && visibleIds.has(card.project_id) && card.summary.includes(query));
+      return Response.json({
+        found,
+        visible_project_count: visibleIds.size,
+        cards_scanned: cards.results.length,
+        visible_card_count: visibleCardCount,
+        visibility_ms: visibilityMs,
+        card_query_ms: cardQueryMs,
+        intersect_ms: Math.round(performance.now() - matchStarted),
+        elapsed_ms: Math.round(performance.now() - started),
+        evidence_class: "test-only-single-snapshot-hypothesis",
+      });
     }
     return spacesWorker.fetch(request, env as never, ctx);
   },

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "experiment": {
+    "name": "blackboard-cursor-pagination-local-wrangler",
+    "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+    "query_cases": [
+      {
+        "visible_cards": 100,
+        "target_position": 100,
+        "target_found": true,
+        "pages_followed": 2,
+        "page_size": 90,
+        "end_to_end_ms": 25,
+        "page_latency_p50_ms": 12,
+        "page_latency_p95_ms": 13,
+        "snapshot_elapsed_ms": 7,
+        "snapshot_visibility_ms": 3,
+        "snapshot_card_query_ms": 4,
+        "snapshot_intersect_ms": 0,
+        "snapshot_cards_scanned": 146,
+        "snapshot_visible_project_count": 146,
+        "cursor_over_snapshot_speedup": 3.57,
+        "seed_ms": 49,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+        "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+      },
+      {
+        "visible_cards": 1000,
+        "target_position": 1000,
+        "target_found": true,
+        "pages_followed": 12,
+        "page_size": 90,
+        "end_to_end_ms": 252,
+        "page_latency_p50_ms": 19,
+        "page_latency_p95_ms": 31,
+        "snapshot_elapsed_ms": 12,
+        "snapshot_visibility_ms": 8,
+        "snapshot_card_query_ms": 4,
+        "snapshot_intersect_ms": 0,
+        "snapshot_cards_scanned": 1046,
+        "snapshot_visible_project_count": 1046,
+        "cursor_over_snapshot_speedup": 21,
+        "seed_ms": 100,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+        "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+      },
+      {
+        "visible_cards": 10000,
+        "target_position": 10000,
+        "target_found": true,
+        "pages_followed": 112,
+        "page_size": 90,
+        "end_to_end_ms": 8887,
+        "page_latency_p50_ms": 78,
+        "page_latency_p95_ms": 92,
+        "snapshot_elapsed_ms": 94,
+        "snapshot_visibility_ms": 71,
+        "snapshot_card_query_ms": 21,
+        "snapshot_intersect_ms": 2,
+        "snapshot_cards_scanned": 10046,
+        "snapshot_visible_project_count": 10046,
+        "cursor_over_snapshot_speedup": 94.54,
+        "seed_ms": 758,
+        "provider_calls": 0,
+        "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+        "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+      }
+    ],
+    "note": "Each target is the last seeded card. Cursor arm follows the production SDK operation cursor to exhaustion. Snapshot arm is a test-only comparator: it resolves visible projects once and intersects one D1 card scan before returning only a match result; it is not an implemented production endpoint and does not establish full ranking semantics."
+  },
+  "overall_runtime": {
+    "started_at": "2026-11-02T17:45:57.428Z",
+    "finished_at": "2026-11-02T17:47:43.433Z",
+    "total_duration_ms": 106004,
+    "migration_apply_ms": 48045,
+    "worker_start_ms": 9512
+  },
+  "suite": {
+    "tests": 15,
+    "passed": 15,
+    "failed": 0
+  },
+  "provider_calls": 0
+}
