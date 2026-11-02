@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "experiment": "blackboard-adversarial-scope-and-retry",
+  "date": "2026-11-02",
+  "evidence_class": "local-route-test-and-serialized-storage-model",
+  "authorization_matrix": {
+    "dimensions": [
+      "tenant",
+      "space",
+      "project",
+      "actor",
+      "root_goal",
+      "parent_do",
+      "non_member_worker",
+      "other_goal_worker"
+    ],
+    "cases_per_dimension": 8,
+    "total_cases": 64,
+    "allowed": 0,
+    "denied": 64,
+    "unauthorized_payloads_returned": 0,
+    "durable_message_writes": 0
+  },
+  "retry_matrix": {
+    "concurrent_identical_publish_requests": 64,
+    "successful_responses": 64,
+    "durable_messages_after_identical_retries": 1,
+    "concurrent_conflicting_message_id_requests": 32,
+    "conflicting_requests_denied": 32,
+    "original_message_preserved": true,
+    "storage_model": "serialized transaction emulator matching the Durable Object storage transaction contract",
+    "limitations": "Does not measure multi-isolate execution or real Cloudflare contention."
+  },
+  "local_wrangler_acceptance": {
+    "tests_passed": 13,
+    "tests_failed": 0,
+    "migration_files": 156,
+    "migration_apply_ms": 51335,
+    "four_worker_start_ms": 12013,
+    "total_duration_ms": 113987,
+    "blackboard_admission_samples": 30,
+    "admission_p50_ms": 125,
+    "admission_p95_ms": 149,
+    "external_provider_requests": 0,
+    "evidence_class": "four local Wrangler Workers with local D1/DO and synthetic model service"
+  },
+  "focused_suites": {
+    "agents_files": 5,
+    "agents_tests": 16,
+    "spaces_files": 2,
+    "spaces_tests": 3,
+    "failures": 0
+  }
+}

@@ -28,7 +28,14 @@ The default Playwright command first failed because its pinned Playwright browse
 - Independent evidence matrix: 400 cases (100 valid artifacts and 300 scope/mutation/path negatives); zero false acceptances, false rejections, scope-mismatch storage reads, or invalid-path host calls. Runtime **52.4 ms**.
 - Blackboard visibility ablation: 100 deterministic graphs / 701 tasks / 595 dependency edges. Direct dependency handoff and recipient-filtered blackboard carried identical dependency payload bytes (**80,518** each), with zero payload or completion mismatches and zero cross-recipient message leaks. A counterfactual all-completion broadcast was **368,311 bytes** versus **81,173 bytes** for targeted messages (about **78.0% fewer bytes**). These are UTF-8 byte counts, not model tokens, inference spend, task quality, or latency savings; the comparison isolates routing visibility, not the intelligent triage benefit.
 
-Raw machine-readable outputs are in this directory: `space-do-acceptance.local.json`, `goal-architecture-benchmark.json`, `goal-evidence-matrix.json`, and `blackboard-visibility-ablation.json`.
+### Follow-up adversarial and retry experiment
+
+- Added an actual `NaelaoAgentDO` blackboard-route matrix: **64 signed but cross-scoped identities** spanning tenant, Space, project, actor, root goal, parent DO, non-member worker, and another goal hash. Every read/publish request was denied (403), no private payload was returned, and the durable message key was never written.
+- Added a transaction-serialized Durable Object storage model for retry stress: **64 concurrent identical publishes** all returned success while producing one stored message; **32 concurrent message-ID conflicts** were all rejected and left the original message unchanged. This validates route/store idempotency under a DO-like serialized transaction contract; it is not a real multi-isolate or Cloudflare contention measurement.
+- Re-ran the local four-Worker Wrangler acceptance: **13/13 passed**, including separate Agents/Spaces Workers, real local D1/DO persistence, restart recovery, access revocation, evidence gates, and synthetic model execution. This run applied 156 migration files in **51.335 s**, started all four Workers in **12.013 s**, and completed in **113.987 s**. The 30 local admission samples measured p50 **125 ms** / p95 **149 ms**; zero external provider calls occurred. The air-gap case denied before model execution.
+- Related focused suites passed: Agents blackboard/route/integration/delivery set **5 files / 16 tests**, Spaces sharing/wake policy **2 files / 3 tests**. These totals overlap broader suite inventories.
+
+Raw machine-readable outputs are in this directory: `space-do-acceptance.local.json`, `goal-architecture-benchmark.json`, `goal-evidence-matrix.json`, `blackboard-visibility-ablation.json`, and `blackboard-adversarial-retry.json`.
 
 ## What this supports, and what it does not
 
@@ -39,7 +46,7 @@ They do **not** demonstrate real model planning quality, paid provider cost/late
 ## Next validation work
 
 1. Run the opt-in provider planning/evidence evaluation only with approved free-tier budgets, model-specific key rotation and explicit per-run request caps. Do not change the production OpenRouter route.
-2. Expand multi-tenant actor/property testing and D1/DO fault injection across lease claim, goal journal, blackboard publish/read/reply, and revocation races.
+2. Expand beyond the new deterministic scope matrix to generated multi-tenant actor/property tests and D1/DO fault injection across lease claim, goal journal, blackboard publish/read/reply, and revocation races; the route retry model still does not reproduce multi-isolate Cloudflare contention.
 3. Compare blackboard/intelligent triage with the direct/no-blackboard baseline on verified outcomes, duplicate work, messages per success, and cost; current ablation measures visibility payload routing only.
 4. Add repeated/soak latency and queue-depth measurements; this checkpoint uses one startup and 30 local admission samples.
 5. Execute isolated deployed Cloudflare acceptance and live provider/email/telephony acceptance only after the relevant bindings, test tenant, domains, and approvals are configured.
