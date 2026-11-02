@@ -34,10 +34,36 @@ describe("space blackboard commands", () => {
   it("passes a valid search cursor to the host and rejects invalid cursors", async () => {
     const fetch = vi.fn(async (_request: Request) => Response.json({ cards: [], next_cursor: "next", truncated: true }));
     const ctx = { env: { tenantId: "tenant", spaceId: "space", userId: "user", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
-    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "project-1" }, ctx) as { next_cursor: string };
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "project-1", max_pages: 1 }, ctx) as { next_cursor: string };
     expect(result.next_cursor).toBe("next");
     expect(new URL(fetch.mock.calls[0]![0].url).searchParams.get("after")).toBe("project-1");
     await expect(spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "../other" }, ctx)).rejects.toThrow("blackboard_cursor_invalid");
+  });
+  it("scans a bounded cursor batch and ranks hits from later pages before returning the continuation cursor", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      const after = new URL(request.url).searchParams.get("after");
+      if (after === null) return Response.json({ cards: [{ projectId: "first", summary: "ordinary project", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" }], next_cursor: "page-1", truncated: true });
+      if (after === "page-1") return Response.json({ cards: [{ projectId: "target", summary: "needle routing task", capabilities: [], evidence: [], updatedAt: "2026-01-01T00:00:00Z" }], next_cursor: "page-2", truncated: true });
+      return Response.json({ cards: [], next_cursor: null, truncated: false });
+    });
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", userId: "user", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "needle routing" }, ctx) as {
+      candidates: Array<{ card: { projectId: string } }>;
+      pages_scanned: number;
+      next_cursor: string | null;
+      truncated: boolean;
+    };
+    expect(result.candidates[0]?.card.projectId).toBe("target");
+    expect(result.pages_scanned).toBe(3);
+    expect(result.next_cursor).toBeNull();
+    expect(result.truncated).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+  it("rejects cursor batch sizes above the bounded maximum", async () => {
+    const fetch = vi.fn();
+    const ctx = { env: { tenantId: "t", spaceId: "s", userId: "u", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
+    await expect(spaceBlackboard.operations["blackboard.search"]!({ query: "needle", max_pages: 11 }, ctx)).rejects.toThrow("blackboard_max_pages_out_of_range");
+    expect(fetch).not.toHaveBeenCalled();
   });
   it("prepares a reviewable journal draft without publishing private instructions or making a network call", async () => {
     const fetch = vi.fn();

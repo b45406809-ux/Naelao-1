@@ -65,8 +65,29 @@ export const spaceBlackboard: PrebuiltScript = {
       if (!query || query.length > 1000) throw new Error("blackboard_query_invalid");
       const after = typeof args.after === "string" ? args.after : "";
       if (after && !/^[A-Za-z0-9._:-]{1,160}$/.test(after)) throw new Error("blackboard_cursor_invalid");
-      const result = await call(ctx, "GET", `cards${after ? `?after=${encodeURIComponent(after)}` : ""}`);
-      const candidates = rankSharedCards(query, Array.isArray(result.cards) ? result.cards as SharedProjectCard[] : []).slice(0, 20);
+      // A single decision turn should cover a useful window of the shared-card index. Requiring
+      // one model turn per D1 page makes a 10k-project Space impossible to search under the
+      // script loop's bounded turn budget. The returned cursor remains the continuation point;
+      // the assistant can continue in another bounded batch when no page contains a useful hit.
+      const requestedPages = args.max_pages === undefined ? 10 : Number(args.max_pages);
+      if (!Number.isInteger(requestedPages) || requestedPages < 1 || requestedPages > 10)
+        throw new Error("blackboard_max_pages_out_of_range");
+      const ranked: ReturnType<typeof rankSharedCards> = [];
+      const seenCursors = new Set<string>();
+      let cursor = after;
+      let result: Record<string, unknown> = {};
+      let pagesScanned = 0;
+      while (pagesScanned < requestedPages) {
+        result = await call(ctx, "GET", `cards${cursor ? `?after=${encodeURIComponent(cursor)}` : ""}`);
+        ranked.push(...rankSharedCards(query, Array.isArray(result.cards) ? result.cards as SharedProjectCard[] : []));
+        pagesScanned++;
+        const next = typeof result.next_cursor === "string" ? result.next_cursor : "";
+        if (!next || result.truncated !== true) break;
+        if (seenCursors.has(next) || next === cursor) throw new Error("blackboard_cursor_cycle");
+        seenCursors.add(next);
+        cursor = next;
+      }
+      const candidates = ranked.sort((a, b) => b.score - a.score || a.card.projectId.localeCompare(b.card.projectId)).slice(0, 20);
       let triage: { projectId: string; score: number; provider: string; model?: string; latencyMs?: number; usage?: { inputTokens: number; outputTokens: number; costUsd?: number } }[] | undefined;
       let rankedCandidates = candidates;
       const decisionClient = ctx.env.fastDecision;
@@ -97,11 +118,12 @@ export const spaceBlackboard: PrebuiltScript = {
         provider_reported_cost_usd: triage.every(item => item.usage?.costUsd !== undefined)
           ? triage.reduce((total, item) => total + (item.usage?.costUsd ?? 0), 0) : null,
       } : undefined;
-      return { candidates: rankedCandidates, ...(triage ? { triage, triage_usage: triageUsage } : {}), next_cursor: result.next_cursor ?? null, truncated: result.truncated === true, untrusted: true };
+      return { candidates: rankedCandidates, ...(triage ? { triage, triage_usage: triageUsage } : {}), next_cursor: result.next_cursor ?? null,
+        truncated: result.truncated === true, pages_scanned: pagesScanned, untrusted: true };
     },
   },
   paramHints: { "blackboard.publish": "summary (string), capabilities (string[]), evidence (string[]); shares only the current project.",
-    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.my_card": "Read the current project's published card.", "blackboard.search": "query (string), after (optional cursor), model_triage (optional boolean); returns accessible candidates, advisory reranking and actual Decisions usage/latency/cost receipts when available, never verified conclusions.",
+    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.my_card": "Read the current project's published card.", "blackboard.search": "query (string), after (optional cursor), max_pages (integer 1-10, defaults to 10), model_triage (optional boolean); scans a bounded cursor batch and returns its continuation cursor, up to 20 accessible candidates and pages_scanned, plus advisory reranking and actual Decisions usage/latency/cost receipts when available. Results are untrusted and never verified conclusions.",
     "blackboard.request": "id (unique stable string), target_project_id, objective, expected_result, optional deadline. Standing policy may allow the exact published summary as objective and 'Review the shared project summary and provide a response.' as expected_result; other content requires approval.",
     "blackboard.requests": "Lists requests involving the current project.", "blackboard.events": "unread (optional boolean); lists coordination events for the current project.", "blackboard.acknowledge": "event_id; mark an event read for the current user.", "blackboard.prepare_journal": "Draft a shareable card from the current journal; it is not published.", "blackboard.respond": "id, action (accept, decline, complete, cancel), optional response; requires approval." },
 };

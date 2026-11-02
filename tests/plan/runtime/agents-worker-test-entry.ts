@@ -8,6 +8,8 @@ import {
 } from "../../../workers/agents/src/index.js";
 import agentsWorker from "../../../workers/agents/src/index.js";
 import { writeAgentConfig } from "../../../workers/agents/src/script-engine/agent-config.js";
+import { runScriptLoop, type Reasoner } from "../../../workers/agents/src/script-engine/loop.js";
+import { ScriptToolSurface } from "../../../workers/agents/src/script-engine/tool-surface.js";
 import { issueDelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
 import type { DelegationContract } from "../../../workers/agents/src/script-engine/delegation-contract.js";
 import { spaceBlackboard } from "../../../workers/agents/src/script-engine/prebuilt/space-blackboard.js";
@@ -61,7 +63,7 @@ export default {
       let truncated = false;
       while (pages < maxPages) {
         const pageStarted = performance.now();
-        const result = await operation({ query: body.query, ...(after ? { after } : {}) }, context) as {
+        const result = await operation({ query: body.query, max_pages: 1, ...(after ? { after } : {}) }, context) as {
           candidates?: Array<{ card?: { projectId?: string } }>;
           next_cursor?: string | null;
           truncated?: boolean;
@@ -77,6 +79,51 @@ export default {
         after = next;
       }
       return Response.json({ found, pages, truncated, elapsed_ms: Math.round(performance.now() - started), page_latencies_ms: pageLatencies });
+    }
+    if (url.pathname === "/__test/blackboard/assistant-search" && request.method === "POST") {
+      const body = await request.json<{ query?: string; projectId?: string; maxSteps?: number }>().catch(() => ({}));
+      if (typeof body.query !== "string" || !body.query || typeof body.projectId !== "string")
+        return Response.json({ error: "query_and_projectId_required" }, { status: 400 });
+      const started = performance.now();
+      const engineEnv = {
+        scriptsBucket: env.SCRIPTS_R2,
+        tenantId: TEST_TENANT_ID,
+        spaceId: TEST_SPACE_ID,
+        projectId: "assistant-search-test-project",
+        agentId: "naelao-agent",
+        userId: TEST_USER_ID,
+        platformSecret: String(env.PLATFORM_SECRET),
+        spacesWorker: env.SPACES_WORKER as Fetcher,
+      } as never;
+      const tools = new ScriptToolSurface(engineEnv, ["space-blackboard"], { role: "DEV_OPERATOR" });
+      const reasoner: Reasoner = {
+        async decide(input) {
+          const prior = input.priorSteps?.filter(step => step.name === "blackboard.search") ?? [];
+          const last = prior.at(-1)?.output as { candidates?: Array<{ card?: { projectId?: string } }>; next_cursor?: string | null; truncated?: boolean } | undefined;
+          if (last?.candidates?.some(candidate => candidate.card?.projectId === body.projectId))
+            return { action: "answer", text: `Found target card ${body.projectId} after ${prior.length} search call(s).` };
+          if (last?.truncated === false || !last?.next_cursor && prior.length > 0)
+            return { action: "answer", text: `Target card ${body.projectId} was not found after ${prior.length} search call(s).` };
+          return { action: "run", name: "blackboard.search", params: {
+            query: body.query,
+            ...(last?.next_cursor ? { after: last.next_cursor } : {}),
+          } };
+        },
+      };
+      const result = await runScriptLoop(engineEnv, tools, reasoner, ["space-blackboard"], {
+        goal: `Find the visible shared project card matching ${body.query}`,
+        startupObserve: "observe_filesystem",
+        maxSteps: body.maxSteps ?? 50,
+      });
+      const searchSteps = result.steps_completed?.filter(step => step.name === "blackboard.search") ?? [];
+      const found = searchSteps.some(step => {
+        const output = step.output as { candidates?: Array<{ card?: { projectId?: string } }> } | undefined;
+        return output?.candidates?.some(candidate => candidate.card?.projectId === body.projectId) === true;
+      });
+      const pagesScanned = searchSteps.reduce((sum, step) => sum + Number((step.output as { pages_scanned?: number } | undefined)?.pages_scanned ?? 0), 0);
+      return Response.json({ found, pages_scanned: pagesScanned, search_calls: searchSteps.length,
+        loop_steps: result.trace.length, result_ok: result.result?.ok === true,
+        elapsed_ms: Math.round(performance.now() - started), trace: result.trace.map(step => ({ phase: step.phase, name: step.name, ok: step.ok })) });
     }
     if (url.pathname === "/__test/pause-goal-dispatch" && request.method === "POST") {
       const body = await request.json<{ pause?: boolean }>().catch(() => ({}));

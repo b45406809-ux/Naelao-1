@@ -1010,6 +1010,15 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
     assert.equal(search.found, true, `last seeded card was not found at ${count}`);
     assert.equal(search.truncated, false, `search stopped before exhausting cards at ${count}`);
     assert.equal(search.pages, Math.ceil(count / 90), `cursor/page count drift at ${count}`);
+    const assistantSearch = await jsonRequest(agentsBaseUrl, "/__test/blackboard/assistant-search", "POST", {
+      query: `ref${String(count - 1).padStart(5, "0")}`,
+      projectId: targetProjectId,
+      maxSteps: 50,
+    }, 180_000);
+    assert.equal(assistantSearch.found, true, `assistant loop did not find last card at ${count}: ${JSON.stringify(assistantSearch)}`);
+    assert.equal(assistantSearch.result_ok, true, `assistant loop did not finish successfully at ${count}`);
+    assert.equal(assistantSearch.pages_scanned, Math.ceil(count / 90), `assistant cursor batches skipped or repeated pages at ${count}`);
+    assert.ok(assistantSearch.search_calls <= 50, `assistant exceeded its normal bounded step budget at ${count}`);
     const snapshot = await jsonRequest(spacesBaseUrl, "/__test/blackboard-scale-search-snapshot", "POST", {
       tenantId: identity.tenantId,
       spaceId: identity.spaceId,
@@ -1027,6 +1036,11 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
       target_position: count,
       target_found: search.found,
       pages_followed: search.pages,
+      assistant_target_found: assistantSearch.found,
+      assistant_search_calls: assistantSearch.search_calls,
+      assistant_loop_steps: assistantSearch.loop_steps,
+      assistant_pages_scanned: assistantSearch.pages_scanned,
+      assistant_end_to_end_ms: assistantSearch.elapsed_ms,
       page_size: 90,
       end_to_end_ms: search.elapsed_ms,
       page_latency_p50_ms: percentile(0.5),
@@ -1049,11 +1063,15 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
     name: "blackboard-cursor-pagination-local-wrangler",
     evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
     query_cases: resultByScale,
-    note: "Each target is the last seeded card. Cursor arm follows the production SDK operation cursor to exhaustion. Snapshot arm is a test-only comparator: it resolves visible projects once and intersects one D1 card scan before returning only a match result; it is not an implemented production endpoint and does not establish full ranking semantics.",
+    note: "Each target is the last seeded card. The SDK arm follows one cursor per call; the assistant arm runs the production ScriptToolSurface and runScriptLoop against the local Wrangler+D1 operation with a deterministic reasoner fixture, following the returned cursor across bounded 10-page search batches. It tests cursor consumption and ranking, not model propensity. Snapshot arm is a test-only comparator and does not establish full ranking semantics.",
   });
 });
 
 test("real D1 membership data denies a viewer permission to create Project Bot threads", async () => {
+  // The 10k-card scale benchmark can take long enough for the fixture's short-lived internal
+  // token to expire. Re-mint it so this role assertion continues to reach membership policy.
+  const refreshedIdentity = await jsonRequest(agentsBaseUrl, "/__test/bootstrap", "POST", {});
+  identity.token = refreshedIdentity.token;
   const started = performance.now();
   const response = await fetch(
     `${spacesBaseUrl}/spaces/${identity.spaceId}/threads`,

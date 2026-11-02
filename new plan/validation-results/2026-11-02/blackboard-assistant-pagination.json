@@ -1,0 +1,939 @@
+{
+  "schema_version": 1,
+  "runtime": "local-wrangler",
+  "started_at": "2026-11-02T17:59:08.196Z",
+  "migration_sql_files": 156,
+  "migration_apply_ms": 52422,
+  "worker_start_ms": 9705,
+  "spaces_worker_start_ms": 2849,
+  "model_gateway_start_ms": 1296,
+  "artifact_worker_start_ms": 1299,
+  "agents_worker_start_ms": 4261,
+  "agents_goal_journal_restarts": [
+    {
+      "outcome": "completed",
+      "verification": "passed",
+      "duration_ms": 4391
+    },
+    {
+      "outcome": "needs_review",
+      "verification": "uncertain",
+      "duration_ms": 4252
+    }
+  ],
+  "requests": [
+    {
+      "route": "POST /__test/bootstrap",
+      "status": 200,
+      "duration_ms": 25
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 156
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 198
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/projects/a0fad137-1614-434e-b7fb-2de54d2dc1d3/assistant-access?user_id=owner-blackboard-runtime-test",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/threads",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/sessions",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/threads/14ecda6b-884d-4735-97f3-c8e8cb35160d",
+      "status": 200,
+      "duration_ms": 7
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/sessions/1611ff9e-955d-463a-9083-eb857cffc256",
+      "status": 200,
+      "duration_ms": 5
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/threads/14ecda6b-884d-4735-97f3-c8e8cb35160d",
+      "status": 200,
+      "duration_ms": 34
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/sessions/1611ff9e-955d-463a-9083-eb857cffc256",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 14
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 392
+    },
+    {
+      "route": "POST /__test/space-assistant-goal",
+      "status": 200,
+      "duration_ms": 360
+    },
+    {
+      "route": "GET /__test/agent-activity?root_run_id=space-assistant-runtime%3A05cc3201-8c5b-4054-9e8e-6bb493d591ee",
+      "status": 200,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 580
+    },
+    {
+      "route": "GET /__test/agent-activity?root_run_id=blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3",
+      "status": 200,
+      "duration_ms": 9
+    },
+    {
+      "route": "GET /spaces/space-blackboard-runtime-test/tasks?project_id=6c64601a-72f4-45e5-8bc6-8129afd64c5b",
+      "status": 200,
+      "duration_ms": 6
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3",
+      "status": 200,
+      "duration_ms": 17
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/pause-goal-dispatch",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-1768aa7e989b9e570d8328c8935fe1965a1d0dade78d6d7a005a599384de58e8",
+      "status": 200,
+      "duration_ms": 5
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-1768aa7e989b9e570d8328c8935fe1965a1d0dade78d6d7a005a599384de58e8",
+      "status": 200,
+      "duration_ms": 20
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-1768aa7e989b9e570d8328c8935fe1965a1d0dade78d6d7a005a599384de58e8",
+      "status": 200,
+      "duration_ms": 29
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-1768aa7e989b9e570d8328c8935fe1965a1d0dade78d6d7a005a599384de58e8",
+      "status": 200,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/pause-goal-dispatch",
+      "status": 200,
+      "duration_ms": 18
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-1768aa7e989b9e570d8328c8935fe1965a1d0dade78d6d7a005a599384de58e8",
+      "status": 200,
+      "duration_ms": 15
+    },
+    {
+      "route": "GET /__test/active-run",
+      "status": 200,
+      "duration_ms": 15
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 721
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-63e7c699e3723e882ee29f20e287d807995747cea69122cbd29eee9e75832a24",
+      "status": 200,
+      "duration_ms": 14
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 1239
+    },
+    {
+      "route": "POST /__test/task-blackboard/publish",
+      "status": 200,
+      "duration_ms": 17
+    },
+    {
+      "route": "GET /__test/goal-activity?run_id=blackboard-a683b1cfdb720b053ef99e17d477e84b053c62dddc9281299741f6150c4da6b0",
+      "status": 200,
+      "duration_ms": 20
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 13
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 772
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 1028
+    },
+    {
+      "route": "POST /__test/task-blackboard/read",
+      "status": 200,
+      "duration_ms": 14
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 143
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 175
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 182
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 223
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 140
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 165
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 147
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 157
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 172
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 143
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 154
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 124
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 13
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 135
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 121
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 131
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 154
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 197
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 167
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 16
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 182
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 153
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 166
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 125
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 12
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 184
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 141
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 153
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 18
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 158
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 140
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 147
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 129
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 131
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 7
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 135
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 11
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 131
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 167
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 9
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 137
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 8
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 92
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 171
+    },
+    {
+      "route": "POST /spaces/space-blackboard-runtime-test/projects",
+      "status": 201,
+      "duration_ms": 10
+    },
+    {
+      "route": "POST /__test/wake",
+      "status": 200,
+      "duration_ms": 112
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 35
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 36
+    },
+    {
+      "route": "POST /__test/blackboard/assistant-search",
+      "status": 200,
+      "duration_ms": 36
+    },
+    {
+      "route": "POST /__test/blackboard-scale-search-snapshot",
+      "status": 200,
+      "duration_ms": 17
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 67
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 240
+    },
+    {
+      "route": "POST /__test/blackboard/assistant-search",
+      "status": 200,
+      "duration_ms": 239
+    },
+    {
+      "route": "POST /__test/blackboard-scale-search-snapshot",
+      "status": 200,
+      "duration_ms": 20
+    },
+    {
+      "route": "POST /__test/blackboard-scale-seed",
+      "status": 200,
+      "duration_ms": 680
+    },
+    {
+      "route": "POST /__test/blackboard/search-all",
+      "status": 200,
+      "duration_ms": 9466
+    },
+    {
+      "route": "POST /__test/blackboard/assistant-search",
+      "status": 200,
+      "duration_ms": 8810
+    },
+    {
+      "route": "POST /__test/blackboard-scale-search-snapshot",
+      "status": 200,
+      "duration_ms": 99
+    },
+    {
+      "route": "POST /__test/bootstrap",
+      "status": 200,
+      "duration_ms": 45
+    },
+    {
+      "route": "POST /spaces/:spaceId/threads (viewer denial)",
+      "status": 403,
+      "duration_ms": 11
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "local-blackboard-project-bot-admission",
+      "evidence_class": "integrated-local",
+      "samples": 30,
+      "p50_ms": 147,
+      "p95_ms": 184,
+      "provider_attempts": 0,
+      "terminal_boundary": "air-gap compliance_violation before model/provider execution"
+    },
+    {
+      "name": "blackboard-cursor-pagination-local-wrangler",
+      "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+      "query_cases": [
+        {
+          "visible_cards": 100,
+          "target_position": 100,
+          "target_found": true,
+          "pages_followed": 2,
+          "assistant_target_found": true,
+          "assistant_search_calls": 1,
+          "assistant_loop_steps": 7,
+          "assistant_pages_scanned": 2,
+          "assistant_end_to_end_ms": 27,
+          "page_size": 90,
+          "end_to_end_ms": 25,
+          "page_latency_p50_ms": 10,
+          "page_latency_p95_ms": 14,
+          "snapshot_elapsed_ms": 9,
+          "snapshot_visibility_ms": 6,
+          "snapshot_card_query_ms": 3,
+          "snapshot_intersect_ms": 0,
+          "snapshot_cards_scanned": 146,
+          "snapshot_visible_project_count": 146,
+          "cursor_over_snapshot_speedup": 2.78,
+          "seed_ms": 98,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+          "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+        },
+        {
+          "visible_cards": 1000,
+          "target_position": 1000,
+          "target_found": true,
+          "pages_followed": 12,
+          "assistant_target_found": true,
+          "assistant_search_calls": 2,
+          "assistant_loop_steps": 9,
+          "assistant_pages_scanned": 12,
+          "assistant_end_to_end_ms": 230,
+          "page_size": 90,
+          "end_to_end_ms": 228,
+          "page_latency_p50_ms": 18,
+          "page_latency_p95_ms": 28,
+          "snapshot_elapsed_ms": 13,
+          "snapshot_visibility_ms": 9,
+          "snapshot_card_query_ms": 3,
+          "snapshot_intersect_ms": 1,
+          "snapshot_cards_scanned": 1046,
+          "snapshot_visible_project_count": 1046,
+          "cursor_over_snapshot_speedup": 17.54,
+          "seed_ms": 338,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+          "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+        },
+        {
+          "visible_cards": 10000,
+          "target_position": 10000,
+          "target_found": true,
+          "pages_followed": 112,
+          "assistant_target_found": true,
+          "assistant_search_calls": 12,
+          "assistant_loop_steps": 29,
+          "assistant_pages_scanned": 112,
+          "assistant_end_to_end_ms": 8803,
+          "page_size": 90,
+          "end_to_end_ms": 9458,
+          "page_latency_p50_ms": 83,
+          "page_latency_p95_ms": 102,
+          "snapshot_elapsed_ms": 91,
+          "snapshot_visibility_ms": 71,
+          "snapshot_card_query_ms": 17,
+          "snapshot_intersect_ms": 3,
+          "snapshot_cards_scanned": 10046,
+          "snapshot_visible_project_count": 10046,
+          "cursor_over_snapshot_speedup": 103.93,
+          "seed_ms": 9597,
+          "provider_calls": 0,
+          "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+          "comparison_evidence_class": "test-only-single-snapshot-hypothesis"
+        }
+      ],
+      "note": "Each target is the last seeded card. The SDK arm follows one cursor per call; the assistant arm runs the production ScriptToolSurface and runScriptLoop against the local Wrangler+D1 operation with a deterministic reasoner fixture, following the returned cursor across bounded 10-page search batches. It tests cursor consumption and ranking, not model propensity. Snapshot arm is a test-only comparator and does not establish full ranking semantics."
+    }
+  ],
+  "blackboard_dispatch": [
+    {
+      "status": 403,
+      "body": {
+        "error": "This space requires a local model for private execution",
+        "error_code": "compliance_violation"
+      }
+    }
+  ],
+  "blackboard_wake_status": "held",
+  "runtime_restart_ms": 9424,
+  "restart_worker_start": {
+    "spacesWorkerStartMs": 2500,
+    "modelGatewayStartMs": 1248,
+    "artifactWorkerStartMs": 1406,
+    "agentsWorkerStartMs": 4268,
+    "totalWorkerStartMs": 9422
+  },
+  "runtime_restart_count": 1,
+  "project_assistant_mock_run": {
+    "evidence_class": "integrated-local-mock-model",
+    "outcome": "completed",
+    "duration_ms": 392,
+    "model_requests": 1,
+    "model_ids": [
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    ],
+    "external_provider_requests": 0
+  },
+  "space_assistant_verified_worker_run": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "task_status": "completed",
+    "verification": "passed",
+    "artifact_workspace": "Space Assistant workspace",
+    "decisions_requests": 1,
+    "billing_events": [
+      "reserve",
+      "settle"
+    ],
+    "correlated_trace": [
+      {
+        "assistant_scope": "worker",
+        "root_run_id": "space-assistant-runtime:05cc3201-8c5b-4054-9e8e-6bb493d591ee",
+        "parent_run_id": "space-assistant-runtime:05cc3201-8c5b-4054-9e8e-6bb493d591ee",
+        "worker_id": "500045c7edce57e8bd818f6347b0e86ed235496369c6aa6e1b75193a8ae3190a:write-report",
+        "run_id": "500045c7edce57e8bd818f6347b0e86ed235496369c6aa6e1b75193a8ae3190a:write-report"
+      },
+      {
+        "assistant_scope": "space_assistant",
+        "root_run_id": "space-assistant-runtime:05cc3201-8c5b-4054-9e8e-6bb493d591ee",
+        "parent_run_id": null,
+        "worker_id": null,
+        "run_id": "space-assistant-runtime:05cc3201-8c5b-4054-9e8e-6bb493d591ee"
+      }
+    ],
+    "external_provider_requests": 0
+  },
+  "project_bot_leaf_worker_run": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "outcome": "completed",
+    "duration_ms": 580,
+    "inference_requests": 4,
+    "task_status": "completed",
+    "artifact_path": "reports/blackboard-worker-smoke.txt",
+    "artifact_branch": "task/81efe86e27fdff0f7c6db4af9467a6c269f5f291492aadac",
+    "external_provider_requests": 0,
+    "host_evidence_verification": "passed",
+    "correlated_trace": [
+      {
+        "assistant_scope": "worker",
+        "root_run_id": "blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3",
+        "parent_run_id": "blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3",
+        "worker_id": "2d6a4689d9bb1c8006fff369ad15e5fd0e028249acfb135ee7261dc86d52b977:write-report",
+        "run_id": "2d6a4689d9bb1c8006fff369ad15e5fd0e028249acfb135ee7261dc86d52b977:write-report"
+      },
+      {
+        "assistant_scope": "project_assistant",
+        "root_run_id": "blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3",
+        "parent_run_id": null,
+        "worker_id": null,
+        "run_id": "blackboard-39821e3abe788af25fbd8bd61f19eeeb0318904ecc2b71fedb6f5622b332fba3"
+      }
+    ],
+    "verification_reason": "Decision assessment agrees with deterministic host evidence.",
+    "decisions_requests": 1,
+    "decision_billing_events": [
+      "reserve",
+      "settle"
+    ]
+  },
+  "agents_dispatch_crash_recovery": {
+    "evidence_class": "local-wrangler-process-restart",
+    "outbox_before_restart": "delivering",
+    "outbox_after_restart": "review",
+    "task_after_restart": "needs_review",
+    "dependent_after_restart": "blocked",
+    "active_run_after_restart": false,
+    "inference_requests_before_and_after": 1,
+    "worker_launches_after_restart": 0,
+    "restart_ms": 4126,
+    "interrupted_wake_settled": true,
+    "external_provider_requests": 0
+  },
+  "project_bot_uncertain_verification": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "task_status": "needs_review",
+    "verification_outcome": "uncertain",
+    "decisions_requests": 1,
+    "decision_billing_events": [
+      "reserve",
+      "settle"
+    ],
+    "artifact_exists": true,
+    "external_provider_requests": 0
+  },
+  "project_bot_dependency_gate": {
+    "evidence_class": "integrated-local-synthetic-model",
+    "passed_prerequisite": "passed",
+    "passed_dependent_status": "completed",
+    "followup_artifact_after_pass": true,
+    "uncertain_prerequisite": "uncertain",
+    "uncertain_dependent_status": "blocked",
+    "followup_artifact_after_uncertain": false,
+    "external_provider_requests": 0,
+    "blackboard_message_survived_agents_restart": true,
+    "blackboard_restart_ms": 4376
+  },
+  "project_bot_decisions_blackboard_route": {
+    "evidence_class": "four-worker-local-wrangler-with-synthetic-decisions",
+    "classifier_and_verifier_decisions": 3,
+    "model_requests": 6,
+    "billing_events": [
+      "reserve",
+      "settle",
+      "reserve",
+      "settle",
+      "reserve",
+      "settle"
+    ],
+    "routed_edges": [
+      [
+        "write-report",
+        "write-follow-up"
+      ]
+    ],
+    "recipient_read_host_completion": true,
+    "tasks_completed_and_verified": true,
+    "external_provider_requests": 0
+  },
+  "blackboard_wake_contention": [
+    {
+      "contenders": 1,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 2,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 8,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    },
+    {
+      "contenders": 32,
+      "dispatches": 1,
+      "attempts": 1,
+      "repeat_dispatches": 0
+    }
+  ],
+  "finished_at": "2026-11-02T18:01:09.246Z",
+  "total_duration_ms": 121049
+}
