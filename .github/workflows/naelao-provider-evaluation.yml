@@ -41,7 +41,7 @@ jobs:
       - name: Verify live-provider follow-up gates
         run: node --test infra/scripts/provider-followup-gate.test.mjs
       - name: Run bounded synthetic provider comparison
-        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') }}
+        if: ${{ !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -55,7 +55,7 @@ jobs:
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
       - name: Disable follow-up calls for quota-limited providers
-        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') }}
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-blackboard-only-') && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
         env:
           PROVIDER_SMOKE_REPORT: provider-eval.json
         run: |
@@ -72,7 +72,7 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
         run: node infra/scripts/provider-followup-gate.mjs blackboard-only
       - name: Run bounded model ranking through production blackboard reranker
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -85,7 +85,7 @@ jobs:
           NAELAO_LIVE_BLACKBOARD_REPORT: ${{ github.workspace }}/blackboard-ranking-live.json
         run: pnpm --filter @naelao/agents-worker exec vitest run src/communications/blackboard-ranking-provider-evaluation.test.ts --reporter=verbose
       - name: Disable planning calls after a ranking failure or provider rate limit
-        if: always()
+        if: ${{ always() && !startsWith(github.ref_name, 'provider-eval-planning-only-') }}
         env:
           BLACKBOARD_RANKING_REPORT: blackboard-ranking-live.json
         run: node infra/scripts/provider-followup-gate.mjs planning
@@ -102,6 +102,8 @@ jobs:
           NAELAO_RUN_LIVE_ARCH_BENCHMARK: 'true'
           NAELAO_LIVE_ARCH_REPORT: live-goal-plan-benchmark.json
           NAELAO_GOAL_BENCHMARK_REPORT: goal-architecture-benchmark.json
+          GEMINI_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || env.GEMINI_GOAL_CALLS_ALLOWED }}
+          GROQ_GOAL_CALLS_ALLOWED: ${{ startsWith(github.ref_name, 'provider-eval-planning-only-') && 'true' || env.GROQ_GOAL_CALLS_ALLOWED }}
         run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
       - name: Publish measured metrics
         if: always()
@@ -112,7 +114,7 @@ jobs:
           try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); }
           catch { report = null; }
           const lines = ['## Naelao live model evaluation', '', `Commit: \`${process.env.GITHUB_SHA}\``, `Tag: \`${process.env.GITHUB_REF_NAME}\``, ''];
-          if (!report) lines.push(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Provider smoke stage skipped for the blackboard-only test profile.' : 'Evaluation report was not produced.');
+          if (!report) lines.push(process.env.GITHUB_REF_NAME.startsWith('provider-eval-blackboard-only-') ? 'Provider smoke stage skipped for the blackboard-only test profile.' : process.env.GITHUB_REF_NAME.startsWith('provider-eval-planning-only-') ? 'Provider comparison skipped for the planning-only test profile.' : 'Evaluation report was not produced.');
           else {
             lines.push('| Provider / model | State | Quality outcome | Inference calls | Valid response | Valid accuracy | Strict accuracy | False accepts | p50 / p95 ms | Est. paid $ / 1k cases |', '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|');
             for (const result of report.results) {
