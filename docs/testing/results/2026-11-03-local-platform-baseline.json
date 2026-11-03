@@ -97,10 +97,40 @@
   ],
   "providerCalls": { "count": 0, "actualUsd": null },
   "cloudflareDeployment": "NOT_RUN",
-  "githubActions": "NOT_VERIFIED_GH_CLI_RETURNED_403",
+  "githubActions": {
+    "runId": 41647630243,
+    "url": "https://github.com/b45406809-ux/Naelao-1/actions/runs/41647630243",
+    "sourceCommit": "5b14de7b37a3df42c5cc578d09a77c56466a964c",
+    "overallConclusion": "success",
+    "suiteOutcomes": {
+      "repository": "success",
+      "workspace": "success",
+      "node": "success",
+      "conformance": "success",
+      "typecheck": "success",
+      "security-lint": "success",
+      "browser-journey": "success",
+      "runtime-acceptance": "success",
+      "connected-binding-probe": "success",
+      "connected-router-dependencies": "success",
+      "connected-agent-authorization": "success",
+      "summary": "success"
+    },
+    "runtimeMetrics": {
+      "migrationSqlFiles": 156,
+      "migrationApplyMs": 54831,
+      "fourWorkerColdStartMs": 9981,
+      "fourWorkerRestartStartMs": 9775,
+      "blackboardLastCardAssistantMs": {
+        "100": 23,
+        "1000": 219,
+        "10000": 10263
+      }
+    }
+  },
   "limitations": [
     "This is local evidence, not Cloudflare staging acceptance or an observed user pilot.",
-    "Playwright's browser download host returned 403; tests passed by using the already-installed system Chromium.",
+    "Playwright's browser download host returned 403 in the local shell; tests passed by using the already-installed system Chromium, and the GitHub Actions browser suite also passed.",
     "No provider-live OpenRouter, Gemini, GroqCloud, Telnyx, Twilio, or WhatsApp calls were made."
   ]
 }
