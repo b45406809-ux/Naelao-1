@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "24abbee6b837bb88809b446d374033494b919b94",
+  "branchRefs": {
+    "work": "24abbee6b837bb88809b446d374033494b919b94",
+    "Mcbt5s-Backup-2": "24abbee6b837bb88809b446d374033494b919b94"
+  },
+  "batch": "route-and-binding-contract-slice",
+  "evidenceLevel": "L1",
+  "state": "PASS",
+  "startedAt": "2026-11-03T14:52:28Z",
+  "finishedAt": "2026-11-03T14:53:07Z",
+  "counts": {
+    "workerManifestsDiscovered": 26,
+    "bindingAndVariableParityTestsPassed": 127,
+    "routerAuthCorsAndDispatchTestsPassed": 78,
+    "githubActionsJobsPassed": 12,
+    "githubActionsJobsFailed": 0
+  },
+  "githubActions": {
+    "runId": 41648724732,
+    "url": "https://github.com/b45406809-ux/Naelao-1/actions/runs/41648724732",
+    "overallConclusion": "success",
+    "suites": [
+      "repository",
+      "workspace",
+      "node",
+      "conformance",
+      "typecheck",
+      "security-lint",
+      "browser-journey",
+      "runtime-acceptance",
+      "connected-binding-probe",
+      "connected-router-dependencies",
+      "connected-agent-authorization",
+      "summary"
+    ]
+  },
+  "initialHarnessIssue": "The first targeted router invocation used Vitest's default config and failed to import cloudflare:workers before collecting tests. Re-running with tests/vitest.config.ts passed all 78 assertions; this was a test invocation/configuration issue, not an application failure.",
+  "limitations": [
+    "This slice validates manifest and variable parity, focused router authorization/CORS/dispatch behavior, and connected local Wrangler bindings. It does not execute every literal route in all 26 Workers individually.",
+    "Connected probes use local Wrangler and synthetic credentials; no deployed Cloudflare account or external provider was exercised.",
+    "A complete per-route inventory with explicit auth, request limits, error contract, and tested/disabled reason remains outstanding."
+  ],
+  "providerCalls": { "count": 0, "actualUsd": null },
+  "cloudflareDeployment": "NOT_RUN"
+}
