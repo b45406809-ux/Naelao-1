@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "4e54d58c948a456b882ada616409545d3748284b",
+  "branchRefs": {
+    "work": "4e54d58c948a456b882ada616409545d3748284b",
+    "Mcbt5s-Backup-2": "4e54d58c948a456b882ada616409545d3748284b"
+  },
+  "batch": "local-platform-baseline-and-runtime-acceptance",
+  "startedAt": "2026-11-03T13:32:59Z",
+  "finishedAt": "2026-11-03T13:47:24Z",
+  "results": [
+    {
+      "name": "frozen-lockfile-install",
+      "state": "PASS",
+      "evidenceLevel": "L0",
+      "details": "pnpm 9.12.0 frozen install passed after correcting the lockfile override metadata."
+    },
+    {
+      "name": "workspace-build",
+      "state": "PASS",
+      "evidenceLevel": "L0",
+      "counts": { "workspaceProjects": 57 }
+    },
+    {
+      "name": "workspace-typecheck",
+      "state": "PASS",
+      "evidenceLevel": "L0",
+      "counts": { "workspaceProjects": 57 }
+    },
+    {
+      "name": "security-lint",
+      "state": "PASS",
+      "counts": { "filesChecked": 2816, "diagnostics": 0 }
+    },
+    {
+      "name": "root-vitest",
+      "state": "PASS",
+      "counts": { "files": 318, "passed": 3141, "failed": 0 }
+    },
+    {
+      "name": "workspace-tests",
+      "state": "PASS",
+      "counts": { "workspaceProjects": 57, "knownSkipped": 7 },
+      "limitations": ["The 7 skips were reported by the agents worker suite."]
+    },
+    {
+      "name": "node-tests",
+      "state": "PASS",
+      "counts": { "passed": 55, "failed": 0 }
+    },
+    {
+      "name": "conformance",
+      "state": "PASS",
+      "counts": { "files": 2, "passed": 4, "failed": 0 }
+    },
+    {
+      "name": "local-wrangler-runtime",
+      "state": "PASS",
+      "evidenceLevel": "L1",
+      "counts": { "passed": 16, "failed": 0 },
+      "metrics": {
+        "sqlMigrationsApplied": 156,
+        "migrationApplyMs": 50811,
+        "fourWorkerColdStartMs": 9752,
+        "fourWorkerRestartStartMs": 10165,
+        "wakeContention": [
+          { "contenders": 1, "dispatches": 1 },
+          { "contenders": 2, "dispatches": 1 },
+          { "contenders": 8, "dispatches": 1 },
+          { "contenders": 32, "dispatches": 1 }
+        ],
+        "blackboardSearch": [
+          { "visibleCards": 100, "assistantFoundLastCard": true, "assistantMs": 42, "pages": 2 },
+          { "visibleCards": 1000, "assistantFoundLastCard": true, "assistantMs": 208, "pages": 12 },
+          { "visibleCards": 10000, "assistantFoundLastCard": true, "assistantMs": 9110, "pages": 112 }
+        ],
+        "taskLoad": [
+          { "workers": 1, "repetitions": 3, "verifiedRate": 1, "p50Ms": 720, "maxConcurrentWorkers": 1 },
+          { "workers": 2, "repetitions": 3, "verifiedRate": 1, "p50Ms": 1091, "maxConcurrentWorkers": 1 },
+          { "workers": 3, "repetitions": 3, "verifiedRate": 1, "p50Ms": 1564, "maxConcurrentWorkers": 1 },
+          { "workers": 6, "repetitions": 3, "verifiedRate": 1, "p50Ms": 2838, "maxConcurrentWorkers": 1 }
+        ]
+      },
+      "limitations": [
+        "Inference and billing used local synthetic fixtures; provider cash cost was not measured.",
+        "Task load serialized workers; this does not establish parallel worker capacity.",
+        "One private-space dispatch was correctly held with compliance_violation because no local model was configured for that scenario."
+      ]
+    },
+    {
+      "name": "browser-journey",
+      "state": "PASS",
+      "evidenceLevel": "L2",
+      "counts": { "passed": 6, "failed": 0 },
+      "details": "Desktop, 338px, and 740px Shell and Project Bot journeys passed using the synthetic local API and system Chromium."
+    }
+  ],
+  "providerCalls": { "count": 0, "actualUsd": null },
+  "cloudflareDeployment": "NOT_RUN",
+  "githubActions": "NOT_VERIFIED_GH_CLI_RETURNED_403",
+  "limitations": [
+    "This is local evidence, not Cloudflare staging acceptance or an observed user pilot.",
+    "Playwright's browser download host returned 403; tests passed by using the already-installed system Chromium.",
+    "No provider-live OpenRouter, Gemini, GroqCloud, Telnyx, Twilio, or WhatsApp calls were made."
+  ]
+}
