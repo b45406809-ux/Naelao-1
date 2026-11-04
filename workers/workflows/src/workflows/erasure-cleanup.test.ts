@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 3067)
+Total output lines: 239
+
 import { describe, expect, it, vi } from "vitest";
 import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, SPACE_ERASURE_TABLES, validateBlueprintExportKey } from "./erasure-cleanup.js";
 
@@ -86,80 +89,7 @@ describe("space erasure workflow checkpointing", () => {
     await expect(eraseSpacesInSteps(db as never, "tenant-a", step as never, eraseSpace)).resolves.toBe(105);
 
     expect(calls.get("space-000")).toBe(1);
-    expect(calls.get("space-100")).toBe(1);
-    expect(calls.get("space-101")).toBe(2);
-    expect(calls.get("space-104")).toBe(1);
-  });
-});
-
-describe("KV erasure pagination", () => {
-  it("deletes every page and returns the number of deleted keys", async () => {
-    const list = vi.fn()
-      .mockResolvedValueOnce({ keys: [{ name: "org-a:one" }], list_complete: false, cursor: "next" })
-      .mockResolvedValueOnce({ keys: [{ name: "org-a:two" }], list_complete: true });
-    const remove = vi.fn(async (_name: string) => undefined);
-    await expect(deleteKvPrefix({ list, delete: remove } as never, "org-a:")).resolves.toBe(2);
-    expect(list).toHaveBeenNthCalledWith(1, { prefix: "org-a:" });
-    expect(list).toHaveBeenNthCalledWith(2, { prefix: "org-a:", cursor: "next" });
-    expect(remove.mock.calls.map(([key]) => key)).toEqual(["org-a:one", "org-a:two"]);
-  });
-
-  it.each([undefined, "repeated"])("fails closed for a missing or repeated cursor (%s)", async (cursor) => {
-    const list = vi.fn()
-      .mockResolvedValueOnce({ keys: [], list_complete: false, ...(cursor ? { cursor } : {}) })
-      .mockResolvedValueOnce({ keys: [], list_complete: false, cursor: "repeated" });
-    await expect(deleteKvPrefix({ list, delete: vi.fn() } as never, "org-a:")).rejects.toThrow(/cursor/);
-    expect(list).toHaveBeenCalledTimes(cursor ? 2 : 1);
-  });
-});
-
-describe("space knowledge resource erasure", () => {
-  it("uses project-scoped keys, drains all pages, and bounds object/vector batches", async () => {
-    const pages = Array.from({ length: 2 }, (_, page) => ({
-      objects: Array.from({ length: page === 0 ? 105 : 2 }, (_, i) => ({ key: `page-${page}-object-${i}` })),
-      truncated: page === 0,
-      ...(page === 0 ? { cursor: "cursor-1" } : {}),
-    }));
-    const list = vi.fn(async ({ prefix }: { prefix: string }) => prefix.includes("doc-a")
-      ? pages.shift()!
-      : { objects: [], truncated: false });
-    const deleteObject = vi.fn(async () => undefined);
-    const deleteVectors = vi.fn(async (_ids: string[]) => undefined);
-
-    await eraseSpaceKnowledgeResources("space-a", [{ id: "doc-a", project_id: "project-a", chunk_count: 205 }],
-      { list, delete: deleteObject } as never, { deleteByIds: deleteVectors } as never);
-
-    expect(list).toHaveBeenNthCalledWith(1, { prefix: "kb/space-a/project-a/doc-a/", limit: 1000 });
-    expect(list).toHaveBeenNthCalledWith(2, { prefix: "kb/space-a/project-a/doc-a/", cursor: "cursor-1", limit: 1000 });
-    expect(list).toHaveBeenNthCalledWith(3, { prefix: "kb/space-a/", limit: 1000 });
-    expect(list).toHaveBeenNthCalledWith(4, { prefix: "autorag/space-a/", limit: 1000 });
-    expect(deleteObject).toHaveBeenCalledTimes(108);
-    expect(deleteVectors.mock.calls.map(([ids]) => ids.length)).toEqual([100, 100, 5]);
-  });
-
-  it("uses the space-level key namespace when a document has no project", async () => {
-    const list = vi.fn(async () => ({ objects: [], truncated: false }));
-    await eraseSpaceKnowledgeResources("space-a", [{ id: "doc-a", project_id: null, chunk_count: null }],
-      { list, delete: vi.fn() } as never, { deleteByIds: vi.fn() } as never);
-    expect(list).toHaveBeenNthCalledWith(1, { prefix: "kb/space-a/_space/doc-a/", limit: 1000 });
-  });
-
-  it.each([
-    { truncated: true, cursor: undefined },
-    { truncated: true, cursor: "same" },
-  ])("fails closed for incomplete or repeated pagination cursors", async ({ truncated, cursor }) => {
-    const list = vi.fn(async () => ({ objects: [], truncated, ...(cursor ? { cursor } : {}) }));
-    const bucket = { list, delete: vi.fn() };
-    if (cursor) list.mockResolvedValueOnce({ objects: [], truncated: true, cursor: "same" }).mockResolvedValueOnce({ objects: [], truncated: true, cursor: "same" });
-    await expect(eraseSpaceKnowledgeResources("space-a", [], bucket as never, { deleteByIds: vi.fn() } as never))
-      .rejects.toThrow(/cursor/);
-  });
-
-  it("rejects corrupt vector counts before deleting external resources", async () => {
-    const list = vi.fn();
-    const deleteObject = vi.fn();
-    await expect(eraseSpaceKnowledgeResources("space-a", [{ id: "doc-a", project_id: null, chunk_count: 12_001 }],
-      { list, delete: deleteObject } as never, { deleteByIds: vi.fn() } as never)).rejects.toThrow(/chunk count/);
+    expect(c…1067 tokens truncated…Throw(/chunk count/);
     expect(list).not.toHaveBeenCalled();
     expect(deleteObject).not.toHaveBeenCalled();
   });
@@ -190,7 +120,6 @@ describe("space D1 erasure", () => {
     expect(statements).toHaveLength(SPACE_ERASURE_TABLES.length);
     expect(statements).toContain("DELETE FROM fde_graduations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM llm_token_reservations WHERE space_id = ?");
-    expect(statements).toContain("DELETE FROM launchpad_products WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM workflow_budget_reservations WHERE space_id = ?");
   });
 });

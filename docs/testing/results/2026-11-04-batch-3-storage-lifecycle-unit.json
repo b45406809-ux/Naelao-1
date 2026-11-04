@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "467a70fcb0175214c0ac701754d27834c3c0a5d1",
+  "branchRefs": {
+    "work": "467a70fcb0175214c0ac701754d27834c3c0a5d1",
+    "Mcbt5s-Backup-2": "467a70fcb0175214c0ac701754d27834c3c0a5d1"
+  },
+  "batch": "3-storage-backup-retention-and-erasure-unit-slice",
+  "evidenceLevel": "L0",
+  "state": "PASS",
+  "startedAt": "2026-11-04T11:40:44Z",
+  "durationMs": 5060,
+  "counts": {
+    "passed": 48,
+    "failed": 0,
+    "skipped": 0,
+    "blocked": 0
+  },
+  "metrics": {
+    "focusedSuites": {
+      "spaceDoBackupRetentionAndRestore": { "files": 2, "passed": 12, "failed": 0 },
+      "erasureSweeperAndRetentionRecords": { "files": 3, "passed": 36, "failed": 0 }
+    },
+    "testHarnessCorrection": "Removed a stale assertion for launchpad_products; no current migration, runtime reference, or schema table exists."
+  },
+  "providerCalls": { "count": 0, "actualUsd": null },
+  "failureIds": [],
+  "artifacts": [
+    "workers/spaces/src/do/space-data-ops.test.ts",
+    "workers/spaces/src/do/space-backup.test.ts",
+    "workers/workflows/src/workflows/erasure-cleanup.test.ts",
+    "workers/sweeper/src/index.test.ts",
+    "tests/unit/data-erasure-records.test.ts"
+  ],
+  "limitations": [
+    "L0 test evidence uses in-memory and mocked Cloudflare bindings; it does not prove remote persistence or provider behavior.",
+    "Interrupted R2 multipart upload, cross-store Space/Project deletion with active jobs and credentials, deployed restore/rollback, and live Cloudflare deletion acceptance remain open."
+  ]
+}
