@@ -24,7 +24,7 @@ function makeAgentDoStub() {
 function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { __calls: string[] } {
   const { agentDoStub, calls } = makeAgentDoStub();
   const membershipDb = createFakeD1([
-    `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active')`,
+    `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'tenant-1', status TEXT NOT NULL DEFAULT 'active')`,
     `CREATE TABLE space_members (space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, PRIMARY KEY (space_id, end_user_id))`,
     `CREATE TABLE channel_links (space_id TEXT NOT NULL, channel TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT, project_id TEXT, model_override TEXT, extension_instance_id TEXT)`,
   ]);
@@ -206,7 +206,7 @@ describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worke
   function makeArtifactEnv(opts: { spacesOk: boolean; withArtifactWorker?: boolean }): AgentsEnv & { artifactListQueries: string[] } {
     const { agentDoStub } = makeAgentDoStub();
     const membershipDb = createFakeD1([
-      `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active')`,
+      `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'tenant-1', status TEXT NOT NULL DEFAULT 'active')`,
       `CREATE TABLE space_members (space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, PRIMARY KEY (space_id, end_user_id))`,
     ]);
     membershipDb.db.exec("INSERT INTO spaces (id, status) VALUES ('space1', 'active')");

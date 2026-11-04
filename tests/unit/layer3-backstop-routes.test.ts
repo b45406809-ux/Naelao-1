@@ -18,6 +18,7 @@ function makeSpacesEnv(): Record<string, unknown> {
       const stmt = {
         bind() { return stmt; },
         async first() {
+          if (/JOIN space_members/.test(sql)) return { role: "member" };
           if (/FROM spaces WHERE/.test(sql)) return { name: "Test Space", spacetype_id: "launchpad", config_json: "{}", parent_space_id: "product-1" };
           if (/FROM space_members/.test(sql)) return { role: "member" };
           if (/FROM business_memberships/.test(sql)) return { role: "member" };

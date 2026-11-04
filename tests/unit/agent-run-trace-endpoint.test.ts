@@ -18,6 +18,7 @@ function makeDb(memberRole?: string) {
       return {
         bind(..._args: unknown[]) { return this; },
         async first() {
+          if (sql.includes("JOIN space_members")) return memberRole ? { role: memberRole } : null;
           if (sql.includes("FROM spaces")) return { id: "space-1" };
           if (sql.includes("FROM space_members")) return memberRole ? { role: memberRole } : null;
           return null;

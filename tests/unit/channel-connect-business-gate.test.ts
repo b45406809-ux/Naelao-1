@@ -29,7 +29,9 @@ function makeEnv(opts: { spaceRole?: string | null; credentialsOk?: boolean } = 
       PLATFORM_DB: {
         prepare: (sql: string) => ({
           bind: (...args: unknown[]) => ({
-            first: async () => sql.includes("FROM spaces") ? { id: SPACE } : opts.spaceRole ? { role: opts.spaceRole } : null,
+            first: async () => sql.includes("JOIN space_members")
+              ? opts.spaceRole ? { role: opts.spaceRole } : null
+              : sql.includes("FROM spaces") ? { id: SPACE } : null,
             run: async () => {
               if (sql.includes("INSERT INTO channel_links")) {
                 links.push({
