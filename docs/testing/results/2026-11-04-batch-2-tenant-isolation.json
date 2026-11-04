@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "batch": 2,
+  "name": "tenant-isolation-and-authorization",
+  "tested_at": "2026-11-04T10:34:54.814Z",
+  "evidence_level": "local-wrangler-real-d1-and-space-do",
+  "environment": {
+    "workers": ["spaces", "agents", "model-gateway", "artifact-worker"],
+    "migration_sql_files": 156,
+    "migration_apply_ms": 44545,
+    "initial_worker_start_ms": 9228,
+    "full_runtime_ms": 134836,
+    "providers_called": 0
+  },
+  "results": {
+    "runtime_acceptance": { "passed": 18, "failed": 0 },
+    "existing_role_token_tenant_unit_suites": { "passed": 93, "failed": 0, "files": 8 },
+    "spaces_worker_suite": { "passed": 362, "failed": 0, "files": 83 },
+    "auth_worker_suite": { "passed": 33, "failed": 0, "files": 2 },
+    "router_worker_suite": { "passed": 72, "failed": 0, "files": 11 }
+  },
+  "tenant_isolation": {
+    "valid_foreign_tenant_owner": 200,
+    "same_tenant_without_space_membership": 403,
+    "tenant_a_reading_tenant_b_space": 403,
+    "tenant_b_reading_tenant_a_space": 403,
+    "mismatched_tenant_header_and_token": 403
+  },
+  "membership_revocation": {
+    "before_revoke": 200,
+    "within_warm_cache_ttl": 200,
+    "after_revoke_and_5250ms": 403,
+    "documented_cache_ttl_ms": 5000,
+    "interpretation": "Revocation is enforced after the documented cache TTL; a warm isolate may continue authorizing until that entry expires. This is an observed bounded stale-authorization window, not immediate revocation."
+  },
+  "covered_paths": [
+    "Space Assistant and Project Bot authorization with real local D1 membership rows",
+    "same-tenant Space membership boundary",
+    "cross-tenant Space read boundary in both directions",
+    "tenant-token mismatch rejection",
+    "viewer write denial",
+    "membership revocation after role-cache expiry",
+    "blackboard paging and visibility snapshot behavior",
+    "wake authorization revocation before AgentDO dispatch",
+    "durable wake contention and expired-lease behavior",
+    "AgentDO process restart recovery without blind redispatch"
+  ],
+  "limitations": [
+    "No remote Cloudflare deployment, live provider call, or production identity provider was exercised.",
+    "No test asserts immediate membership revocation; local runtime confirms a warm-cache allow can remain for up to the documented 5000ms TTL.",
+    "Account signup, password recovery, session rotation, and tenant deletion lifecycle remain outside this batch."
+  ]
+}

@@ -271,6 +271,16 @@ function headers(userId = identity.userId, role = "owner") {
   };
 }
 
+function headersFor(scope, role = "product_end_user") {
+  return {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": scope.tenantId,
+    "x-naelao-user-id": scope.userId,
+    "x-naelao-role": role,
+    "x-naelao-internal-token": scope.token,
+  };
+}
+
 async function jsonRequest(baseUrl, pathname, method, body, timeoutMs = 120_000) {
   const started = performance.now();
   const response = await fetch(`${baseUrl}${pathname}`, {
@@ -484,6 +494,8 @@ test("a Project Bot wake completes through the local model adapter without exter
     external_provider_requests: 0,
   };
 });
+
+
 
 test("Space Assistant uses the shared planner, verified leaf worker and Space workspace", async () => {
   const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
@@ -1196,4 +1208,80 @@ test("real D1 membership data denies a viewer permission to create Project Bot t
     error_code: "forbidden",
     message: "Insufficient role for this action",
   });
+});
+
+test("real D1 tenant and Space membership fences reject cross-scope reads", async () => {
+  const bootstrap = await fetch(`${agentsBaseUrl}/__test/bootstrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ includeTenantIsolation: true }),
+  });
+  assert.equal(bootstrap.status, 200, await bootstrap.clone().text());
+  const fixtures = await bootstrap.json();
+  identity.token = fixtures.token;
+  const foreign = fixtures.foreignTenant;
+  assert.ok(foreign?.tenantId && foreign?.spaceId && foreign?.userId && foreign?.token);
+
+  const ownSpace = await fetch(`${spacesBaseUrl}/spaces/${encodeURIComponent(foreign.spaceId)}/projects`, {
+    headers: headersFor(foreign),
+  });
+  assert.equal(ownSpace.status, 200, await ownSpace.clone().text());
+
+  const sameTenantUnjoined = await fetch(`${spacesBaseUrl}/spaces/${encodeURIComponent(fixtures.sameTenantUnjoinedSpaceId)}/projects`, {
+    headers: headersFor(identity),
+  });
+  assert.equal(sameTenantUnjoined.status, 403, await sameTenantUnjoined.clone().text());
+
+  const ownerAReadsTenantB = await fetch(`${spacesBaseUrl}/spaces/${encodeURIComponent(foreign.spaceId)}/projects`, {
+    headers: headersFor(identity),
+  });
+  assert.equal(ownerAReadsTenantB.status, 403, await ownerAReadsTenantB.clone().text());
+
+  const ownerBReadsTenantA = await fetch(`${spacesBaseUrl}/spaces/${encodeURIComponent(identity.spaceId)}/projects`, {
+    headers: headersFor(foreign),
+  });
+  assert.equal(ownerBReadsTenantA.status, 403, await ownerBReadsTenantA.clone().text());
+
+  const tenantHeaderTokenMismatch = await fetch(`${spacesBaseUrl}/spaces/${encodeURIComponent(identity.spaceId)}/projects`, {
+    headers: { ...headersFor(identity), "x-naelao-tenant-id": foreign.tenantId },
+  });
+  assert.ok([401, 403].includes(tenantHeaderTokenMismatch.status), await tenantHeaderTokenMismatch.clone().text());
+
+  metrics.tenant_isolation = {
+    evidence_class: "local-wrangler-real-d1-space-membership",
+    validForeignTenantOwner: ownSpace.status,
+    sameTenantWithoutSpaceMembership: sameTenantUnjoined.status,
+    tenantACannotReadTenantBSpace: ownerAReadsTenantB.status,
+    tenantBCannotReadTenantASpace: ownerBReadsTenantA.status,
+    mismatchedTenantHeaderAndToken: tenantHeaderTokenMismatch.status,
+    provider_calls: 0,
+  };
+});
+
+test("real D1 Space membership revocation is enforced after the documented role-cache TTL", async () => {
+  const bootstrap = await jsonRequest(agentsBaseUrl, "/__test/bootstrap", "POST", {});
+  identity.token = bootstrap.token;
+  const path = `/spaces/${encodeURIComponent(identity.spaceId)}/projects`;
+  const before = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
+  assert.equal(before.status, 200, await before.clone().text());
+
+  const revoke = await jsonRequest(agentsBaseUrl, "/__test/revoke-owner-membership", "POST", {});
+  assert.equal(revoke.changes, 1, JSON.stringify(revoke));
+  const withinCacheTtl = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
+  assert.equal(withinCacheTtl.status, 200, await withinCacheTtl.clone().text());
+
+  // space-auth.ts documents a 5 second request-path cache to avoid a D1 lookup on every read.
+  // Wait beyond that TTL, then assert the next request is denied against real local D1.
+  await new Promise((resolve) => setTimeout(resolve, 5_250));
+  const after = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
+  assert.equal(after.status, 403, await after.clone().text());
+  metrics.membership_revocation = {
+    evidence_class: "local-wrangler-real-d1-space-membership",
+    initial_access: before.status,
+    access_within_cache_ttl: withinCacheTtl.status,
+    revoked_membership_after_cache_ttl: after.status,
+    cache_ttl_ms: 5_000,
+    wait_ms: 5_250,
+    provider_calls: 0,
+  };
 });

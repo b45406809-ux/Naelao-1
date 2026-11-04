@@ -209,6 +209,7 @@ export default {
     }
     if (url.pathname === "/__test/bootstrap" && request.method === "POST") {
       const db = env.PLATFORM_DB as D1Database;
+      const bootstrapOptions = await request.json<{ includeTenantIsolation?: boolean }>().catch(() => ({}));
       await db.batch([
         db
           .prepare(
@@ -247,16 +248,51 @@ export default {
           ),
       ]);
 
+      let foreignTenant: { tenantId: string; spaceId: string; userId: string; token: string } | undefined;
+      let sameTenantUnjoinedSpaceId: string | undefined;
+      if (bootstrapOptions.includeTenantIsolation === true) {
+        const foreignTenantId = "tenant-blackboard-runtime-foreign";
+        const foreignSpaceId = "space-blackboard-runtime-foreign";
+        const foreignUserId = "owner-blackboard-runtime-foreign";
+        sameTenantUnjoinedSpaceId = "space-blackboard-runtime-unjoined";
+        await db.batch([
+          db.prepare("INSERT OR REPLACE INTO orgs(id,name,owner_id,status) VALUES(?,?,?,'active')")
+            .bind(foreignTenantId, "Foreign Tenant Runtime Fixture", foreignUserId),
+          db.prepare("INSERT OR REPLACE INTO spaces(id,tenant_id,spacetype_id,name,status,config_json) VALUES(?,?,? ,?,'active','{}')")
+            .bind(foreignSpaceId, foreignTenantId, "launchpad", "Foreign Tenant Runtime Space"),
+          db.prepare("INSERT OR REPLACE INTO space_members(id,space_id,tenant_id,end_user_id,role) VALUES(?,?,?,?, 'owner')")
+            .bind("member-blackboard-runtime-foreign", foreignSpaceId, foreignTenantId, foreignUserId),
+          db.prepare("INSERT OR REPLACE INTO spaces(id,tenant_id,spacetype_id,name,status,config_json) VALUES(?,?,? ,?,'active','{}')")
+            .bind(sameTenantUnjoinedSpaceId, TEST_TENANT_ID, "launchpad", "Unjoined Same Tenant Runtime Space"),
+        ]);
+        foreignTenant = {
+          tenantId: foreignTenantId,
+          spaceId: foreignSpaceId,
+          userId: foreignUserId,
+          token: await mintInternalToken(String(env.PLATFORM_SECRET), foreignTenantId),
+        };
+      }
+
       return Response.json({
         tenantId: TEST_TENANT_ID,
         spaceId: TEST_SPACE_ID,
         userId: TEST_USER_ID,
         viewerId: TEST_VIEWER_ID,
+        ...(foreignTenant ? { foreignTenant } : {}),
+        ...(sameTenantUnjoinedSpaceId ? { sameTenantUnjoinedSpaceId } : {}),
         token: await mintInternalToken(
           String(env.PLATFORM_SECRET),
           TEST_TENANT_ID
         ),
       });
+    }
+
+    if (url.pathname === "/__test/revoke-owner-membership" && request.method === "POST") {
+      const db = env.PLATFORM_DB as D1Database;
+      const result = await db.prepare(
+        "DELETE FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=?"
+      ).bind(TEST_SPACE_ID, TEST_TENANT_ID, TEST_USER_ID).run();
+      return Response.json({ changes: result.meta.changes ?? 0 });
     }
 
     if (url.pathname === "/__test/space-assistant-goal" && request.method === "POST") {
