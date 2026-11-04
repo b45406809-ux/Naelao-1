@@ -5,11 +5,9 @@ import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-// WS-7 (audit plan): resolveEndUserSpaceRole ran 1-2 PLATFORM_DB reads on EVERY Space-scoped
-// end-user request — a real chokepoint on single-instance D1 at scale. requireSpaceMembership
-// now wraps the lookup in a short-TTL (5s) in-memory cache, mirroring the router's own per-user
-// token-version cache. Proven here at the D1-call-count level (not just status codes) so a
-// regression that silently drops the cache would actually fail this test.
+// Membership authorization intentionally queries current D1 state on every protected request.
+// A positive in-memory cache can let a revoked member continue accessing a Space from a warm
+// isolate; correctness and immediate revocation take precedence over saving these reads.
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const PLATFORM_SECRET = "test-platform-secret";
@@ -49,6 +47,7 @@ function makeEnv(tenantId = "tenant-1", authorized = true) {
   return {
     env: { PLATFORM_SECRET, ENVIRONMENT: "test", PLATFORM_DB: dbWithSpy, SPACE_DO: makeStatefulDoNamespace(SpaceDO) },
     prepareSpy,
+    revokeMembership: () => fakeDb.prepare("DELETE FROM space_members WHERE space_id = ? AND end_user_id = ?").bind("space-1", "cache-test-user").run(),
   };
 }
 
@@ -65,27 +64,27 @@ async function req(path: string, method = "GET", tenantId = "tenant-1"): Promise
   });
 }
 
-describe("requireSpaceMembership — short-TTL role cache (WS-7)", () => {
-  it("does not re-query PLATFORM_DB for a repeat request within the TTL window", async () => {
-    const { env, prepareSpy } = makeEnv();
+describe("requireSpaceMembership — immediate membership revocation", () => {
+  it("re-queries D1 and denies access on the first request after membership removal", async () => {
+    const { env, prepareSpy, revokeMembership } = makeEnv();
 
     const res1 = await spacesWorker.fetch(await req("/spaces/space-1/projects"), env as never, execCtx);
     expect(res1.status).toBe(200);
     const queriesAfterFirst = prepareSpy.mock.calls.filter(([sql]: [string]) =>
       /space_members|FROM spaces WHERE id/.test(sql)
     ).length;
-    expect(queriesAfterFirst).toBeGreaterThan(0);
+    expect(queriesAfterFirst).toBe(1);
 
+    await revokeMembership();
     const res2 = await spacesWorker.fetch(await req("/spaces/space-1/projects"), env as never, execCtx);
-    expect(res2.status).toBe(200);
+    expect(res2.status).toBe(403);
     const queriesAfterSecond = prepareSpy.mock.calls.filter(([sql]: [string]) =>
       /space_members|FROM spaces WHERE id/.test(sql)
     ).length;
-    // The second call must not have issued any NEW role-lookup queries — same count as after the first.
-    expect(queriesAfterSecond).toBe(queriesAfterFirst);
+    expect(queriesAfterSecond).toBeGreaterThan(queriesAfterFirst);
   });
 
-  it("does not reuse a positive membership cached for another tenant's same space/user IDs", async () => {
+  it("does not authorize a Space request with a mismatched tenant identity", async () => {
     const authorized = makeEnv("tenant-cache-a", true);
     const denied = makeEnv("tenant-cache-b", false);
     const first = await spacesWorker.fetch(await req("/spaces/space-1/projects", "GET", "tenant-cache-a"), authorized.env as never, execCtx);

@@ -1258,7 +1258,7 @@ test("real D1 tenant and Space membership fences reject cross-scope reads", asyn
   };
 });
 
-test("real D1 Space membership revocation is enforced after the documented role-cache TTL", async () => {
+test("real D1 Space membership revocation is enforced on the next request", async () => {
   const bootstrap = await jsonRequest(agentsBaseUrl, "/__test/bootstrap", "POST", {});
   identity.token = bootstrap.token;
   const path = `/spaces/${encodeURIComponent(identity.spaceId)}/projects`;
@@ -1267,21 +1267,13 @@ test("real D1 Space membership revocation is enforced after the documented role-
 
   const revoke = await jsonRequest(agentsBaseUrl, "/__test/revoke-owner-membership", "POST", {});
   assert.equal(revoke.changes, 1, JSON.stringify(revoke));
-  const withinCacheTtl = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
-  assert.equal(withinCacheTtl.status, 200, await withinCacheTtl.clone().text());
-
-  // space-auth.ts documents a 5 second request-path cache to avoid a D1 lookup on every read.
-  // Wait beyond that TTL, then assert the next request is denied against real local D1.
-  await new Promise((resolve) => setTimeout(resolve, 5_250));
   const after = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
   assert.equal(after.status, 403, await after.clone().text());
   metrics.membership_revocation = {
     evidence_class: "local-wrangler-real-d1-space-membership",
     initial_access: before.status,
-    access_within_cache_ttl: withinCacheTtl.status,
-    revoked_membership_after_cache_ttl: after.status,
-    cache_ttl_ms: 5_000,
-    wait_ms: 5_250,
+    revoked_membership_on_next_request: after.status,
+    wait_ms: 0,
     provider_calls: 0,
   };
 });

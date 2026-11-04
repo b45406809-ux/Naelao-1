@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { resolveEndUserSpaceRole } from "../../workers/spaces/src/space-auth.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-const SPACES = `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active');`;
+const SPACES = `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'tenant-1', status TEXT NOT NULL DEFAULT 'active');`;
 const MEMBERS = `CREATE TABLE space_members (space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, PRIMARY KEY (space_id, end_user_id));`;
 
 function makeDb() {
@@ -17,6 +17,7 @@ describe("resolveEndUserSpaceRole", () => {
     const db = makeDb();
     expect(await resolveEndUserSpaceRole(db as never, "space-a", "alice")).toBe("owner");
     expect(await resolveEndUserSpaceRole(db as never, "space-a", "bob")).toBe("member");
+    expect(await resolveEndUserSpaceRole(db as never, "space-a", "alice", "tenant-b")).toBeNull();
     expect(await resolveEndUserSpaceRole(db as never, "space-a", "stranger")).toBeNull();
     expect(await resolveEndUserSpaceRole(db as never, "missing-space", "alice")).toBeNull();
   });

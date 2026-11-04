@@ -41,16 +41,19 @@ interface SpaceAuthEnv {
 export async function resolveEndUserSpaceRole(
   db: D1Database,
   spaceId: string,
-  endUserId: string
+  endUserId: string,
+  tenantId?: string
 ): Promise<SpaceRole | null> {
   if (!spaceId || !endUserId) return null;
   try {
-    const space = await db.prepare("SELECT id FROM spaces WHERE id = ? AND status != 'deleted'")
-      .bind(spaceId).first<{ id: string }>();
-    if (!space) return null;
     const direct = await db.prepare(
-      "SELECT role FROM space_members WHERE space_id = ? AND end_user_id = ? AND suspended_at IS NULL"
-    ).bind(spaceId, endUserId).first<{ role: string }>();
+      `SELECT sm.role
+       FROM spaces s
+       JOIN space_members sm ON sm.space_id = s.id
+       WHERE s.id = ? AND s.status != 'deleted'
+         AND (? IS NULL OR s.tenant_id = ?)
+         AND sm.end_user_id = ? AND sm.suspended_at IS NULL`
+    ).bind(spaceId, tenantId ?? null, tenantId ?? null, endUserId).first<{ role: string }>();
     if (direct) {
       const role = direct.role === "moderator" ? "admin" : direct.role;
       return (["viewer", "member", "admin", "owner"] as string[]).includes(role)
@@ -61,36 +64,6 @@ export async function resolveEndUserSpaceRole(
   } catch {
     return null;
   }
-}
-
-// This check runs on each Space-scoped end-user request, doing at most two
-// PLATFORM_DB (single-instance D1, per CLAUDE.md) reads each time — a real chokepoint at
-// "millions of end-users" scale. Short-TTL in-memory cache, same pattern as the router's own
-// per-user token-version cache (5s TTL): a warm isolate skips the D1 round trip for a burst of
-// requests from the same (spaceId, endUserId), while a revoked/changed membership is picked up
-// again within a few seconds. Deliberately only wraps the MIDDLEWARE call site, not the exported
-// `resolveEndUserSpaceRole` function itself — that function is called directly (uncached) by
-// existing tests asserting on membership changes taking effect immediately after a DB mutation;
-// caching belongs to the request-serving path, not the primitive.
-const SPACE_ROLE_CACHE_TTL_MS = 5_000;
-const SPACE_ROLE_CACHE_MAX = 2000;
-const spaceRoleCache = new Map<string, { role: SpaceRole | null; expiresAt: number }>();
-
-async function resolveEndUserSpaceRoleCached(
-  db: D1Database,
-  tenantId: string,
-  spaceId: string,
-  endUserId: string
-): Promise<SpaceRole | null> {
-  const cacheKey = `${tenantId}:${spaceId}:${endUserId}`;
-  const cached = spaceRoleCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.role;
-  const role = await resolveEndUserSpaceRole(db, spaceId, endUserId);
-  if (spaceRoleCache.size >= SPACE_ROLE_CACHE_MAX) {
-    spaceRoleCache.delete(spaceRoleCache.keys().next().value!);
-  }
-  spaceRoleCache.set(cacheKey, { role, expiresAt: Date.now() + SPACE_ROLE_CACHE_TTL_MS });
-  return role;
 }
 
 /** Returns a Hono middleware that, ONLY for `x-naelao-role: product_end_user` callers, requires
@@ -105,7 +78,10 @@ export function requireSpaceMembership(methodMinRole: Partial<Record<string, Spa
     const endUserId = c.req.header("x-naelao-user-id") ?? "";
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const env = c.env as SpaceAuthEnv;
-    const callerRole = await resolveEndUserSpaceRoleCached(env.PLATFORM_DB, tenantId, spaceId, endUserId);
+    // Resolve on every protected request. Positive role caching allowed a revoked member to keep
+    // using a warm isolate until TTL expiry; authorization changes must take effect immediately.
+    // The joined lookup also binds Space and membership rows to the authenticated tenant in one D1 read.
+    const callerRole = await resolveEndUserSpaceRole(env.PLATFORM_DB, spaceId, endUserId, tenantId);
     if (!callerRole) {
       return c.json({ error_code: "forbidden", message: "Not a member of this Space" }, 403);
     }
