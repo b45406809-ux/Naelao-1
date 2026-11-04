@@ -27,7 +27,14 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "node tests/plan/support/assistant-journey-api.mjs",
+      command: "node tests/plan/support/browser-space-worker.mjs",
+      cwd: repoRoot,
+      url: "http://127.0.0.1:8788/__runtime_ready",
+      reuseExistingServer: !process.env.CI,
+      timeout: 180_000,
+    },
+    {
+      command: "NAELAO_REAL_SPACE_BACKEND=http://127.0.0.1:8788 node tests/plan/support/assistant-journey-api.mjs",
       cwd: repoRoot,
       url: "http://127.0.0.1:8787/__health",
       reuseExistingServer: !process.env.CI,

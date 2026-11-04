@@ -2,9 +2,9 @@
 import { createServer } from "node:http";
 
 const spaceId = "space-bot-e2e";
-const projectId = "project-logistics-e2e";
+let projectId = "project-logistics-e2e";
 const now = new Date().toISOString();
-const project = {
+let project = {
   id: projectId,
   name: "Logistics Project",
   description: "Synthetic browser journey project",
@@ -28,6 +28,15 @@ const createdThread = {
   updated_at: now,
 };
 const persistedThreads = new Map();
+const realSpaceBackend = process.env.NAELAO_REAL_SPACE_BACKEND;
+
+if (realSpaceBackend) {
+  const seeded = await fetch(`${realSpaceBackend}/__test/browser/bootstrap`, { method: "POST" });
+  const fixture = await seeded.json().catch(() => null);
+  if (!seeded.ok || !fixture?.projectId) throw new Error(`Could not seed local SpaceDO browser fixture: ${seeded.status} ${JSON.stringify(fixture)}`);
+  projectId = fixture.projectId;
+  project = { ...project, id: projectId, description: "Real local SpaceDO browser fixture" };
+}
 
 function json(response, status = 200, body = {}) {
   response.writeHead(status, {
@@ -137,10 +146,19 @@ const server = createServer(async (request, response) => {
       ],
     });
   if (path === `/v1/spaces/${spaceId}/threads`) {
+    if (realSpaceBackend) {
+      const input = request.method === "POST" ? await readJson(request) : undefined;
+      const upstream = await fetch(`${realSpaceBackend}/__test/browser/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request.method === "POST"
+          ? { operation: "create", input }
+          : { operation: "list" }),
+      });
+      return json(response, upstream.status, await upstream.json().catch(() => ({ error_code: "space_backend_invalid_json" })));
+    }
     if (request.method === "POST") {
-      let body = "";
-      for await (const chunk of request) body += chunk;
-      const input = JSON.parse(body);
+      const input = await readJson(request);
       if (input.project_id !== projectId)
         return json(response, 403, { error_code: "project_scope_required" });
       const userId = request.headers["x-naelao-end-user-id"];
@@ -164,7 +182,16 @@ const server = createServer(async (request, response) => {
     return json(response, 200, { data: [] });
   if (path === `/v1/spaces/${spaceId}/sessions/inbox/approvals`)
     return json(response, 200, { approvals: [] });
-  if (path === `/v1/spaces/${spaceId}/threads/${createdThread.id}`) {
+  if (path.startsWith(`/v1/spaces/${spaceId}/threads/`)) {
+    if (realSpaceBackend) {
+      const threadId = decodeURIComponent(path.slice(`/v1/spaces/${spaceId}/threads/`.length));
+      const upstream = await fetch(`${realSpaceBackend}/__test/browser/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operation: "get", threadId }),
+      });
+      return json(response, upstream.status, await upstream.json().catch(() => ({ error_code: "space_backend_invalid_json" })));
+    }
     const userId = request.headers["x-naelao-end-user-id"];
     const persistedThread = userId ? persistedThreads.get(userId) : null;
     return persistedThread
@@ -175,6 +202,15 @@ const server = createServer(async (request, response) => {
     return json(response, 200, project);
   return json(response, 404, { error_code: "fixture_route_not_found", path });
 });
+
+async function readJson(request) {
+  let body = "";
+  for await (const chunk of request) {
+    body += chunk;
+    if (body.length > 16_384) throw new Error("browser fixture request exceeded the body limit");
+  }
+  return JSON.parse(body || "{}");
+}
 
 server.listen(8787, "127.0.0.1");
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
