@@ -287,6 +287,12 @@ export default {
       });
     }
 
+    if (url.pathname === "/__test/refresh-token" && request.method === "POST") {
+      return Response.json({
+        token: await mintInternalToken(String(env.PLATFORM_SECRET), TEST_TENANT_ID),
+      });
+    }
+
     if (url.pathname === "/__test/revoke-owner-membership" && request.method === "POST") {
       const db = env.PLATFORM_DB as D1Database;
       const result = await db.prepare(

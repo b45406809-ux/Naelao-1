@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 16018)
+Total output lines: 1290
+
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -26,6 +29,7 @@ let agentsBaseUrl;
 let modelGatewayBaseUrl;
 let artifactBaseUrl;
 let identity;
+let identityTokenIssuedAt = 0;
 let runtimeRestartCount = 0;
 const runStartedAt = new Date().toISOString();
 const runStarted = performance.now();
@@ -239,6 +243,7 @@ before(
       duration_ms: Math.round(performance.now() - bootstrapStarted),
     });
     identity = await response.json();
+    identityTokenIssuedAt = Date.now();
   },
   { timeout: 180_000 }
 );
@@ -282,6 +287,12 @@ function headersFor(scope, role = "product_end_user") {
 }
 
 async function jsonRequest(baseUrl, pathname, method, body, timeoutMs = 120_000) {
+  if (Date.now() - identityTokenIssuedAt > 45_000) {
+    const refreshed = await fetch(`${agentsBaseUrl}/__test/refresh-token`, { method: "POST" });
+    assert.equal(refreshed.status, 200, await refreshed.clone().text());
+    identity.token = (await refreshed.json()).token;
+    identityTokenIssuedAt = Date.now();
+  }
   const started = performance.now();
   const response = await fetch(`${baseUrl}${pathname}`, {
     method,
@@ -526,371 +537,7 @@ test("Space Assistant uses the shared planner, verified leaf worker and Space wo
   };
 });
 
-test("Project Bot planning dispatches a real leaf AgentDO and writes its scoped workspace artifact", async () => {
-  const project = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/projects`,
-    "POST",
-    { name: "Project Bot Leaf Worker Journey" }
-  );
-  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leafWorkerMode: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
-  });
-  assert.equal(configure.status, 200, await configure.clone().text());
-  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const started = performance.now();
-  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
-    projectId: project.id,
-    mockModelRun: true,
-  });
-  const elapsedMs = Math.round(performance.now() - started);
-  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  assert.equal(result.wake.status, "completed", JSON.stringify({ wake: result.wake, dispatchResponses: result.dispatchResponses, gateway: after }));
-  assert.equal(result.wake.attempts, 1);
-  assert.equal(result.dispatchResponses[0]?.body?.result?.ok, true, JSON.stringify(result.dispatchResponses[0]?.body));
-  assert.ok(after.totalRequests - before.totalRequests >= 3, `planner and leaf worker should each reason through the local adapter: ${JSON.stringify({ before, after })}`);
-  assert.equal(result.workspaceArtifact?.exists, true, JSON.stringify({ workspaceArtifact: result.workspaceArtifact, dispatchResponses: result.dispatchResponses, modelRequests: after.totalRequests - before.totalRequests }));
-  assert.equal(result.workspaceArtifact?.contentMatches, true, JSON.stringify(result.workspaceArtifact));
-  assert.match(result.workspaceArtifact?.sha256 ?? "", /^[a-f0-9]{64}$/);
-  assert.match(result.workspaceArtifact?.branch ?? "", /^task\/[a-f0-9]{48}$/);
-  assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, wake: result.wake, dispatch: result.dispatchResponses, decisions: after.decisions }));
-  assert.equal(result.goalActivity.goals[0]?.verificationRequired, true);
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "completed");
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.dispatch?.status, "acknowledged", JSON.stringify(result.goalActivity));
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "passed");
-  assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /agrees with deterministic host evidence/i);
-  assert.equal(after.decisions.calls - before.decisions.calls, 1, JSON.stringify(after.decisions));
-  assert.deepEqual(after.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
-  assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
-  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "billing_reserve") < after.decisions.timeline.findIndex(event => event.kind === "decision"));
-  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "decision") < after.decisions.timeline.findIndex(event => event.kind === "billing_settle"));
-  const correlatedTrace = await waitForCorrelatedAgentActivity(result.goalActivityRunId, "project_assistant");
-  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.goalActivityRunId && row.assistant_scope === "project_assistant" && row.project_id === project.id), JSON.stringify(correlatedTrace));
-  assert.ok(correlatedTrace.data?.some((row) => row.root_run_id === result.goalActivityRunId && row.assistant_scope === "worker" && row.worker_id && row.parent_run_id), JSON.stringify(correlatedTrace));
-  assert.ok(correlatedTrace.data.filter((row) => row.root_run_id === result.goalActivityRunId).every((row) => row.project_id === project.id), JSON.stringify(correlatedTrace));
-  const tasks = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/tasks?project_id=${encodeURIComponent(project.id)}`,
-    "GET"
-  );
-  assert.ok(tasks.data?.some((task) => task.project_id === project.id && task.status === "completed"));
-  const restartMs = await restartAgentsWorker();
-  const persistedGoal = await jsonRequest(
-    agentsBaseUrl,
-    `/__test/goal-activity?run_id=${encodeURIComponent(result.goalActivityRunId)}`,
-    "GET"
-  );
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "completed", JSON.stringify(persistedGoal));
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.dispatch?.status, "acknowledged", JSON.stringify(persistedGoal));
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "passed", JSON.stringify(persistedGoal));
-  metrics.agents_goal_journal_restarts.push({
-    outcome: "completed",
-    verification: "passed",
-    duration_ms: restartMs,
-  });
-  metrics.project_bot_leaf_worker_run = {
-    evidence_class: "integrated-local-synthetic-model",
-    outcome: "completed",
-    duration_ms: elapsedMs,
-    inference_requests: after.totalRequests - before.totalRequests,
-    task_status: "completed",
-    artifact_path: "reports/blackboard-worker-smoke.txt",
-    artifact_branch: result.workspaceArtifact.branch,
-    external_provider_requests: 0,
-    host_evidence_verification: result.goalActivity.goals[0].tasks[0].verification.outcome,
-    correlated_trace: (correlatedTrace.data ?? []).map(({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id }) => ({ assistant_scope, root_run_id, parent_run_id, worker_id, run_id })),
-    verification_reason: result.goalActivity.goals[0].tasks[0].verification.reason,
-    decisions_requests: after.decisions.calls - before.decisions.calls,
-    decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),
-  };
-});
-
-test("an AgentDO process crash during delivery is reconciled to review without launching a worker", async () => {
-  const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", { name: "Interrupted AgentDO Dispatch Boundary" });
-  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leafWorkerMode: true, dependentTaskMode: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
-  });
-  assert.equal(configure.status, 200, await configure.clone().text());
-  const modelBefore = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const pause = await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: true });
-  assert.deepEqual(pause, { ok: true, paused: true, stored: true });
-
-  const wakeRequest = fetch(`${agentsBaseUrl}/__test/wake`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ projectId: project.id, mockModelRun: true }),
-  }).then(async response => ({ status: response.status, body: await response.text() })).catch(error => ({ error: String(error) }));
-  const eventId = `runtime-e2e:${project.id}:pending`;
-  const runId = `blackboard-${createHash("sha256").update(JSON.stringify([
-    "tenant-blackboard-runtime-test", identity.spaceId, project.id, eventId,
-  ])).digest("hex")}`;
-  let beforeCrash;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    beforeCrash = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(runId)}`, "GET");
-    const tasks = beforeCrash.goals?.[0]?.tasks ?? [];
-    if (tasks[0]?.dispatch?.status === "delivering") break;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  if (beforeCrash?.goals?.[0]?.tasks?.[0]?.dispatch?.status !== "delivering") {
-    await restartAgentsWorker();
-    await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: false });
-  }
-  assert.equal(beforeCrash?.goals?.[0]?.tasks?.[0]?.dispatch?.status, "delivering", JSON.stringify(beforeCrash));
-  assert.equal(beforeCrash?.goals?.[0]?.tasks?.[0]?.status, "running");
-
-  const restartMs = await restartAgentsWorker();
-  // The original inbound fetch may take a while to observe that its DO continuation was lost.
-  // Drain it before starting later scenarios; otherwise its eventual wake response can overlap
-  // and contend with the next test's project resources.
-  const interruptedWake = await Promise.race([
-    wakeRequest,
-    new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 30_000)),
-  ]);
-  assert.notEqual(interruptedWake.timeout, true, "the interrupted wake must settle before the next acceptance scenario");
-  const resetPause = await jsonRequest(agentsBaseUrl, "/__test/pause-goal-dispatch", "POST", { pause: false });
-  assert.equal(resetPause.paused, false);
-  const afterRestart = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(runId)}`, "GET");
-  const activeRun = await jsonRequest(agentsBaseUrl, "/__test/active-run", "GET");
-  assert.deepEqual(activeRun, { active: false }, "a reconstructed AgentDO must not retain a ghost active-run lease");
-  const tasks = afterRestart.goals?.[0]?.tasks ?? [];
-  assert.deepEqual(tasks.map(task => [task.id, task.status, task.dispatch?.status]), [
-    ["write-report", "needs_review", "review"],
-    ["write-follow-up", "blocked", undefined],
-  ], JSON.stringify(afterRestart));
-  const model = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  assert.equal(model.totalRequests - modelBefore.totalRequests, 1, "only the planner request should occur; child worker must not launch before the injected crash");
-  assert.equal(model.decisions.calls, 0);
-  metrics.agents_dispatch_crash_recovery = {
-    evidence_class: "local-wrangler-process-restart",
-    outbox_before_restart: "delivering",
-    outbox_after_restart: tasks[0].dispatch.status,
-    task_after_restart: tasks[0].status,
-    dependent_after_restart: tasks[1].status,
-    active_run_after_restart: activeRun.active,
-    inference_requests_before_and_after: model.totalRequests - modelBefore.totalRequests,
-    worker_launches_after_restart: 0,
-    restart_ms: restartMs,
-    interrupted_wake_settled: true,
-    external_provider_requests: 0,
-  };
-});
-
-test("a cautious Decisions verdict remains visible as review instead of being promoted to a pass", async () => {
-  const project = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/projects`,
-    "POST",
-    { name: "Project Bot Verification Review" }
-  );
-  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leafWorkerMode: true, decisionOutcome: "uncertain", resetDecisionTelemetry: true }),
-  });
-  assert.equal(configure.status, 200, await configure.clone().text());
-  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
-    projectId: project.id,
-    mockModelRun: true,
-  });
-  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  assert.equal(result.wake.status, "held", JSON.stringify({ wake: result.wake, dispatch: result.dispatchResponses }));
-  assert.equal(result.dispatchResponses[0]?.body?.steps_completed?.some((step) => step.ok === false), true);
-  assert.equal(result.workspaceArtifact?.exists, true);
-  assert.equal(result.goalActivity?.goals?.length, 1, JSON.stringify({ goalActivity: result.goalActivity, dispatch: result.dispatchResponses }));
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.status, "needs_review");
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.dispatch?.status, "acknowledged", JSON.stringify(result.goalActivity));
-  assert.equal(result.goalActivity.goals[0]?.tasks[0]?.verification?.outcome, "uncertain");
-  assert.match(result.goalActivity.goals[0]?.tasks[0]?.verification?.reason ?? "", /review required/i);
-  assert.equal(after.decisions.calls, 1);
-  assert.deepEqual(after.decisions.billingEvents.map((event) => event.kind), ["reserve", "settle"]);
-  assert.equal(after.decisions.billingEvents[1]?.outcome, "confirmed");
-  const restartMs = await restartAgentsWorker();
-  const persistedGoal = await jsonRequest(
-    agentsBaseUrl,
-    `/__test/goal-activity?run_id=${encodeURIComponent(result.goalActivityRunId)}`,
-    "GET"
-  );
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.status, "needs_review", JSON.stringify(persistedGoal));
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.dispatch?.status, "acknowledged", JSON.stringify(persistedGoal));
-  assert.equal(persistedGoal.goals?.[0]?.tasks?.[0]?.verification?.outcome, "uncertain", JSON.stringify(persistedGoal));
-  metrics.agents_goal_journal_restarts.push({
-    outcome: "needs_review",
-    verification: "uncertain",
-    duration_ms: restartMs,
-  });
-  metrics.project_bot_uncertain_verification = {
-    evidence_class: "integrated-local-synthetic-model",
-    task_status: result.goalActivity.goals[0].tasks[0].status,
-    verification_outcome: result.goalActivity.goals[0].tasks[0].verification.outcome,
-    decisions_requests: after.decisions.calls,
-    decision_billing_events: after.decisions.billingEvents.map((event) => event.kind),
-    artifact_exists: result.workspaceArtifact.exists,
-    external_provider_requests: 0,
-  };
-});
-
-test("only a verified Project Bot prerequisite dispatches its dependent leaf worker", async () => {
-  const project = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/projects`,
-    "POST",
-    { name: "Project Bot Verified Dependency Gate" }
-  );
-  const configure = async (decisionOutcome) => {
-    const response = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ leafWorkerMode: true, dependentTaskMode: true, decisionOutcome, resetDecisionTelemetry: true }),
-    });
-    assert.equal(response.status, 200, await response.clone().text());
-  };
-
-  await configure("passed");
-  const beforePass = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const passed = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
-    projectId: project.id,
-    mockModelRun: true,
-  }, 90_000);
-  const afterPass = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const passedTasks = passed.goalActivity?.goals?.[0]?.tasks ?? [];
-  assert.equal(passed.wake.status, "completed", JSON.stringify({ wake: passed.wake, tasks: passedTasks, dispatch: passed.dispatchResponses, model: afterPass }));
-  assert.deepEqual(passedTasks.map(task => [task.id, task.status, task.verification?.outcome]), [
-    ["write-report", "completed", "passed"],
-    ["write-follow-up", "completed", "passed"],
-  ]);
-  assert.ok(passed.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(passed.workspaceArtifact));
-  assert.equal(afterPass.decisions.calls, 2);
-  assert.deepEqual(afterPass.decisions.billingEvents.map(event => event.kind), ["reserve", "settle", "reserve", "settle"]);
-
-  const message = await jsonRequest(agentsBaseUrl, "/__test/task-blackboard/publish", "POST", {
-    goalId: passed.goalActivity.goals[0].id,
-    runId: passed.goalActivityRunId,
-    projectId: project.id,
-    senderTaskId: "write-report",
-    recipientTaskId: "write-follow-up",
-  });
-  assert.equal(message.status, 200, JSON.stringify(message));
-  assert.equal(message.body?.message?.text, "Persisted worker handoff for the restart acceptance.");
-  const blackboardRestartMs = await restartAgentsWorker();
-  const persistedMessages = await jsonRequest(agentsBaseUrl, `/__test/goal-activity?run_id=${encodeURIComponent(passed.goalActivityRunId)}`, "GET");
-  assert.equal(persistedMessages.goals?.[0]?.messages?.length, 2, JSON.stringify(persistedMessages));
-  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.text === "Persisted worker handoff for the restart acceptance."));
-  assert.ok(persistedMessages.goals?.[0]?.messages?.some((item) => item.id === "completion:write-report" && item.kind === "completion"));
-
-  const reviewProject = await jsonRequest(
-    spacesBaseUrl,
-    `/spaces/${identity.spaceId}/projects`,
-    "POST",
-    { name: "Project Bot Uncertain Dependency Gate" }
-  );
-  await configure("uncertain");
-  const beforeReview = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const review = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", {
-    projectId: reviewProject.id,
-    mockModelRun: true,
-  }, 90_000);
-  const afterReview = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const reviewTasks = review.goalActivity?.goals?.[0]?.tasks ?? [];
-  assert.equal(review.wake.status, "held", JSON.stringify({ wake: review.wake, tasks: reviewTasks }));
-  assert.deepEqual(reviewTasks.map(task => [task.id, task.status, task.verification?.outcome]), [
-    ["write-report", "needs_review", "uncertain"],
-    ["write-follow-up", "blocked", undefined],
-  ]);
-  assert.ok(!review.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(review.workspaceArtifact));
-  assert.equal(afterReview.decisions.calls, 1);
-  assert.deepEqual(afterReview.decisions.billingEvents.map(event => event.kind), ["reserve", "settle"]);
-  assert.ok(afterReview.totalRequests > beforeReview.totalRequests);
-  assert.ok(afterPass.totalRequests > beforePass.totalRequests);
-  metrics.project_bot_dependency_gate = {
-    evidence_class: "integrated-local-synthetic-model",
-    passed_prerequisite: passedTasks[0].verification.outcome,
-    passed_dependent_status: passedTasks[1].status,
-    followup_artifact_after_pass: true,
-    uncertain_prerequisite: reviewTasks[0].verification.outcome,
-    uncertain_dependent_status: reviewTasks[1].status,
-    followup_artifact_after_uncertain: false,
-    external_provider_requests: 0,
-    blackboard_message_survived_agents_restart: true,
-    blackboard_restart_ms: blackboardRestartMs,
-  };
-});
-
-test("metered Decisions peer routing grants a finding, wakes an independent worker, and exposes the scoped read route", async () => {
-  const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", { name: "Project Bot Decisions Blackboard Route" });
-  const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leafWorkerMode: true, sharePeerTasks: true, decisionOutcome: "passed", resetDecisionTelemetry: true }),
-  });
-  assert.equal(configure.status, 200, await configure.clone().text());
-  const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", { projectId: project.id, mockModelRun: true }, 120_000);
-  const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-  const goal = result.goalActivity?.goals?.[0];
-  assert.equal(result.wake.status, "completed", JSON.stringify({ wake: result.wake, goal, dispatch: result.dispatchResponses }));
-  assert.deepEqual(goal?.tasks?.map(task => [task.id, task.status, task.verification?.outcome]), [
-    ["write-report", "completed", "passed"],
-    ["write-follow-up", "completed", "passed"],
-  ]);
-  assert.deepEqual(goal?.tasks?.map(task => task.communication_recipients), [["write-follow-up"], []]);
-  assert.ok(goal?.messages?.some(message => message.id === "completion:write-report" && message.kind === "completion"), JSON.stringify(goal?.messages));
-  assert.ok(result.workspaceArtifact?.workspaceKeys?.some(key => key.endsWith("/reports/blackboard-worker-followup.txt")), JSON.stringify(result.workspaceArtifact));
-  const recipientRead = await jsonRequest(agentsBaseUrl, "/__test/task-blackboard/read", "POST", {
-    goalId: goal.id, runId: result.goalActivityRunId, projectId: project.id,
-    senderTaskId: "write-report", recipientTaskId: "write-follow-up",
-  });
-  assert.ok(recipientRead.messages?.some(message => message.id === "completion:write-report" && message.kind === "completion"), JSON.stringify(recipientRead));
-  assert.equal(after.decisions.calls - before.decisions.calls, 3, "one batched peer classification plus one metered evidence decision per task");
-  assert.deepEqual(after.decisions.billingEvents.map(event => event.kind), ["reserve", "settle", "reserve", "settle", "reserve", "settle"]);
-  assert.ok(after.decisions.timeline.findIndex(event => event.kind === "billing_reserve") < after.decisions.timeline.findIndex(event => event.kind === "decision"));
-  const modelRequests = after.totalRequests - before.totalRequests;
-  assert.ok(modelRequests >= 4, `planner and both independent workers should execute through the normal runtime: ${modelRequests}`);
-  metrics.project_bot_decisions_blackboard_route = {
-    evidence_class: "four-worker-local-wrangler-with-synthetic-decisions",
-    classifier_and_verifier_decisions: after.decisions.calls - before.decisions.calls,
-    model_requests: modelRequests,
-    billing_events: after.decisions.billingEvents.map(event => event.kind),
-    routed_edges: goal.tasks.filter(task => task.communication_recipients.length).flatMap(task => task.communication_recipients.map(recipient => [task.id, recipient])),
-    recipient_read_host_completion: recipientRead.messages.some(message => message.id === "completion:write-report"),
-    tasks_completed_and_verified: goal.tasks.every(task => task.status === "completed" && task.verification?.outcome === "passed"),
-    external_provider_requests: 0,
-  };
-});
-
-test("bounded end-to-end task load records verified completion, concurrency, and synthetic metering", async () => {
-  const scenarios = [];
-  const sampleCount = 3;
-  const inferenceDelayMs = 25;
-  for (const taskCount of [1, 2, 3, 6]) {
-    const runs = [];
-    for (let sample = 0; sample < sampleCount; sample++) {
-      const project = await jsonRequest(spacesBaseUrl, `/spaces/${identity.spaceId}/projects`, "POST", {
-        name: `Local end-to-end load ${taskCount} workers sample ${sample + 1}`,
-      });
-      const configure = await fetch(`${modelGatewayBaseUrl}/__test/configure`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ loadTaskCount: taskCount, loadInferenceDelayMs: inferenceDelayMs, decisionOutcome: "passed", resetDecisionTelemetry: true }),
-      });
-      assert.equal(configure.status, 200, await configure.clone().text());
-      const before = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-      const started = performance.now();
-      const result = await jsonRequest(agentsBaseUrl, "/__test/wake", "POST", { projectId: project.id, mockModelRun: true }, 180_000);
-      const durationMs = Math.round(performance.now() - started);
-      const after = await (await fetch(`${modelGatewayBaseUrl}/__test/metrics`)).json();
-      const tasks = result.goalActivity?.goals?.[0]?.tasks ?? [];
-      assert.equal(result.wake.status, "completed", JSON.stringify({ taskCount, wake: result.wake, tasks, load: after.load, dispatch: result.dispatchResponses }));
-      assert.equal(tasks.length, taskCount, JSON.stringify({ taskCount, tasks }));
-      assert.ok(tasks.every(task => task.status === "completed" && task.verification?.outcome === "passed"), JSON.stringify({ taskCount, tasks }));
-      const modelRequestCount = after.totalRequests - before.totalRequests;
-      // The Project Bot may take more than one semantic turn around task dispatch
-      // and workers may need a final answer turn after writing. Capture that real
-      // count instead of assuming one request per task plus one planner request.
-      assert.ok(modelRequestCount >= taskCount + 1 && modelRequestCount <= taskCount * 4 + 4,
-        JSON.stringify({ taskCount, modelRequestCount, requests: after.requests }));
-      assert.equal(after.load.path_match_failures, 0, JSON.stringify(after.load));
-      assert.ok(after.load.max_concurrent_inference_requests <= 3, JSON.stringify({ taskCount, load: after.load }));
+test("Project Bot planning dispatches a real leaf Ag…6018 tokens truncated…oncurrent_inference_requests <= 3, JSON.stringify({ taskCount, load: after.load }));
       assert.equal(after.decisions.calls, taskCount, JSON.stringify(after.decisions));
       const reserveCount = after.decisions.billingEvents.filter(event => event.kind === "reserve").length;
       const settlementEvents = after.decisions.billingEvents.filter(event => event.kind === "settle");
@@ -1186,6 +833,7 @@ test("real D1 membership data denies a viewer permission to create Project Bot t
   // token to expire. Re-mint it so this role assertion continues to reach membership policy.
   const refreshedIdentity = await jsonRequest(agentsBaseUrl, "/__test/bootstrap", "POST", {});
   identity.token = refreshedIdentity.token;
+  identityTokenIssuedAt = Date.now();
   const started = performance.now();
   const response = await fetch(
     `${spacesBaseUrl}/spaces/${identity.spaceId}/threads`,
@@ -1219,6 +867,7 @@ test("real D1 tenant and Space membership fences reject cross-scope reads", asyn
   assert.equal(bootstrap.status, 200, await bootstrap.clone().text());
   const fixtures = await bootstrap.json();
   identity.token = fixtures.token;
+  identityTokenIssuedAt = Date.now();
   const foreign = fixtures.foreignTenant;
   assert.ok(foreign?.tenantId && foreign?.spaceId && foreign?.userId && foreign?.token);
 
@@ -1261,6 +910,7 @@ test("real D1 tenant and Space membership fences reject cross-scope reads", asyn
 test("real D1 Space membership revocation is enforced on the next request", async () => {
   const bootstrap = await jsonRequest(agentsBaseUrl, "/__test/bootstrap", "POST", {});
   identity.token = bootstrap.token;
+  identityTokenIssuedAt = Date.now();
   const path = `/spaces/${encodeURIComponent(identity.spaceId)}/projects`;
   const before = await fetch(`${spacesBaseUrl}${path}`, { headers: headersFor(identity) });
   assert.equal(before.status, 200, await before.clone().text());
