@@ -184,9 +184,13 @@ async function startLocalWorkers() {
 }
 
 async function restartAgentsWorker() {
-  const port = Number(new URL(agentsBaseUrl).port);
   const started = performance.now();
   await stopWorker(agentsWorker);
+  // Reuse the same Wrangler port only after the child process has exited, but the spawned
+  // workerd process may still be releasing its listener. Allocate a fresh port for restart
+  // recovery while retaining the exact same persistence directory and Durable Object IDs.
+  const port = await availablePort();
+  agentsBaseUrl = `http://127.0.0.1:${port}`;
   agentsWorker = startWorker(
     path.join(repoRoot, "tests/plan/runtime/agents.wrangler.toml"),
     port
