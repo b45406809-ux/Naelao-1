@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "f7b2eb630ffc80f05a088af616cdefa1bfbd0b7f",
+  "branchRefs": {
+    "work": "f7b2eb630ffc80f05a088af616cdefa1bfbd0b7f",
+    "Mcbt5s-Backup-2": "f7b2eb630ffc80f05a088af616cdefa1bfbd0b7f"
+  },
+  "batch": "3-storage-migrations-and-lifecycle-durability-first-slice",
+  "evidenceLevel": "L1",
+  "state": "PASS",
+  "startedAt": "2026-11-04T10:47:49Z",
+  "durationMs": 107000,
+  "counts": {
+    "passed": 38,
+    "failed": 0,
+    "skipped": 0,
+    "blocked": 0
+  },
+  "metrics": {
+    "focusedSuites": {
+      "rootGitMeshArtifactFsAndD1Migrations": { "files": 3, "passed": 18, "failed": 0 },
+      "spaceDoMigrationsAndArchive": { "files": 2, "passed": 11, "failed": 0 },
+      "artifactRepositoryConcurrencyBoundariesAndRoutes": { "files": 3, "passed": 7, "failed": 0 },
+      "agentDoUsageOutbox": { "files": 1, "passed": 2, "failed": 0 }
+    },
+    "cleanLocalD1": {
+      "migrationsApplied": 156,
+      "lastMigration": "0155_telnyx_extension_calls.sql",
+      "secondApplyResult": "No migrations to apply",
+      "secondApplyExitCode": 0,
+      "migrationLedgerRows": 156
+    },
+    "relatedRealWranglerRuntimeEvidence": {
+      "sourceCommit": "267680e18083dcf8baffd41b3202d569800e3e0f",
+      "testsPassed": 18,
+      "testsFailed": 0,
+      "workers": ["spaces", "agents", "model-gateway", "artifact-worker"],
+      "agentDoRestartRecoveredWithoutBlindRedispatch": true,
+      "externalProviderCalls": 0
+    }
+  },
+  "providerCalls": { "count": 0, "actualUsd": null },
+  "failureIds": [],
+  "artifacts": [
+    "Local Wrangler D1 migration output (first apply)",
+    "Local Wrangler D1 migration output (second apply)",
+    "Local multi-worker runtime acceptance record from commit 267680e18083dcf8baffd41b3202d569800e3e0f"
+  ],
+  "limitations": [
+    "This is the first storage-durability slice, not completion of all Batch 3 cases.",
+    "The archive tests validate encrypted serialization, integrity, tenant scoping, and restore ordering with test fixtures; a complete deployed backup restore was not performed.",
+    "Interrupted R2 multipart upload, cross-store Space/Project deletion with active jobs and credentials, and production backup/rollback remain untested.",
+    "No remote Cloudflare deployment or live provider call was performed."
+  ]
+}
