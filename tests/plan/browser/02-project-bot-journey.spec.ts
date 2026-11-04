@@ -3,6 +3,11 @@ import { expect, test } from "@playwright/test";
 test("opens an internal Project Bot and creates a project-scoped thread", async ({
   page,
 }) => {
+  await page.request.post("http://127.0.0.1:8787/__reset");
+  const beforeCreate = await page.request.get(
+    "http://127.0.0.1:8787/v1/spaces/space-bot-e2e/threads/thread-project-bot-e2e"
+  );
+  expect(beforeCreate.status()).toBe(404);
   await page.addInitScript(
     ({ spaceId }) => {
       localStorage.setItem(
@@ -36,12 +41,24 @@ test("opens an internal Project Bot and creates a project-scoped thread", async 
       request.method() === "POST" &&
       request.url().endsWith(`/v1/spaces/space-bot-e2e/threads`)
   );
+  const persistedThreadResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().endsWith(
+        "/v1/spaces/space-bot-e2e/threads/thread-project-bot-e2e"
+      )
+  );
   await page.getByRole("button", { name: "Talk to Project Bot" }).click();
   const request = await createRequest;
   expect(request.postDataJSON()).toMatchObject({
     project_id: "project-logistics-e2e",
     title: "Project Bot",
   });
+  const persistedResponse = await persistedThreadResponse;
+  expect(persistedResponse.status()).toBe(200);
+  await expect
+    .poll(async () => (await persistedResponse.json()).project_id)
+    .toBe("project-logistics-e2e");
   await expect(page).toHaveURL(
     /\/p\/launchpad-e2e\/threads\/thread-project-bot-e2e/
   );

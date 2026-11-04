@@ -27,6 +27,7 @@ const createdThread = {
   created_at: now,
   updated_at: now,
 };
+let persistedThread = null;
 
 function json(response, status = 200, body = {}) {
   response.writeHead(status, {
@@ -53,6 +54,10 @@ const server = createServer(async (request, response) => {
   }
   const path = url.pathname;
   if (path === "/__health") return json(response, 200, { ok: true });
+  if (path === "/__reset" && request.method === "POST") {
+    persistedThread = null;
+    return json(response, 200, { ok: true });
+  }
   if (path === "/v1/products/by-slug/launchpad-e2e") {
     return json(response, 200, {
       space_id: spaceId,
@@ -132,7 +137,14 @@ const server = createServer(async (request, response) => {
       const input = JSON.parse(body);
       if (input.project_id !== projectId)
         return json(response, 403, { error_code: "project_scope_required" });
-      return json(response, 201, createdThread);
+      if (persistedThread)
+        return json(response, 409, { error_code: "thread_already_created" });
+      persistedThread = {
+        ...createdThread,
+        title: input.title ?? createdThread.title,
+        thread_tier: input.thread_tier ?? createdThread.thread_tier,
+      };
+      return json(response, 201, persistedThread);
     }
     return json(response, 200, { data: [], count: 0 });
   }
@@ -143,7 +155,9 @@ const server = createServer(async (request, response) => {
   if (path === `/v1/spaces/${spaceId}/sessions/inbox/approvals`)
     return json(response, 200, { approvals: [] });
   if (path === `/v1/spaces/${spaceId}/threads/${createdThread.id}`)
-    return json(response, 200, createdThread);
+    return persistedThread
+      ? json(response, 200, persistedThread)
+      : json(response, 404, { error_code: "thread_not_found" });
   if (path === `/v1/spaces/${spaceId}/projects/${projectId}`)
     return json(response, 200, project);
   return json(response, 404, { error_code: "fixture_route_not_found", path });
