@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "267680e18083dcf8baffd41b3202d569800e3e0f",
+  "sourceCommit": "9dcdc785a3b5d1e46ce1b8c325911be86cfd4c82",
   "branchRefs": {
-    "work": "267680e18083dcf8baffd41b3202d569800e3e0f",
-    "Mcbt5s-Backup-2": "267680e18083dcf8baffd41b3202d569800e3e0f"
+    "work": "9dcdc785a3b5d1e46ce1b8c325911be86cfd4c82",
+    "Mcbt5s-Backup-2": "9dcdc785a3b5d1e46ce1b8c325911be86cfd4c82"
   },
   "batch": "2-tenant-isolation-and-authorization",
   "evidenceLevel": "L1",
   "state": "PASS",
-  "startedAt": "2026-11-04T10:34:54.814Z",
-  "durationMs": 134836,
+  "startedAt": "2026-11-04T11:02:55Z",
+  "durationMs": 139809,
   "counts": {
     "passed": 18,
     "failed": 0,
@@ -17,83 +17,57 @@
     "blocked": 0
   },
   "metrics": {
-    "environment": {
-      "workers": [
-        "spaces",
-        "agents",
-        "model-gateway",
-        "artifact-worker"
-      ],
-      "migration_sql_files": 156,
-      "migration_apply_ms": 44545,
-      "initial_worker_start_ms": 9228,
-      "full_runtime_ms": 134836,
-      "providers_called": 0
-    },
-    "results": {
-      "runtime_acceptance": {
-        "passed": 18,
-        "failed": 0
+    "postFixLocalWranglerRuntime": {
+      "passed": 18,
+      "failed": 0,
+      "workers": ["spaces", "agents", "model-gateway", "artifact-worker"],
+      "migrationSqlFiles": 156,
+      "runtimeDurationMs": 139809,
+      "externalProviderCalls": 0,
+      "tenantIsolation": {
+        "validForeignTenantOwner": 200,
+        "sameTenantWithoutSpaceMembership": 403,
+        "tenantACannotReadTenantBSpace": 403,
+        "tenantBCannotReadTenantASpace": 403,
+        "mismatchedTenantHeaderAndToken": 403
       },
-      "existing_role_token_tenant_unit_suites": {
-        "passed": 93,
-        "failed": 0,
-        "files": 8
-      },
-      "spaces_worker_suite": {
-        "passed": 362,
-        "failed": 0,
-        "files": 83
-      },
-      "auth_worker_suite": {
-        "passed": 33,
-        "failed": 0,
-        "files": 2
-      },
-      "router_worker_suite": {
-        "passed": 72,
-        "failed": 0,
-        "files": 11
+      "membershipRevocation": {
+        "initialAccess": 200,
+        "firstRequestAfterRevocation": 403,
+        "delayMs": 0
       }
     },
-    "tenantIsolation": {
-      "valid_foreign_tenant_owner": 200,
-      "same_tenant_without_space_membership": 403,
-      "tenant_a_reading_tenant_b_space": 403,
-      "tenant_b_reading_tenant_a_space": 403,
-      "mismatched_tenant_header_and_token": 403
+    "preFixFinding": {
+      "symptom": "A removed member still received 200 from a warm isolate during the 5000ms positive-role cache TTL.",
+      "cause": "The request middleware cached positive membership roles and did not observe D1 revocation until cache expiry.",
+      "fixedIn": "0f3cd441aa360211a4150b514d070b31c33a3caf"
     },
-    "membershipRevocation": {
-      "before_revoke": 200,
-      "within_warm_cache_ttl": 200,
-      "after_revoke_and_5250ms": 403,
-      "documented_cache_ttl_ms": 5000,
-      "interpretation": "Revocation is enforced after the documented cache TTL; a warm isolate may continue authorizing until that entry expires. This is an observed bounded stale-authorization window, not immediate revocation."
+    "fix": {
+      "behavior": "Resolve current Space membership and status on each protected request; include the authenticated tenant in the lookup.",
+      "queryShape": "One joined D1 query replaces the prior two lookups; no positive membership result is cached.",
+      "regressionCoverage": "Local real-D1 test revokes the owner row then asserts the immediately following request is 403; unit test asserts one D1 lookup per authorized request and checks tenant mismatch."
     },
-    "coveredPaths": [
-      "Space Assistant and Project Bot authorization with real local D1 membership rows",
-      "same-tenant Space membership boundary",
-      "cross-tenant Space read boundary in both directions",
-      "tenant-token mismatch rejection",
-      "viewer write denial",
-      "membership revocation after role-cache expiry",
-      "blackboard paging and visibility snapshot behavior",
-      "wake authorization revocation before AgentDO dispatch",
-      "durable wake contention and expired-lease behavior",
-      "AgentDO process restart recovery without blind redispatch"
-    ]
+    "postFixSuites": {
+      "repository": { "passed": 3141, "failed": 0, "files": 318 },
+      "spacesWorker": { "passed": 362, "failed": 0, "files": 83 },
+      "focusedMembershipAndTenant": { "passed": 5, "failed": 0, "files": 3 },
+      "affectedMockRoutes": { "passed": 66, "failed": 0, "files": 4 }
+    },
+    "githubActions": {
+      "runId": 41820004625,
+      "conclusion": "success",
+      "summaryAndAllJobsPassed": true
+    }
   },
-  "providerCalls": {
-    "count": 0,
-    "actualUsd": null
-  },
+  "providerCalls": { "count": 0, "actualUsd": null },
   "failureIds": [],
   "artifacts": [
-    "/tmp/naelao-batch2-runtime.json (local; summarized in this record)"
+    "GitHub Actions run 41820004625",
+    "Local Wrangler real-D1 runtime acceptance log at /tmp/naelao-batch2-runtime-after-fix.json"
   ],
   "limitations": [
-    "No remote Cloudflare deployment, live provider call, or production identity provider was exercised.",
-    "No test asserts immediate membership revocation; local runtime confirms a warm-cache allow can remain for up to the documented 5000ms TTL.",
-    "Account signup, password recovery, session rotation, and tenant deletion lifecycle remain outside this batch."
+    "Authorization now performs one current D1 lookup for each protected request. Load impact on the production D1 topology remains to be measured; any future cache must use revocation-aware invalidation rather than a positive TTL-only grant cache.",
+    "No remote Cloudflare deployment, production identity provider, or live provider call was exercised.",
+    "Signup, account recovery, session rotation, and tenant deletion lifecycle remain outside this batch."
   ]
 }
