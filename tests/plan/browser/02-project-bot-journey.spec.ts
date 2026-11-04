@@ -2,24 +2,27 @@ import { expect, test } from "@playwright/test";
 
 test("opens an internal Project Bot and creates a project-scoped thread", async ({
   page,
-}) => {
-  await page.request.post("http://127.0.0.1:8787/__reset");
+}, testInfo) => {
+  const endUserId = `owner-e2e-${testInfo.project.name}`;
+  await page.request.post("http://127.0.0.1:8787/__reset", {
+    data: { user_id: endUserId },
+  });
   const beforeCreate = await page.request.get(
     "http://127.0.0.1:8787/v1/spaces/space-bot-e2e/threads/thread-project-bot-e2e"
   );
   expect(beforeCreate.status()).toBe(404);
   await page.addInitScript(
-    ({ spaceId }) => {
+    ({ spaceId, endUserId }) => {
       localStorage.setItem(
         `naelao_product_session:${spaceId}`,
         JSON.stringify({
-          end_user_id: "owner-e2e",
+          end_user_id: endUserId,
           session_token: "test-only-session",
           expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         })
       );
     },
-    { spaceId: "space-bot-e2e" }
+    { spaceId: "space-bot-e2e", endUserId }
   );
 
   await page.goto("/p/launchpad-e2e/bots", { waitUntil: "domcontentloaded" });

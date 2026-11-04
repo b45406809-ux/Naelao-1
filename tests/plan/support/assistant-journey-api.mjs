@@ -27,7 +27,7 @@ const createdThread = {
   created_at: now,
   updated_at: now,
 };
-let persistedThread = null;
+const persistedThreads = new Map();
 
 function json(response, status = 200, body = {}) {
   response.writeHead(status, {
@@ -55,7 +55,13 @@ const server = createServer(async (request, response) => {
   const path = url.pathname;
   if (path === "/__health") return json(response, 200, { ok: true });
   if (path === "/__reset" && request.method === "POST") {
-    persistedThread = null;
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    let input = {};
+    try { input = JSON.parse(body); } catch { /* validation below returns a clear error */ }
+    if (typeof input.user_id !== "string" || input.user_id.length > 120)
+      return json(response, 400, { error_code: "invalid_test_user" });
+    persistedThreads.delete(input.user_id);
     return json(response, 200, { ok: true });
   }
   if (path === "/v1/products/by-slug/launchpad-e2e") {
@@ -137,13 +143,17 @@ const server = createServer(async (request, response) => {
       const input = JSON.parse(body);
       if (input.project_id !== projectId)
         return json(response, 403, { error_code: "project_scope_required" });
-      if (persistedThread)
+      const userId = request.headers["x-naelao-end-user-id"];
+      if (!userId)
+        return json(response, 401, { error_code: "test_user_required" });
+      if (persistedThreads.has(userId))
         return json(response, 409, { error_code: "thread_already_created" });
-      persistedThread = {
+      const persistedThread = {
         ...createdThread,
         title: input.title ?? createdThread.title,
         thread_tier: input.thread_tier ?? createdThread.thread_tier,
       };
+      persistedThreads.set(userId, persistedThread);
       return json(response, 201, persistedThread);
     }
     return json(response, 200, { data: [], count: 0 });
@@ -154,10 +164,13 @@ const server = createServer(async (request, response) => {
     return json(response, 200, { data: [] });
   if (path === `/v1/spaces/${spaceId}/sessions/inbox/approvals`)
     return json(response, 200, { approvals: [] });
-  if (path === `/v1/spaces/${spaceId}/threads/${createdThread.id}`)
+  if (path === `/v1/spaces/${spaceId}/threads/${createdThread.id}`) {
+    const userId = request.headers["x-naelao-end-user-id"];
+    const persistedThread = userId ? persistedThreads.get(userId) : null;
     return persistedThread
       ? json(response, 200, persistedThread)
       : json(response, 404, { error_code: "thread_not_found" });
+  }
   if (path === `/v1/spaces/${spaceId}/projects/${projectId}`)
     return json(response, 200, project);
   return json(response, 404, { error_code: "fixture_route_not_found", path });
