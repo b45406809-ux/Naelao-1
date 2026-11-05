@@ -1,8 +1,7 @@
 import { getDOName } from "@naelao/crypto";
 import { mintInternalToken } from "@naelao/http";
-import spacesWorker, { SpaceDO as BaseSpaceDO } from "../../../workers/spaces/src/index.js";
-
-let browserProjectId: string | undefined;
+import spacesWorker, { ProductUserDO, SpaceTypeRegistryDO, SpaceDO as BaseSpaceDO } from "../../../workers/spaces/src/index.js";
+import routerWorker, { RateLimitDO } from "../../../workers/router/src/index.js";
 
 /** Test-only bulk fixture seeding keeps the scale experiment on the real local SpaceDO. */
 class RuntimeTestSpaceDO extends BaseSpaceDO {
@@ -42,7 +41,7 @@ class RuntimeTestSpaceDO extends BaseSpaceDO {
   }
 }
 
-export { RuntimeTestSpaceDO as SpaceDO };
+export { RuntimeTestSpaceDO as SpaceDO, ProductUserDO, RateLimitDO, SpaceTypeRegistryDO };
 
 export default {
   async fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext) {
@@ -56,10 +55,10 @@ export default {
       const secret = String(env.PLATFORM_SECRET ?? "");
       const db = env.PLATFORM_DB as D1Database;
       await db.batch([
-        db.prepare("INSERT OR REPLACE INTO orgs(id,name,owner_id,status) VALUES(?,?,?,'active')")
+        db.prepare("INSERT OR REPLACE INTO orgs(id,name,owner_id,plan_tier,status) VALUES(?,?,?,'business','active')")
           .bind(tenantId, "Project Bot Browser Acceptance", userId),
-        db.prepare("INSERT OR REPLACE INTO spaces(id,tenant_id,spacetype_id,name,status,config_json) VALUES(?,?,? ,?,'active','{}')")
-          .bind(spaceId, tenantId, "launchpad", "Project Bot Browser Acceptance"),
+        db.prepare("INSERT OR REPLACE INTO spaces(id,tenant_id,spacetype_id,name,status,config_json,product_slug) VALUES(?,?,? ,?,'active','{}',?)")
+          .bind(spaceId, tenantId, "launchpad", "Project Bot Browser Acceptance", "launchpad-e2e"),
       ]);
       const token = await mintInternalToken(secret, tenantId);
       const callSpaces = (pathname: string, method: string, body?: unknown) => spacesWorker.fetch(new Request(`http://spaces${pathname}`, {
@@ -69,29 +68,20 @@ export default {
       }), env as never, ctx);
       const member = await callSpaces(`/spaces/${spaceId}/members`, "POST", { space_id: spaceId, user_id: userId, role: "owner" });
       if (!member.ok) return Response.json({ error: "space_member_seed_failed", status: member.status, body: await member.json().catch(() => null) }, { status: 500 });
-      const created = await callSpaces(`/spaces/${spaceId}/projects`, "POST", { name: "Logistics Project", description: "Real local SpaceDO browser fixture" });
-      const project = await created.json().catch(() => null) as { id?: string } | null;
-      if (!created.ok || !project?.id) return Response.json({ error: "project_seed_failed", status: created.status, body: project }, { status: 500 });
-      browserProjectId = project.id;
-      return Response.json({ tenantId, spaceId, userId, projectId: project.id });
+      return Response.json({ tenantId, spaceId, userId });
     }
-    if (url.pathname === "/__test/browser/threads" && request.method === "POST") {
-      const body = await request.json<{ operation?: "create" | "get" | "list"; threadId?: string; input?: Record<string, unknown> }>().catch(() => ({}));
+    if (url.pathname === "/__test/browser/platform-roster-check" && request.method === "POST") {
+      const body = await request.json<{ endUserId?: string }>().catch(() => ({}));
       const tenantId = "tenant-project-bot-browser-test";
       const spaceId = "space-bot-e2e";
-      const userId = "owner-project-bot-browser-test";
-      if (!["create", "get", "list"].includes(body.operation ?? "")) return Response.json({ error_code: "invalid_operation" }, { status: 400 });
-      if (body.operation === "create" && (!browserProjectId || body.input?.project_id !== browserProjectId))
-        return Response.json({ error_code: "browser_fixture_project_scope_required" }, { status: 403 });
-      const path = body.operation === "create" ? `/spaces/${spaceId}/threads`
-        : body.operation === "list" ? `/spaces/${spaceId}/threads`
-        : `/spaces/${spaceId}/threads/${encodeURIComponent(body.threadId ?? "")}`;
-      const upstream = await spacesWorker.fetch(new Request(`http://spaces${path}`, {
-        method: body.operation === "create" ? "POST" : "GET",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET ?? ""), tenantId) },
-        ...(body.operation === "create" ? { body: JSON.stringify(body.input ?? {}) } : {}),
+      const ownerId = "owner-project-bot-browser-test";
+      const secret = String(env.PLATFORM_SECRET ?? "");
+      const response = await spacesWorker.fetch(new Request(`http://spaces/spaces/${spaceId}/members`, {
+        headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": ownerId, "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, tenantId) },
       }), env as never, ctx);
-      return new Response(upstream.body, { status: upstream.status, headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" } });
+      if (!response.ok) return Response.json({ error_code: "platform_roster_unavailable" }, { status: 503 });
+      const roster = await response.json<{ data?: Array<{ user_id?: string }> }>();
+      return Response.json({ is_platform_collaborator: (roster.data ?? []).some(member => member.user_id === body.endUserId) });
     }
     if (url.pathname === "/__test/blackboard-scale-seed" && request.method === "POST") {
       const body = await request.json<{ tenantId?: string; spaceId?: string; count?: number }>().catch(() => ({}));
@@ -172,6 +162,15 @@ export default {
         evidence_class: "test-only-single-snapshot-hypothesis",
       });
     }
-    return spacesWorker.fetch(request, env as never, ctx);
+    const routerEnv = {
+      ...env,
+      SPACES_WORKER: { fetch: (upstream: Request) => spacesWorker.fetch(upstream, env as never, ctx) },
+    };
+    // Browser product API requests exercise Router auth/session handling. The runtime acceptance
+    // harness also calls Spaces' internal worker routes directly; preserve that boundary rather
+    // than exposing internal `/spaces/*` routes through Router.
+    return url.pathname.startsWith("/v1/")
+      ? routerWorker.fetch(request, routerEnv as never, ctx)
+      : spacesWorker.fetch(request, env as never, ctx);
   },
 };

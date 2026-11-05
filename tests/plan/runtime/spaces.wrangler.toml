@@ -7,9 +7,53 @@ compatibility_flags = ["nodejs_compat"]
 name = "SPACE_DO"
 class_name = "SpaceDO"
 
+[[durable_objects.bindings]]
+name = "PRODUCT_USER_DO"
+class_name = "ProductUserDO"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+[[durable_objects.bindings]]
+name = "SPACE_TYPE_REGISTRY_DO"
+class_name = "SpaceTypeRegistryDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SpaceDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ProductUserDO"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["RateLimitDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["SpaceTypeRegistryDO"]
+
+[[kv_namespaces]]
+binding = "NAELAO_CONFIG_KV"
+id = "naelao-browser-space-config"
+
+[[kv_namespaces]]
+binding = "SESSION_REVOCATION"
+id = "naelao-browser-session-revocation"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "naelao-browser-config"
+
+[[kv_namespaces]]
+binding = "NONCE_STORE"
+id = "naelao-browser-nonce-store"
+
+[[kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "naelao-browser-quota-cache"
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -19,3 +63,6 @@ migrations_dir = "../../../infra/migrations"
 
 [vars]
 PLATFORM_SECRET = "blackboard-integration-test-secret"
+JWT_SECRET = "browser-runtime-test-jwt-secret"
+ENVIRONMENT = "test"
+CORS_ALLOWLIST = "http://127.0.0.1:3100,http://localhost:3100"

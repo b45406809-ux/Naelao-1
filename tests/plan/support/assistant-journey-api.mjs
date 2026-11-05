@@ -1,41 +1,15 @@
-/** Isolated fake API for browser tests. This never connects to a user or production Space. */
+/** Isolated browser API bridge. It proxies an allowlist to the local Wrangler Router and
+ * supplies fixtures only for ancillary UI routes outside this journey. It never connects to a
+ * production Space or user account. */
 import { createServer } from "node:http";
 
 const spaceId = "space-bot-e2e";
-let projectId = "project-logistics-e2e";
-const now = new Date().toISOString();
-let project = {
-  id: projectId,
-  name: "Logistics Project",
-  description: "Synthetic browser journey project",
-  status: "active",
-  default_agent_id: "planner-logistics",
-  max_threads: 20,
-  allowed_agent_ids: null,
-  created_at: now,
-};
-const createdThread = {
-  id: "thread-project-bot-e2e",
-  space_id: spaceId,
-  project_id: projectId,
-  title: "Project Bot",
-  status: "active",
-  thread_kind: "primary",
-  thread_tier: "tier_1_team",
-  parent_thread_id: null,
-  session_id: "session-project-bot-e2e",
-  created_at: now,
-  updated_at: now,
-};
-const persistedThreads = new Map();
 const realSpaceBackend = process.env.NAELAO_REAL_SPACE_BACKEND;
 
 if (realSpaceBackend) {
   const seeded = await fetch(`${realSpaceBackend}/__test/browser/bootstrap`, { method: "POST" });
   const fixture = await seeded.json().catch(() => null);
-  if (!seeded.ok || !fixture?.projectId) throw new Error(`Could not seed local SpaceDO browser fixture: ${seeded.status} ${JSON.stringify(fixture)}`);
-  projectId = fixture.projectId;
-  project = { ...project, id: projectId, description: "Real local SpaceDO browser fixture" };
+  if (!seeded.ok || !fixture?.spaceId) throw new Error(`Could not seed local SpaceDO browser fixture: ${seeded.status} ${JSON.stringify(fixture)}`);
 }
 
 function json(response, status = 200, body = {}) {
@@ -70,8 +44,22 @@ const server = createServer(async (request, response) => {
     try { input = JSON.parse(body); } catch { /* validation below returns a clear error */ }
     if (typeof input.user_id !== "string" || input.user_id.length > 120)
       return json(response, 400, { error_code: "invalid_test_user" });
-    persistedThreads.delete(input.user_id);
     return json(response, 200, { ok: true });
+  }
+  const isProductRuntimeRoute = /^\/v1\/(?:products\/by-slug\/|spaces\/[^/]+\/(?:end-users\/(?:signup|login)|shell\/manifest|my-spaces|spaces|memberships|product-users\/me|projects(?:\/[^/]+)?|agent-definitions(?:\/.*)?|threads(?:\/.*)?))/.test(path);
+  if (realSpaceBackend && isProductRuntimeRoute) {
+    const headers = new Headers();
+    for (const name of ["authorization", "x-naelao-end-user-id", "content-type", "origin"]) {
+      const value = request.headers[name];
+      if (typeof value === "string") headers.set(name, value);
+    }
+    const body = ["GET", "HEAD"].includes(request.method ?? "GET") ? undefined : await readJson(request);
+    const upstream = await fetch(`${realSpaceBackend}${path}${url.search}`, {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return json(response, upstream.status, await upstream.json().catch(() => ({ error_code: "router_invalid_json" })));
   }
   if (path === "/v1/products/by-slug/launchpad-e2e") {
     return json(response, 200, {
@@ -145,61 +133,18 @@ const server = createServer(async (request, response) => {
         },
       ],
     });
-  if (path === `/v1/spaces/${spaceId}/threads`) {
-    if (realSpaceBackend) {
-      const input = request.method === "POST" ? await readJson(request) : undefined;
-      const upstream = await fetch(`${realSpaceBackend}/__test/browser/threads`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request.method === "POST"
-          ? { operation: "create", input }
-          : { operation: "list" }),
-      });
-      return json(response, upstream.status, await upstream.json().catch(() => ({ error_code: "space_backend_invalid_json" })));
-    }
-    if (request.method === "POST") {
-      const input = await readJson(request);
-      if (input.project_id !== projectId)
-        return json(response, 403, { error_code: "project_scope_required" });
-      const userId = request.headers["x-naelao-end-user-id"];
-      if (!userId)
-        return json(response, 401, { error_code: "test_user_required" });
-      if (persistedThreads.has(userId))
-        return json(response, 409, { error_code: "thread_already_created" });
-      const persistedThread = {
-        ...createdThread,
-        title: input.title ?? createdThread.title,
-        thread_tier: input.thread_tier ?? createdThread.thread_tier,
-      };
-      persistedThreads.set(userId, persistedThread);
-      return json(response, 201, persistedThread);
-    }
-    return json(response, 200, { data: [], count: 0 });
-  }
   if (path === `/v1/spaces/${spaceId}/scheduled-jobs`)
     return json(response, 200, { data: [] });
   if (path === `/v1/spaces/${spaceId}/project-steward/reviews`)
     return json(response, 200, { data: [] });
   if (path === `/v1/spaces/${spaceId}/sessions/inbox/approvals`)
     return json(response, 200, { approvals: [] });
-  if (path.startsWith(`/v1/spaces/${spaceId}/threads/`)) {
-    if (realSpaceBackend) {
-      const threadId = decodeURIComponent(path.slice(`/v1/spaces/${spaceId}/threads/`.length));
-      const upstream = await fetch(`${realSpaceBackend}/__test/browser/threads`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ operation: "get", threadId }),
-      });
-      return json(response, upstream.status, await upstream.json().catch(() => ({ error_code: "space_backend_invalid_json" })));
-    }
-    const userId = request.headers["x-naelao-end-user-id"];
-    const persistedThread = userId ? persistedThreads.get(userId) : null;
-    return persistedThread
-      ? json(response, 200, persistedThread)
-      : json(response, 404, { error_code: "thread_not_found" });
-  }
-  if (path === `/v1/spaces/${spaceId}/projects/${projectId}`)
-    return json(response, 200, project);
+  if (/^\/v1\/spaces\/[^/]+\/scheduled-jobs$/.test(path))
+    return json(response, 200, { data: [] });
+  if (/^\/v1\/spaces\/[^/]+\/project-steward\/reviews$/.test(path))
+    return json(response, 200, { data: [] });
+  if (/^\/v1\/spaces\/[^/]+\/sessions\/inbox\/approvals$/.test(path))
+    return json(response, 200, { approvals: [] });
   return json(response, 404, { error_code: "fixture_route_not_found", path });
 });
 
