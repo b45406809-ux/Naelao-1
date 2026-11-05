@@ -5446,13 +5446,17 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId } = getCallerIdentity(c);
 
-  const space = tenantId
+  let space = tenantId
     ? await c.env.PLATFORM_DB.prepare(
         "SELECT id, name, spacetype_id, config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
       ).bind(spaceId, tenantId).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>()
     : await c.env.PLATFORM_DB.prepare(
         "SELECT id, name, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
       ).bind(spaceId).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
+  if (!space) {
+    const query = "SELECT id, name, spacetype_id, config_json FROM products WHERE id = ? AND status = 'active'" + (tenantId ? " AND tenant_id = ?" : "");
+    space = await c.env.PLATFORM_DB.prepare(query).bind(...(tenantId ? [spaceId, tenantId] : [spaceId])).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
+  }
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
   const manifest = await loadManifest(c.env, space.spacetype_id);

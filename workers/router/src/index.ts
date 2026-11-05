@@ -132,7 +132,7 @@ const app = new Hono<{ Bindings: Env }>();
 // two fixed platform frontends (dashboard, portal) but can't scale to arbitrary Space
 // custom domains or even the platform's own {slug}.naelao.com subdomains (which were
 // never added to it at all — apps/shell, the Product Shell every end user uses, would have been
-// CORS-blocked in a real deployment). Resolves dynamically against spaces.product_slug and
+// CORS-blocked in a real deployment). Resolves dynamically against products.product_slug and
 // space_domains.domain, cached in KV (60s TTL — this platform's own stated KV
 // eventual-consistency window) so this doesn't cost a D1 round trip on every single request once
 // warm. Degrades to the static allowlist only when PLATFORM_DB/CONFIG aren't wired (tests, or a
@@ -168,7 +168,7 @@ async function isDynamicOriginAllowed(env: Env, origin: string): Promise<boolean
   const slug = productSubdomainSlug(hostname, apex);
   if (slug) {
     const row = await env.PLATFORM_DB.prepare(
-      "SELECT id FROM spaces WHERE product_slug = ? AND status = 'active'"
+      "SELECT id FROM products WHERE product_slug = ? AND status = 'active'"
     ).bind(slug).first<{ id: string }>().catch(() => null);
     allowed = !!row;
   }
