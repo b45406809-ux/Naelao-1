@@ -463,11 +463,11 @@ describe("credential hierarchy", () => {
       });
     }
 
-    it("a business with nothing of its own falls through to the product root's shared credential", async () => {
+    it("allows a legacy Product credential only for an explicitly granted user", async () => {
       await insertSpace(env, "product-root");
       await insertSpace(env, "biz-1", "product-root");
       await credentialsWorker.fetch(
-        await req("/spaces/product-root/credentials", { method: "POST", user: "builder-1", role: "owner", body: { name: "TAVILY", value: "product-key", scope: "space" } }),
+        await req("/spaces/product-root/credentials", { method: "POST", user: "builder-1", role: "owner", body: { name: "TAVILY", value: "product-key", scope: "space", shared_with_user_ids: ["end-user-1"] } }),
         env, execCtx
       );
 
@@ -480,6 +480,19 @@ describe("credential hierarchy", () => {
       const json = await res.json() as { value: string; resolved_tier: string };
       expect(json.value).toBe("product-key");
       expect(json.resolved_tier).toBe("product");
+    });
+
+    it("does not expose a Product Space's default shared credential to an end-user Space", async () => {
+      await insertSpace(env, "private-product");
+      await insertSpace(env, "other-space", "private-product");
+      await credentialsWorker.fetch(
+        await req("/spaces/private-product/credentials", { method: "POST", user: "builder-1", role: "owner", body: { name: "PRIVATE", value: "secret", scope: "space" } }), env, execCtx
+      );
+      const token = await makeToken("other-space", "agent-1", "end-user-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/other-space/credentials/PRIVATE/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "end-user-1" } }), env, execCtx
+      );
+      expect(res.status).toBe(404);
     });
 
     it("a business's own shared credential wins over the product root's", async () => {

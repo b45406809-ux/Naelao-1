@@ -1,6 +1,7 @@
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { describe, expect, it, vi } from "vitest";
 import { loadSavedLanguagePreference } from "./preferred-language";
+import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
 
 function claims(role: NaelaoJwtClaims["role"], sub: string): NaelaoJwtClaims {
   return {
@@ -16,6 +17,16 @@ function claims(role: NaelaoJwtClaims["role"], sub: string): NaelaoJwtClaims {
 }
 
 describe("authenticated language preference lookup", () => {
+  it("resolves a user's preference through a direct Product reference without a Product Space", async () => {
+    const db = createFakeD1([
+      "CREATE TABLE spaces(id TEXT PRIMARY KEY,parent_space_id TEXT,product_id TEXT)",
+      "CREATE TABLE product_end_users(product_space_id TEXT,end_user_id TEXT,preferred_language TEXT,deleted_at TEXT)",
+      "INSERT INTO spaces VALUES('my-space',NULL,'product')",
+      "INSERT INTO product_end_users VALUES('product','user-a','sw-KE',NULL),('product','user-b','fr',NULL)",
+    ]);
+    expect(await loadSavedLanguagePreference(db as never, claims("product_end_user", "user-a"), "my-space")).toBe("sw-KE");
+    expect(await loadSavedLanguagePreference(db as never, claims("product_end_user", "other"), "my-space")).toBeNull();
+  });
   it("isolates product users by product and verified end-user identity", async () => {
     const bind = vi.fn((productId: string, userId: string) => ({
       first: async () =>

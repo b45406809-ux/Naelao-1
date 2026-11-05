@@ -83,6 +83,23 @@ function makeSpacesStub(opts: {
 }
 
 describe("router — product end-user hybrid auth", () => {
+  it("resolves a Product session without a Product backing row in spaces", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "product-owner-tenant" }));
+    let lookedUpSpace = false;
+    env.PLATFORM_DB = {
+      prepare: (sql: string) => ({ bind: () => ({ first: async () => {
+        if (sql.includes("FROM products")) return { id: "product-only" };
+        if (sql.includes("FROM spaces")) { lookedUpSpace = true; return null; }
+        return { status: "active", reseller_status: "active" };
+      } }) }),
+    } as unknown as D1Database;
+    const response = await routerWorker.fetch(new Request("https://router.naelao.com/v1/spaces/product-only/my-spaces", {
+      headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+    }), env as never, execCtx);
+    expect(response.status).toBe(200);
+    expect(lookedUpSpace).toBe(false);
+  });
+
   it("a valid nps_ session token + end-user-id on an allowlisted path resolves and forwards product_end_user claims", async () => {
     const env = makeEnv(
       makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" })

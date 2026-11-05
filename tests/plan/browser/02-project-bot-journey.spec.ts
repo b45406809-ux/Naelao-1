@@ -41,6 +41,8 @@ test("opens an internal Project Bot and creates a project-scoped thread", async 
   const userSpace = await createSpaceResponse.json() as { id: string; name: string; status: string };
   expect(userSpace.id).toMatch(/^[0-9a-f-]{36}$/i);
   expect(userSpace.status).toBe("active");
+  const hierarchy = await page.request.post("http://127.0.0.1:8788/__test/browser/space-hierarchy", { data: { spaceId: userSpace.id } });
+  expect(await hierarchy.json()).toMatchObject({ product_id: "space-bot-e2e", parent_space_id: null, depth: 0 });
   await page.waitForURL(/\/p\/launchpad-e2e\/new$/);
   await expect(page).toHaveURL(/\/p\/launchpad-e2e\/new$/);
 

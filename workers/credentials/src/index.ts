@@ -747,7 +747,10 @@ async function resolveCredential(
       ).bind(space.parent_space_id, tenantId).first<{ id: string }>();
       if (activeRoot) {
         const rootRow = await fetchSpaceRow(db, space.parent_space_id, tenantId, name);
-        if (rootRow) return { row: rootRow, tier: "product" };
+        // A credential shared with everyone in the legacy Product backing Space was never a
+        // grant to every end-user Space. Cross-Space fallback requires a named user grant.
+        if (rootRow && rootRow.shared_with_user_ids !== null && sharedRowAppliesToUser(rootRow, actingUserId))
+          return { row: rootRow, tier: "product" };
       }
     }
   } catch {

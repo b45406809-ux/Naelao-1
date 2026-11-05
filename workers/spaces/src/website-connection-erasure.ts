@@ -18,9 +18,9 @@ export async function eraseWebsiteConnections(
   }
   if (scope.productSpaceId) {
     clauses.push(
-      "space_id IN (SELECT id FROM spaces WHERE id=? OR parent_space_id=?)"
+      "space_id IN (SELECT id FROM spaces WHERE id=? OR parent_space_id=? OR product_id=?)"
     );
-    values.push(scope.productSpaceId, scope.productSpaceId);
+    values.push(scope.productSpaceId, scope.productSpaceId, scope.productSpaceId);
   }
   for (;;) {
     const { results } = await env.PLATFORM_DB.prepare(

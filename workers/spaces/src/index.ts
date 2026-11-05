@@ -244,9 +244,9 @@ registerDeskDropRoutes(app, {
     // Contact verification never substitutes for fresh business authorization at redemption.
     const role = await resolveEndUserSpaceRole(env.PLATFORM_DB, spaceId, userId);
     if (role !== "owner" && role !== "admin") return null;
-    const root = await resolveProductRootSpace(env, spaceId);
+    const root = await resolveProductIdentity(env, spaceId);
     if (!root) return null;
-    const product = await env.PLATFORM_DB.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(root.id).first<{ product_slug: string | null }>();
+    const product = await env.PLATFORM_DB.prepare("SELECT product_slug FROM products WHERE id = ? AND status = 'active'").bind(root.id).first<{ product_slug: string | null }>();
     if (!product?.product_slug) return null;
     const response = await (await productUserDoStub(env, root.id, userId, root.tenant_id)).fetch(new Request("http://do/sessions", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ auth_provider: "verified-mobile-desk-drop" }),
@@ -258,7 +258,7 @@ registerDeskDropRoutes(app, {
   async verifySession(rawEnv, session) {
     const env = rawEnv as Env;
     if (!await resolveEndUserSpaceRole(env.PLATFORM_DB, session.spaceId, session.userId)) return false;
-    const root = await resolveProductRootSpace(env, session.spaceId);
+    const root = await resolveProductIdentity(env, session.spaceId);
     if (!root || root.id !== session.productId) return false;
     const response = await (await productUserDoStub(env, root.id, session.userId, root.tenant_id)).fetch(new Request("http://do/sessions/verify", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }),
@@ -267,7 +267,7 @@ registerDeskDropRoutes(app, {
   },
   async revokeSession(rawEnv, session) {
     const env = rawEnv as Env;
-    const root = await resolveProductRootSpace(env, session.spaceId);
+    const root = await resolveProductIdentity(env, session.spaceId);
     if (!root || root.id !== session.productId) return;
     const stub = await productUserDoStub(env, root.id, session.userId, root.tenant_id);
     const verify = await stub.fetch(new Request("http://do/sessions/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }) }));
@@ -382,10 +382,10 @@ async function authorizeProductEndUserSpace(
   const identity = getCallerIdentity(c);
   if (!tenantId || !await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET) ||
       identity.role !== "product_end_user" || !identity.userId || identity.userId !== requestedUserId) return null;
-  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id, product_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string; product_id: string | null; parent_space_id: string | null }>();
   if (!space || space.tenant_id !== tenantId) return null;
-  if (space.parent_space_id) {
+  if (space.product_id || space.parent_space_id) {
     if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
   } else {
     const roster = await c.env.PLATFORM_DB.prepare(
@@ -494,8 +494,6 @@ app.post("/spaces/:spaceId/spaces", async (c) => {
       userId: owner.userId,
       name: body.name,
       spacetypeId: owner.root.spacetype_id,
-      parentSpaceId: owner.root.id,
-      depth: 1,
       ...(typeof body.blueprint_id === "string" ? { blueprintId: body.blueprint_id } : {}),
       initialMembership: { productSpaceId: owner.root.id, endUserId: owner.userId, role: "owner" },
     });
@@ -1845,9 +1843,7 @@ async function builderAccountDoStub(env: Env, tenantId: string) {
   return env.BUILDER_ACCOUNT_DO.get(doId);
 }
 
-/** Get the ProductUserDO stub for a (product, end-user) pair, HMAC-named to prevent enumeration.
- *  productId is a space id; the tenant that owns it scopes the HMAC so two builders can't collide
- *  on the same end_user_id namespace. */
+/** Get the ProductUserDO stub for a (product, end-user) pair, HMAC-named to prevent enumeration. */
 async function productUserDoStub(env: Env, productId: string, endUserId: string, tenantId: string) {
   const doId = env.PRODUCT_USER_DO.idFromName(
     await getDOName("produser", `${productId}:${endUserId}`, tenantId, env.PLATFORM_SECRET)
@@ -1855,20 +1851,54 @@ async function productUserDoStub(env: Env, productId: string, endUserId: string,
   return env.PRODUCT_USER_DO.get(doId);
 }
 
-/** Resolve a child Space to the root Space that owns its product-user session namespace. */
-async function resolveProductRootSpace(
+/** Resolve a Product or an end-user Space to its Product identity and requested tenant. */
+async function resolveProductScope(
   env: Env,
-  spaceId: string
-): Promise<{ id: string; tenant_id: string } | null> {
+  resourceId: string
+): Promise<{ id: string; tenant_id: string; resource_tenant_id: string } | null> {
+  const direct = await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id FROM products WHERE id = ? AND status = 'active'"
+  ).bind(resourceId).first<{ id: string; tenant_id: string }>();
+  if (direct) return { ...direct, resource_tenant_id: direct.tenant_id };
   const space = await env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+    "SELECT tenant_id, product_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(resourceId).first<{ tenant_id: string; product_id: string | null; parent_space_id: string | null }>();
   if (!space) return null;
-  if (!space.parent_space_id) return { id: spaceId, tenant_id: space.tenant_id };
-  const root = await env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(space.parent_space_id).first<{ id: string; tenant_id: string }>();
-  return root?.tenant_id === space.tenant_id ? root : null;
+  const productId = space.product_id ?? space.parent_space_id;
+  if (!productId) return null;
+  const product = await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id FROM products WHERE id = ? AND status = 'active'"
+  ).bind(productId).first<{ id: string; tenant_id: string }>();
+  // Legacy child Spaces may have their own tenant. A direct Product reference, used by
+  // newly created Spaces, must stay within the Product tenant until tenant ownership
+  // and cross-tenant membership are migrated together.
+  if (!product || (space.product_id && product.tenant_id !== space.tenant_id)) return null;
+  return { ...product, resource_tenant_id: space.tenant_id };
+}
+
+async function resolveProductIdentity(env: Env, spaceId: string): Promise<{ id: string; tenant_id: string } | null> {
+  const scope = await resolveProductScope(env, spaceId);
+  return scope ? { id: scope.id, tenant_id: scope.tenant_id } : null;
+}
+
+async function isActiveProductUser(env: Env, productId: string, tenantId: string, userId: string): Promise<boolean> {
+  const row = await env.PLATFORM_DB.prepare(
+    `SELECT 1 FROM products p JOIN product_end_users u ON u.product_space_id = p.id
+      WHERE p.id = ? AND p.tenant_id = ? AND p.status = 'active' AND u.end_user_id = ?
+        AND u.suspended_at IS NULL AND u.deleted_at IS NULL`
+  ).bind(productId, tenantId, userId).first();
+  return !!row;
+}
+
+async function verifyProductSession(env: Env, resourceId: string, userId: string, token: string): Promise<{ tenant_id: string } | null> {
+  const scope = await resolveProductScope(env, resourceId);
+  if (!scope || !await isActiveProductUser(env, scope.id, scope.tenant_id, userId)) return null;
+  const stub = await productUserDoStub(env, scope.id, userId, scope.tenant_id);
+  const response = await stub.fetch(new Request("http://do/sessions/verify", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: token }),
+  }));
+  if (!response.ok || !(await response.json<{ valid?: boolean }>()).valid) return null;
+  return { tenant_id: scope.resource_tenant_id };
 }
 
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
@@ -4398,8 +4428,8 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT config_json, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null; parent_space_id: string | null }>();
+    "SELECT config_json, product_id, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null; product_id: string | null; parent_space_id: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   let policy: SpaceModelPolicy | null = null;
   try {
@@ -4407,8 +4437,9 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
       model_policy?: { mode?: string; allowedModelIds?: unknown };
       productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown } };
     };
-    const productRow = row.parent_space_id
-      ? await c.env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?").bind(row.parent_space_id, tenantId).first<{ config_json: string | null }>()
+    const productId = row.product_id ?? row.parent_space_id;
+    const productRow = productId
+      ? await c.env.PLATFORM_DB.prepare("SELECT config_json FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'").bind(productId, tenantId).first<{ config_json: string | null }>()
       : row;
     const productConfig = JSON.parse(productRow?.config_json || "{}") as {
       productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown }; workerModelPool?: { modelIds?: unknown; modelsByPlan?: Record<string, unknown>; selectionMode?: unknown; inputUsdPerMillion?: unknown; outputUsdPerMillion?: unknown } };
@@ -5252,17 +5283,8 @@ app.post("/internal/space-types/seed", async (c) => {
 // resolving the tenantId is exactly what this endpoint is FOR (a real chicken-and-egg the seed
 // route's precedent already solved the same way).
 //
-// Phase B parent-walk (§A1.17): a reseller-mode end user's OWN business (Phase C) is a real
-// child-tenant space with `parent_space_id` set to the product root (spec §49 Scenario C,
-// depth ≤ 2 — never more than one hop). Its ProductUserDO does NOT live under the business's own
-// id — end users are a PRODUCT-scoped concept (one ProductUserDO per productId×endUserId), not a
-// per-business one, so the session lives under the product root regardless of which business the
-// URL is for. When `body.productId` (the URL space the caller is actually hitting) has a
-// `parent_space_id`, walk to that root FIRST to find the right ProductUserDO, but return the URL
-// SPACE's own tenant_id (not the root's) — the router uses this as `claims.tid` for
-// requireInternalHmac against the space actually being accessed. No child business spaces exist
-// yet (that's Phase C), so this is a no-op for every caller today; it exists so Phase C doesn't
-// have to re-open this endpoint's security model under time pressure later.
+// A session is Product-scoped; a Space has its own membership authorization. Resolve the
+// requested Product or Space through the Product registry, with a legacy parent fallback.
 app.post("/internal/product-sessions/verify", async (c) => {
   if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
     return c.json({ valid: false }, 403);
@@ -5272,40 +5294,8 @@ app.post("/internal/product-sessions/verify", async (c) => {
     return c.json({ valid: false }, 400);
   }
 
-  const urlSpace = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(body.productId).first<{ tenant_id: string; parent_space_id: string | null }>();
-  if (!urlSpace) return c.json({ valid: false });
-
-  let productRootId = body.productId;
-  let productRootTenantId = urlSpace.tenant_id;
-  if (urlSpace.parent_space_id) {
-    const root = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
-    ).bind(urlSpace.parent_space_id).first<{ id: string; tenant_id: string }>();
-    if (!root) return c.json({ valid: false });
-    productRootId = root.id;
-    productRootTenantId = root.tenant_id;
-  }
-
-  // Product sessions are valid only for registered active Products, never for an arbitrary
-  // end-user Space that happens to be a root in the legacy hierarchy.
-  const product = await c.env.PLATFORM_DB.prepare(
-    `SELECT 1 FROM products p JOIN product_end_users u ON u.product_space_id = p.id
-      WHERE p.id = ? AND p.tenant_id = ? AND p.status = 'active' AND u.end_user_id = ?
-        AND u.suspended_at IS NULL AND u.deleted_at IS NULL`
-  ).bind(productRootId, productRootTenantId, body.endUserId).first();
-  if (!product) return c.json({ valid: false });
-  const stub = await productUserDoStub(c.env, productRootId, body.endUserId, productRootTenantId);
-  const verifyRes = await stub.fetch(new Request("http://do/sessions/verify", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session_token: body.sessionToken }),
-  }));
-  const verified = await verifyRes.json<{ valid: boolean }>();
-  if (!verified.valid) return c.json({ valid: false });
-
-  return c.json({ valid: true, tenant_id: urlSpace.tenant_id, end_user_id: body.endUserId });
+  const verified = await verifyProductSession(c.env, body.productId, body.endUserId, body.sessionToken);
+  return verified ? c.json({ valid: true, tenant_id: verified.tenant_id, end_user_id: body.endUserId }) : c.json({ valid: false });
 });
 
 // POST /internal/stream-tickets/issue — mint a short-lived (60s), single-use stream ticket
@@ -5323,37 +5313,11 @@ app.post("/internal/stream-tickets/issue", async (c) => {
   }
   const { productId, endUserId, sessionToken } = await c.req.json<{ productId: string; endUserId: string; sessionToken: string }>();
   if (!productId || !endUserId || !sessionToken) return c.json({ error: "bad_request" }, 400);
-  // Verify the session inline — this IS the spaces worker, so there is no separate worker to call
-  // out to (a prior version referenced a non-existent SPACES_WORKER self-binding). Same logic as
-  // /internal/product-sessions/verify above: resolve the product's root space (walking a
-  // parent_space_id for child business spaces), verify the token against that ProductUserDO.
-  let tenantId: string | undefined;
-  {
-    const urlSpace = await c.env.PLATFORM_DB.prepare(
-      "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-    ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null }>();
-    if (!urlSpace) return c.json({ error: "invalid_session" }, 401);
-    let rootId = productId;
-    let rootTenantId = urlSpace.tenant_id;
-    if (urlSpace.parent_space_id) {
-      const root = await c.env.PLATFORM_DB.prepare(
-        "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
-      ).bind(urlSpace.parent_space_id).first<{ id: string; tenant_id: string }>();
-      if (!root) return c.json({ error: "invalid_session" }, 401);
-      rootId = root.id; rootTenantId = root.tenant_id;
-    }
-    const stub = await productUserDoStub(c.env, rootId, endUserId, rootTenantId);
-    const sv = await stub.fetch(new Request("http://do/sessions/verify", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_token: sessionToken }),
-    }));
-    const verified = await sv.json<{ valid: boolean }>();
-    if (!verified.valid) return c.json({ error: "invalid_session" }, 401);
-    tenantId = urlSpace.tenant_id;
-  }
+  const verified = await verifyProductSession(c.env, productId, endUserId, sessionToken);
+  if (!verified) return c.json({ error: "invalid_session" }, 401);
   const ticket = crypto.randomUUID();
   const key = `stream-ticket:${productId}:${endUserId}:${ticket}`;
-  await c.env.NAELAO_CONFIG_KV.put(key, tenantId ?? "", { expirationTtl: 60 });
+  await c.env.NAELAO_CONFIG_KV.put(key, verified.tenant_id, { expirationTtl: 60 });
   return c.json({ ticket, expires_in: 60 });
 });
 
@@ -5368,11 +5332,11 @@ app.post("/internal/stream-tickets/consume", async (c) => {
   if (tenantId === null) return c.json({ valid: false }); // expired or already consumed
   // Single-use: delete immediately after reading.
   await c.env.NAELAO_CONFIG_KV.delete(key);
-  // Resolve true tenant for this space (may be parent if spaceId is a business).
-  const urlSpace = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(productId).first<{ tenant_id: string }>();
-  return c.json({ valid: true, tenant_id: urlSpace?.tenant_id ?? tenantId });
+  // Suspension or deletion after ticket issue takes effect before it can be redeemed.
+  const scope = await resolveProductScope(c.env, productId);
+  if (!scope || scope.resource_tenant_id !== tenantId || !await isActiveProductUser(c.env, scope.id, scope.tenant_id, endUserId))
+    return c.json({ valid: false });
+  return c.json({ valid: true, tenant_id: scope.resource_tenant_id });
 });
 
 // ── Reseller / tenant membership (spec G-AS34/G-AS35; productConfig.membershipModel) ──
@@ -5553,7 +5517,7 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
-  const root = await resolveProductRootSpace(c.env, spaceId);
+  const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
@@ -5579,7 +5543,7 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
-  const root = await resolveProductRootSpace(c.env, spaceId);
+  const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const body = await c.req.json<{ display_name?: string; preferred_language?: string | null }>().catch(() => ({}) as { display_name?: string; preferred_language?: string | null });
   if (body.display_name === undefined && body.preferred_language === undefined) {
@@ -5609,7 +5573,7 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
-  const root = await resolveProductRootSpace(c.env, spaceId);
+  const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const profile = await c.env.PLATFORM_DB.prepare(
     "SELECT email, display_name, phone_e164, phone_verified_at, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
@@ -5642,7 +5606,7 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
-  const root = await resolveProductRootSpace(c.env, spaceId);
+  const root = await resolveProductIdentity(c.env, spaceId);
   if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"

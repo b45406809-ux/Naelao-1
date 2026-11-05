@@ -59,6 +59,57 @@ function verifyReq(body: unknown, platformSecret?: string): Request {
 }
 
 describe("POST /internal/product-sessions/verify", () => {
+  it("verifies a Product session without a Product backing row in spaces", async () => {
+    const env = makeEnv();
+    env.PLATFORM_DB.db.prepare(`INSERT INTO products
+      (id, tenant_id, spacetype_id, name, product_slug, status, config_json, created_at, updated_at)
+      VALUES ('product-only','tenant-1','launchpad','Naelao','standalone','active','{}','now','now')`).run();
+    env.PLATFORM_DB.db.prepare("INSERT INTO product_end_users(product_space_id,end_user_id) VALUES ('product-only','user-42')").run();
+    const { getDOName } = await import("@naelao/crypto");
+    const name = await getDOName("produser", "product-only:user-42", "tenant-1", "test-platform-secret");
+    const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const response = await spacesWorker.fetch(verifyReq({ productId: "product-only", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"), env as never, execCtx);
+    expect(await response.json()).toMatchObject({ valid: true, tenant_id: "tenant-1", end_user_id: "user-42" });
+  });
+
+  it("rejects stream ticket issuance and redemption after account suspension", async () => {
+    const env = makeEnv();
+    const tickets = new Map<string, string>();
+    const envWithKv = { ...env, NAELAO_CONFIG_KV: {
+      get: async (key: string) => tickets.get(key) ?? null,
+      put: async (key: string, value: string) => { tickets.set(key, value); },
+      delete: async (key: string) => { tickets.delete(key); },
+    } };
+    await seedSpace(env, "prod-1", "tenant-1");
+    const { getDOName } = await import("@naelao/crypto");
+    const name = await getDOName("produser", "prod-1:user-42", "tenant-1", "test-platform-secret");
+    const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const call = (path: string, body: object) => spacesWorker.fetch(new Request(`https://spaces.naelao.com${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": "test-platform-secret" }, body: JSON.stringify(body),
+    }), envWithKv as never, execCtx);
+    const issued = await call("/internal/stream-tickets/issue", { productId: "prod-1", endUserId: "user-42", sessionToken: opened.session_token });
+    expect(issued.status).toBe(200);
+    const { ticket } = await issued.json() as { ticket: string };
+    env.PLATFORM_DB.db.prepare("UPDATE product_end_users SET suspended_at='now' WHERE product_space_id='prod-1' AND end_user_id='user-42'").run();
+    const consume = await call("/internal/stream-tickets/consume", { productId: "prod-1", endUserId: "user-42", ticket });
+    expect(await consume.json()).toEqual({ valid: false });
+    expect((await call("/internal/stream-tickets/issue", { productId: "prod-1", endUserId: "user-42", sessionToken: opened.session_token })).status).toBe(401);
+  });
+
+  it("rejects an explicit Space-to-Product reference across tenant boundaries", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-a");
+    env.PLATFORM_DB.db.prepare("INSERT INTO spaces (id,tenant_id,name,status,product_id) VALUES ('foreign-space','tenant-b','Foreign','active','prod-1')").run();
+    const { getDOName } = await import("@naelao/crypto");
+    const name = await getDOName("produser", "prod-1:user-42", "tenant-a", "test-platform-secret");
+    const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const response = await spacesWorker.fetch(verifyReq({ productId: "foreign-space", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"), env as never, execCtx);
+    expect(await response.json()).toEqual({ valid: false });
+  });
+
   it("rejects a wrong or missing platform secret with 403", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(verifyReq({ productId: "p1", endUserId: "u1", sessionToken: "x" }, "wrong-secret"), env as never, execCtx);

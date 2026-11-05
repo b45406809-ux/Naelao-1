@@ -13,9 +13,9 @@ export async function eraseCommunicationIdentities(
     .first();
   if (!owned) throw new Error("communication_erasure_scope_mismatch");
   const coordinationSpaces = await env.PLATFORM_DB.prepare(
-    `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=?)" : "id=?"}`
+    `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=? OR product_id=?)" : "id=?"}`
   )
-    .bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : []))
+    .bind(tenantId, spaceId, ...(includeChildren ? [spaceId, spaceId] : []))
     .all<{ id: string }>();
   for (const space of coordinationSpaces.results) {
     for (const table of [
@@ -72,9 +72,9 @@ export async function eraseCommunicationIdentities(
   // Learning can be used with email disabled, so it cannot depend on a mailbox existing.
   if (env.SCRIPTS_R2) {
     const learningSpaces = await env.PLATFORM_DB.prepare(
-      `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=?)" : "id=?"}`
+      `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=? OR product_id=?)" : "id=?"}`
     )
-      .bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : []))
+      .bind(tenantId, spaceId, ...(includeChildren ? [spaceId, spaceId] : []))
       .all<{ id: string }>();
     for (const space of learningSpaces.results) {
       let cursor: string | undefined;
@@ -101,12 +101,12 @@ export async function eraseCommunicationIdentities(
   } else throw new Error("learning_storage_erasure_unavailable");
   for (;;) {
     const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT id,space_id FROM assistant_communication_identities WHERE tenant_id=? AND ${includeChildren ? "space_id IN (SELECT id FROM spaces WHERE id=? OR parent_space_id=?)" : "space_id=?"} ${userId ? "AND project_id IS NULL AND owner_user_id=?" : ""} ORDER BY id LIMIT 100`
+      `SELECT id,space_id FROM assistant_communication_identities WHERE tenant_id=? AND ${includeChildren ? "space_id IN (SELECT id FROM spaces WHERE id=? OR parent_space_id=? OR product_id=?)" : "space_id=?"} ${userId ? "AND project_id IS NULL AND owner_user_id=?" : ""} ORDER BY id LIMIT 100`
     )
       .bind(
         tenantId,
         spaceId,
-        ...(includeChildren ? [spaceId] : []),
+        ...(includeChildren ? [spaceId, spaceId] : []),
         ...(userId ? [userId] : [])
       )
       .all<{ id: string; space_id: string }>();

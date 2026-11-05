@@ -35,8 +35,8 @@ function testEnv() {
         bind(...values: unknown[]) {
           return {
             async first() {
-              if (sql.includes("SELECT tenant_id, parent_space_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
-              if (sql.includes("SELECT id, tenant_id FROM spaces")) {
+              if (sql.includes("SELECT tenant_id, product_id, parent_space_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
+              if (sql.includes("SELECT id, tenant_id FROM products")) {
                 const root = [...spaces.entries()].find(([id, row]) => id === String(values[0]) && row.parent_space_id === null);
                 return root ? { id: root[0], tenant_id: root[1].tenant_id } : null;
               }

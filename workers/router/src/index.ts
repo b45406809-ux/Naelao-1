@@ -778,25 +778,29 @@ async function resolveProductEndUserClaims(
   endUserId: string,
   sessionToken: string
 ): Promise<NaelaoJwtClaims | null> {
-  // Sessions belong to the root Space. Child Spaces share the product session but are authorized
-  // independently by their own membership records in the downstream handler.
-  const requested = await env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, parent_space_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null; product_id: string | null }>();
-  if (!requested) return null;
+  // Product sessions establish identity; end-user Spaces still require their own membership.
+  const direct = await env.PLATFORM_DB.prepare(
+    "SELECT id FROM products WHERE id = ? AND status = 'active'"
+  ).bind(productId).first<{ id: string }>();
   let sessionProductId = productId;
-  if (requested.product_id) {
-    const product = await env.PLATFORM_DB.prepare(
-      "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
-    ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
-    if (!product) return null;
-    sessionProductId = product.id;
-  } else if (requested.parent_space_id) {
-    const root = await env.PLATFORM_DB.prepare(
-      "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND parent_space_id IS NULL AND status = 'active'"
-    ).bind(requested.parent_space_id, requested.tenant_id).first<{ id: string }>();
-    if (!root) return null;
-    sessionProductId = root.id;
+  if (!direct?.id) {
+    const requested = await env.PLATFORM_DB.prepare(
+      "SELECT tenant_id, parent_space_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null; product_id: string | null }>();
+    if (!requested) return null;
+    if (requested.product_id) {
+      const product = await env.PLATFORM_DB.prepare(
+        "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+      ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
+      if (!product) return null;
+      sessionProductId = product.id;
+    } else if (requested.parent_space_id) {
+      const root = await env.PLATFORM_DB.prepare(
+        "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND parent_space_id IS NULL AND status = 'active'"
+      ).bind(requested.parent_space_id, requested.tenant_id).first<{ id: string }>();
+      if (!root) return null;
+      sessionProductId = root.id;
+    }
   }
   const res = await env.SPACES_WORKER.fetch(
     new Request("http://spaces/internal/product-sessions/verify", {

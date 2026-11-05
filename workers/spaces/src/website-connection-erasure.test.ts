@@ -1,5 +1,23 @@
 import { it, expect, vi } from "vitest";
 import { eraseWebsiteConnections } from "./website-connection-erasure.js";
+import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
+
+it("erases only the requested user's profiles in Spaces linked directly to the Product", async () => {
+  const db = createFakeD1([
+    "CREATE TABLE spaces(id TEXT PRIMARY KEY,parent_space_id TEXT,product_id TEXT)",
+    "CREATE TABLE website_connections(id TEXT PRIMARY KEY,tenant_id TEXT,space_id TEXT,owner_user_id TEXT,project_id TEXT,origins_json TEXT,status TEXT)",
+    "INSERT INTO spaces VALUES('space-a',NULL,'product'),('space-b',NULL,'product'),('other',NULL,'different-product')",
+    `INSERT INTO website_connections VALUES
+      ('a','tenant','space-a','user-a',NULL,'[]','active'),('b','tenant','space-b','user-b',NULL,'[]','active'),
+      ('c','tenant','other','user-a',NULL,'[]','active')`,
+  ]);
+  const revoked: string[] = [];
+  const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: db,
+    BROWSER_WORKER: { fetch: async (request: Request) => { revoked.push((await request.json() as { connectionId: string }).connectionId); return new Response(null, { status: 200 }); } } };
+  await eraseWebsiteConnections(env as never, "tenant", { productSpaceId: "product", userId: "user-a" });
+  expect(revoked).toEqual(["a"]);
+  expect(db.db.prepare("SELECT id FROM website_connections ORDER BY id").all()).toEqual([{ id: "b" }, { id: "c" }]);
+});
 it("retains discovery metadata when encrypted profile erasure fails, then safely retries", async () => {
   let exists = true;
   const calls: string[] = [];

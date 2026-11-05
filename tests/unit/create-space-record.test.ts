@@ -80,11 +80,11 @@ describe("createSpaceRecord — bounded inputs and tenant quota serialization", 
     const fakeDb = makeDb();
     const product = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "tenant", name: "Naelao", spacetypeId: "launchpad", productSlug: "launchpad" });
     const workspace = await createSpaceRecord({ PLATFORM_DB: fakeDb }, {
-      tenantId: "tenant", userId: "owner", name: "My Space", spacetypeId: "launchpad", parentSpaceId: product.id,
+      tenantId: "tenant", userId: "owner", name: "My Space", spacetypeId: "launchpad",
       initialMembership: { productSpaceId: product.id, endUserId: "owner" },
     });
-    const row = fakeDb.db.prepare("SELECT product_id FROM spaces WHERE id = ?").get(workspace.id);
-    expect(row).toEqual(expect.objectContaining({ product_id: product.id }));
+    const row = fakeDb.db.prepare("SELECT product_id,parent_space_id,depth FROM spaces WHERE id = ?").get(workspace.id);
+    expect(row).toEqual(expect.objectContaining({ product_id: product.id, parent_space_id: null, depth: 0 }));
     expect(fakeDb.db.prepare("SELECT role FROM space_members WHERE space_id = ? AND end_user_id = ?").get(workspace.id, "owner"))
       .toEqual(expect.objectContaining({ role: "owner" }));
     await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, {
@@ -276,11 +276,18 @@ describe("createSpaceRecord — provisioning", () => {
   // runs continuously; the digest email that reports on it was opt-in and off by default, so a
   // builder who never found the toggle got no visibility. Defaulted ON here unless the caller
   // already made an explicit choice.
-  it("defaults the daily digest email ON when the caller doesn't specify it", async () => {
+  it("preserves the historical Launchpad digest default", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
     expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: true } } });
+  });
+
+  it("does not enable a digest merely because an end-user Space is a root", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "My Space", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json).productConfig?.notificationsConfig?.dailyDigestEnabled).toBeUndefined();
   });
 
   it("respects an explicit dailyDigestEnabled: false rather than overriding it", async () => {
@@ -297,7 +304,7 @@ describe("createSpaceRecord — provisioning", () => {
     const fakeDb = makeDb();
     const result = await createSpaceRecord(
       { PLATFORM_DB: fakeDb },
-      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
     );
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
     expect(JSON.parse(row!.config_json)).toMatchObject({

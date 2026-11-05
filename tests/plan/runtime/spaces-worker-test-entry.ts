@@ -91,6 +91,14 @@ export default {
       ).bind(body.endUserId).run();
       return Response.json({ suspended: result.meta.changes === 1 });
     }
+    if (url.pathname === "/__test/browser/space-hierarchy" && request.method === "POST") {
+      const body = await request.json<{ spaceId?: string }>().catch(() => ({}));
+      if (!body.spaceId || !/^[0-9a-f-]{36}$/i.test(body.spaceId)) return Response.json({ error_code: "invalid_scope" }, { status: 400 });
+      const row = await (env.PLATFORM_DB as D1Database).prepare(
+        "SELECT product_id, parent_space_id, depth FROM spaces WHERE id=? AND tenant_id='tenant-project-bot-browser-test'"
+      ).bind(body.spaceId).first();
+      return row ? Response.json(row) : Response.json({ error_code: "not_found" }, { status: 404 });
+    }
     if (url.pathname === "/__test/browser/suspend-space-member" && request.method === "POST") {
       const body = await request.json<{ spaceId?: string; endUserId?: string }>().catch(() => ({}));
       if (!body.spaceId || !body.endUserId || !/^[0-9a-f-]{36}$/i.test(body.spaceId) || !/^[0-9a-f-]{36}$/i.test(body.endUserId))

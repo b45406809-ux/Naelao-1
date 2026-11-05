@@ -45,9 +45,9 @@ export function registerDeskDropRoutes<T extends Env>(app: Hono<{ Bindings: T }>
     const token = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, "0")).join("");
     let hash = await digest(token); let expiresAt = Date.now() + 90_000;
     if (body.challengeId) {
-      const space = await c.env.PLATFORM_DB.prepare("SELECT parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?").bind(body.spaceId, tenantId).first<{ parent_space_id: string | null }>();
+      const space = await c.env.PLATFORM_DB.prepare("SELECT product_id, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?").bind(body.spaceId, tenantId).first<{ product_id: string | null; parent_space_id: string | null }>();
       const challenge = await c.env.PLATFORM_DB.prepare("DELETE FROM desk_drop_challenges WHERE id = ? AND product_id = ? AND expires_at > ? RETURNING proof_hash, expires_at")
-        .bind(body.challengeId, space?.parent_space_id ?? body.spaceId, Date.now()).first<{ proof_hash: string; expires_at: number }>();
+        .bind(body.challengeId, space?.product_id ?? space?.parent_space_id ?? body.spaceId, Date.now()).first<{ proof_hash: string; expires_at: number }>();
       if (!challenge) return c.json({ error_code: "expired_or_used_challenge" }, 410);
       hash = challenge.proof_hash; expiresAt = challenge.expires_at;
     }

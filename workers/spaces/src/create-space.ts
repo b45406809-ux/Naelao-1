@@ -234,7 +234,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
 
   if (params.initialMembership) {
-    if (params.parentSpaceId !== params.initialMembership.productSpaceId || params.userId !== params.initialMembership.endUserId) {
+    if ((params.parentSpaceId && params.parentSpaceId !== params.initialMembership.productSpaceId) || params.userId !== params.initialMembership.endUserId) {
       throw new SpaceCreationError(400, "invalid_product_membership", "The Space owner and Product must match the authenticated creation scope");
     }
     const product = await env.PLATFORM_DB.prepare(
@@ -278,16 +278,12 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  // Default the daily digest ON for every new product — Naelao's proactive tick infrastructure
-  // (hourly cron + near-real-time channel triggers, workers/agents/src/index.ts enqueueAgentTicks)
-  // already runs more continuously than a Polsia-style nightly batch, but the digest email that
-  // reports it was opt-in and off by default, so a builder who never found the toggle got zero
-  // visibility into it. Only defaults when the caller hasn't already set it explicitly — a wizard
-  // or API caller that deliberately opted out keeps that choice.
+  // Preserve the historical Launchpad Product default. End-user Spaces only schedule a digest
+  // when explicitly configured; turning them into root Spaces must not silently enable new work.
   const productConfig = (params.configOverrides?.["productConfig"] ?? {}) as Record<string, unknown>;
   const notificationsConfig = (productConfig["notificationsConfig"] ?? {}) as Record<string, unknown>;
   const mergedConfigOverrides =
-    notificationsConfig["dailyDigestEnabled"] === undefined
+    params.productSlug && notificationsConfig["dailyDigestEnabled"] === undefined
       ? {
           ...(params.configOverrides ?? {}),
           productConfig: { ...productConfig, notificationsConfig: { ...notificationsConfig, dailyDigestEnabled: true } },
