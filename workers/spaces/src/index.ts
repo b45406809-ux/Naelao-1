@@ -431,7 +431,7 @@ async function getProductSpaceOwner(c: Context<{ Bindings: Env }>, rootSpaceId: 
   const identity = getCallerIdentity(c);
   if (identity.role !== "product_end_user" || !identity.userId || !identity.tenantId) return null;
   const root = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id, spacetype_id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active' AND parent_space_id IS NULL"
+    "SELECT id, tenant_id, spacetype_id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
   ).bind(rootSpaceId, identity.tenantId).first<{ id: string; tenant_id: string; spacetype_id: string }>();
   if (!root) return null;
   const user = await c.env.PLATFORM_DB.prepare(
@@ -445,14 +445,13 @@ app.get("/spaces/:spaceId/my-spaces", async (c) => {
   if (!owner) return c.json({ error_code: "forbidden", message: "A verified Space account is required" }, 403);
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT s.id, s.name, s.status AS space_status, s.created_at,
-            COALESCE(m.role, 'owner') AS role, COALESCE(m.created_at, s.created_at) AS joined_at,
+            m.role AS role, m.created_at AS joined_at,
             s.config_json
        FROM spaces s
-       LEFT JOIN space_members m ON m.space_id = s.id AND m.end_user_id = ? AND m.suspended_at IS NULL
-      WHERE s.tenant_id = ? AND s.parent_space_id = ? AND s.status != 'deleted'
-        AND (m.end_user_id = ? OR s.created_by = ?)
+       JOIN space_members m ON m.space_id = s.id AND m.end_user_id = ? AND m.suspended_at IS NULL
+      WHERE s.tenant_id = ? AND s.product_id = ? AND s.status != 'deleted'
       ORDER BY s.created_at DESC LIMIT 100`
-  ).bind(owner.userId, owner.tenantId, owner.root.id, owner.userId, owner.userId)
+  ).bind(owner.userId, owner.tenantId, owner.root.id)
     .all<{ id: string; name: string; space_status: string; created_at: string; role: string; joined_at: string; config_json: string | null }>();
   const data = results.map(row => {
     let config: Record<string, unknown> = {};
@@ -2737,6 +2736,22 @@ app.get("/spaces/:spaceId/projects", async (c) => {
     ? `&viewer_id=${encodeURIComponent(identity.userId)}`
     : "&space_manager=1";
   const res = await forwardToSpaceDO(stub, `/projects?space_id=${encodeURIComponent(spaceId)}${viewerParam}`, "GET");
+  if (c.req.query("include_subspaces") === "1" && identity.userId && res.ok) {
+    const roots = await res.json<{ data?: Array<{ id?: string }> }>();
+    const hierarchy = await forwardToSpaceDO(stub, "/spaces", "GET");
+    if (!hierarchy.ok) return c.json({ error_code: "subspace_listing_unavailable" }, 503);
+    const entries = await hierarchy.json<{ data?: Array<{ id?: string; parent_id?: string | null; status?: string }> }>();
+    const projects = new Map((roots.data ?? []).filter(item => item.id).map(item => [item.id!, item]));
+    for (const entry of entries.data ?? []) {
+      if (!entry.id || entry.parent_id !== spaceId || entry.status !== "active") continue;
+      if (!(await authorizeDepartmentMember(stub, identity.userId, entry.id, "read")).permitted) continue;
+      const scoped = await forwardToSpaceDO(stub, `/projects?space_id=${encodeURIComponent(spaceId)}&subspace_id=${encodeURIComponent(entry.id)}${viewerParam}`, "GET");
+      if (!scoped.ok) return c.json({ error_code: "subspace_projects_unavailable" }, 503);
+      const payload = await scoped.json<{ data?: Array<{ id?: string }> }>();
+      for (const project of payload.data ?? []) if (project.id) projects.set(project.id, project);
+    }
+    return c.json({ data: [...projects.values()], count: projects.size });
+  }
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -2797,6 +2812,10 @@ app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireInte
 app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireSpaceMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireSpaceMembership({ POST: "admin" }));
+for (const route of ["/spaces/:spaceId/projects/:projectId/sub-spaces", "/spaces/:spaceId/projects/:projectId/sub-spaces/:subId"]) {
+  app.use(route, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+  app.use(route, requireSpaceMembership({ GET: "member", POST: "admin", DELETE: "admin" }));
+}
 for (const route of ["/spaces/:spaceId/sub-spaces/:subId/projects", "/spaces/:spaceId/sub-spaces/:subId/projects/*"]) {
   app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
   app.use(route, requireSpaceMembership({ GET: "member", POST: "member" }));
@@ -3472,6 +3491,8 @@ app.get("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const denied = await requireReadableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   if (!(await authorizeDepartmentMember(stub, userId, spaceId, "read")).permitted)
     return c.json({ error_code: "forbidden" }, 403);
@@ -3482,6 +3503,8 @@ app.post("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   if (!(await authorizeDepartmentMember(stub, userId, spaceId, "manage")).permitted)
     return c.json({ error_code: "forbidden" }, 403);
@@ -3497,6 +3520,8 @@ app.delete("/spaces/:spaceId/projects/:projectId/sub-spaces/:subId", async (c) =
   const { spaceId, projectId, subId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   if (!(await authorizeDepartmentMember(stub, userId, spaceId, "manage")).permitted ||
       !(await authorizeDepartmentMember(stub, userId, subId, "manage")).permitted)
@@ -4942,13 +4967,29 @@ app.post("/spaces/:spaceId/tasks/:taskId/lease", async c => {
   return forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}/lease`, "POST", await readBoundedRequestText(c.req.raw, 1024 * 1024));
 });
 
-// GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
+// Product sessions prove identity; membership in the end-user Space grants access to its
+// subspaces. Neither product membership nor membership in a sibling Space is sufficient.
+for (const route of ["/spaces/:spaceId/sub-spaces", "/spaces/:spaceId/sub-spaces/:subId"]) {
+  app.use(route, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+  app.use(route, requireSpaceMembership({ GET: "member", POST: "admin", PATCH: "admin" }));
+}
+
+// GET /spaces/:spaceId/sub-spaces — list the end-user Space's local hierarchy.
 app.get("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, userId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, "/spaces", "GET");
+  if (role === "product_end_user" && res.ok) {
+    if (!userId) return c.json({ error_code: "unauthorized" }, 401);
+    const result = await res.json<{ data?: Array<{ id?: unknown }> }>();
+    const visible: Array<{ id?: unknown }> = [];
+    for (const item of result.data ?? []) {
+      if (typeof item.id === "string" && (await authorizeDepartmentMember(stub, userId, item.id, "read")).permitted) visible.push(item);
+    }
+    return c.json({ data: visible });
+  }
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -4957,7 +4998,7 @@ app.get("/spaces/:spaceId/sub-spaces", async (c) => {
 // callers always inherit the parent space_type (force_parent_type) and can never pick a type.
 app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId, userId } = getCallerIdentity(c);
+  const { tenantId, userId, role } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing authenticated user or tenant" }, 401);
 
   // Resolve the Space (D1) to apply its optional template policy.
@@ -4965,8 +5006,16 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
     "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
   ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
   if (!parentSpace) throw notFound("Space");
-  if (parentSpace.depth >= 1 || parentSpace.parent_space_id) {
-    return c.json({ error_code: "max_depth_exceeded", message: "A department cannot have child spaces" }, 400);
+  if (parentSpace.parent_space_id) {
+    // A legacy Product backing row is not an end-user Space. Allow the actual end-user
+    // Space below it to own a local subspace hierarchy, but reject nested D1 Spaces.
+    const product = await c.env.PLATFORM_DB.prepare(
+      "SELECT 1 FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+    ).bind(parentSpace.parent_space_id, tenantId).first();
+    if (parentSpace.depth !== 1 || !product)
+      return c.json({ error_code: "max_depth_exceeded", message: "A subspace cannot have child spaces" }, 400);
+  } else if (parentSpace.depth !== 0) {
+    return c.json({ error_code: "max_depth_exceeded", message: "Invalid Space hierarchy" }, 400);
   }
 
   const pc = await loadEffectiveProductConfig(c.env, parentSpace.spacetype_id, parentSpace.config_json);
@@ -4983,6 +5032,8 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
 
   const parentId = body.parent_id ?? spaceId;
+  if (role === "product_end_user" && parentId !== spaceId)
+    return c.json({ error_code: "max_depth_exceeded", message: "A subspace cannot have child spaces" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(parentId)}`, "GET");
   const authorization = await auth.json<{ permitted?: boolean }>().catch(() => ({} as { permitted?: boolean }));
@@ -4994,7 +5045,7 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
     parent_id: parentId,
     name: body.name,
     scenario_type: "organizational" as const,
-    ...(body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
+    ...(role !== "product_end_user" && body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
     ...(body.settings ? { settings: body.settings } : {}),
   };
 
@@ -5010,7 +5061,8 @@ app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(subId)}`, "GET");
-  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
+  const authorization = await auth.json<{ permitted?: boolean }>().catch(() => ({} as { permitted?: boolean }));
+  if (!auth.ok || authorization.permitted !== true) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
   const res = await forwardToSpaceDO(stub, `/spaces/${subId}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -5217,6 +5269,14 @@ app.post("/internal/product-sessions/verify", async (c) => {
     productRootTenantId = root.tenant_id;
   }
 
+  // Product sessions are valid only for registered active Products, never for an arbitrary
+  // end-user Space that happens to be a root in the legacy hierarchy.
+  const product = await c.env.PLATFORM_DB.prepare(
+    `SELECT 1 FROM products p JOIN product_end_users u ON u.product_space_id = p.id
+      WHERE p.id = ? AND p.tenant_id = ? AND p.status = 'active' AND u.end_user_id = ?
+        AND u.suspended_at IS NULL AND u.deleted_at IS NULL`
+  ).bind(productRootId, productRootTenantId, body.endUserId).first();
+  if (!product) return c.json({ valid: false });
   const stub = await productUserDoStub(c.env, productRootId, body.endUserId, productRootTenantId);
   const verifyRes = await stub.fetch(new Request("http://do/sessions/verify", {
     method: "POST",
@@ -5374,7 +5434,7 @@ app.get("/products/by-slug/:slug", async (c) => {
     catch (error) { console.error("Launchpad bootstrap failed", error); return c.json({ error_code: "launchpad_unavailable" }, 503); }
   }
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, name, spacetype_id, config_json FROM spaces WHERE product_slug = ? AND status = 'active'"
+    "SELECT id, name, spacetype_id, config_json FROM products WHERE product_slug = ? AND status = 'active'"
   ).bind(slug).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
   if (!space) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 

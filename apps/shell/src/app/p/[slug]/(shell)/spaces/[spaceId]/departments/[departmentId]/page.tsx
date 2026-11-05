@@ -34,19 +34,19 @@ export default function DepartmentProjectsPage() {
     ]).then(([departments, items]) => {
       if (cancelled) return;
       const selected = departments.find((item) => item.id === params.departmentId && item.parent_id === params.spaceId);
-      if (!selected) throw new Error("Department not found in this space");
+      if (!selected) throw new Error("Subspace not found in this Space");
       setDepartment(selected);
       setProjects(items);
     }).catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : "Couldn't load this department");
+      if (!cancelled) setError(reason instanceof Error ? reason.message : "Couldn't load this subspace");
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
   }, [activeSpaceId, params.spaceId, params.departmentId, creds, setActiveSpace]);
 
-  if (loading) return <div className="page-view">Loading department…</div>;
-  if (error || !department) return <main className="page-view"><h1>Department unavailable</h1><output>{error ?? "This department is unavailable."}</output></main>;
+  if (loading) return <div className="page-view">Loading subspace…</div>;
+  if (error || !department) return <main className="page-view"><h1>Subspace unavailable</h1><output>{error ?? "This subspace is unavailable."}</output></main>;
 
   return (
     <main className="page-view">
@@ -57,10 +57,10 @@ export default function DepartmentProjectsPage() {
       </nav>
       <header className="page-header">
         <h1 className="page-title">{department.name}</h1>
-        <p className="page-subtitle">Projects associated with this department</p>
+        <p className="page-subtitle">Projects associated with this subspace</p>
       </header>
       {projects.length === 0 ? (
-        <p style={{ color: "var(--text3)" }}>No projects are linked to this department yet.</p>
+        <p style={{ color: "var(--text3)" }}>No projects are linked to this subspace yet.</p>
       ) : (
         <div className="grid-2">
           {projects.map((project) => (

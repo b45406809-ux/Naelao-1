@@ -128,9 +128,7 @@ export function validateConfigSchema(config: Record<string, unknown>, schema: Re
   return errors;
 }
 
-/** Subdomains that collide with Naelao infrastructure or enable phishing. Module-scoped so the
- *  explicit-slug validator and the name-derived fallback below can never disagree about what is
- *  allowed — a derived slug reaching the insert unchecked would bypass this entirely. */
+/** Subdomains that collide with Naelao infrastructure or enable phishing. */
 const RESERVED_SLUGS = new Set([
   "www", "api", "api2", "app", "mail", "email", "smtp", "imap", "pop",
   "admin", "superadmin", "root", "naelao", "naelao-admin", "dashboard",
@@ -172,44 +170,6 @@ export interface CreateSpaceResult {
   product_slug: string | null;
 }
 
-
-/**
- * Turn a product name into a usable, free platform slug.
- *
- * Collisions are resolved by suffixing rather than by rejecting: a builder naming their product
- * "Launchpad" when someone else already has that slug should still end up with a working product,
- * not a 409 on a field they never filled in. Returns undefined only if the name has no usable
- * address base or all bounded candidates collide; the caller must then require an explicit slug.
- */
-export async function deriveAvailableSlug(db: D1Database, name: string): Promise<string | undefined> {
-  const base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  if (base.length < 1) return undefined;
-
-  for (let attempt = 0; attempt < 6; attempt++) {
-    // First try the clean slug, then progressively-random suffixes. Random rather than an
-    // incrementing counter so two products created at once can't race onto the same candidate.
-    const candidate = attempt === 0 && base.length >= 2
-      ? base
-      : `${base}-${Math.random().toString(36).slice(2, 6)}`;
-    if (RESERVED_SLUGS.has(candidate)) continue;
-    try {
-      const taken = await db
-        .prepare("SELECT 1 AS x FROM spaces WHERE product_slug = ?")
-        .bind(candidate)
-        .first<{ x: number }>();
-      if (!taken) return candidate;
-    } catch {
-      // Never create a product with an unverified/unreachable address when the uniqueness check
-      // is unavailable. Returning undefined here used to create active but unopenable products.
-      throw new SpaceCreationError(503, "slug_lookup_failed", "Product address availability could not be checked. Retry shortly.");
-    }
-  }
-  return undefined;
-}
 
 /** The one space-creation code path: quota check, config-schema validation, insert (as
  *  'provisioning' when a queue is bound, else immediately 'active' — matches local-dev behavior
@@ -273,6 +233,16 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     derivedDepth = parent.depth + 1;
   }
 
+  if (params.initialMembership) {
+    if (params.parentSpaceId !== params.initialMembership.productSpaceId || params.userId !== params.initialMembership.endUserId) {
+      throw new SpaceCreationError(400, "invalid_product_membership", "The Space owner and Product must match the authenticated creation scope");
+    }
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT 1 FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+    ).bind(params.initialMembership.productSpaceId, params.tenantId).first();
+    if (!product) throw new SpaceCreationError(404, "product_not_found", "Product not found");
+  }
+
   if (params.configOverrides) {
     try {
       // NOTE: the real migration (infra/migrations/0003_spaces.sql) names this column
@@ -294,22 +264,15 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  // Keep a stable address for root Spaces that opt into a hosted shell. Child Spaces inherit
-  // their parent's address and do not receive their own subdomain.
-  if (!params.parentSpaceId && !params.productSlug) {
-    const derived = await deriveAvailableSlug(env.PLATFORM_DB, params.name);
-    if (!derived) {
-      throw new SpaceCreationError(400, "product_slug_required", "Choose a product address with at least two letters or numbers.");
-    }
-    params = { ...params, productSlug: derived };
-  }
-
   if (params.productSlug) {
     if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])$/.test(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", "product_slug must match ^[a-z0-9-]{2,40}$");
     }
     if (RESERVED_SLUGS.has(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", `product_slug '${params.productSlug}' is reserved`);
+    }
+    if (params.productSlug !== "launchpad" || params.parentSpaceId) {
+      throw new SpaceCreationError(400, "product_creation_retired", "Only the platform Launchpad Product can be provisioned");
     }
   }
 
@@ -354,10 +317,10 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   };
   const insertSpace = async (): Promise<void> => {
     const spaceInsert = env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by, product_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
-      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null);
+      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null, params.initialMembership?.productSpaceId ?? null);
     const writes = [spaceInsert];
     if (params.initialMembership) {
       writes.push(env.PLATFORM_DB.prepare(

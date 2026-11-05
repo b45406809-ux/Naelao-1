@@ -139,7 +139,7 @@ async function loadProductAuthConfig(
   productId: string
 ): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"] } | null> {
   const product = await env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id, spacetype_id, config_json, product_slug FROM spaces WHERE id = ? AND status != 'deleted'"
+    "SELECT id, tenant_id, spacetype_id, config_json, product_slug FROM products WHERE id = ? AND status = 'active'"
   ).bind(productId).first<ProductRow>();
   if (!product) return null;
 

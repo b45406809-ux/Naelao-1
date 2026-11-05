@@ -6,6 +6,7 @@ import { normalizeE164, registerProductEndUserRoutes, type ProductEndUserRoutesE
 
 const AUTH_SCHEMA = [
   `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, spacetype_id TEXT NOT NULL DEFAULT 'launchpad', status TEXT NOT NULL DEFAULT 'active', config_json TEXT, product_slug TEXT);`,
+  `CREATE TABLE products (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, spacetype_id TEXT NOT NULL, status TEXT NOT NULL, config_json TEXT, product_slug TEXT);`,
   `CREATE TABLE product_end_users (product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, display_name TEXT, password_hash TEXT, email_verified_at TEXT, phone_e164 TEXT, phone_verified_at TEXT, suspended_at TEXT, deleted_at TEXT, first_seen_at TEXT, last_seen_at TEXT, PRIMARY KEY (product_space_id, end_user_id));`,
   `CREATE TABLE password_reset_tokens (id TEXT PRIMARY KEY, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);`,
   `CREATE TABLE email_verification_tokens (id TEXT PRIMARY KEY, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);`,
@@ -20,6 +21,7 @@ async function sha256Hex(value: string): Promise<string> {
 function authHarness(config = '{"productConfig":{"authProvider":{"provider":"naelao-native"},"pricingConfig":{"model":"subscription"}}}') {
   const fakeDb = createFakeD1(AUTH_SCHEMA);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, config_json) VALUES ('product', 'tenant', '${config}')`);
+  fakeDb.db.exec(`INSERT INTO products (id, tenant_id, spacetype_id, status, config_json, product_slug) VALUES ('product', 'tenant', 'launchpad', 'active', '${config}', 'launchpad')`);
   fakeDb.db.exec("INSERT INTO product_end_users (product_space_id, end_user_id, email) VALUES ('product', 'user', 'user@example.com')");
   const doFetch = vi.fn(async () => Response.json({ ok: true }));
   const env = {
@@ -54,6 +56,17 @@ describe("WhatsApp passwordless identity", () => {
 });
 
 describe("product end-user recovery token replay boundary", () => {
+  it("does not permit signup against an ordinary end-user Space", async () => {
+    const { fakeDb, env, app, doFetch } = authHarness();
+    fakeDb.db.exec("INSERT INTO spaces (id, tenant_id) VALUES ('workspace', 'tenant')");
+    const response = await app.request("/spaces/workspace/end-users/signup", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "new@example.com", password: "a secure test password" }),
+    }, env);
+    expect(response.status).toBe(404);
+    expect(doFetch).not.toHaveBeenCalled();
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM product_end_users WHERE product_space_id = 'workspace'").get()).toEqual({ count: 0 });
+  });
   it("allows only one concurrent password reset for a single-use token", async () => {
     const { fakeDb, env, app } = authHarness();
     const token = "a".repeat(72);

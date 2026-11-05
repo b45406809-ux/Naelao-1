@@ -40,7 +40,7 @@ export default function ProjectBotsPage() {
     setCanDecideReviews(false);
     try {
       const [nextProjects, nextAgents, nextThreads, nextJobs, nextReviews, businesses] = await Promise.all([
-        listProjects(activeSpaceId, session),
+        listProjects(activeSpaceId, session, { includeSubspaces: true }),
         listAgentDefinitions(activeSpaceId, session),
         listThreads(activeSpaceId, session),
         listScheduledJobs(activeSpaceId, session, { projectId: null, visibleProjects: true }),

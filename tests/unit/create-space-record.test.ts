@@ -25,11 +25,14 @@ const SPACES_TABLE_SQL = `
   CREATE UNIQUE INDEX idx_spaces_product_slug ON spaces(product_slug) WHERE product_slug IS NOT NULL;
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
+  CREATE TABLE space_members (id TEXT PRIMARY KEY, space_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+    end_user_id TEXT NOT NULL, role TEXT NOT NULL, UNIQUE(space_id, end_user_id));
 `;
 
 function makeDb() {
   const outboxMigration = readFileSync(new URL("../../infra/migrations/0126_space_provisioning_outbox.sql", import.meta.url), "utf8");
-  return createFakeD1([SPACES_TABLE_SQL, outboxMigration]);
+  const productMigration = readFileSync(new URL("../../infra/migrations/0156_product_registry.sql", import.meta.url), "utf8");
+  return createFakeD1([SPACES_TABLE_SQL, outboxMigration, productMigration]);
 }
 
 describe("createSpaceRecord — quota enforcement queries the REAL orgs table", () => {
@@ -73,6 +76,22 @@ describe("createSpaceRecord — quota enforcement queries the REAL orgs table", 
 });
 
 describe("createSpaceRecord — bounded inputs and tenant quota serialization", () => {
+  it("binds an end-user Space and its owner membership to the registered Product", async () => {
+    const fakeDb = makeDb();
+    const product = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "tenant", name: "Naelao", spacetypeId: "launchpad", productSlug: "launchpad" });
+    const workspace = await createSpaceRecord({ PLATFORM_DB: fakeDb }, {
+      tenantId: "tenant", userId: "owner", name: "My Space", spacetypeId: "launchpad", parentSpaceId: product.id,
+      initialMembership: { productSpaceId: product.id, endUserId: "owner" },
+    });
+    const row = fakeDb.db.prepare("SELECT product_id FROM spaces WHERE id = ?").get(workspace.id);
+    expect(row).toEqual(expect.objectContaining({ product_id: product.id }));
+    expect(fakeDb.db.prepare("SELECT role FROM space_members WHERE space_id = ? AND end_user_id = ?").get(workspace.id, "owner"))
+      .toEqual(expect.objectContaining({ role: "owner" }));
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, {
+      tenantId: "tenant", userId: "attacker", name: "Invalid", spacetypeId: "launchpad", parentSpaceId: product.id,
+      initialMembership: { productSpaceId: product.id, endUserId: "owner" },
+    })).rejects.toMatchObject({ error_code: "invalid_product_membership" });
+  });
   it("rejects oversized names and config overrides before inserting", async () => {
     const fakeDb = makeDb();
     await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "x".repeat(101), spacetypeId: "launchpad" }))
@@ -157,9 +176,9 @@ describe("createSpaceRecord — product_slug", () => {
 
   it("enforces platform-wide slug uniqueness with a 409", async () => {
     const fakeDb = makeDb();
-    await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "my-shop" });
+    await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
     await expect(
-      createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "B", spacetypeId: "launchpad", productSlug: "my-shop" })
+      createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "B", spacetypeId: "launchpad", productSlug: "launchpad" })
     ).rejects.toMatchObject({ error_code: "conflict", status: 409 });
   });
 
@@ -173,58 +192,34 @@ describe("createSpaceRecord — product_slug", () => {
     ).rejects.toMatchObject({ error_code: "bad_request", status: 400, message: expect.stringContaining("reserved") });
   });
 
-  it("accepts a legitimate non-reserved slug", async () => {
+  it("accepts the platform Launchpad Product slug", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "my-awesome-shop" });
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
     expect(result.id).toBeTruthy();
   });
 
-  // The Product Shell resolves every end-user URL as /p/{product_slug}; omitted addresses must be
-  // derived from a usable product name before a row can become active.
-  it("derives a slug from the name when none is given, so the product is reachable", async () => {
+  it("does not turn a generic Space into a Product", async () => {
     const fakeDb = makeDb();
     const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme Creator Store", spacetypeId: "launchpad" });
-    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string }>();
-    expect(row?.product_slug).toBe("acme-creator-store");
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).toBeNull();
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM products").get()).toEqual({ count: 0 });
   });
 
-  it("works around a taken name rather than failing on a field the builder never filled in", async () => {
+  it("allows Spaces with the same name without inventing Products", async () => {
     const fakeDb = makeDb();
     await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Launchpad", spacetypeId: "launchpad" });
     const second = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "Launchpad", spacetypeId: "launchpad" });
-    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(second.id).first<{ product_slug: string }>();
-    expect(row?.product_slug).toMatch(/^launchpad-[a-z0-9]{4}$/);
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(second.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).toBeNull();
   });
 
-  it("never derives a reserved slug", async () => {
-    // "Admin" is a perfectly reasonable product name and a slug that must never be handed out.
+  it("rejects attempts to create another Product", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Admin", spacetypeId: "launchpad" });
-    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
-    expect(row?.product_slug).not.toBe("admin");
-  });
-
-  it("rejects names from which no reachable address can be derived", async () => {
-    const fakeDb = makeDb();
-    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "!!!", spacetypeId: "launchpad" }))
-      .rejects.toMatchObject({ error_code: "product_slug_required", status: 400 });
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Other", spacetypeId: "launchpad", productSlug: "other-product" }))
+      .rejects.toMatchObject({ error_code: "product_creation_retired", status: 400 });
     const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
     expect(row?.count).toBe(0);
-  });
-
-  it("does not create a slugless product when address uniqueness cannot be checked", async () => {
-    const fakeDb = makeDb();
-    const prepare = fakeDb.prepare.bind(fakeDb);
-    fakeDb.prepare = ((sql: string) => {
-      if (sql === "SELECT 1 AS x FROM spaces WHERE product_slug = ?") {
-        return { bind: () => ({ first: async () => { throw new Error("database unavailable"); } }) } as never;
-      }
-      return prepare(sql);
-    }) as typeof fakeDb.prepare;
-
-    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme", spacetypeId: "launchpad" }))
-      .rejects.toMatchObject({ error_code: "slug_lookup_failed", status: 503 });
-    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM spaces").get()).toEqual({ count: 0 });
   });
 });
 

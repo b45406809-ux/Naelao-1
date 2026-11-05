@@ -623,6 +623,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/my-spaces$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/memberships$/,
+  /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
   /^\/spaces\/([^/]+)\/template-listings\/([^/]+)\/fork$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
@@ -634,6 +635,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
 // thread lock. Additionally gated by the Spaces worker's project membership check; the pattern
 // deliberately excludes admin-only routes and does not match project spend/config operations.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/sub-spaces(?:\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
   // F-39: read-only workspace file viewer — a project member browses/views the artifacts their
   // agent wrote to R2. Identity here, real per-project ACL (requireSpaceMembership) on the
@@ -779,11 +781,17 @@ async function resolveProductEndUserClaims(
   // Sessions belong to the root Space. Child Spaces share the product session but are authorized
   // independently by their own membership records in the downstream handler.
   const requested = await env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null }>();
+    "SELECT tenant_id, parent_space_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null; product_id: string | null }>();
   if (!requested) return null;
   let sessionProductId = productId;
-  if (requested.parent_space_id) {
+  if (requested.product_id) {
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+    ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
+    if (!product) return null;
+    sessionProductId = product.id;
+  } else if (requested.parent_space_id) {
     const root = await env.PLATFORM_DB.prepare(
       "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND parent_space_id IS NULL AND status = 'active'"
     ).bind(requested.parent_space_id, requested.tenant_id).first<{ id: string }>();

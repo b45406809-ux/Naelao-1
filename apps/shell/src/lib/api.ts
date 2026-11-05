@@ -1014,8 +1014,8 @@ export interface Project {
   visibility?: "public" | "private";
 }
 
-export async function listProjects(spaceId: string, session: SessionCredentials): Promise<Project[]> {
-  const res = await apiFetch<{ data: Project[]; count: number }>(`/v1/spaces/${spaceId}/projects`, { session });
+export async function listProjects(spaceId: string, session: SessionCredentials, options?: { includeSubspaces?: boolean }): Promise<Project[]> {
+  const res = await apiFetch<{ data: Project[]; count: number }>(`/v1/spaces/${spaceId}/projects${options?.includeSubspaces ? "?include_subspaces=1" : ""}`, { session });
   return res.data;
 }
 

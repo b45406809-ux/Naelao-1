@@ -193,7 +193,7 @@ export default function ProjectDetailPage() {
       next.set("departmentId", departmentId);
       router.push(`?${next.toString()}`);
     } catch (error) {
-      show(error instanceof Error ? error.message : "Couldn't add department");
+      show(error instanceof Error ? error.message : "Couldn't link subspace");
     } finally {
       setDepartmentBusy(false);
     }
@@ -210,7 +210,7 @@ export default function ProjectDetailPage() {
       const next = new URLSearchParams(searchParams.toString()); next.set("departmentId", department.id);
       router.push(`?${next.toString()}`);
     } catch (error) {
-      show(error instanceof Error ? error.message : "Couldn't create department");
+      show(error instanceof Error ? error.message : "Couldn't create subspace");
       await refresh();
     } finally {
       setDepartmentBusy(false);
@@ -485,9 +485,9 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      <section aria-label="Project departments" style={{ margin: "0 0 20px", padding: 14, border: "1px solid var(--border)", borderRadius: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Departments</div>
-        {departmentLoadError ? <output style={{ color: "var(--text3)", fontSize: 12 }}>Department links are unavailable. Refresh to try again.</output> : (
+      <section aria-label="Project subspaces" style={{ margin: "0 0 20px", padding: 14, border: "1px solid var(--border)", borderRadius: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Subspaces</div>
+        {departmentLoadError ? <output style={{ color: "var(--text3)", fontSize: 12 }}>Subspace links are unavailable. Refresh to try again.</output> : (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <button type="button" className={`btn btn-sm ${selectedDepartmentId ? "btn-ghost" : "btn-secondary"}`} onClick={() => {
@@ -500,25 +500,25 @@ export default function ProjectDetailPage() {
                   {department.name}{department.is_primary ? " · Primary" : ""}
                 </button>;
               })}
-              {departments.length === 0 && <span style={{ fontSize: 12, color: "var(--text3)" }}>No department is linked to this project.</span>}
+              {departments.length === 0 && <span style={{ fontSize: 12, color: "var(--text3)" }}>No subspace is linked to this project.</span>}
             </div>
             {selectedDepartmentId && <div style={{ marginTop: 8, fontSize: 12, color: "var(--text3)" }}>
-              Department selected: {departments.find((department) => department.id === selectedDepartmentId)?.name}. Project identity and its data remain shared across its linked departments.
-              {departments.some((department) => department.id === selectedDepartmentId) && <Link href={`/p/${product.slug}/spaces/${activeSpaceId}/departments/${encodeURIComponent(selectedDepartmentId)}`} style={{ marginLeft: 8, color: "var(--accent)" }}>Open department projects →</Link>}
+              Subspace selected: {departments.find((department) => department.id === selectedDepartmentId)?.name}. Project identity and its data remain shared across its linked subspaces.
+              {departments.some((department) => department.id === selectedDepartmentId) && <Link href={`/p/${product.slug}/spaces/${activeSpaceId}/departments/${encodeURIComponent(selectedDepartmentId)}`} style={{ marginLeft: 8, color: "var(--accent)" }}>Open subspace projects →</Link>}
             </div>}
             {departmentOptions.some((option) => !departments.some((department) => department.id === option.id)) && (
               <form style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); void attachDepartment(departmentToAdd); }}>
-                <label htmlFor="project-department-add" style={{ fontSize: 12, color: "var(--text2)" }}>Link another department</label>
+                <label htmlFor="project-department-add" style={{ fontSize: 12, color: "var(--text2)" }}>Link another subspace</label>
                 <select id="project-department-add" value={departmentToAdd} onChange={(event) => setDepartmentToAdd(event.target.value)} style={{ maxWidth: 240 }}>
-                  <option value="">Choose a department</option>
+                  <option value="">Choose a subspace</option>
                   {departmentOptions.filter((option) => !departments.some((department) => department.id === option.id)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
                 </select>
-                <button type="submit" className="btn btn-secondary btn-sm" disabled={!departmentToAdd || departmentBusy}>{departmentBusy ? "Linking…" : "Link department"}</button>
+                <button type="submit" className="btn btn-secondary btn-sm" disabled={!departmentToAdd || departmentBusy}>{departmentBusy ? "Linking…" : "Link subspace"}</button>
               </form>
             )}
             <form style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); void createAndAttachDepartment(); }}>
-              <label htmlFor="project-department-new" style={{ fontSize: 12, color: "var(--text2)" }}>Create a department</label>
-              <input id="project-department-new" value={newDepartmentName} onChange={(event) => setNewDepartmentName(event.target.value)} maxLength={120} placeholder="Department name" style={{ maxWidth: 240 }} />
+              <label htmlFor="project-department-new" style={{ fontSize: 12, color: "var(--text2)" }}>Create a subspace</label>
+              <input id="project-department-new" value={newDepartmentName} onChange={(event) => setNewDepartmentName(event.target.value)} maxLength={120} placeholder="Subspace name" style={{ maxWidth: 240 }} />
               <button type="submit" className="btn btn-secondary btn-sm" disabled={!newDepartmentName.trim() || departmentBusy}>{departmentBusy ? "Creating…" : "Create and link"}</button>
             </form>
           </>
