@@ -11,7 +11,7 @@ function envFor(rows: Record<string, unknown> = {}) {
   return {
     ENVIRONMENT: "development",
     NAELAO_DASHBOARD_TENANT_ID: "team",
-    PLATFORM_DB: { prepare(sql: string) { return { bind() { return { first: async () => sql.includes("product_slug") ? rows.slug ?? null : sql.includes("FROM orgs") ? rows.org ?? null : rows.root ?? null }; } }; } },
+    PLATFORM_DB: { prepare(sql: string) { return { bind() { return { first: async () => sql.includes("FROM products") ? rows.product ?? rows.slug ?? null : sql.includes("product_slug") ? rows.slug ?? null : sql.includes("FROM orgs") ? rows.org ?? null : rows.root ?? null }; } }; } },
   } as unknown as Parameters<typeof ensureLaunchpad>[0];
 }
 
@@ -27,6 +27,10 @@ describe("Launchpad bootstrap", () => {
   });
   it("does not take over another tenant's product", async () => {
     await expect(ensureLaunchpad(envFor({ slug: { id: "p", tenant_id: "other", status: "active", parent_space_id: null, spacetype_id: "launchpad" } }))).rejects.toThrow("launchpad_identity_conflict");
+  });
+  it("does not create a duplicate when a registered Product has no backing Space", async () => {
+    await expect(ensureLaunchpad(envFor({ product: { id: "p", tenant_id: "team", status: "active", spacetype_id: "launchpad" } }))).rejects.toThrow("launchpad_backing_space_missing");
+    expect(createSpaceRecord).not.toHaveBeenCalled();
   });
   it("stops if an older root requires migration", async () => {
     await expect(ensureLaunchpad(envFor({ org: { id: "team" }, root: { id: "old" } }))).rejects.toThrow("launchpad_existing_root_requires_migration");

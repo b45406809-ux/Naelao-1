@@ -5,20 +5,30 @@ export interface LaunchpadBootstrapEnv extends CreateSpaceEnv {
 }
 
 type RootRow = { id: string; tenant_id: string; status: string; parent_space_id: string | null; spacetype_id: string };
+type ProductRow = { id: string; tenant_id: string; status: string; spacetype_id: string };
 
 /** Initialize the single Launchpad product for the configured team tenant. Existing roots are
  * never renamed or adopted implicitly: an operator must resolve a conflicting deployment first. */
 export async function ensureLaunchpad(env: LaunchpadBootstrapEnv): Promise<void> {
   const tenantId = env.NAELAO_DASHBOARD_TENANT_ID?.trim();
   if (!tenantId) throw new Error("launchpad_team_tenant_not_configured");
+  const registered = await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id, status, spacetype_id FROM products WHERE product_slug = ?"
+  ).bind("launchpad").first<ProductRow>();
+  if (registered && (registered.tenant_id !== tenantId || registered.spacetype_id !== "launchpad")) throw new Error("launchpad_identity_conflict");
+  if (registered && !["active", "provisioning"].includes(registered.status)) throw new Error("launchpad_not_active");
   const existing = await env.PLATFORM_DB.prepare(
     "SELECT id, tenant_id, status, parent_space_id, spacetype_id FROM spaces WHERE product_slug = ?"
   ).bind("launchpad").first<RootRow>();
   if (existing) {
+    if (registered && registered.id !== existing.id) throw new Error("launchpad_identity_conflict");
     if (existing.tenant_id !== tenantId || existing.parent_space_id || existing.spacetype_id !== "launchpad") throw new Error("launchpad_identity_conflict");
     if (!["active", "provisioning"].includes(existing.status)) throw new Error("launchpad_not_active");
     return;
   }
+  // Other paths still use the legacy backing Space. Fail closed until that migration is complete
+  // rather than provisioning a second Product with a different identity.
+  if (registered) throw new Error("launchpad_backing_space_missing");
   const org = await env.PLATFORM_DB.prepare("SELECT id FROM orgs WHERE id = ? AND status = 'active'").bind(tenantId).first<{ id: string }>();
   if (!org) throw new Error("launchpad_team_tenant_unavailable");
   const previous = await env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE tenant_id = ? AND parent_space_id IS NULL AND status != 'deleted' LIMIT 1").bind(tenantId).first<{ id: string }>();
