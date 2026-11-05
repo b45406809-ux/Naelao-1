@@ -17,10 +17,10 @@ type Profile = {
 
 function testEnv() {
   const spaces = new Map([
-    ["product-a", { tenant_id: "tenant-a", parent_space_id: null as string | null }],
-    ["business-a", { tenant_id: "tenant-a", parent_space_id: "product-a" }],
-    ["product-b", { tenant_id: "tenant-a", parent_space_id: null as string | null }],
-    ["product-c", { tenant_id: "tenant-b", parent_space_id: null as string | null }],
+    ["product-a", { tenant_id: "tenant-a", product_id: null as string | null, parent_space_id: null as string | null }],
+    ["business-a", { tenant_id: "tenant-a", product_id: "product-a", parent_space_id: null }],
+    ["product-b", { tenant_id: "tenant-a", product_id: null as string | null, parent_space_id: null as string | null }],
+    ["product-c", { tenant_id: "tenant-b", product_id: null as string | null, parent_space_id: null as string | null }],
   ]);
   const productProfiles = new Map<string, Profile>([
     ["product-a:user-a", { email: "a@example.invalid", display_name: "A", first_seen_at: "now", last_seen_at: "recent", suspended_at: null, email_verified_at: "now", phone_e164: "+14155550100", phone_verified_at: "now", password_hash: "private", deleted_at: null, preferred_language: null }],
@@ -35,10 +35,12 @@ function testEnv() {
         bind(...values: unknown[]) {
           return {
             async first() {
-              if (sql.includes("SELECT tenant_id, product_id, parent_space_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
+              if (sql.includes("FROM spaces s JOIN space_members sm")) return { role: "owner" };
+              if (sql.includes("SELECT tenant_id, product_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
               if (sql.includes("SELECT id, tenant_id FROM products")) {
-                const root = [...spaces.entries()].find(([id, row]) => id === String(values[0]) && row.parent_space_id === null);
-                return root ? { id: root[0], tenant_id: root[1].tenant_id } : null;
+                const rootId = String(values[0]);
+                const root = spaces.get(rootId);
+                return root && root.parent_space_id === null ? { id: rootId, tenant_id: root.tenant_id } : null;
               }
               if (sql.includes("FROM users WHERE id")) return members.has(String(values[0])) ? { preferred_language: members.get(String(values[0])) } : null;
               if (sql.includes("FROM product_end_users")) {
