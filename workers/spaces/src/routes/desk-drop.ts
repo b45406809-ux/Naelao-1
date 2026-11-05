@@ -15,7 +15,7 @@ export function registerDeskDropRoutes<T extends Env>(app: Hono<{ Bindings: T }>
   const readChallengeProof = (cookie: string | undefined) => cookie?.split(";").map(v => v.trim()).find(v => v.startsWith(`${challengeCookie}=`))?.slice(challengeCookie.length + 1);
   app.post("/desk-drop/challenge", async c => {
     const { productId } = await c.req.json<{ productId: string }>();
-    const product = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND status = 'active'").bind(productId).first();
+    const product = await c.env.PLATFORM_DB.prepare("SELECT id FROM products WHERE id = ? AND status = 'active'").bind(productId).first();
     if (!product) return c.json({ error_code: "not_found" }, 404);
     const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
     const proof = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -45,9 +45,9 @@ export function registerDeskDropRoutes<T extends Env>(app: Hono<{ Bindings: T }>
     const token = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, "0")).join("");
     let hash = await digest(token); let expiresAt = Date.now() + 90_000;
     if (body.challengeId) {
-      const space = await c.env.PLATFORM_DB.prepare("SELECT product_id, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?").bind(body.spaceId, tenantId).first<{ product_id: string | null; parent_space_id: string | null }>();
+      const space = await c.env.PLATFORM_DB.prepare("SELECT product_id FROM spaces WHERE id = ? AND tenant_id = ?").bind(body.spaceId, tenantId).first<{ product_id: string | null }>();
       const challenge = await c.env.PLATFORM_DB.prepare("DELETE FROM desk_drop_challenges WHERE id = ? AND product_id = ? AND expires_at > ? RETURNING proof_hash, expires_at")
-        .bind(body.challengeId, space?.product_id ?? space?.parent_space_id ?? body.spaceId, Date.now()).first<{ proof_hash: string; expires_at: number }>();
+        .bind(body.challengeId, space?.product_id ?? body.spaceId, Date.now()).first<{ proof_hash: string; expires_at: number }>();
       if (!challenge) return c.json({ error_code: "expired_or_used_challenge" }, 410);
       hash = challenge.proof_hash; expiresAt = challenge.expires_at;
     }

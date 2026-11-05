@@ -13,7 +13,7 @@ const message: ProvisionMessage = {
 };
 
 describe("provisioning tenant suspension gate", () => {
-  it("does not start provisioning for a suspended or unknown tenant", async () => {
+  it("does not start provisioning for a suspended tenant or Product compatibility row", async () => {
     const first = vi.fn(async () => null);
     const run = vi.fn();
     const prepare = vi.fn(() => ({ bind: () => ({ first, run }) }));
@@ -26,6 +26,7 @@ describe("provisioning tenant suspension gate", () => {
     await provisionSpace(message, env);
 
     expect(prepare).toHaveBeenCalledWith(expect.stringContaining("JOIN orgs"));
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining("NOT EXISTS (SELECT 1 FROM products"));
     expect(first).toHaveBeenCalledOnce();
     expect(run).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();

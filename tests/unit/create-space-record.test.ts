@@ -26,13 +26,14 @@ const SPACES_TABLE_SQL = `
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
   CREATE TABLE space_members (id TEXT PRIMARY KEY, space_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
-    end_user_id TEXT NOT NULL, role TEXT NOT NULL, UNIQUE(space_id, end_user_id));
+    end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, UNIQUE(space_id, end_user_id));
 `;
 
 function makeDb() {
   const outboxMigration = readFileSync(new URL("../../infra/migrations/0126_space_provisioning_outbox.sql", import.meta.url), "utf8");
   const productMigration = readFileSync(new URL("../../infra/migrations/0156_product_registry.sql", import.meta.url), "utf8");
-  return createFakeD1([SPACES_TABLE_SQL, outboxMigration, productMigration]);
+  const cutoverMigration = readFileSync(new URL("../../infra/migrations/0157_product_registry_cutover.sql", import.meta.url), "utf8");
+  return createFakeD1([SPACES_TABLE_SQL, outboxMigration, productMigration, cutoverMigration]);
 }
 
 describe("createSpaceRecord — quota enforcement queries the REAL orgs table", () => {
@@ -78,7 +79,8 @@ describe("createSpaceRecord — quota enforcement queries the REAL orgs table", 
 describe("createSpaceRecord — bounded inputs and tenant quota serialization", () => {
   it("binds an end-user Space and its owner membership to the registered Product", async () => {
     const fakeDb = makeDb();
-    const product = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "tenant", name: "Naelao", spacetypeId: "launchpad", productSlug: "launchpad" });
+    fakeDb.db.prepare("INSERT INTO products (id,tenant_id,spacetype_id,name,product_slug,status,config_json,created_at,updated_at) VALUES ('product','tenant','launchpad','Naelao','launchpad','active','{}','t','t')").run();
+    const product = { id: "product" };
     const workspace = await createSpaceRecord({ PLATFORM_DB: fakeDb }, {
       tenantId: "tenant", userId: "owner", name: "My Space", spacetypeId: "launchpad",
       initialMembership: { productSpaceId: product.id, endUserId: "owner" },
@@ -91,6 +93,20 @@ describe("createSpaceRecord — bounded inputs and tenant quota serialization", 
       tenantId: "tenant", userId: "attacker", name: "Invalid", spacetypeId: "launchpad", parentSpaceId: product.id,
       initialMembership: { productSpaceId: product.id, endUserId: "owner" },
     })).rejects.toMatchObject({ error_code: "invalid_product_membership" });
+  });
+  it("applies the subscription and Space limit to the individual Product account", async () => {
+    const fakeDb = makeDb();
+    fakeDb.db.prepare("INSERT INTO products (id,tenant_id,spacetype_id,name,product_slug,status,config_json,created_at,updated_at) VALUES ('product','team','launchpad','Launchpad','launchpad','active','{}','t','t')").run();
+    fakeDb.db.prepare("INSERT INTO product_user_subscriptions(product_id,end_user_id,plan_tier,status) VALUES ('product','paid-user','growth','active')").run();
+    for (let i = 0; i < 3; i++) {
+      await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "team", userId: "free-user", name: `Free ${i}`, spacetypeId: "launchpad", initialMembership: { productSpaceId: "product", endUserId: "free-user" } });
+    }
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "team", userId: "free-user", name: "Free too many", spacetypeId: "launchpad", initialMembership: { productSpaceId: "product", endUserId: "free-user" } }))
+      .rejects.toMatchObject({ error_code: "quota_exceeded", status: 402 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM space_members").get()).toEqual({ count: 3 });
+    for (let i = 0; i < 4; i++) {
+      await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "team", userId: "paid-user", name: `Paid ${i}`, spacetypeId: "launchpad", initialMembership: { productSpaceId: "product", endUserId: "paid-user" } });
+    }
   });
   it("rejects oversized names and config overrides before inserting", async () => {
     const fakeDb = makeDb();
@@ -176,10 +192,9 @@ describe("createSpaceRecord — product_slug", () => {
 
   it("enforces platform-wide slug uniqueness with a 409", async () => {
     const fakeDb = makeDb();
-    await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
     await expect(
       createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "B", spacetypeId: "launchpad", productSlug: "launchpad" })
-    ).rejects.toMatchObject({ error_code: "conflict", status: 409 });
+    ).rejects.toMatchObject({ error_code: "product_creation_retired", status: 400 });
   });
 
   it.each([
@@ -194,8 +209,8 @@ describe("createSpaceRecord — product_slug", () => {
 
   it("accepts the platform Launchpad Product slug", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
-    expect(result.id).toBeTruthy();
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "product_creation_retired" });
   });
 
   it("does not turn a generic Space into a Product", async () => {
@@ -272,15 +287,11 @@ describe("createSpaceRecord — provisioning", () => {
     expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { branding: { brandColor: "#ff0000" } } });
   });
 
-  // The proactive tick infrastructure (hourly cron + near-real-time channel triggers) already
-  // runs continuously; the digest email that reports on it was opt-in and off by default, so a
-  // builder who never found the toggle got no visibility. Defaulted ON here unless the caller
-  // already made an explicit choice.
-  it("preserves the historical Launchpad digest default", async () => {
+  it("does not copy Product defaults into newly created end-user Spaces", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad" });
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
-    expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: true } } });
+    expect(JSON.parse(row!.config_json).productConfig).toBeUndefined();
   });
 
   it("does not enable a digest merely because an end-user Space is a root", async () => {
@@ -300,15 +311,15 @@ describe("createSpaceRecord — provisioning", () => {
     expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: false } } });
   });
 
-  it("preserves other productConfig fields alongside the defaulted digest setting", async () => {
+  it("preserves explicit Product-shaped config without adding implicit settings", async () => {
     const fakeDb = makeDb();
     const result = await createSpaceRecord(
       { PLATFORM_DB: fakeDb },
-      { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
     );
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
     expect(JSON.parse(row!.config_json)).toMatchObject({
-      productConfig: { branding: { brandColor: "#ff0000" }, notificationsConfig: { dailyDigestEnabled: true } },
+      productConfig: { branding: { brandColor: "#ff0000" } },
     });
   });
 });

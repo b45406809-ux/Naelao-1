@@ -8,8 +8,8 @@ import { checkedAudioStream, isOpenRouterSpeechStream } from "./audio-stream.js"
 //   3. project-bound row                    — available only with a signed project credential token
 //   4. space-scope row with is_override=0  — shared business-wide fallback (optionally narrowed
 //      to specific members via shared_with_user_ids — NULL means everyone, unchanged default)
-//   5. the PRODUCT ROOT's own space-scope row — a builder-set product-wide default, checked only
-//      when this space is a business (has parent_space_id) and nothing matched above
+//   5. the linked Product's stored credential row — only with an explicit named-user grant,
+//      checked only when this Space has a valid direct product_id and nothing matched above
 // A caller above this worker (mcp-hub, a prebuilt op) applies its own final fallback — a
 // Naelao-held platform Workers Secret (Tavily, etc, item 42's universal-tools doctrine) — when
 // this worker returns nothing at all; that tier is deliberately NOT a vaulted DB row here (see
@@ -734,23 +734,23 @@ async function resolveCredential(
     return { row: spaceRow, tier: "business_shared" };
   }
 
-  // Best-effort: the product-root walk is a nice-to-have tier, never a hard dependency of
+  // Best-effort: a Product connection is a nice-to-have tier, never a hard dependency of
   // credential resolution — a missing/unreachable spaces table must fall through to "not found"
   // rather than 500 the whole lookup.
   try {
     const space = await db.prepare(
-      `SELECT parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'`
-    ).bind(spaceId, tenantId).first<{ parent_space_id: string | null }>();
-    if (space?.parent_space_id) {
-      const activeRoot = await db.prepare(
-        `SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'`
-      ).bind(space.parent_space_id, tenantId).first<{ id: string }>();
-      if (activeRoot) {
-        const rootRow = await fetchSpaceRow(db, space.parent_space_id, tenantId, name);
-        // A credential shared with everyone in the legacy Product backing Space was never a
-        // grant to every end-user Space. Cross-Space fallback requires a named user grant.
-        if (rootRow && rootRow.shared_with_user_ids !== null && sharedRowAppliesToUser(rootRow, actingUserId))
-          return { row: rootRow, tier: "product" };
+      `SELECT product_id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'`
+    ).bind(spaceId, tenantId).first<{ product_id: string | null }>();
+    if (space?.product_id) {
+      const activeProduct = await db.prepare(
+        "SELECT id FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+      ).bind(space.product_id, tenantId).first<{ id: string }>();
+      if (activeProduct) {
+        const productRow = await fetchSpaceRow(db, activeProduct.id, tenantId, name);
+        // A Product credential must carry an explicit named-user grant. Product membership or a
+        // generic shared credential never grants access to every account Space.
+        if (productRow && productRow.shared_with_user_ids !== null && sharedRowAppliesToUser(productRow, actingUserId))
+          return { row: productRow, tier: "product" };
       }
     }
   } catch {

@@ -16,7 +16,7 @@ import {
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
 import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary, PLAN_LIMITS, llmReservationAdmission } from "./quota.js";
-import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
+import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, recordProductUserPlanSubscription } from "./lemon-squeezy.js";
 import { normalizePlanTier, PLANS, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
@@ -43,6 +43,9 @@ export interface BillingEnv {
    *  to the same dev-placeholder flow when its platform-plan variant is unset. */
   LEMON_SQUEEZY_GROWTH_VARIANT_ID?: string;
   LEMON_SQUEEZY_BUSINESS_VARIANT_ID?: string;
+  /** Customer Products have their own checkout variants, independent of Naelao's org plan. */
+  LEMON_SQUEEZY_CUSTOMER_GROWTH_VARIANT_ID?: string;
+  LEMON_SQUEEZY_CUSTOMER_BUSINESS_VARIANT_ID?: string;
   // Whop is retained only as an optional provider for Naelao platform plans.
   /** Naelao's own Whop company API key (a normal seller key, like any Whop creator has — no
    *  invite needed). Optional — /billing/checkout falls through to Lemon Squeezy, then the dev
@@ -52,6 +55,8 @@ export interface BillingEnv {
    *  company dashboard (like LEMON_SQUEEZY_*_VARIANT_ID). */
   WHOP_GROWTH_PLAN_ID?: string;
   WHOP_BUSINESS_PLAN_ID?: string;
+  WHOP_CUSTOMER_GROWTH_PLAN_ID?: string;
+  WHOP_CUSTOMER_BUSINESS_PLAN_ID?: string;
   /** Naelao's own company's webhook signing secret. */
   WHOP_PLATFORM_PLAN_WEBHOOK_SECRET?: string;
 }
@@ -230,6 +235,38 @@ app.post("/billing/checkout", async (c) => {
   });
 
   return c.json({ checkout_url: url, plan: body.plan });
+});
+
+// Product end-users buy their own Space allowance. The Spaces Worker reaches this route with
+// an HMAC token after it verifies the Product account; no shared team org plan is consulted.
+app.use("/internal/product-user-checkout", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.post("/internal/product-user-checkout", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ product_id?: string; end_user_id?: string; plan?: string; success_url?: string }>();
+  if (!tenantId || !body.product_id || !body.end_user_id || !body.success_url || !["growth", "business"].includes(body.plan ?? ""))
+    throw badRequest("product_id, end_user_id, plan, and success_url are required");
+  const account = await c.env.PLATFORM_DB.prepare(
+    `SELECT p.id, u.email FROM products p JOIN product_end_users u ON u.product_space_id=p.id
+     WHERE p.id=? AND p.tenant_id=? AND p.status='active' AND u.end_user_id=? AND u.suspended_at IS NULL AND u.deleted_at IS NULL`
+  ).bind(body.product_id, tenantId, body.end_user_id).first<{ id: string; email: string | null }>();
+  if (!account) return c.json({ error_code: "product_account_not_found" }, 404);
+  const plan = body.plan as "growth" | "business";
+  const variantId = plan === "growth" ? c.env.LEMON_SQUEEZY_CUSTOMER_GROWTH_VARIANT_ID : c.env.LEMON_SQUEEZY_CUSTOMER_BUSINESS_VARIANT_ID;
+  const custom = { kind: "product_user_plan", product_id: account.id, end_user_id: body.end_user_id, plan };
+  const whopPlanId = plan === "growth" ? c.env.WHOP_CUSTOMER_GROWTH_PLAN_ID : c.env.WHOP_CUSTOMER_BUSINESS_PLAN_ID;
+  if (c.env.WHOP_API_KEY && whopPlanId) {
+    const { createWhopPlatformPlanCheckout } = await import("@naelao/billing-core");
+    const result = await createWhopPlatformPlanCheckout(c.env.WHOP_API_KEY, { planId: whopPlanId,
+      ...(account.email ? { customerEmail: account.email } : {}), redirectUrl: body.success_url, metadata: custom });
+    return c.json({ checkout_url: result.checkout_url, plan, provider: "whop" });
+  }
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !variantId)
+    return c.json({ error_code: "customer_billing_unavailable" }, 503);
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({ LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY, LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID });
+  const result = await provider.createCheckout({ spaceId: account.id, variantOrPriceId: variantId,
+    ...(account.email ? { customerEmail: account.email } : {}), successUrl: body.success_url, metadata: custom });
+  return c.json({ checkout_url: result.url, plan, provider: "lemon_squeezy" });
 });
 
 // ── POST /billing/portal ──────────────────────────────────────────────────────
@@ -872,8 +909,8 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
 });
 
 // ── POST /webhooks/whop-platform-plan ──────────────────────────────────────────
-// Naelao's OWN Whop company's webhook (builder Growth/Business platform plans, AUDIT_TODO.md
-// AI-7). Unauthenticated route; the Whop-Signature HMAC (verified against
+// Naelao's Whop company webhook (organization and Product-user subscriptions). Unauthenticated
+// route; the Whop-Signature HMAC (verified against
 // WHOP_PLATFORM_PLAN_WEBHOOK_SECRET) is the auth, same posture as every other webhook here.
 app.post("/webhooks/whop-platform-plan", async (c) => {
   let rawBody: string;
@@ -890,11 +927,14 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     console.warn(`[billing/whop-platform-plan] failed to parse event body: ${(err as Error).message}`);
     return c.json({ ok: true, skipped: true, reason: "unparseable body" });
   }
-  const handled = await recordPlatformPlanSubscription(event, {
+  const env = {
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
     QUOTA_CACHE: c.env.QUOTA_CACHE,
-  });
+  };
+  const handled = event.metadata.kind === "product_user_plan"
+    ? await recordProductUserPlanSubscription(event, env)
+    : await recordPlatformPlanSubscription(event, env);
   return c.json({ ok: true, handled });
 });
 

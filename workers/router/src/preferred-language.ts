@@ -3,7 +3,7 @@ import {
   normalizePreferredLanguage,
 } from "@naelao/types";
 
-/** Load only the authenticated caller's preference; product users resolve within their product tree. */
+/** Load only the authenticated caller's preference using the Space's explicit Product link. */
 export async function loadSavedLanguagePreference(
   db: D1Database,
   claims: NaelaoJwtClaims,
@@ -13,17 +13,9 @@ export async function loadSavedLanguagePreference(
     if (claims.role === "product_end_user") {
       const row = await db
         .prepare(
-          `WITH RECURSIVE ancestors(id, parent_space_id, product_id, depth) AS (
-           SELECT id, parent_space_id, product_id, 0 FROM spaces WHERE id = ?
-           UNION ALL
-           SELECT s.id, s.parent_space_id, s.product_id, ancestors.depth + 1
-           FROM spaces s JOIN ancestors ON s.id = ancestors.parent_space_id
-           WHERE ancestors.depth < 8
-         )
-         SELECT p.preferred_language FROM ancestors a
-         JOIN product_end_users p ON p.product_space_id = COALESCE(a.product_id, a.id)
-         WHERE p.end_user_id = ? AND p.deleted_at IS NULL
-         ORDER BY a.depth DESC LIMIT 1`
+          `SELECT p.preferred_language FROM spaces s
+           JOIN product_end_users p ON p.product_space_id = s.product_id
+           WHERE s.id = ? AND p.end_user_id = ? AND p.deleted_at IS NULL AND p.suspended_at IS NULL LIMIT 1`
         )
         .bind(spaceId, claims.sub)
         .first<{ preferred_language: string | null }>();

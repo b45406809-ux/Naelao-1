@@ -382,17 +382,10 @@ async function authorizeProductEndUserSpace(
   const identity = getCallerIdentity(c);
   if (!tenantId || !await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET) ||
       identity.role !== "product_end_user" || !identity.userId || identity.userId !== requestedUserId) return null;
-  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id, product_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string; product_id: string | null; parent_space_id: string | null }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string; product_id: string | null }>();
   if (!space || space.tenant_id !== tenantId) return null;
-  if (space.product_id || space.parent_space_id) {
-    if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
-  } else {
-    const roster = await c.env.PLATFORM_DB.prepare(
-      "SELECT 1 AS active FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
-    ).bind(spaceId, identity.userId).first();
-    if (!roster) return null;
-  }
+  if (!space.product_id || !await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
   return identity.userId;
 }
 async function canExportBlueprint(c: { env: Env; req: { header(h: string): string | undefined } }, spaceId: string): Promise<boolean> {
@@ -464,6 +457,29 @@ app.get("/spaces/:spaceId/my-spaces", async (c) => {
     };
   });
   return c.json({ data, count: data.length });
+});
+
+app.post("/spaces/:spaceId/customer-checkout", async (c) => {
+  const owner = await getProductSpaceOwner(c, c.req.param("spaceId"));
+  if (!owner) return c.json({ error_code: "forbidden" }, 403);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "customer_billing_unavailable" }, 503);
+  const body = await c.req.json<{ plan?: string; success_url?: string }>().catch(() => ({} as { plan?: string; success_url?: string }));
+  if (!body.success_url || !["growth", "business"].includes(body.plan ?? "")) return c.json({ error_code: "bad_request" }, 400);
+  let success: URL;
+  try { success = new URL(body.success_url); } catch { return c.json({ error_code: "bad_request" }, 400); }
+  let shellOrigin: string | undefined;
+  try { shellOrigin = c.env.PRODUCT_SHELL_URL ? new URL(c.env.PRODUCT_SHELL_URL).origin : undefined; } catch { /* invalid config fails closed */ }
+  const local = c.env.ENVIRONMENT === "development" && ["localhost", "127.0.0.1"].includes(success.hostname);
+  if (success.protocol !== "https:" && !local) return c.json({ error_code: "bad_request" }, 400);
+  if (!shellOrigin && !local) return c.json({ error_code: "customer_billing_unavailable" }, 503);
+  if (shellOrigin && success.origin !== shellOrigin && !local) return c.json({ error_code: "bad_request" }, 400);
+  const response = await c.env.BILLING_WORKER.fetch(new Request("http://billing/internal/product-user-checkout", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": owner.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owner.tenantId) },
+    body: JSON.stringify({ product_id: owner.root.id, end_user_id: owner.userId, plan: body.plan, success_url: success.href }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
 app.post("/spaces/:spaceId/spaces", async (c) => {
@@ -1861,18 +1877,15 @@ async function resolveProductScope(
   ).bind(resourceId).first<{ id: string; tenant_id: string }>();
   if (direct) return { ...direct, resource_tenant_id: direct.tenant_id };
   const space = await env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, product_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(resourceId).first<{ tenant_id: string; product_id: string | null; parent_space_id: string | null }>();
+    "SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(resourceId).first<{ tenant_id: string; product_id: string | null }>();
   if (!space) return null;
-  const productId = space.product_id ?? space.parent_space_id;
+  const productId = space.product_id;
   if (!productId) return null;
   const product = await env.PLATFORM_DB.prepare(
     "SELECT id, tenant_id FROM products WHERE id = ? AND status = 'active'"
   ).bind(productId).first<{ id: string; tenant_id: string }>();
-  // Legacy child Spaces may have their own tenant. A direct Product reference, used by
-  // newly created Spaces, must stay within the Product tenant until tenant ownership
-  // and cross-tenant membership are migrated together.
-  if (!product || (space.product_id && product.tenant_id !== space.tenant_id)) return null;
+  if (!product || product.tenant_id !== space.tenant_id) return null;
   return { ...product, resource_tenant_id: space.tenant_id };
 }
 
@@ -4428,8 +4441,8 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT config_json, product_id, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null; product_id: string | null; parent_space_id: string | null }>();
+    "SELECT config_json, product_id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null; product_id: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   let policy: SpaceModelPolicy | null = null;
   try {
@@ -4437,7 +4450,7 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
       model_policy?: { mode?: string; allowedModelIds?: unknown };
       productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown } };
     };
-    const productId = row.product_id ?? row.parent_space_id;
+    const productId = row.product_id;
     const productRow = productId
       ? await c.env.PLATFORM_DB.prepare("SELECT config_json FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'").bind(productId, tenantId).first<{ config_json: string | null }>()
       : row;
@@ -5037,15 +5050,7 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
     "SELECT name, spacetype_id, config_json, tenancy_mode, agency_shell, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
   ).bind(spaceId, tenantId).first<{ name: string; spacetype_id: string; config_json: string | null; tenancy_mode: string; agency_shell: number; depth: number; parent_space_id: string | null }>();
   if (!parentSpace) throw notFound("Space");
-  if (parentSpace.parent_space_id) {
-    // A legacy Product backing row is not an end-user Space. Allow the actual end-user
-    // Space below it to own a local subspace hierarchy, but reject nested D1 Spaces.
-    const product = await c.env.PLATFORM_DB.prepare(
-      "SELECT 1 FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
-    ).bind(parentSpace.parent_space_id, tenantId).first();
-    if (parentSpace.depth !== 1 || !product)
-      return c.json({ error_code: "max_depth_exceeded", message: "A subspace cannot have child spaces" }, 400);
-  } else if (parentSpace.depth !== 0) {
+  if (parentSpace.parent_space_id || parentSpace.depth !== 0) {
     return c.json({ error_code: "max_depth_exceeded", message: "Invalid Space hierarchy" }, 400);
   }
 

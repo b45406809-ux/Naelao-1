@@ -27,6 +27,9 @@ function makeEnv() {
     readMigration("0116_space_suspension_reason.sql"),
     readMigration("0117_org_suspension_reason.sql"),
   ]);
+  fakeDb.db.exec(`CREATE TABLE products (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, spacetype_id TEXT NOT NULL,
+    name TEXT NOT NULL, product_slug TEXT NOT NULL UNIQUE, status TEXT NOT NULL, config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, suspension_reason TEXT)`);
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: "test-platform-secret",
@@ -109,13 +112,13 @@ describe("admin worker against the real platform schema", () => {
     const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
     db.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, ?, ?, ?)")
       .run("org-erase", "Acme", "u1", "free");
-    db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, suspension_reason) VALUES (?, ?, ?, ?, ?, ?)")
-      .run("space-erase", "org-erase", "launchpad", "Shop", "suspended", "erasure");
+    db.prepare("INSERT INTO products (id, tenant_id, spacetype_id, name, product_slug, status, suspension_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'now', 'now')")
+      .run("space-erase", "org-erase", "launchpad", "Shop", "shop", "suspended", "erasure");
     const response = await adminWorker.fetch(
       adminReq("/admin/products/space-erase/suspend", { method: "POST", body: JSON.stringify({ reason: "Policy review" }) }), env as never, execCtx,
     );
     expect(response.status).toBe(409);
-    expect(db.prepare("SELECT status, suspension_reason FROM spaces WHERE id = ?").get("space-erase"))
+    expect(db.prepare("SELECT status, suspension_reason FROM products WHERE id = ?").get("space-erase"))
       .toEqual({ status: "suspended", suspension_reason: "erasure" });
   });
 
@@ -175,23 +178,23 @@ describe("admin worker against the real platform schema", () => {
     const env = makeEnv();
     const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
     db.exec(`INSERT INTO orgs (id, name, owner_id, plan_tier, status) VALUES ('org-1', 'Acme', 'u1', 'free', 'suspended')`);
-    db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, suspension_reason) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'suspended', 'admin_product')`);
+    db.exec(`INSERT INTO products (id, tenant_id, spacetype_id, name, product_slug, status, suspension_reason, created_at, updated_at) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'product-1', 'suspended', 'admin_product', 'now', 'now')`);
 
     const res = await adminWorker.fetch(adminReq("/admin/products/space-1/restore", { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
-    expect((db.prepare("SELECT status FROM spaces WHERE id = ?").get("space-1") as { status: string }).status).toBe("suspended");
+    expect((db.prepare("SELECT status FROM products WHERE id = ?").get("space-1") as { status: string }).status).toBe("suspended");
   });
 
   it("restores only a suspended space under an active tenant", async () => {
     const env = makeEnv();
     const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
     db.exec(`INSERT INTO orgs (id, name, owner_id, plan_tier, status) VALUES ('org-1', 'Acme', 'u1', 'free', 'active')`);
-    db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, suspension_reason) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'suspended', 'admin_product')`);
+    db.exec(`INSERT INTO products (id, tenant_id, spacetype_id, name, product_slug, status, suspension_reason, created_at, updated_at) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'product-1', 'suspended', 'admin_product', 'now', 'now')`);
 
     const res = await adminWorker.fetch(adminReq("/admin/products/space-1/restore", { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(200);
-    expect((db.prepare("SELECT status FROM spaces WHERE id = ?").get("space-1") as { status: string }).status).toBe("active");
+    expect((db.prepare("SELECT status FROM products WHERE id = ?").get("space-1") as { status: string }).status).toBe("active");
   });
 
   it("does not let the product restore route undo a reseller or erasure suspension", async () => {
@@ -199,12 +202,12 @@ describe("admin worker against the real platform schema", () => {
       const env = makeEnv();
       const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
       db.exec(`INSERT INTO orgs (id, name, owner_id, plan_tier, status) VALUES ('org-1', 'Acme', 'u1', 'free', 'active')`);
-      db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, suspension_reason) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'suspended', '${reason}')`);
+      db.exec(`INSERT INTO products (id, tenant_id, spacetype_id, name, product_slug, status, suspension_reason, created_at, updated_at) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'product-1', 'suspended', '${reason}', 'now', 'now')`);
 
       const res = await adminWorker.fetch(adminReq("/admin/products/space-1/restore", { method: "POST" }), env as never, execCtx);
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ error_code: "suspension_reason_mismatch" });
-      expect((db.prepare("SELECT status FROM spaces WHERE id = ?").get("space-1") as { status: string }).status).toBe("suspended");
+      expect((db.prepare("SELECT status FROM products WHERE id = ?").get("space-1") as { status: string }).status).toBe("suspended");
     }
   });
 });

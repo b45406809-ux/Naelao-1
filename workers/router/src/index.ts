@@ -621,6 +621,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/my-spaces$/,
+  /^\/spaces\/([^/]+)\/customer-checkout$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/memberships$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
@@ -785,8 +786,8 @@ async function resolveProductEndUserClaims(
   let sessionProductId = productId;
   if (!direct?.id) {
     const requested = await env.PLATFORM_DB.prepare(
-      "SELECT tenant_id, parent_space_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
-    ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null; product_id: string | null }>();
+      "SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(productId).first<{ tenant_id: string; product_id: string | null }>();
     if (!requested) return null;
     if (requested.product_id) {
       const product = await env.PLATFORM_DB.prepare(
@@ -794,12 +795,6 @@ async function resolveProductEndUserClaims(
       ).bind(requested.product_id, requested.tenant_id).first<{ id: string }>();
       if (!product) return null;
       sessionProductId = product.id;
-    } else if (requested.parent_space_id) {
-      const root = await env.PLATFORM_DB.prepare(
-        "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND parent_space_id IS NULL AND status = 'active'"
-      ).bind(requested.parent_space_id, requested.tenant_id).first<{ id: string }>();
-      if (!root) return null;
-      sessionProductId = root.id;
     }
   }
   const res = await env.SPACES_WORKER.fetch(

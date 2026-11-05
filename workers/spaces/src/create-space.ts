@@ -44,8 +44,8 @@ export interface SchemaValidationError {
   error: string;
 }
 
-// G-I13: quota enforcement — matches the values index.ts's /spaces route used before this
-// extraction verbatim (do not "improve" these without checking billing/entitlements agree).
+// Per-account ceilings mirror the customer subscription plans; the registry Product is shared,
+// but quotas and Space counts belong to each Product user.
 const SPACE_LIMITS: Record<string, number> = {
   free: 3,
   growth: 25,
@@ -62,22 +62,18 @@ export class SpaceCreationError extends Error {
   }
 }
 
-async function enforceSpaceQuota(db: D1Database, tenantId: string): Promise<void> {
-  // BUG FOUND during Phase 4 (Three-Tier Platform Model): this queried a table called
-  // "organizations", which no migration anywhere creates — the real table is `orgs`
-  // (infra/migrations/0002_orgs.sql, id == tenantId, plan_tier column). Since this function is
-  // called unconditionally on every space creation and its caller only special-cases the
-  // `quota_exceeded` error code (rethrowing everything else), this meant POST /spaces has likely
-  // been hard-500ing on every single call in any real deployment — nothing in this codebase's
-  // test suite exercised POST /spaces before this phase, so nothing caught it until now.
-  const org = await db.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(tenantId).first<{ plan_tier: string }>();
-  const tier = org?.plan_tier ?? "free";
+async function getSpaceLimit(db: D1Database, tenantId: string, membership?: CreateSpaceParams["initialMembership"]): Promise<{ limit: number; tier: string }> {
+  // Product-user subscriptions are account-scoped. Ordinary platform Spaces continue to use
+  // their owning org plan, while customer Spaces never inherit the shared Launchpad team's tier.
+  const account = membership ? await db.prepare(
+    "SELECT plan_tier,status,current_period_end FROM product_user_subscriptions WHERE product_id = ? AND end_user_id = ? AND status IN ('active','trialing','cancelled','past_due')"
+  ).bind(membership.productSpaceId, membership.endUserId).first<{ plan_tier: string; status: string; current_period_end: string | null }>() : null;
+  const org = membership ? null : await db.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(tenantId).first<{ plan_tier: string }>();
+  const cancellationEnded = account?.status === "cancelled" &&
+    (!account.current_period_end || !Number.isFinite(Date.parse(account.current_period_end)) || Date.parse(account.current_period_end) <= Date.now());
+  const tier = (cancellationEnded ? undefined : account?.plan_tier) ?? org?.plan_tier ?? "free";
   const limit = SPACE_LIMITS[tier] ?? SPACE_LIMITS["free"]!;
-  const row = await db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'").bind(tenantId).first<{ count: number }>();
-  const count = row?.count ?? 0;
-  if (count >= limit) {
-    throw new SpaceCreationError(402, "quota_exceeded", `Space limit reached for ${tier} plan (${limit} spaces)`);
-  }
+  return { limit, tier };
 }
 
 // G-AV02: Lightweight JSON Schema (draft-07 subset) validator for SpaceType config. Validates:
@@ -218,6 +214,15 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   if (requestedDepth !== 0 && requestedDepth !== 1) {
     throw new SpaceCreationError(400, "invalid_hierarchy", "Spaces may only be roots or direct departments");
   }
+  if (params.initialMembership) {
+    if ((params.parentSpaceId && params.parentSpaceId !== params.initialMembership.productSpaceId) || params.userId !== params.initialMembership.endUserId) {
+      throw new SpaceCreationError(400, "invalid_product_membership", "The Space owner and Product must match the authenticated creation scope");
+    }
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT 1 FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
+    ).bind(params.initialMembership.productSpaceId, params.tenantId).first();
+    if (!product) throw new SpaceCreationError(404, "product_not_found", "Product not found");
+  }
   let derivedDepth = 0;
   if (params.parentSpaceId) {
     const parent = await env.PLATFORM_DB.prepare(
@@ -231,16 +236,6 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
       throw new SpaceCreationError(400, "invalid_hierarchy", "A child Space must have a root Space as its parent");
     }
     derivedDepth = parent.depth + 1;
-  }
-
-  if (params.initialMembership) {
-    if ((params.parentSpaceId && params.parentSpaceId !== params.initialMembership.productSpaceId) || params.userId !== params.initialMembership.endUserId) {
-      throw new SpaceCreationError(400, "invalid_product_membership", "The Space owner and Product must match the authenticated creation scope");
-    }
-    const product = await env.PLATFORM_DB.prepare(
-      "SELECT 1 FROM products WHERE id = ? AND tenant_id = ? AND status = 'active'"
-    ).bind(params.initialMembership.productSpaceId, params.tenantId).first();
-    if (!product) throw new SpaceCreationError(404, "product_not_found", "Product not found");
   }
 
   if (params.configOverrides) {
@@ -271,24 +266,12 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     if (RESERVED_SLUGS.has(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", `product_slug '${params.productSlug}' is reserved`);
     }
-    if (params.productSlug !== "launchpad" || params.parentSpaceId) {
-      throw new SpaceCreationError(400, "product_creation_retired", "Only the platform Launchpad Product can be provisioned");
-    }
+    throw new SpaceCreationError(400, "product_creation_retired", "Products are provisioned through the Product registry");
   }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  // Preserve the historical Launchpad Product default. End-user Spaces only schedule a digest
-  // when explicitly configured; turning them into root Spaces must not silently enable new work.
-  const productConfig = (params.configOverrides?.["productConfig"] ?? {}) as Record<string, unknown>;
-  const notificationsConfig = (productConfig["notificationsConfig"] ?? {}) as Record<string, unknown>;
-  const mergedConfigOverrides =
-    params.productSlug && notificationsConfig["dailyDigestEnabled"] === undefined
-      ? {
-          ...(params.configOverrides ?? {}),
-          productConfig: { ...productConfig, notificationsConfig: { ...notificationsConfig, dailyDigestEnabled: true } },
-        }
-      : (params.configOverrides ?? {});
+  const mergedConfigOverrides = params.configOverrides ?? {};
   const configJson = JSON.stringify({
     ...mergedConfigOverrides,
     ...(params.templateId ? { template_id: params.templateId } : {}),
@@ -311,17 +294,32 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     ...(params.userId ? { userId: params.userId } : {}),
     requestedAt: now,
   };
-  const insertSpace = async (): Promise<void> => {
+  const insertSpace = async (limit: number): Promise<boolean> => {
+    const columns = `(id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by, product_id)`;
+    const baseValues = [id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
+      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null, params.initialMembership?.productSpaceId ?? null];
+    const quotaPredicate = params.initialMembership
+      ? `SELECT COUNT(*) FROM spaces s WHERE s.tenant_id = ? AND s.product_id = ? AND s.status != 'deleted'
+         AND (s.created_by = ? OR EXISTS (SELECT 1 FROM space_members m WHERE m.space_id=s.id AND m.end_user_id=? AND m.suspended_at IS NULL))`
+      : `SELECT COUNT(*) FROM spaces s WHERE s.tenant_id = ? AND s.status != 'deleted'`;
+    const accountLimit = `COALESCE((SELECT CASE
+      WHEN status='cancelled' AND (current_period_end IS NULL OR julianday(current_period_end) <= julianday('now')) THEN 3
+      WHEN status IN ('active','trialing','cancelled','past_due') THEN CASE plan_tier
+        WHEN 'growth' THEN 25 WHEN 'starter' THEN 25 WHEN 'business' THEN 100 WHEN 'pro' THEN 100 WHEN 'enterprise' THEN 1000 ELSE 3 END
+      ELSE 3 END FROM product_user_subscriptions WHERE product_id=? AND end_user_id=? LIMIT 1), 3)`;
+    const quotaThreshold = params.initialMembership ? accountLimit : "?";
+    const quotaParams = params.initialMembership
+      ? [params.tenantId, params.initialMembership.productSpaceId, params.initialMembership.endUserId, params.initialMembership.endUserId,
+         params.initialMembership.productSpaceId, params.initialMembership.endUserId]
+      : [params.tenantId, limit];
     const spaceInsert = env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by, product_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
-      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null, params.initialMembership?.productSpaceId ?? null);
+      `INSERT INTO spaces ${columns} SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (${quotaPredicate}) < ${quotaThreshold}`
+    ).bind(...baseValues, ...quotaParams);
     const writes = [spaceInsert];
     if (params.initialMembership) {
       writes.push(env.PLATFORM_DB.prepare(
-        `INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role)
-         VALUES (?, ?, ?, ?, ?) ON CONFLICT(space_id, end_user_id) DO NOTHING`
+        `INSERT OR IGNORE INTO space_members (id, space_id, tenant_id, end_user_id, role)
+         SELECT ?, ?, ?, ?, ? WHERE changes() = 1`
       ).bind(crypto.randomUUID(), id, params.tenantId, params.initialMembership.endUserId, params.initialMembership.role ?? "owner"));
     }
     if (useProvisioningQueue) {
@@ -331,15 +329,21 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
         ).bind(id, params.tenantId, JSON.stringify(provisionMessage)));
     }
     if (useProvisioningQueue || params.initialMembership) {
-      await env.PLATFORM_DB.batch(writes);
+      const results = await env.PLATFORM_DB.batch(writes);
+      if (!results[0]?.meta.changes) return false;
     } else {
-      await spaceInsert.run();
+      const result = await spaceInsert.run();
+      if (!result.meta.changes) return false;
     }
+    return true;
   };
   const checkQuotaAndInsert = async (): Promise<void> => {
-    await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
+    const { limit, tier } = await getSpaceLimit(env.PLATFORM_DB, params.tenantId, params.initialMembership);
     try {
-      await insertSpace();
+      if (!await insertSpace(limit)) {
+        const current = await getSpaceLimit(env.PLATFORM_DB, params.tenantId, params.initialMembership);
+        throw new SpaceCreationError(402, "quota_exceeded", `Space limit reached for ${current.tier} plan (${current.limit} spaces)`);
+      }
     } catch (err) {
       if ((err as Error).message?.includes("UNIQUE")) {
         throw new SpaceCreationError(409, "conflict", "product_slug is already taken");
@@ -350,7 +354,8 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   if (env.LOCK_DO) {
     if (!env.PLATFORM_SECRET) throw new SpaceCreationError(503, "creation_lock_unavailable", "Space creation is temporarily unavailable");
-    const lockName = await getDOName("space-create", params.tenantId, params.tenantId, env.PLATFORM_SECRET);
+    const scope = params.initialMembership ? `${params.initialMembership.productSpaceId}:${params.initialMembership.endUserId}` : params.tenantId;
+    const lockName = await getDOName("space-create", scope, params.tenantId, env.PLATFORM_SECRET);
     const lock = env.LOCK_DO.get(env.LOCK_DO.idFromName(lockName));
     const callerId = `space-create:${crypto.randomUUID()}`;
     let acquired = false;

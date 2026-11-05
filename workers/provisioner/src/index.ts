@@ -204,7 +204,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
   const current = await env.PLATFORM_DB.prepare(
     `SELECT s.status FROM spaces s
      JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
-     WHERE s.id = ? AND s.tenant_id = ?`
+     WHERE s.id = ? AND s.tenant_id = ? AND NOT EXISTS (SELECT 1 FROM products p WHERE p.id = s.id)`
   ).bind(spaceId, tenantId).first<{ status: string }>();
   if (!current || !mayStartProvisioning(current.status)) {
     console.warn(`[provisioner] Ignoring stale provision request for ${spaceId} (status=${current?.status ?? "missing"})`);
@@ -219,7 +219,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
   try {
     // A previous attempt may have completed between the initial read and our lease claim.
     const claimedSpace = await env.PLATFORM_DB.prepare(
-      "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+      "SELECT status FROM spaces WHERE id = ? AND tenant_id = ? AND NOT EXISTS (SELECT 1 FROM products p WHERE p.id = spaces.id)"
     ).bind(spaceId, tenantId).first<{ status: string }>();
     if (!claimedSpace || !mayStartProvisioning(claimedSpace.status)) return;
 

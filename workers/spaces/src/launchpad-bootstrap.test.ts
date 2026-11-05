@@ -8,37 +8,30 @@ import { createSpaceRecord } from "./create-space.js";
 import { ensureLaunchpad } from "./launchpad-bootstrap.js";
 
 function envFor(rows: Record<string, unknown> = {}) {
+  let inserted = false;
   return {
     ENVIRONMENT: "development",
     NAELAO_DASHBOARD_TENANT_ID: "team",
-    PLATFORM_DB: { prepare(sql: string) { return { bind() { return { first: async () => sql.includes("FROM products") ? rows.product ?? rows.slug ?? null : sql.includes("product_slug") ? rows.slug ?? null : sql.includes("FROM orgs") ? rows.org ?? null : rows.root ?? null }; } }; } },
+    PLATFORM_DB: { prepare(sql: string) { return { bind() { return { first: async () => sql.includes("FROM products") ? rows.product ?? (inserted ? { id: "new", tenant_id: "team", status: "active", spacetype_id: "launchpad" } : null) : sql.includes("product_link_migration_issues") ? rows.legacyIssue ?? null : sql.includes("FROM orgs") ? rows.org ?? null : null, run: async () => { inserted = true; return { meta: { changes: 1 } }; } }; } }; } },
   } as unknown as Parameters<typeof ensureLaunchpad>[0];
 }
 
 describe("Launchpad bootstrap", () => {
   beforeEach(() => vi.clearAllMocks());
-  it("creates Launchpad for the configured active team", async () => {
+  it("creates Launchpad in the Product registry for the configured active team", async () => {
     await ensureLaunchpad(envFor({ org: { id: "team" } }));
-    expect(createSpaceRecord).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ tenantId: "team", spacetypeId: "launchpad", productSlug: "launchpad" }));
-  });
-  it("reuses a matching root without creating a duplicate", async () => {
-    await ensureLaunchpad(envFor({ slug: { id: "p", tenant_id: "team", status: "active", parent_space_id: null, spacetype_id: "launchpad" } }));
     expect(createSpaceRecord).not.toHaveBeenCalled();
   });
-  it("does not take over another tenant's product", async () => {
-    await expect(ensureLaunchpad(envFor({ slug: { id: "p", tenant_id: "other", status: "active", parent_space_id: null, spacetype_id: "launchpad" } }))).rejects.toThrow("launchpad_identity_conflict");
-  });
-  it("does not create a duplicate when a registered Product has no backing Space", async () => {
-    await expect(ensureLaunchpad(envFor({ product: { id: "p", tenant_id: "team", status: "active", spacetype_id: "launchpad" } }))).rejects.toThrow("launchpad_backing_space_missing");
+  it("reuses a registered Product without reading a backing Space", async () => {
+    await ensureLaunchpad(envFor({ product: { id: "p", tenant_id: "team", status: "active", spacetype_id: "launchpad" } }));
     expect(createSpaceRecord).not.toHaveBeenCalled();
   });
-  it("stops if an older root requires migration", async () => {
-    await expect(ensureLaunchpad(envFor({ org: { id: "team" }, root: { id: "old" } }))).rejects.toThrow("launchpad_existing_root_requires_migration");
+  it("does not take over another tenant's Product", async () => {
+    await expect(ensureLaunchpad(envFor({ product: { id: "p", tenant_id: "other", status: "active", spacetype_id: "launchpad" } }))).rejects.toThrow("launchpad_identity_conflict");
     expect(createSpaceRecord).not.toHaveBeenCalled();
   });
-  it("requires the provisioning queue outside development", async () => {
-    const env = envFor({ org: { id: "team" } });
-    env.ENVIRONMENT = "production";
-    await expect(ensureLaunchpad(env)).rejects.toThrow("launchpad_provisioning_queue_unavailable");
+  it("fails closed when the upgrade audit found an unresolved legacy Launchpad identity", async () => {
+    await expect(ensureLaunchpad(envFor({ legacyIssue: { space_id: "legacy-root" } }))).rejects.toThrow("launchpad_legacy_product_requires_migration");
+    expect(createSpaceRecord).not.toHaveBeenCalled();
   });
 });

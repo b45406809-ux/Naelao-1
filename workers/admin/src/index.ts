@@ -333,27 +333,27 @@ app.get("/admin/audit", async (c) => {
 app.get("/admin/products/search", async (c) => {
   const slug = c.req.query("slug") ?? "";
   if (!slug) return c.json({ error_code: "bad_request", message: "slug is required" }, 400);
-  const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id, name, status, product_slug, created_at FROM spaces WHERE product_slug = ? LIMIT 1"
+  const product = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id, name, status, product_slug, created_at FROM products WHERE product_slug = ? LIMIT 1"
   ).bind(slug).first();
-  if (!space) return c.json({ error_code: "not_found", message: "No product with that slug" }, 404);
-  return c.json(space);
+  if (!product) return c.json({ error_code: "not_found", message: "No product with that slug" }, 404);
+  return c.json(product);
 });
 
 app.post("/admin/products/:spaceId/suspend", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { reason } = await c.req.json<{ reason: string }>();
   if (!reason?.trim()) return c.json({ error_code: "bad_request", message: "reason is required for audit trail" }, 400);
-  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status, suspension_reason FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string; suspension_reason: string | null }>();
-  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  if (space.status === "suspended") {
-    if (space.suspension_reason !== "admin_product") {
+  const product = await c.env.PLATFORM_DB.prepare("SELECT id, status, suspension_reason FROM products WHERE id = ?").bind(spaceId).first<{ id: string; status: string; suspension_reason: string | null }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  if (product.status === "suspended") {
+    if (product.suspension_reason !== "admin_product") {
       return c.json({ error_code: "suspension_reason_mismatch", message: "This space is held by another platform control" }, 409);
     }
     return c.json({ ok: true, already_suspended: true });
   }
   await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = 'suspended', suspension_reason = 'admin_product', updated_at = datetime('now') WHERE id = ? AND status = 'active'"
+    "UPDATE products SET status = 'suspended', suspension_reason = 'admin_product', updated_at = datetime('now') WHERE id = ? AND status = 'active'"
   ).bind(spaceId).run();
   // Audit trail — same table pattern as /admin/failures.
   await c.env.PLATFORM_DB.prepare(
@@ -366,8 +366,8 @@ app.post("/admin/products/:spaceId/suspend", async (c) => {
 app.post("/admin/products/:spaceId/restore", async (c) => {
   const spaceId = c.req.param("spaceId");
   const space = await c.env.PLATFORM_DB.prepare(
-    `SELECT s.id, s.status, s.suspension_reason, o.status AS org_status
-     FROM spaces s JOIN orgs o ON o.id = s.tenant_id WHERE s.id = ?`
+    `SELECT p.id, p.status, p.suspension_reason, o.status AS org_status
+     FROM products p JOIN orgs o ON o.id = p.tenant_id WHERE p.id = ?`
   ).bind(spaceId).first<{ id: string; status: string; suspension_reason: string | null; org_status: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   if (space.org_status !== "active") {
@@ -380,9 +380,9 @@ app.post("/admin/products/:spaceId/restore", async (c) => {
     return c.json({ error_code: "suspension_reason_mismatch", message: "This space was suspended by another control; restore it through that control" }, 409);
   }
   const result = await c.env.PLATFORM_DB.prepare(
-    `UPDATE spaces SET status = 'active', suspension_reason = NULL, updated_at = datetime('now')
+    `UPDATE products SET status = 'active', suspension_reason = NULL, updated_at = datetime('now')
      WHERE id = ? AND status = 'suspended' AND suspension_reason = 'admin_product'
-       AND EXISTS (SELECT 1 FROM orgs WHERE id = spaces.tenant_id AND status = 'active')`
+       AND EXISTS (SELECT 1 FROM orgs WHERE id = products.tenant_id AND status = 'active')`
   ).bind(spaceId).run();
   if (result.meta.changes === 0) {
     return c.json({ error_code: "restore_conflict", message: "Space or tenant status changed; reload and retry" }, 409);

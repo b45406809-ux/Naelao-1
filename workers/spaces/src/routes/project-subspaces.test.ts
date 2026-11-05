@@ -123,7 +123,7 @@ describe("project subspace routes", () => {
     const db = { prepare: (sql: string) => ({ bind: () => ({ first: async () => {
       if (sql.includes("JOIN space_members")) return { role: "owner" };
       if (sql.includes("FROM products")) return { id: "product" };
-      return { spacetype_id: "launchpad", config_json: null, tenancy_mode: "team", depth: 1, parent_space_id: "product" };
+      return { spacetype_id: "launchpad", config_json: null, tenancy_mode: "team", depth: 0, parent_space_id: null };
     } }) }) };
     const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
       NAELAO_CONFIG_KV: { get: async () => ({ productConfig: {} }), put: vi.fn() },

@@ -174,6 +174,55 @@ export async function recordPlatformPlanSubscription(
   return true;
 }
 
+/** Store the Product customer's subscription on their account, independently of the Launchpad
+ * team's org subscription. Signed webhook metadata binds the lifecycle to the account checkout. */
+export async function recordProductUserPlanSubscription(event: NormalizedBillingEvent, env: LemonSqueezyEnv): Promise<boolean> {
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom.kind !== "product_user_plan") return false;
+  const productId = requiredMetadataString(custom, "product_id", "Product user plan");
+  const endUserId = requiredMetadataString(custom, "end_user_id", "Product user plan");
+  const plan = requiredMetadataString(custom, "plan", "Product user plan");
+  if (plan !== "growth" && plan !== "business") throw new Error("product user plan webhook contains an unsupported plan");
+  if (event.type === "refund.issued") return true;
+  const provider = event.provider;
+  const providerSubscriptionId = event.subscriptionId ?? null;
+  if (event.type === "payment.failed") {
+    if (!providerSubscriptionId) return true;
+    await env.PLATFORM_DB.prepare(
+      `UPDATE product_user_subscriptions SET status='past_due', provider_event_at=COALESCE(?, provider_event_at), updated_at=datetime('now')
+       WHERE product_id=? AND end_user_id=? AND provider=? AND provider_subscription_id=?
+         AND (? IS NULL OR provider_event_at IS NULL OR ? > provider_event_at)`
+    ).bind(event.providerUpdatedAt ?? null, productId, endUserId, provider, providerSubscriptionId,
+      event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null).run();
+    return true;
+  }
+  if (!event.type.startsWith("subscription.") && event.type !== "payment.success") return true;
+  const active = await env.PLATFORM_DB.prepare(
+    `SELECT 1 FROM products p JOIN product_end_users u ON u.product_space_id=p.id
+     WHERE p.id=? AND p.status='active' AND u.end_user_id=? AND u.deleted_at IS NULL`
+  ).bind(productId, endUserId).first();
+  if (!active) throw new Error("Product user plan references an inactive account");
+  const status = mapSubscriptionStatus(event);
+  const planTier = status === "expired" ? "free" : plan;
+  const result = await env.PLATFORM_DB.prepare(
+    `INSERT INTO product_user_subscriptions
+       (product_id,end_user_id,plan_tier,status,provider,provider_customer_id,provider_subscription_id,current_period_end,provider_event_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
+     ON CONFLICT(product_id,end_user_id) DO UPDATE SET
+       plan_tier=excluded.plan_tier,status=excluded.status,provider=excluded.provider,
+       provider_customer_id=COALESCE(excluded.provider_customer_id,product_user_subscriptions.provider_customer_id),
+       provider_subscription_id=COALESCE(excluded.provider_subscription_id,product_user_subscriptions.provider_subscription_id),
+       current_period_end=excluded.current_period_end,provider_event_at=excluded.provider_event_at,updated_at=datetime('now')
+     WHERE (product_user_subscriptions.provider=excluded.provider OR product_user_subscriptions.provider IS NULL)
+       AND (product_user_subscriptions.provider_subscription_id=excluded.provider_subscription_id
+            OR (excluded.provider_event_at IS NOT NULL AND (product_user_subscriptions.provider_event_at IS NULL OR excluded.provider_event_at>product_user_subscriptions.provider_event_at)))
+       AND (excluded.provider_event_at IS NULL OR product_user_subscriptions.provider_event_at IS NULL OR excluded.provider_event_at>product_user_subscriptions.provider_event_at)`
+  ).bind(productId, endUserId, planTier, status, provider, event.customerId ?? null, providerSubscriptionId,
+    event.currentPeriodEnd ?? null, event.providerUpdatedAt ?? null).run();
+  if (!result.meta.changes) console.warn(`[billing/${provider}] Ignored stale Product user plan event product=${productId} user=${endUserId}`);
+  return true;
+}
+
 /** Apply verified payment and subscription lifecycle updates for a marketplace template. */
 async function settleNativeTemplateRoyalty(event: NormalizedBillingEvent, env: LemonSqueezyEnv): Promise<boolean> {
   if (event.type !== "payment.success") return false;
@@ -305,7 +354,7 @@ export async function handleLemonSqueezyWebhook(
       !event.subscriptionId) {
     return Response.json({ error: "missing_template_subscription_id" }, { status: 500 });
   }
-  if (topCustom["kind"] === "platform_plan") {
+  if (topCustom["kind"] === "platform_plan" || topCustom["kind"] === "product_user_plan") {
     // data.id identifies the subscription resource, not a webhook delivery. Creation, renewal,
     // cancellation, and expiry can all share it. Hash the signed body for delivery dedupe while
     // retaining providerEventId separately for subscription matching and money-ledger joins.
@@ -316,13 +365,14 @@ export async function handleLemonSqueezyWebhook(
       return Response.json({ ok: true, duplicate: true });
     }
     try {
-      await recordPlatformPlanSubscription(event, env);
+      if (topCustom["kind"] === "platform_plan") await recordPlatformPlanSubscription(event, env);
+      else await recordProductUserPlanSubscription(event, env);
     } catch (err) {
       console.error("[billing/ls] platform plan recording failed:", (err as Error).message);
       await unmarkEventProcessed("lemon_squeezy", planEventId, env.PLATFORM_DB);
       return Response.json({ error: "processing_failed", failed: ["platform plan recording"] }, { status: 500 });
     }
-    return Response.json({ ok: true, kind: "platform_plan" });
+      return Response.json({ ok: true, kind: topCustom["kind"] });
   }
 
   // Marketplace license purchases are platform-native one-time sales, not a business's

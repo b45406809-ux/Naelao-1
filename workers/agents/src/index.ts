@@ -8336,6 +8336,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
         `SELECT id, tenant_id, config_json, last_digest_sent_at
            FROM spaces
           WHERE parent_space_id IS NULL AND status = 'active' AND id > ?
+            AND NOT EXISTS (SELECT 1 FROM products p WHERE p.id = spaces.id)
           ORDER BY id
           LIMIT ?`
       ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; tenant_id: string; config_json: string | null; last_digest_sent_at: string | null }>();

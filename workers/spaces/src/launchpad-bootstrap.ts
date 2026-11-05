@@ -1,10 +1,9 @@
-import { createSpaceRecord, SpaceCreationError, type CreateSpaceEnv } from "./create-space.js";
+import type { CreateSpaceEnv } from "./create-space.js";
 
 export interface LaunchpadBootstrapEnv extends CreateSpaceEnv {
   NAELAO_DASHBOARD_TENANT_ID?: string;
 }
 
-type RootRow = { id: string; tenant_id: string; status: string; parent_space_id: string | null; spacetype_id: string };
 type ProductRow = { id: string; tenant_id: string; status: string; spacetype_id: string };
 
 /** Initialize the single Launchpad product for the configured team tenant. Existing roots are
@@ -16,30 +15,25 @@ export async function ensureLaunchpad(env: LaunchpadBootstrapEnv): Promise<void>
     "SELECT id, tenant_id, status, spacetype_id FROM products WHERE product_slug = ?"
   ).bind("launchpad").first<ProductRow>();
   if (registered && (registered.tenant_id !== tenantId || registered.spacetype_id !== "launchpad")) throw new Error("launchpad_identity_conflict");
-  if (registered && !["active", "provisioning"].includes(registered.status)) throw new Error("launchpad_not_active");
-  const existing = await env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id, status, parent_space_id, spacetype_id FROM spaces WHERE product_slug = ?"
-  ).bind("launchpad").first<RootRow>();
-  if (existing) {
-    if (registered && registered.id !== existing.id) throw new Error("launchpad_identity_conflict");
-    if (existing.tenant_id !== tenantId || existing.parent_space_id || existing.spacetype_id !== "launchpad") throw new Error("launchpad_identity_conflict");
-    if (!["active", "provisioning"].includes(existing.status)) throw new Error("launchpad_not_active");
+  if (registered) {
+    if (!["active", "provisioning"].includes(registered.status)) throw new Error("launchpad_not_active");
     return;
   }
-  // Other paths still use the legacy backing Space. Fail closed until that migration is complete
-  // rather than provisioning a second Product with a different identity.
-  if (registered) throw new Error("launchpad_backing_space_missing");
+  const unresolvedLegacy = await env.PLATFORM_DB.prepare(
+    "SELECT space_id FROM product_link_migration_issues WHERE recorded_product_slug = ? LIMIT 1"
+  ).bind("launchpad").first<{ space_id: string }>();
+  if (unresolvedLegacy) throw new Error("launchpad_legacy_product_requires_migration");
   const org = await env.PLATFORM_DB.prepare("SELECT id FROM orgs WHERE id = ? AND status = 'active'").bind(tenantId).first<{ id: string }>();
   if (!org) throw new Error("launchpad_team_tenant_unavailable");
-  const previous = await env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE tenant_id = ? AND parent_space_id IS NULL AND status != 'deleted' LIMIT 1").bind(tenantId).first<{ id: string }>();
-  if (previous) throw new Error("launchpad_existing_root_requires_migration");
-  if (env.ENVIRONMENT !== "development" && !env.PROVISION_QUEUE) throw new Error("launchpad_provisioning_queue_unavailable");
-  try {
-    await createSpaceRecord(env, { tenantId, name: "Launchpad", spacetypeId: "launchpad", productSlug: "launchpad" });
-  } catch (error) {
-    // Concurrent starts can race on the unique slug. Validate the winner instead of duplicating it.
-    if (!(error instanceof SpaceCreationError) || ![409, 429].includes(error.status)) throw error;
-    const winner = await env.PLATFORM_DB.prepare("SELECT id, tenant_id, status, parent_space_id, spacetype_id FROM spaces WHERE product_slug = ?").bind("launchpad").first<RootRow>();
-    if (!winner || winner.tenant_id !== tenantId || winner.parent_space_id || winner.spacetype_id !== "launchpad" || !["active", "provisioning"].includes(winner.status)) throw error;
-  }
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO products (id, tenant_id, spacetype_id, name, product_slug, status, config_json, created_at, updated_at)
+     VALUES (?, ?, 'launchpad', 'Launchpad', 'launchpad', 'active', '{}', ?, ?)
+     ON CONFLICT(product_slug) DO NOTHING`
+  ).bind(id, tenantId, now, now).run();
+  const winner = await env.PLATFORM_DB.prepare("SELECT id, tenant_id, status, spacetype_id FROM products WHERE product_slug = ?")
+    .bind("launchpad").first<ProductRow>();
+  if (!winner || winner.tenant_id !== tenantId || winner.spacetype_id !== "launchpad") throw new Error("launchpad_identity_conflict");
+  if (winner.status !== "active") throw new Error("launchpad_not_active");
 }

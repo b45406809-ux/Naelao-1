@@ -847,7 +847,7 @@ async function handle(c: C, agent: boolean) {
     )
       return c.json({ error_code: "delegate_membership_required" }, 403);
     const row = await c.env.PLATFORM_DB.prepare(
-      "SELECT u.email,u.email_verified_at,u.phone_e164,u.phone_verified_at FROM product_end_users u JOIN spaces s ON u.product_space_id=COALESCE(s.product_id,s.parent_space_id,s.id) WHERE s.id=? AND u.end_user_id=? AND u.deleted_at IS NULL AND u.suspended_at IS NULL"
+      "SELECT u.email,u.email_verified_at,u.phone_e164,u.phone_verified_at FROM product_end_users u JOIN spaces s ON u.product_space_id=s.product_id WHERE s.id=? AND u.end_user_id=? AND u.deleted_at IS NULL AND u.suspended_at IS NULL"
     )
       .bind(space, target)
       .first<{
