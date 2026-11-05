@@ -83,29 +83,6 @@ export default {
       const roster = await response.json<{ data?: Array<{ user_id?: string }> }>();
       return Response.json({ is_platform_collaborator: (roster.data ?? []).some(member => member.user_id === body.endUserId) });
     }
-    if (url.pathname === "/__test/browser/provision-user-space" && request.method === "POST") {
-      // Simulate the real provisioner's registry and owner-seeding calls for a Space created in
-      // this isolated no-queue browser runtime. Never accept arbitrary tenant/owner headers.
-      const body = await request.json<{ spaceId?: string; endUserId?: string }>().catch(() => ({}));
-      const tenantId = "tenant-project-bot-browser-test";
-      const space = await (env.PLATFORM_DB as D1Database).prepare(
-        `SELECT s.id, s.name, s.spacetype_id FROM spaces s JOIN space_members m ON m.space_id=s.id
-         WHERE s.id=? AND s.tenant_id=? AND s.parent_space_id='space-bot-e2e'
-           AND s.created_by=? AND m.end_user_id=? AND m.role='owner' AND m.suspended_at IS NULL`
-      ).bind(body.spaceId, tenantId, body.endUserId, body.endUserId).first<{ id: string; name: string; spacetype_id: string }>();
-      if (!space || !body.endUserId) return Response.json({ error_code: "fixture_space_not_found" }, { status: 404 });
-      const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
-        "x-naelao-internal-token": await mintInternalToken(String(env.PLATFORM_SECRET ?? ""), tenantId) };
-      const registry = await spacesWorker.fetch(new Request(`http://spaces/spaces/${space.id}/registry`, {
-        method: "POST", headers, body: JSON.stringify({ id: space.id, name: space.name, space_type: space.spacetype_id }),
-      }), env as never, ctx);
-      if (!registry.ok) return Response.json({ error_code: "registry_seed_failed", status: registry.status }, { status: 500 });
-      const member = await spacesWorker.fetch(new Request(`http://spaces/spaces/${space.id}/members`, {
-        method: "POST", headers, body: JSON.stringify({ space_id: space.id, user_id: body.endUserId, role: "owner" }),
-      }), env as never, ctx);
-      if (!member.ok) return Response.json({ error_code: "owner_seed_failed", status: member.status }, { status: 500 });
-      return Response.json({ provisioned: true });
-    }
     if (url.pathname === "/__test/browser/suspend-product-user" && request.method === "POST") {
       const body = await request.json<{ endUserId?: string }>().catch(() => ({}));
       if (!body.endUserId || !/^[0-9a-f-]{36}$/i.test(body.endUserId)) return Response.json({ error_code: "invalid_user" }, { status: 400 });

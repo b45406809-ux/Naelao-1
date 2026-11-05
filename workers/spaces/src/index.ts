@@ -5003,8 +5003,8 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
 
   // Resolve the Space (D1) to apply its optional template policy.
   const parentSpace = await c.env.PLATFORM_DB.prepare(
-    "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
-  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
+    "SELECT name, spacetype_id, config_json, tenancy_mode, agency_shell, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ name: string; spacetype_id: string; config_json: string | null; tenancy_mode: string; agency_shell: number; depth: number; parent_space_id: string | null }>();
   if (!parentSpace) throw notFound("Space");
   if (parentSpace.parent_space_id) {
     // A legacy Product backing row is not an end-user Space. Allow the actual end-user
@@ -5035,6 +5035,25 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   if (role === "product_end_user" && parentId !== spaceId)
     return c.json({ error_code: "max_depth_exceeded", message: "A subspace cannot have child spaces" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (role === "product_end_user" && (c.env.ENVIRONMENT === "development" || c.env.ENVIRONMENT === "test") &&
+      (!c.env.PROVISION_QUEUE || c.env.ENVIRONMENT === "development")) {
+    // Local Wrangler can run without a provisioner queue. Repair the same root and owner
+    // records that the production provisioner writes, using fresh D1 membership authority.
+    const membership = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId, tenantId);
+    if (membership !== "owner" && membership !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    const registry = await forwardToSpaceDO(stub, "/spaces", "GET");
+    const current = registry.ok ? await registry.json<{ data?: Array<{ id?: string }> }>().catch(() => null) : null;
+    if (!current?.data) return c.json({ error_code: "local_space_initialization_unavailable" }, 503);
+    if (!current.data.some(entry => entry.id === spaceId)) {
+      const initialized = await forwardToSpaceDO(stub, "/spaces", "POST", JSON.stringify({
+        id: spaceId, name: parentSpace.name, space_type: parentSpace.spacetype_id,
+        tenancy_mode: parentSpace.tenancy_mode, agency_shell: parentSpace.agency_shell === 1,
+      }));
+      if (!initialized.ok) return c.json({ error_code: "local_space_initialization_unavailable" }, 503);
+    }
+    const synced = await forwardToSpaceDO(stub, "/members", "POST", JSON.stringify({ space_id: spaceId, user_id: userId, role: membership }));
+    if (!synced.ok) return c.json({ error_code: "local_space_initialization_unavailable" }, 503);
+  }
   const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(parentId)}`, "GET");
   const authorization = await auth.json<{ permitted?: boolean }>().catch(() => ({} as { permitted?: boolean }));
   if (!auth.ok || authorization.permitted !== true) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);

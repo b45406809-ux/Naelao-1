@@ -35,9 +35,10 @@ const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../
 const WHATSAPP_AUTH_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0080_whatsapp_passwordless_auth.sql"), "utf8");
 const WEBSITE_CONNECTIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0129_website_connections.sql"), "utf8");
 const ASSISTANT_COMMUNICATIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0130_assistant_communications.sql"), "utf8");
+const PRODUCT_REGISTRY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0156_product_registry.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION, WEBSITE_CONNECTIONS_MIGRATION, ASSISTANT_COMMUNICATIONS_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION, WEBSITE_CONNECTIONS_MIGRATION, ASSISTANT_COMMUNICATIONS_MIGRATION, PRODUCT_REGISTRY_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -68,7 +69,7 @@ async function seedProduct(env: ReturnType<typeof makeEnv>, id: string, tenantId
   const configJson = productConfig ? JSON.stringify({ productConfig }) : "{}";
   await env.PLATFORM_DB.prepare(
     "INSERT INTO spaces (id, tenant_id, status, name, config_json, product_slug) VALUES (?, ?, 'active', 'Acme Store', ?, ?)"
-  ).bind(id, tenantId, configJson, slug ?? null).run();
+  ).bind(id, tenantId, configJson, slug ?? id).run();
 }
 
 /** Extracts the verification token from the most recent notify() call and redeems it. */

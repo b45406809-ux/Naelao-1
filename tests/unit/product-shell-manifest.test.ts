@@ -38,6 +38,7 @@ const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migratio
 const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
 const SPACE_MEMBERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0021_space_members.sql"), "utf8");
 const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0096_product_end_user_language.sql"), "utf8");
+const PRODUCT_REGISTRY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0156_product_registry.sql"), "utf8");
 
 const FAKE_MANIFEST = {
   id: "launchpad",
@@ -82,7 +83,7 @@ const FAKE_PROJECT_TEMPLATES = [
 const FAKE_AGENTS = [{ id: "launchpad-support-v1", name: "Support Agent", description: "d" }];
 
 function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
-  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION, SPACE_MEMBERS_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION, SPACE_MEMBERS_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, PRODUCT_REGISTRY_MIGRATION]);
   const kvStore = new Map<string, string>();
   kvStore.set("space-type-manifest:v2:launchpad", JSON.stringify(FAKE_MANIFEST));
   // Routes by path like the real agents worker: the manifest handler now fetches TWO catalogues
@@ -123,8 +124,8 @@ function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number
 
 async function seedSpace(env: ReturnType<typeof makeEnv>, id: string, tenantId: string) {
   await env.PLATFORM_DB.prepare(
-    "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id) VALUES (?, ?, 'active', 'Acme Store', 'launchpad')"
-  ).bind(id, tenantId).run();
+    "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, product_slug) VALUES (?, ?, 'active', 'Acme Store', 'launchpad', ?)"
+  ).bind(id, tenantId, id).run();
   for (const endUserId of ["user-a", "user-b"]) {
     await env.PLATFORM_DB.prepare(
       "INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role) VALUES (?, ?, ?, ?, 'member')"

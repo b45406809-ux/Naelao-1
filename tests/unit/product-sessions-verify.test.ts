@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import spacesWorker from "../../workers/spaces/src/index.js";
 import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
 import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.js";
@@ -19,14 +20,16 @@ const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
-    config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT, product_slug TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
 `;
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL]);
+  const productMigration = readFileSync(new URL("../../infra/migrations/0156_product_registry.sql", import.meta.url), "utf8");
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, productMigration,
+    "CREATE TABLE product_end_users (product_space_id TEXT, end_user_id TEXT, suspended_at TEXT, deleted_at TEXT)"]);
   return {
     PLATFORM_SECRET: "test-platform-secret",
     ENVIRONMENT: "test",
@@ -40,8 +43,11 @@ function makeEnv() {
 
 async function seedSpace(env: ReturnType<typeof makeEnv>, id: string, tenantId: string) {
   await env.PLATFORM_DB.prepare(
-    "INSERT INTO spaces (id, tenant_id, status, name) VALUES (?, ?, 'active', 'Acme Store')"
-  ).bind(id, tenantId).run();
+    "INSERT INTO spaces (id, tenant_id, status, name, product_slug) VALUES (?, ?, 'active', 'Acme Store', ?)"
+  ).bind(id, tenantId, id).run();
+  for (const user of ["u1", "user-42", "user-a", "user-b"]) {
+    await env.PLATFORM_DB.prepare("INSERT INTO product_end_users (product_space_id, end_user_id) VALUES (?, ?)").bind(id, user).run();
+  }
 }
 
 function verifyReq(body: unknown, platformSecret?: string): Request {

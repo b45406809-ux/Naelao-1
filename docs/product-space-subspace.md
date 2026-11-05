@@ -21,4 +21,4 @@ Product sessions establish identity only. The Spaces Worker separately resolves 
 
 The current change does not perform that cutover. It does not establish deployed Cloudflare behavior or production readiness.
 
-The local browser acceptance test explicitly runs the provisioner's registry and owner-seeding operations in its isolated no-queue environment. Local no-queue Space creation itself still needs that initialization integrated before subspace creation works without the test fixture.
+In local development without a provisioner queue, the first authorized subspace creation initializes the SpaceDO root and synchronizes the caller's current D1 owner or admin role. Production continues to use the provisioner queue. Local acceptance covers that initialization; deployed provisioner and upgrade acceptance remain necessary.

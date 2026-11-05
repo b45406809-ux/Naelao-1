@@ -54,7 +54,7 @@ describe("data erasure D1 records", () => {
       "gdpr_requests", "idempotency_keys", "marketplace_forks",
       "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains", "assistant_sessions",
       "service_accounts", "space_provisioning_leases", "space_type_tools",
-      "spaces", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
+      "spaces", "products", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
       "website_connections", "assistant_communication_identities",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
@@ -249,8 +249,8 @@ describe("data erasure D1 records", () => {
     db.db.prepare("INSERT INTO users (id, email, org_id) VALUES (?, ?, ?)").run("user-a", "person@example.com", "org-a");
     db.db.prepare("INSERT INTO notifications (id, tenant_id, user_id, type, title, body) VALUES (?, ?, ?, ?, ?, ?)")
       .run("n-a", "org-a", "user-a", "agent", "Private", "Body");
-    db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, ?, ?, ?)")
-      .run("space-a", "org-a", "type-a", "Acme space");
+    db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, product_slug) VALUES (?, ?, ?, ?, ?)")
+      .run("space-a", "org-a", "type-a", "Acme space", "legacy-product");
     db.db.prepare("INSERT INTO template_subscriptions (id, space_id, template_id, developer_user_id, attribution_channel) VALUES (?, ?, ?, ?, ?)")
       .run("sub-a", "space-a", "template-a", "developer-a", "MARKETPLACE_ORGANIC");
     db.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name) VALUES (?, ?, ?, ?)")
@@ -296,6 +296,10 @@ describe("data erasure D1 records", () => {
 
     await anonymizeOrgUsers(db as never, "org-a");
     await eraseOrgOperationalRecords(db as never, "org-a");
+
+    // During the compatibility phase the Space update trigger must also sanitize Product data.
+    expect(db.db.prepare("SELECT name, config_json, status FROM products WHERE id = ?").get("space-a"))
+      .toEqual({ name: "Erased space", config_json: "{}", status: "deleted" });
 
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM org_members WHERE org_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });

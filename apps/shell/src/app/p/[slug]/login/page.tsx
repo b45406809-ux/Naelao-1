@@ -115,14 +115,15 @@ export default function LoginPage() {
         <DeskDropLogin productId={product.space_id} />
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14, padding: 4, background: "var(--bg)", borderRadius: 10 }}>
-          <button type="button" onClick={() => { setMode("password"); setError(null); }} style={{ padding: 8, border: 0, borderRadius: 7, background: mode === "password" ? "var(--surface)" : "transparent", color: "var(--text)", cursor: "pointer" }}>Password</button>
-          <button type="button" onClick={() => { setMode("whatsapp"); setError(null); }} style={{ padding: 8, border: 0, borderRadius: 7, background: mode === "whatsapp" ? "var(--surface)" : "transparent", color: "var(--text)", cursor: "pointer" }}>WhatsApp</button>
+          <button type="button" disabled={!isHydrated} onClick={() => { setMode("password"); setError(null); }} style={{ padding: 8, border: 0, borderRadius: 7, background: mode === "password" ? "var(--surface)" : "transparent", color: "var(--text)", cursor: "pointer" }}>Password</button>
+          <button type="button" disabled={!isHydrated} onClick={() => { setMode("whatsapp"); setError(null); }} style={{ padding: 8, border: 0, borderRadius: 7, background: mode === "whatsapp" ? "var(--surface)" : "transparent", color: "var(--text)", cursor: "pointer" }}>WhatsApp</button>
         </div>
 
         {mode === "password" ? <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <input
             type="email"
             placeholder="Email"
+            disabled={!isHydrated}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
@@ -131,13 +132,14 @@ export default function LoginPage() {
           <input
             type="password"
             placeholder="Password"
+            disabled={!isHydrated}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
             style={{ padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)", color: "var(--text)" }}
           />
           {error && <div style={{ color: "#dc2626", fontSize: 12.5 }}>{error}</div>}
-          <button type="submit" disabled={submitting} style={{ padding: "10px 12px", border: 0, borderRadius: 8, background: "var(--accent)", color: "white", fontWeight: 600, cursor: submitting ? "default" : "pointer" }}>
+          <button type="submit" disabled={submitting || !isHydrated} style={{ padding: "10px 12px", border: 0, borderRadius: 8, background: "var(--accent)", color: "white", fontWeight: 600, cursor: submitting || !isHydrated ? "default" : "pointer" }}>
             {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form> : <form onSubmit={handleWhatsApp} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -148,7 +150,7 @@ export default function LoginPage() {
             placeholder="+27 82 123 4567"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            disabled={challengeSent}
+            disabled={challengeSent || !isHydrated}
             required
             style={{ padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)", color: "var(--text)" }}
           />
@@ -167,7 +169,7 @@ export default function LoginPage() {
             />
           </>}
           {error && <div style={{ color: "#dc2626", fontSize: 12.5 }}>{error}</div>}
-          <button type="submit" disabled={submitting || (challengeSent && code.length !== 6)} style={{ padding: "10px 12px", border: 0, borderRadius: 8, background: "var(--accent)", color: "white", fontWeight: 600, cursor: submitting ? "default" : "pointer" }}>
+          <button type="submit" disabled={submitting || !isHydrated || (challengeSent && code.length !== 6)} style={{ padding: "10px 12px", border: 0, borderRadius: 8, background: "var(--accent)", color: "white", fontWeight: 600, cursor: submitting || !isHydrated ? "default" : "pointer" }}>
             {submitting ? "Please wait…" : challengeSent ? "Verify and sign in" : "Send WhatsApp code"}
           </button>
           {challengeSent && <button type="button" onClick={() => { setChallengeSent(false); setCode(""); }} style={{ border: 0, background: "transparent", color: "var(--text2)", cursor: "pointer" }}>Use another number</button>}

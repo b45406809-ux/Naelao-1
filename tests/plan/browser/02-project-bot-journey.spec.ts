@@ -64,12 +64,7 @@ test("opens an internal Project Bot and creates a project-scoped thread", async 
   const projectId = createdProject.id;
   expect(projectId).toMatch(/^[0-9a-f-]{36}$/i);
 
-  // The browser runtime has no provision queue; replay the production provisioner's registry
-  // and owner seed calls before exercising subspaces through the real Router and SpaceDO.
-  const provisioned = await page.request.post("http://127.0.0.1:8788/__test/browser/provision-user-space", {
-    data: { spaceId: userSpace.id, endUserId: session.end_user_id },
-  });
-  expect(provisioned.status()).toBe(200);
+  // The local no-queue runtime initializes the Space hierarchy on the first authorized create.
   const createSubspace = await page.request.post(`http://127.0.0.1:8788/v1/spaces/${userSpace.id}/sub-spaces`, {
     headers: sessionHeaders, data: { name: "Research", space_type: "untrusted-type" },
   });
