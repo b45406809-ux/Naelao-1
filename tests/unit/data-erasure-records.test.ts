@@ -56,6 +56,9 @@ describe("data erasure D1 records", () => {
       "service_accounts", "space_provisioning_leases", "space_type_tools",
       "spaces", "products", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
       "website_connections", "assistant_communication_identities",
+      "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_accounts",
+      "agentport_agents", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events",
+      "agentport_principals", "agentport_services",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -218,6 +221,34 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT id FROM assistant_sessions ORDER BY id").all()).toEqual([{ id: "session-b" }]);
     expect(db.db.prepare("SELECT id, content FROM assistant_messages ORDER BY id").all())
       .toEqual([{ id: "message-b", content: "private tenant B text" }]);
+  });
+
+  it("erases AgentPort registry relationships child-first for the target tenant", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare(`INSERT INTO agentport_services(id,tenant_id,name,service_type,connection_purpose,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?)`).run("svc-a", "tenant-a", "Service A", "managed", "agent_resource", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_principals(id,tenant_id,principal_type,external_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?)`).run("principal-a", "tenant-a", "individual", "user-a", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_agents(id,tenant_id,principal_id,created_by,host_platform,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?)`).run("agent-a", "tenant-a", "principal-a", "user-a", "naelao", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("account-a", "tenant-a", "svc-a", "agent_native", "individual", "user-a", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_account_grants(id,tenant_id,account_id,agent_id,granted_by,permissions_json,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("grant-a", "tenant-a", "account-a", "agent-a", "user-a", '["email.read"]', "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_event_subscriptions(id,tenant_id,agent_id,service_id,event_type,delivery_mode,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("sub-a", "tenant-a", "agent-a", "svc-a", "message.received", "poll", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,event_type,available_at,created_at)
+      VALUES(?,?,?,?,?,?)`).run("event-a", "tenant-a", "svc-a", "message.received", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_event_deliveries(id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("delivery-a", "tenant-a", "event-a", "sub-a", "agent-a", "2026-01-01", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_activity_leases(id,tenant_id,agent_id,subscription_id,consumer_id,expires_at,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("lease-a", "tenant-a", "agent-a", "sub-a", "run-a", "2026-01-02", "2026-01-01", "2026-01-01");
+
+    await eraseOrgOperationalRecords(db as never, "tenant-a");
+
+    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_account_grants", "agentport_accounts", "agentport_agents", "agentport_principals", "agentport_services"]) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE tenant_id=?`).get("tenant-a"), table).toEqual({ count: 0 });
+    }
   });
 
   it("clears credentials and login metadata while anonymizing only the target org", async () => {

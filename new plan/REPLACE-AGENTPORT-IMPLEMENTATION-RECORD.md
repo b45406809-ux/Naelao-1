@@ -46,6 +46,7 @@ The implemented change is a safe first AgentPort control-plane slice, not the fu
 - `corepack pnpm@9.12.0 --filter @naelao/agents-worker typecheck`: passed after hosted-agent identity registration was added.
 - `corepack pnpm@9.12.0 --filter naelao-router typecheck`: passed after building the workspace `@naelao/types` and `@naelao/http` dependencies; initial failure was stale/missing generated workspace `dist` output.
 - `corepack pnpm@9.12.0 --filter @naelao/http build` and `--filter @naelao/types build`: passed.
+- Organization erasure removes the tenant's AgentPort event, lease, access-grant, account, agent, principal, and service records child-first. The data-erasure classification and AgentPort erasure regression tests pass.
 - Agents Wrangler staging dry run: blocked twice by Docker build `no space left on device` while materializing its sandbox image, including after reclaiming Docker build cache; no deploy was attempted.
 - `git diff --check`: passed before final review.
-- GitHub Actions: latest recorded target-branch full test inventory run `41421693500` completed successfully on 2026-11-02. A new run is still required for this commit.
+- GitHub Actions inventory run `42134124869` on commit `06974eba`: `node`, `conformance`, `typecheck`, `security-lint`, `runtime-acceptance`, and connected checks passed; `repository`, `workspace`, and `browser-journey` failed, so the summary failed. Repository output identified the missing AgentPort erasure classification, fixed in the follow-up. The other failures were unrelated existing Launchpad/product route and data-erasure expectations (including the product-registry cutover) and were not changed by this AgentPort work. A full rerun is required on the follow-up commit.

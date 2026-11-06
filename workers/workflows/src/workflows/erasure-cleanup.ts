@@ -7,6 +7,7 @@ export const SPACE_ERASURE_TABLES = [
   "active_sessions", "thread_sessions", "threads", "kb_chunks", "kb_documents",
   "agent_email_addresses", "agi_runs", "artifacts", "attachment_copy_claims", "blueprint_export_jobs",
   "space_domains", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
+  "product_link_migration_issues",
   "connector_alias_audit", "connector_aliases", "customer_voice_call_admissions",
   "customer_voice_purchase_quotes", "customer_voice_number_bindings", "customer_voice_space_policies",
   "desk_drop_tickets", "email_attachment_ocr_usage", "email_inbound_attachments", "email_reply_routes",
@@ -132,6 +133,20 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
+    // AgentPort registry rows are tenant-owned operational data. Delete dependents before
+    // principals/services/accounts so no identity, event payload reference, or access grant
+    // survives an organization erasure.
+    db.prepare("DELETE FROM agentport_activity_leases WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_event_deliveries WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_account_dependencies WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_account_grants WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_event_subscriptions WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_events WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_accounts WHERE tenant_id = ? AND parent_account_id IS NOT NULL").bind(orgId),
+    db.prepare("DELETE FROM agentport_accounts WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_agents WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_principals WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_services WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
