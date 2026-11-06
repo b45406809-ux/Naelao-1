@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentPortClient, AgentPortError, buildAgentPortAuthorizationUrl, createAgentPortPKCE, createDeveloperApiKey, createOAuthClient, exchangeAgentPortOAuthCode, refreshAgentPortOAuthToken, registerDeveloper, revokeAgentPortToken, verifyAgentCredential } from "./index.js";
+import { AgentPortClient, AgentPortError, buildAgentPortAuthorizationUrl, createAgentPortPKCE, createDeveloperApiKey, createOAuthClient, exchangeAgentPortOAuthCode, refreshAgentPortOAuthToken, registerDeveloper, revokeAgentPortToken, verifyAgentCredential, verifyAgentPortEmailWebhook } from "./index.js";
 
 describe("AgentPort public SDK", () => {
+  it("verifies inbound email webhook HMACs over the original bytes and rejects stale callbacks", async () => {
+    const secret = "per-mailbox-secret"; const timestamp = "1000"; const eventId = "message-1";
+    const raw = new TextEncoder().encode("From: sender@example.org\r\n\r\nprivate body");
+    const prefix = new TextEncoder().encode(`${timestamp}\n${eventId}\n`);
+    const data = new Uint8Array(prefix.length + raw.length); data.set(prefix); data.set(raw, prefix.length);
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+    const signature = `v1=${btoa(String.fromCharCode(...signatureBytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+    expect(await verifyAgentPortEmailWebhook({ secret, timestamp, eventId, signature, raw, now: 1_000_000 })).toEqual({ valid: true });
+    expect(await verifyAgentPortEmailWebhook({ secret, timestamp: "600", eventId, signature, raw, now: 1_000_000 })).toEqual({ valid: false, reason: "timestamp_outside_window" });
+    expect(await verifyAgentPortEmailWebhook({ secret, timestamp, eventId, signature: `v1=${"A".repeat(43)}`, raw, now: 1_000_000 })).toEqual({ valid: false, reason: "invalid_signature" });
+  });
   it("verifies signed mandates against the trusted issuer, audience, key set and revocation status", async () => {
     const encoder = new TextEncoder();
     const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
@@ -46,6 +58,23 @@ describe("AgentPort public SDK", () => {
     expect(calls.map(call => call.url)).toEqual(["https://agentport.test/v1/agents", "https://agentport.test/v1/accounts"]);
     expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({ hostPlatform: "builder.example" });
     expect(JSON.parse(String(calls[1]!.init?.body))).toMatchObject({ serviceId: "mail", ownerId: "org_1" });
+  });
+  it("provisions, sends from, and revokes an AgentPort email identity", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return Response.json({ account: { id: "acct_mail", address: "agent-a@mail.example.net", status: "active" }, webhookSecret: "secret", send: { id: "ems_1", status: "sent" }, revoked: true });
+    }) as typeof fetch;
+    const client = new AgentPortClient({ apiKey: "ap_live_test", baseUrl: "https://agentport.test", fetch: fetcher });
+    const created = await client.provisionEmailAccount({ agentId: "agt_1", inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "setup-1" });
+    await client.sendEmail(created.account.id, { agentId: "agt_1", to: "recipient@example.net", subject: "hello", text: "message", idempotencyKey: "send-1" });
+    await client.revokeEmailAccount(created.account.id);
+    expect(calls.map(call => call.url)).toEqual([
+      "https://agentport.test/v1/email/accounts",
+      "https://agentport.test/v1/email/accounts/acct_mail/send",
+      "https://agentport.test/v1/email/accounts/acct_mail/revoke",
+    ]);
+    expect(JSON.parse(String(calls[1]!.init?.body))).toMatchObject({ agentId: "agt_1", to: "recipient@example.net", idempotencyKey: "send-1" });
   });
   it("surfaces API errors with code and status", async () => {
     const client = new AgentPortClient({ apiKey: "key", fetch: (async () => new Response(JSON.stringify({ error_code: "scope_denied" }), { status: 403 })) as typeof fetch });

@@ -11,9 +11,13 @@ let baseUrl;
 let seen;
 before(async () => {
   server = createServer((request, response) => {
-    seen = { url: request.url, authorization: request.headers.authorization };
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ services: [{ id: "mail" }] }));
+    const chunks = [];
+    request.on("data", chunk => chunks.push(chunk));
+    request.on("end", () => {
+      seen = { url: request.url, method: request.method, authorization: request.headers.authorization, body: Buffer.concat(chunks).toString("utf8") };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ services: [{ id: "mail" }] }));
+    });
   });
   await new Promise(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -46,4 +50,20 @@ test("CLI lists provider message references without fetching or sending content"
   assert.equal(result.code, 0, stderr);
   assert.equal(seen.url, "/v1/threads/thread%2F1/message-references?agentId=agent%201");
   assert.equal(seen.authorization, "Bearer ap_live_test");
+});
+
+test("CLI provisions a managed AgentPort email identity through the public API", async () => {
+  const input = { agentId: "agt_1", inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "setup-1" };
+  const child = spawn(process.execPath, [resolve(here, "agentport.js"), "email", "provision", "--json", JSON.stringify(input)], {
+    env: { ...process.env, AGENTPORT_API_URL: baseUrl, AGENTPORT_API_KEY: "ap_live_test" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", chunk => stderr += chunk);
+  const result = await new Promise(resolveExit => child.on("close", (code, signal) => resolveExit({ code, signal })));
+  assert.equal(result.code, 0, stderr);
+  assert.equal(seen.url, "/v1/email/accounts");
+  assert.equal(seen.method, "POST");
+  assert.equal(seen.authorization, "Bearer ap_live_test");
+  assert.deepEqual(JSON.parse(seen.body), input);
 });

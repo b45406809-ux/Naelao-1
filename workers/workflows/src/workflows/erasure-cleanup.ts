@@ -147,6 +147,8 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_event_deliveries WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_account_dependencies WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_account_grants WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_email_sends WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_email_accounts WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_usage_records WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_capability_handles WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_apps WHERE tenant_id = ?").bind(orgId),

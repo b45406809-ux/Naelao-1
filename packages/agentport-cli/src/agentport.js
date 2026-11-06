@@ -6,7 +6,7 @@ function usage() {
 
 Usage: agentport auth <register|login|password> --json '{"email":"...","password":"..."}'
        agentport keys create --json '{"scopes":["agentport:read","agentport:write"]}'
-       agentport <services|agents|accounts|channels|threads|messages|events|activity|keys> <command> [--flag value]
+       agentport <services|agents|accounts|email|channels|threads|messages|events|activity|keys> <command> [--flag value]
 
 Set AGENTPORT_API_URL to override the host. Auth returns a short-lived user token; export it as AGENTPORT_USER_TOKEN to create your first API key. Store AGENTPORT_API_KEY in your secret manager.`);
   process.exit(2);
@@ -47,6 +47,9 @@ else if (resource === "services" && command === "register" && input) await reque
 else if (resource === "agents" && command === "register") await request("POST", "/agents", input || { hostPlatform: flags.host || "external", runtime: flags.runtime });
 else if (resource === "accounts" && command === "create" && input) await request("POST", "/accounts", input);
 else if (resource === "accounts" && command === "grant" && flags.account && input) await request("POST", `/accounts/${encodeURIComponent(flags.account)}/grants`, input);
+else if (resource === "email" && command === "provision" && input) await request("POST", "/email/accounts", input);
+else if (resource === "email" && command === "send" && flags.account && input) await request("POST", `/email/accounts/${encodeURIComponent(flags.account)}/send`, input);
+else if (resource === "email" && command === "revoke" && flags.account) await request("POST", `/email/accounts/${encodeURIComponent(flags.account)}/revoke`, {});
 else if (resource === "channels" && command === "list") await request("GET", `/channels${flags.agent ? `?agentId=${encodeURIComponent(flags.agent)}` : ""}`);
 else if (resource === "channels" && command === "register" && input) await request("POST", "/channels", input);
 else if (resource === "threads" && command === "create" && flags.channel && input) await request("POST", `/channels/${encodeURIComponent(flags.channel)}/threads`, input);

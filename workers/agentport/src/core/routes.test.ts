@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { verifyAgentCredentialLocal } from "./identity.js";
 import { agentPortRoutes } from "./routes.js";
+import { handleAgentPortEmail } from "../email.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
@@ -20,6 +21,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0167_agentport_apps_capabilities.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0168_agentport_client_neutral_host_resources.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0169_agentport_email_accounts.sql", import.meta.url), "utf8"));
   const platformDb = { prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -29,7 +31,7 @@ function fixture() {
       async all<T>() { return { success: true, results: db.prepare(sql).all(...(values as never[])) as T[] }; },
     };
     return statement;
-  } };
+  }, async batch(statements: Array<{ run(): Promise<unknown> }>) { for (const statement of statements) await statement.run(); return []; } };
   return { db, platformDb };
 }
 
@@ -217,4 +219,60 @@ describe("AgentPort internal registry API", () => {
     expect(db.prepare("SELECT revoked_at FROM agentport_issued_credentials WHERE jti=?").get(issued.jti)).toMatchObject({ revoked_at: expect.any(String) });
     db.close();
   }, 30000);
+
+  it("provisions, sends, receives, idempotently tracks, and revokes content-free managed email accounts", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a"), "x-agentport-actor-role": "agentport_api", "x-agentport-owner-id": "owner-1", "x-agentport-owner-type": "individual" };
+    const send = vi.fn(async () => ({ messageId: "provider-send-1" }));
+    const fetch = vi.fn().mockResolvedValueOnce(new Response("retry", { status: 503 })).mockResolvedValueOnce(new Response("accepted", { status: 202 }));
+    const signingSecret = "agentport-test-signing-secret-which-is-long-enough-32";
+    const configuredEnv = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: signingSecret, AGENTPORT_ISSUER: "https://issuer.example", EMAIL: { send }, EMAIL_SENDING_DOMAIN: "mail.example.net", EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "false", PLATFORM_DB: platformDb };
+    const env = configuredEnv as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    const registration = await call("/agents", "POST", { principalId: "owner-1", principalType: "individual", createdBy: "owner-1", hostPlatform: "external" });
+    const { agent } = await registration.json() as { agent: { id: string } };
+    expect((await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "disabled-1" })).status).toBe(503);
+    configuredEnv.EMAIL_PROVISIONING_ENABLED = "true";
+    const provision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
+    expect(provision.status).toBe(201);
+    const created = await provision.json() as { account: { id: string; address: string }; webhookSecret: string; contentStored: boolean };
+    expect(created).toMatchObject({ account: { status: "active", address: expect.stringMatching(/^agent-[a-f0-9]+@mail\.example\.net$/) }, webhookSecret: expect.any(String), contentStored: false });
+    const repeatedProvision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
+    expect(repeatedProvision.status).toBe(200);
+    expect(await repeatedProvision.json()).toMatchObject({ webhookSecret: created.webhookSecret, idempotent: true });
+    const sendBody = { agentId: agent.id, to: "customer@example.org", subject: "A private subject", text: "Do not persist this body", idempotencyKey: "send-1" };
+    const firstSend = await call(`/email/accounts/${created.account.id}/send`, "POST", sendBody);
+    expect(firstSend.status).toBe(202);
+    expect(await firstSend.json()).toMatchObject({ send: { status: "sent", providerMessageId: "provider-send-1" }, contentStored: false });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({ from: created.account.address, to: sendBody.to, subject: sendBody.subject, text: sendBody.text });
+    expect((await call(`/email/accounts/${created.account.id}/send`, "POST", sendBody)).status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
+    const sendColumns = db.prepare("PRAGMA table_info(agentport_email_sends)").all() as Array<{ name: string }>;
+    expect(sendColumns.map(column => column.name)).not.toEqual(expect.arrayContaining(["to", "subject", "text", "body", "attachments"]));
+    const raw = new TextEncoder().encode("From: sender@example.org\r\nSubject: private inbound\r\n\r\nprivate body");
+    const message = { to: created.account.address, rawSize: raw.byteLength, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), headers: new Headers({ "message-id": "provider-inbound-1" }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
+    await handleAgentPortEmail(message, { PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: signingSecret, EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "true", fetch });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const callback = fetch.mock.calls[1]![1] as RequestInit;
+    expect(callback.headers).toMatchObject({ "content-type": "message/rfc822", "x-agentport-account-id": created.account.id, "x-agentport-event-id": "provider-inbound-1" });
+    expect(new TextDecoder().decode(callback.body as Uint8Array)).toBe(new TextDecoder().decode(raw));
+    expect(message.setReject).not.toHaveBeenCalled();
+    for (let index = 0; index < 9; index++) {
+      const fakeId = `quota_acct_${index}`; const at = new Date().toISOString();
+      db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,metadata_json,status,created_at,updated_at)
+        VALUES(?,?,'ap_email:tenant-a','agent_native','individual','owner-1','{}','active',?,?)`).run(fakeId, "tenant-a", at, at);
+      db.prepare(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at)
+        VALUES(?,?,?,?,'https://hooks.builder.com/mail',?,?,?)`).run(fakeId, "tenant-a", agent.id, `quota-${index}@mail.example.net`, `quota-${index}`, at, at);
+    }
+    expect((await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-over-limit" })).status).toBe(429);
+    const revoked = await call(`/email/accounts/${created.account.id}/revoke`, "POST", {});
+    expect(await revoked.json()).toMatchObject({ revoked: true });
+    const rejectedMessage = { ...message, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
+    await handleAgentPortEmail(rejectedMessage, { PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: signingSecret, EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "true", fetch });
+    expect(rejectedMessage.setReject).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(db.prepare("SELECT status FROM agentport_accounts WHERE id=?").get(created.account.id)).toMatchObject({ status: "revoked" });
+    db.close();
+  });
 });

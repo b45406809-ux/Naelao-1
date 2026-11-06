@@ -21,6 +21,13 @@ function env(scopes: string[] = ["agentport:read"]) {
 }
 
 describe("standalone AgentPort API", () => {
+  it("exports the Cloudflare inbound email handler for managed mailbox routing", async () => {
+    expect(typeof app.email).toBe("function");
+    const bindings = env();
+    const message = { to: "agent@mail.example.net", rawSize: 0, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }), headers: new Headers(), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
+    await app.email(message, bindings as never);
+    expect(message.setReject).toHaveBeenCalledWith(expect.any(String));
+  });
   it("rejects absent and malformed bearer credentials", async () => {
     const bindings = env();
     const response = await app.fetch(new Request("https://agentport.test/v1/services"), bindings);
@@ -48,6 +55,7 @@ describe("standalone AgentPort API", () => {
     const toolsResponse = await app.fetch(new Request("https://agentport.test/mcp", { method: "POST", headers: { authorization: bindings.bearer, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) }), bindings);
     const toolList = await toolsResponse.json() as { result: { tools: Array<{ name: string }> } };
     expect(toolList.result.tools.map(tool => tool.name)).toContain("agentport_accounts_create");
+    expect(toolList.result.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["agentport_email_provision", "agentport_email_send", "agentport_email_revoke"]));
     expect(toolList.result.tools.some(tool => tool.name.includes("apps") || tool.name.includes("capabilities_provision"))).toBe(false);
   });
   it("registers developer identity inside AgentPort and rate limits signup", async () => {

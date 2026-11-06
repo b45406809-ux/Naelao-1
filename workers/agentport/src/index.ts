@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt } from "@naelao/auth";
 import { agentPortRoutes } from "./core/routes.js";
+import { handleAgentPortEmail } from "./email.js";
 
 interface Env {
   PLATFORM_DB: D1Database;
@@ -9,6 +10,10 @@ interface Env {
   AGENTPORT_JWT_SECRET: string;
   ENVIRONMENT: string;
   AGENTPORT_ISSUER?: string;
+  EMAIL: SendEmail;
+  EMAIL_INGRESS_DOMAIN?: string;
+  EMAIL_SENDING_DOMAIN?: string;
+  EMAIL_PROVISIONING_ENABLED?: string;
 }
 interface ApiKeyRow { id: string; tenant_id: string; owner_type: string; owner_id: string; scopes_json: string; expires_at: string | null; }
 interface DeveloperTokenClaims { sub: string; tid: string; email: string; role: string; scopes: string[]; iat: number; exp: number; jti: string; tv?: number; }
@@ -412,6 +417,8 @@ app.delete("/v1/account", async c => {
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_event_deliveries WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_account_dependencies WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_account_grants WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_email_sends WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_email_accounts WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_usage_records WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_capability_handles WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_apps WHERE tenant_id=?").bind(tenantId),
@@ -529,6 +536,9 @@ app.post("/mcp", async c => {
     { name: "agentport_services_list", description: "List registered services and their declared account models and events.", inputSchema: { type: "object", properties: {} } },
     { name: "agentport_services_register", description: "Publish an existing API, MCP, A2A, channel, or managed service manifest. Providers cannot self-approve partnership status; provisioning metadata does not execute provider actions.", inputSchema: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, type: { type: "string", enum: ["api", "mcp", "a2a", "channel", "managed"] }, endpoint: { type: "string" }, accountModels: { type: "array", items: { type: "string" } }, capabilities: { type: "array", items: { type: "string" } }, events: { type: "array", items: { type: "string" } }, connectionPurpose: { type: "string", enum: ["user_delegation", "agent_resource", "parent_provisioning"] }, partnershipStatus: { type: "string", enum: ["unaffiliated", "restricted", "unavailable"] }, auth: { type: "object" }, provisioning: { type: "object" }, billing: { type: "object" } }, required: ["id", "name", "type", "accountModels", "capabilities", "events", "connectionPurpose"] } },
     { name: "agentport_agents_register", description: "Register a persistent agent identity under the API key owner.", inputSchema: { type: "object", properties: { hostPlatform: { type: "string" }, hostResourceId: { type: "string" }, runtime: { type: "string" } }, required: ["hostPlatform"] } },
+    { name: "agentport_email_provision", description: "Provision an AgentPort managed email identity for an agent. The webhookSecret is used to verify inbound raw mail; AgentPort does not retain message content.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, inboundWebhookUrl: { type: "string" }, idempotencyKey: { type: "string" } }, required: ["agentId", "inboundWebhookUrl", "idempotencyKey"] } },
+    { name: "agentport_email_send", description: "Send email from an active AgentPort mailbox. AgentPort keeps only an idempotency key and delivery receipt, not message content.", inputSchema: { type: "object", properties: { accountId: { type: "string" }, agentId: { type: "string" }, to: { type: "string" }, subject: { type: "string" }, text: { type: "string" }, idempotencyKey: { type: "string" } }, required: ["accountId", "agentId", "to", "subject", "text", "idempotencyKey"] } },
+    { name: "agentport_email_revoke", description: "Revoke an AgentPort email identity and its agent access grant.", inputSchema: { type: "object", properties: { accountId: { type: "string" } }, required: ["accountId"] } },
     { name: "agentport_accounts_create", description: "Register a provider resource after the provider has provisioned it using an authorized API, MCP server or other supported interface.", inputSchema: { type: "object", properties: { serviceId: { type: "string" }, accountModel: { type: "string", enum: ["agent_native", "user_parent", "agentport_parent", "delegated"] }, ownerType: { type: "string", enum: ["individual", "organization", "agentport", "provider"] }, ownerId: { type: "string" }, parentAccountId: { type: "string" }, externalAccountId: { type: "string" }, credentialRef: { type: "string" } }, required: ["serviceId", "accountModel", "ownerType", "ownerId"] } },
     { name: "agentport_accounts_grant", description: "Grant an agent scoped access to a registered account.", inputSchema: { type: "object", properties: { accountId: { type: "string" }, agentId: { type: "string" }, permissions: { type: "array", items: { type: "string" } }, expiresAt: { type: "string" } }, required: ["accountId", "agentId", "permissions"] } },
     { name: "agentport_channels_list", description: "List channel accounts available to an agent.", inputSchema: { type: "object", properties: { agentId: { type: "string" } }, required: ["agentId"] } },
@@ -552,6 +562,9 @@ app.post("/mcp", async c => {
     case "agentport_services_list": path = "/services"; break;
     case "agentport_services_register": method = "POST"; path = "/services"; break;
     case "agentport_agents_register": method = "POST"; path = "/agents"; args.hostPlatform = args.hostPlatform ?? "external"; break;
+    case "agentport_email_provision": method = "POST"; path = "/email/accounts"; break;
+    case "agentport_email_send": method = "POST"; path = `/email/accounts/${encodeURIComponent(String(args.accountId ?? ""))}/send`; delete args.accountId; break;
+    case "agentport_email_revoke": method = "POST"; path = `/email/accounts/${encodeURIComponent(String(args.accountId ?? ""))}/revoke`; delete args.accountId; break;
     case "agentport_accounts_create": method = "POST"; path = "/accounts"; break;
     case "agentport_accounts_grant": method = "POST"; path = `/accounts/${encodeURIComponent(String(args.accountId ?? ""))}/grants`; delete args.accountId; break;
     case "agentport_channels_list": path = `/channels?agentId=${encodeURIComponent(String(args.agentId ?? ""))}`; break;
@@ -579,4 +592,7 @@ app.post("/mcp", async c => {
 app.get("/mcp", c => c.json({ error_code: "method_not_allowed", message: "MCP Streamable HTTP uses POST requests." }, 405));
 
 app.notFound(c => c.json({ error_code: "not_found" }, 404));
-export default app;
+const handler = Object.assign(app, {
+  email: (message: ForwardableEmailMessage, env: Env) => handleAgentPortEmail(message, env),
+});
+export default handler;

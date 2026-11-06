@@ -56,7 +56,7 @@ describe("data erasure D1 records", () => {
       "service_accounts", "space_provisioning_leases", "space_type_tools",
       "spaces", "products", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
       "website_connections", "assistant_communication_identities",
-      "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_accounts",
+      "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_email_accounts", "agentport_email_sends", "agentport_accounts",
       "agentport_apps", "agentport_capability_handles", "agentport_usage_records",
       "agentport_agents", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events",
       "agentport_principals", "agentport_services", "agentport_service_manifests", "agentport_provider_auth", "agentport_channels",
@@ -274,7 +274,7 @@ describe("data erasure D1 records", () => {
 
     await eraseOrgOperationalRecords(db as never, "tenant-a");
 
-    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_usage_records", "agentport_capability_handles", "agentport_apps", "agentport_account_grants", "agentport_accounts", "agentport_identity_keys", "agentport_issued_credentials", "agentport_service_manifests", "agentport_provider_auth", "agentport_agents", "agentport_principals", "agentport_services", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens"]) {
+    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_usage_records", "agentport_capability_handles", "agentport_apps", "agentport_account_grants", "agentport_email_sends", "agentport_email_accounts", "agentport_accounts", "agentport_identity_keys", "agentport_issued_credentials", "agentport_service_manifests", "agentport_provider_auth", "agentport_agents", "agentport_principals", "agentport_services", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens"]) {
       expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE tenant_id=?`).get("tenant-a"), table).toEqual({ count: 0 });
     }
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM agentport_oauth_clients WHERE owner_tenant_id=?").get("tenant-a")).toEqual({ count: 0 });
