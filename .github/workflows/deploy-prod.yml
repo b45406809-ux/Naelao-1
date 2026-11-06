@@ -159,6 +159,8 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0163_agentport_provider_auth.sql --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0164_agentport_channel_message_refs.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote
 
       - name: Deploy all workers (production)

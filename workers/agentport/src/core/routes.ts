@@ -277,21 +277,25 @@ routes.post("/events/subscriptions", async (c) => {
 });
 
 routes.post("/events", async (c) => {
-  const body = await c.req.json<{ id?: string; serviceId?: string; accountId?: string; providerEventId?: string; eventType?: string; threadRef?: string; payloadRef?: string }>().catch(() => null);
-  if (!body?.serviceId || !body.eventType || !body.providerEventId) return c.json({ error_code: "invalid_event" }, 400);
-  const tenantId = c.get("tenantId"); const service = await c.env.PLATFORM_DB.prepare("SELECT events_json FROM agentport_services WHERE id=? AND tenant_id=? AND status='active'").bind(body.serviceId, tenantId).first<{ events_json: string }>();
-  if (!service || !(JSON.parse(service.events_json) as string[]).includes(body.eventType)) return c.json({ error_code: "event_not_supported" }, 422);
-  if (body.accountId) {
-    const account = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_accounts WHERE id=? AND tenant_id=? AND service_id=? AND status='active'").bind(body.accountId, tenantId, body.serviceId).first();
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (body && Object.keys(body).some(key => !["id", "serviceId", "accountId", "providerEventId", "eventType", "threadRef", "dataRef"].includes(key))) return c.json({ error_code: "event_content_must_remain_with_provider" }, 400);
+  const { id: eventIdInput, serviceId, accountId, providerEventId, eventType, threadRef, dataRef } = (body ?? {}) as {
+    id?: string; serviceId?: string; accountId?: string; providerEventId?: string; eventType?: string; threadRef?: string; dataRef?: string;
+  };
+  if (!serviceId || !eventType || !providerEventId || (dataRef !== undefined && (typeof dataRef !== "string" || dataRef.length > 1024))) return c.json({ error_code: "invalid_event" }, 400);
+  const tenantId = c.get("tenantId"); const service = await c.env.PLATFORM_DB.prepare("SELECT events_json FROM agentport_services WHERE id=? AND tenant_id=? AND status='active'").bind(serviceId, tenantId).first<{ events_json: string }>();
+  if (!service || !(JSON.parse(service.events_json) as string[]).includes(eventType)) return c.json({ error_code: "event_not_supported" }, 422);
+  if (accountId) {
+    const account = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_accounts WHERE id=? AND tenant_id=? AND service_id=? AND status='active'").bind(accountId, tenantId, serviceId).first();
     if (!account) return c.json({ error_code: "account_service_mismatch" }, 404);
   }
-  const eventId = body.id ?? id("evt"); const at = stamp();
+  const eventId = eventIdInput ?? id("evt"); const at = stamp();
   try { await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(eventId, tenantId, body.serviceId, body.accountId ?? null, body.providerEventId, body.eventType, body.threadRef ?? null, body.payloadRef ?? null, at, at).run(); }
+    VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(eventId, tenantId, serviceId, accountId ?? null, providerEventId, eventType, threadRef ?? null, dataRef ?? null, at, at).run(); }
   catch { return c.json({ accepted: true, duplicate: true }); }
   const subscriptions = await c.env.PLATFORM_DB.prepare(`SELECT s.id,s.agent_id FROM agentport_event_subscriptions s
     WHERE s.tenant_id=? AND s.service_id=? AND s.event_type=? AND s.status='active'
-      AND (s.account_id IS NULL OR s.account_id=?)`).bind(tenantId, body.serviceId, body.eventType, body.accountId ?? null).all<{ id: string; agent_id: string }>();
+      AND (s.account_id IS NULL OR s.account_id=?)`).bind(tenantId, serviceId, eventType, accountId ?? null).all<{ id: string; agent_id: string }>();
   for (const sub of subscriptions.results ?? []) await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO agentport_event_deliveries
     (id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`)
     .bind(id("dlv"), tenantId, eventId, sub.id, sub.agent_id, at, at, at).run();
@@ -308,7 +312,7 @@ routes.get("/events/pending", async (c) => {
       AND (e.account_id IS NULL OR EXISTS (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=d.tenant_id AND g.account_id=e.account_id AND g.agent_id=d.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?)))
     ORDER BY d.created_at LIMIT 100`)
     .bind(c.get("tenantId"), agentId, stamp(), stamp()).all();
-  return c.json({ events: rows.results ?? [] });
+  return c.json({ events: (rows.results ?? []).map(({ payload_ref, ...event }) => ({ ...event, dataRef: payload_ref })) });
 });
 
 routes.post("/events/:eventId/claim", async (c) => {
@@ -330,6 +334,10 @@ routes.post("/events/:eventId/claim", async (c) => {
   const event = await c.env.PLATFORM_DB.prepare(`SELECT e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.id AS delivery_id,d.attempts,d.claim_expires_at
     FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id WHERE d.event_id=? AND d.tenant_id=? AND d.agent_id=? AND d.claim_owner=?`)
     .bind(c.req.param("eventId"), tenantId, body.agentId, body.consumerId).first();
+  if (event && "payload_ref" in event) {
+    const { payload_ref, ...rest } = event as Record<string, unknown>;
+    return c.json({ claimed: true, event: { ...rest, dataRef: payload_ref } });
+  }
   return c.json({ claimed: true, event });
 });
 
@@ -473,87 +481,82 @@ routes.get("/channels/:channelId/threads", async (c) => {
   return c.json({ threads: (rows.results ?? []).map(row => ({ ...row, participants: JSON.parse(String(row.participants_json)), metadata: JSON.parse(String(row.metadata_json)), sessionBinding: row.session_binding_json ? JSON.parse(String(row.session_binding_json)) : null })) });
 });
 
-routes.get("/threads/:threadId/messages", async (c) => {
+routes.get("/threads/:threadId/message-references", async (c) => {
   const tenantId = c.get("tenantId"); const agentId = c.req.query("agentId"); const threadId = c.req.param("threadId");
   const thread = await c.env.PLATFORM_DB.prepare("SELECT channel_id FROM agentport_threads WHERE id=? AND tenant_id=?").bind(threadId, tenantId).first<{ channel_id: string }>();
   if (!thread) return c.json({ error_code: "thread_unavailable" }, 404);
   if (agentId && !await channelGrant(c.env.PLATFORM_DB, tenantId, thread.channel_id, agentId, "messages.read")) return channelPermissionDenied(c, "The agent does not have message-read access to this thread.");
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT id,provider_message_id,direction,sender_id,sender_role,trust_level,content_text,content_ref,attachments_json,status,occurred_at
-    FROM agentport_messages WHERE tenant_id=? AND thread_id=? ORDER BY occurred_at DESC LIMIT 100`).bind(tenantId, threadId).all();
-  return c.json({ messages: (rows.results ?? []).reverse().map(row => ({ ...row, attachments: JSON.parse(String(row.attachments_json)) })) });
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at
+    FROM agentport_channel_message_refs WHERE tenant_id=? AND thread_id=? ORDER BY occurred_at DESC LIMIT 100`).bind(tenantId, threadId).all();
+  return c.json({ messageReferences: (rows.results ?? []).reverse().map(row => ({ providerMessageId: row.provider_message_id,
+    direction: row.direction, senderId: row.sender_id, senderRole: row.sender_role, trustLevel: row.trust_level, status: row.status, occurredAt: row.occurred_at })), contentLocation: "channel_provider" });
 });
 
-// Provider adapters use this endpoint after authenticating their own webhook. Sender role and
-// trust are derived from AgentPort's trusted-sender registry; caller-supplied trust is ignored.
-routes.post("/channels/:channelId/messages/inbound", async (c) => {
-  const body = await c.req.json<{ providerMessageId?: string; providerThreadId?: string; senderId?: string; content?: string; contentRef?: string; attachments?: string[]; occurredAt?: string }>().catch(() => null);
-  if (!body?.providerMessageId || !body.providerThreadId || !body.senderId || body.providerMessageId.length > 512 || body.providerThreadId.length > 512 || body.senderId.length > 512 || (body.content?.length ?? 0) > 64_000 || (body.attachments?.length ?? 0) > 32) return c.json({ error_code: "invalid_message" }, 400);
+// Provider adapters post references and trust metadata only. Message text, attachments and
+// conversation history remain in the channel provider and are fetched through its authorized API.
+routes.post("/channels/:channelId/message-events/inbound", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (body && Object.keys(body).some(key => !["providerMessageId", "providerThreadId", "senderId", "occurredAt"].includes(key))) return c.json({ error_code: "message_content_must_remain_with_provider" }, 400);
+  const { providerMessageId, providerThreadId, senderId, occurredAt } = (body ?? {}) as { providerMessageId?: string; providerThreadId?: string; senderId?: string; occurredAt?: string };
+  if (!providerMessageId || !providerThreadId || !senderId || providerMessageId.length > 512 || providerThreadId.length > 512 || senderId.length > 512) return c.json({ error_code: "invalid_message_event" }, 400);
   const tenantId = c.get("tenantId"); const channelId = c.req.param("channelId"); const db = c.env.PLATFORM_DB;
   const channel = await db.prepare(`SELECT ch.service_id,ch.account_id,s.events_json FROM agentport_channels ch JOIN agentport_services s ON s.id=ch.service_id AND s.tenant_id=ch.tenant_id
     WHERE ch.id=? AND ch.tenant_id=? AND ch.status='active' AND s.status='active'`).bind(channelId, tenantId).first<{ service_id: string; account_id: string; events_json: string }>();
   if (!channel) return c.json({ error_code: "channel_unavailable" }, 404);
   if (!(JSON.parse(channel.events_json) as string[]).includes("message.received")) return c.json({ error_code: "event_not_supported" }, 422);
-  const at = stamp(); const occurredAt = body.occurredAt && Number.isFinite(Date.parse(body.occurredAt)) ? new Date(body.occurredAt).toISOString() : at;
+  const at = stamp(); const messageAt = occurredAt && Number.isFinite(Date.parse(occurredAt)) ? new Date(occurredAt).toISOString() : at;
   const threadId = id("thr");
-  await db.prepare(`INSERT OR IGNORE INTO agentport_threads(id,tenant_id,channel_id,provider_thread_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`).bind(threadId, tenantId, channelId, body.providerThreadId, at, at).run();
-  const thread = await db.prepare("SELECT id FROM agentport_threads WHERE tenant_id=? AND channel_id=? AND provider_thread_id=?").bind(tenantId, channelId, body.providerThreadId).first<{ id: string }>();
+  await db.prepare(`INSERT OR IGNORE INTO agentport_threads(id,tenant_id,channel_id,provider_thread_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`).bind(threadId, tenantId, channelId, providerThreadId, at, at).run();
+  const thread = await db.prepare("SELECT id FROM agentport_threads WHERE tenant_id=? AND channel_id=? AND provider_thread_id=?").bind(tenantId, channelId, providerThreadId).first<{ id: string }>();
   if (!thread) return c.json({ error_code: "thread_store_unavailable" }, 503);
-  const sender = await db.prepare("SELECT role FROM agentport_trusted_senders WHERE tenant_id=? AND channel_id=? AND provider_sender_id=? AND status='active'").bind(tenantId, channelId, body.senderId).first<{ role: "owner" | "delegate" }>();
-  const senderRole = sender?.role ?? "external"; const trustLevel = sender ? "verified" : "unverified"; const messageId = id("msg");
-  try { await db.prepare(`INSERT INTO agentport_messages(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_role,trust_level,content_text,content_ref,attachments_json,status,occurred_at,created_at)
-    VALUES(?,?,?,?,?,'inbound',?,?,?,?,?,?,'received',?,?)`).bind(messageId, tenantId, channelId, thread.id, body.providerMessageId, body.senderId, senderRole, trustLevel,
-      body.content ?? null, body.contentRef ?? null, JSON.stringify((body.attachments ?? []).filter(x => typeof x === "string").slice(0, 32)), occurredAt, at).run(); }
+  const sender = await db.prepare("SELECT role FROM agentport_trusted_senders WHERE tenant_id=? AND channel_id=? AND provider_sender_id=? AND status='active'").bind(tenantId, channelId, senderId).first<{ role: "owner" | "delegate" }>();
+  const senderRole = sender?.role ?? "external"; const trustLevel = sender ? "verified" : "unverified"; const messageRefId = id("mref");
+  try { await db.prepare(`INSERT INTO agentport_channel_message_refs(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at,created_at)
+    VALUES(?,?,?,?,?,'inbound',?,?,?,'received',?,?)`).bind(messageRefId, tenantId, channelId, thread.id, providerMessageId, senderId, senderRole, trustLevel, messageAt, at).run(); }
   catch { return c.json({ accepted: true, duplicate: true }); }
-  await db.prepare("UPDATE agentport_threads SET last_message_at=?,updated_at=? WHERE id=? AND tenant_id=?").bind(occurredAt, at, thread.id, tenantId).run();
+  await db.prepare("UPDATE agentport_threads SET last_message_at=?,updated_at=? WHERE id=? AND tenant_id=?").bind(messageAt, at, thread.id, tenantId).run();
   const eventId = id("evt");
   await db.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
-    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(eventId, tenantId, channel.service_id, channel.account_id, body.providerMessageId, thread.id, `agentport-message:${messageId}`, at, at).run();
+    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(eventId, tenantId, channel.service_id, channel.account_id, providerMessageId, thread.id, providerMessageId, at, at).run();
   const subscriptions = await db.prepare(`SELECT id,agent_id FROM agentport_event_subscriptions WHERE tenant_id=? AND service_id=? AND event_type='message.received' AND status='active' AND (account_id IS NULL OR account_id=?)`)
     .bind(tenantId, channel.service_id, channel.account_id).all<{ id: string; agent_id: string }>();
   for (const sub of subscriptions.results ?? []) await db.prepare(`INSERT OR IGNORE INTO agentport_event_deliveries(id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`)
     .bind(id("dlv"), tenantId, eventId, sub.id, sub.agent_id, at, at, at).run();
-  return c.json({ accepted: true, duplicate: false, message: { id: messageId, threadId: thread.id, senderRole, trustLevel }, eventId }, 202);
+  return c.json({ accepted: true, duplicate: false, messageReference: { providerMessageId, threadId: thread.id, senderRole, trustLevel }, eventId, contentLocation: "channel_provider" }, 202);
 });
 
-// Runtime send requests are durable outbox entries. A message is not reported as sent until a
-// registered provider adapter claims it and records the provider acknowledgment.
-routes.post("/threads/:threadId/messages", async (c) => {
-  const body = await c.req.json<{ agentId?: string; content?: string; idempotencyKey?: string; attachments?: string[] }>().catch(() => null);
-  if (!body?.agentId || typeof body.content !== "string" || !body.content.trim() || body.content.length > 64_000 || !body.idempotencyKey || body.idempotencyKey.length > 200) return c.json({ error_code: "invalid_message" }, 400);
+// Runtimes send/read through the channel provider's own authorized API/MCP connector. AgentPort
+// provides a grant decision and provider resource references but never accepts message content.
+routes.post("/threads/:threadId/actions/authorize", async (c) => {
+  const body = await c.req.json<{ agentId?: string; action?: "messages.read" | "messages.send"; resourceRef?: string; idempotencyKey?: string }>().catch(() => null);
+  if (body && Object.keys(body).some(key => !["agentId", "action", "resourceRef", "idempotencyKey"].includes(key))) return c.json({ error_code: "message_content_must_remain_with_provider" }, 400);
+  if (!body?.agentId || !["messages.read", "messages.send"].includes(String(body.action)) || (body.resourceRef && body.resourceRef.length > 512) || !body.idempotencyKey || body.idempotencyKey.length > 200) return c.json({ error_code: "invalid_channel_action" }, 400);
   const tenantId = c.get("tenantId"); const db = c.env.PLATFORM_DB; const threadId = c.req.param("threadId");
-  const thread = await db.prepare(`SELECT t.channel_id,ch.service_id,ch.account_id,s.events_json FROM agentport_threads t JOIN agentport_channels ch ON ch.id=t.channel_id AND ch.tenant_id=t.tenant_id
-    JOIN agentport_services s ON s.id=ch.service_id AND s.tenant_id=ch.tenant_id WHERE t.id=? AND t.tenant_id=? AND t.status='active' AND ch.status='active'`).bind(threadId, tenantId).first<{ channel_id: string; service_id: string; account_id: string; events_json: string }>();
+  const thread = await db.prepare(`SELECT t.id,t.channel_id,t.provider_thread_id,ch.service_id,ch.provider_channel_id,ch.account_id FROM agentport_threads t
+    JOIN agentport_channels ch ON ch.id=t.channel_id AND ch.tenant_id=t.tenant_id JOIN agentport_accounts a ON a.id=ch.account_id AND a.tenant_id=ch.tenant_id
+    WHERE t.id=? AND t.tenant_id=? AND t.status='active' AND ch.status='active' AND a.status='active'`).bind(threadId, tenantId)
+    .first<{ id: string; channel_id: string; provider_thread_id: string; service_id: string; provider_channel_id: string; account_id: string }>();
   if (!thread) return c.json({ error_code: "thread_unavailable" }, 404);
-  if (!await channelGrant(db, tenantId, thread.channel_id, body.agentId, "messages.send")) return channelPermissionDenied(c, "The agent does not have message-send access to this channel.");
-  const messageId = id("msg"); const at = stamp();
-  try { await db.prepare(`INSERT INTO agentport_messages(id,tenant_id,channel_id,thread_id,idempotency_key,direction,sender_id,sender_role,trust_level,content_text,attachments_json,status,occurred_at,created_at)
-    VALUES(?,?,?,?,?,'outbound',?,'provider','verified',?,?,'queued',?,?)`).bind(messageId, tenantId, thread.channel_id, threadId, body.idempotencyKey, body.agentId, body.content,
-      JSON.stringify((body.attachments ?? []).filter(x => typeof x === "string").slice(0, 32)), at, at).run(); }
-  catch { const existing = await db.prepare("SELECT id,status FROM agentport_messages WHERE tenant_id=? AND channel_id=? AND idempotency_key=?").bind(tenantId, thread.channel_id, body.idempotencyKey).first(); return c.json({ message: existing, duplicate: true }, 202); }
-  if ((JSON.parse(thread.events_json) as string[]).includes("message.send_requested")) {
-    const eventId = id("evt");
-    await db.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at) VALUES(?,?,?,?,?,'message.send_requested',?,?,?,?)`)
-      .bind(eventId, tenantId, thread.service_id, thread.account_id, messageId, threadId, `agentport-message:${messageId}`, at, at).run();
+  if (!await channelGrant(db, tenantId, thread.channel_id, body.agentId, body.action!)) return channelPermissionDenied(c, "The agent does not have the requested channel permission.");
+  const prior = await db.prepare("SELECT id,outcome,action,resource_ref,channel_id,provider_id FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? AND authorization_ref=?")
+    .bind(tenantId, body.agentId, body.idempotencyKey).first<{ id: string; outcome: string; action: string; resource_ref: string | null; channel_id: string | null; provider_id: string | null }>();
+  if (prior) {
+    if (prior.action !== body.action || prior.resource_ref !== (body.resourceRef ?? thread.provider_thread_id) || prior.channel_id !== thread.channel_id || prior.provider_id !== thread.service_id) return c.json({ error_code: "idempotency_conflict" }, 409);
+    return c.json({ decision: prior.outcome === "allowed" ? "allow" : "deny", authorizationId: prior.id, serviceId: thread.service_id,
+      providerChannelId: thread.provider_channel_id, providerThreadId: thread.provider_thread_id, ...(body.resourceRef ? { providerMessageId: body.resourceRef } : {}), contentLocation: "channel_provider" });
   }
-  await db.prepare("UPDATE agentport_threads SET last_message_at=?,updated_at=? WHERE id=? AND tenant_id=?").bind(at, at, threadId, tenantId).run();
-  return c.json({ message: { id: messageId, threadId, status: "queued" }, delivery: "pending_provider_adapter" }, 202);
+  const receiptId = id("rcpt"); const at = stamp();
+  await db.prepare(`INSERT OR IGNORE INTO agentport_action_receipts(id,tenant_id,agent_id,account_id,channel_id,action,resource_ref,authorization_ref,provider_id,outcome,details_json,receipt_hash,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,'allowed',?,?,?)`).bind(receiptId, tenantId, body.agentId, thread.account_id, thread.channel_id, body.action!, body.resourceRef ?? thread.provider_thread_id,
+      body.idempotencyKey, thread.service_id, JSON.stringify({ threadId, contentStored: false }), await hashReceipt(`${tenantId}:${receiptId}:${body.agentId}:${body.action}:${body.idempotencyKey}`), at).run();
+  const receipt = await db.prepare("SELECT id,outcome FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? AND authorization_ref=?").bind(tenantId, body.agentId, body.idempotencyKey).first<{ id: string; outcome: string }>();
+  return c.json({ decision: "allow", authorizationId: receipt?.id ?? receiptId, serviceId: thread.service_id, providerChannelId: thread.provider_channel_id,
+    providerThreadId: thread.provider_thread_id, ...(body.resourceRef ? { providerMessageId: body.resourceRef } : {}), contentLocation: "channel_provider" });
 });
 
-routes.get("/outbox", async (c) => {
-  const serviceId = c.req.query("serviceId"); if (!serviceId) return c.json({ error_code: "service_id_required" }, 400);
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT m.id,m.channel_id,m.thread_id,m.sender_id,m.content_text,m.attachments_json,m.created_at FROM agentport_messages m
-    JOIN agentport_channels ch ON ch.id=m.channel_id AND ch.tenant_id=m.tenant_id WHERE m.tenant_id=? AND ch.service_id=? AND m.direction='outbound' AND m.status='queued' ORDER BY m.created_at LIMIT 100`)
-    .bind(c.get("tenantId"), serviceId).all();
-  return c.json({ messages: (rows.results ?? []).map(row => ({ ...row, attachments: JSON.parse(String(row.attachments_json)) })) });
-});
-
-routes.post("/outbox/:messageId/ack", async (c) => {
-  const body = await c.req.json<{ serviceId?: string; result?: "sent" | "failed"; providerMessageId?: string }>().catch(() => null);
-  if (!body?.serviceId || !["sent", "failed"].includes(String(body.result))) return c.json({ error_code: "invalid_delivery_ack" }, 400);
-  const result = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_messages SET status=? ,provider_message_id=COALESCE(?,provider_message_id)
-    WHERE id=? AND tenant_id=? AND direction='outbound' AND status='queued' AND channel_id IN (SELECT id FROM agentport_channels WHERE service_id=? AND tenant_id=?)`)
-    .bind(body.result, body.providerMessageId ?? null, c.req.param("messageId"), c.get("tenantId"), body.serviceId, c.get("tenantId")).run();
-  return c.json({ recorded: result.meta.changes > 0 });
-});
+async function hashReceipt(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export const agentPortRoutes = routes;

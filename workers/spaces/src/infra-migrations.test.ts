@@ -26,7 +26,9 @@ describe("latest D1 deployment migration batch", () => {
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0161_agentport_channels_threads.sql"), "utf8"));
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0162_agentport_signed_identity.sql"), "utf8"));
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0163_agentport_provider_auth.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0164_agentport_channel_message_refs.sql"), "utf8"));
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0163_agentport_provider_auth.sql"), "utf8"))).not.toThrow();
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0164_agentport_channel_message_refs.sql"), "utf8"))).not.toThrow();
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",
@@ -43,7 +45,7 @@ describe("latest D1 deployment migration batch", () => {
       "agentport_events", "agentport_activity_leases",
       "agentport_api_keys",
       "agentport_organizations", "agentport_developers", "agentport_auth_rate_limits",
-      "agentport_channels", "agentport_threads", "agentport_messages", "agentport_trusted_senders", "agentport_action_receipts",
+      "agentport_channels", "agentport_threads", "agentport_messages", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
       "agentport_service_manifests",
       "agentport_identity_keys", "agentport_issued_credentials",
       "agentport_provider_auth",

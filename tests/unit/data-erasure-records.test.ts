@@ -59,7 +59,7 @@ describe("data erasure D1 records", () => {
       "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_accounts",
       "agentport_agents", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events",
       "agentport_principals", "agentport_services", "agentport_service_manifests", "agentport_provider_auth", "agentport_channels",
-      "agentport_threads", "agentport_messages", "agentport_trusted_senders", "agentport_action_receipts",
+      "agentport_threads", "agentport_messages", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
       "agentport_identity_keys", "agentport_issued_credentials", "agentport_api_keys", "agentport_developers",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a

@@ -1,6 +1,6 @@
 # AgentPort standalone API
 
-AgentPort is deployed as its own Worker at `https://agentport.naelao.com`; `/auth` is its developer sign-in and registration entry point. It is not a route inside the Naelao application. Naelao calls this service as one AgentPort client. AgentPort owns developer/org records, login sessions, API keys, agent principals, provider registrations, account grants, channels, threads, messages, event inboxes, and activity leases.
+AgentPort is deployed as its own Worker at `https://agentport.naelao.com`; `/auth` is its developer sign-in and registration entry point. It is not a route inside the Naelao application. Naelao calls this service as one AgentPort client. AgentPort owns developer/org records, login sessions, API keys, agent principals, provider registrations, account grants, channel and thread references, event inboxes, and activity leases. The connected channel provider (WhatsApp, Telegram, email, etc.) remains the source of truth for message content, attachments, and conversation history.
 
 ## First API key
 
@@ -32,9 +32,9 @@ Base URL: `https://agentport.naelao.com/v1` (set `AGENTPORT_API_URL` for another
 - `POST /accounts`, `GET /accounts`, `POST /accounts/:id/activate`, `POST /accounts/:id/grants`, `DELETE /grants/:id`: record provisioned resources and grant/revoke agent access.
 - `GET /services?capability=...&accountModel=...`, `GET /services/:serviceId`: discover and inspect only provider-declared capabilities, account models, provisioning and billing metadata.
 - `POST /channels`, `GET /channels`: associate provider channels with active AgentPort accounts and list available channels. Trusted sender records classify provider-authenticated sender IDs; message text or model claims cannot assign sender roles.
-- `POST /channels/:channelId/threads`, `GET /channels/:channelId/threads`, `GET /threads/:threadId/messages`: persist provider conversation threads separately from runtime sessions. An optional `sessionBinding` is opaque; AgentPort does not create or own sessions.
-- `POST /threads/:threadId/messages`: authorize against the account grant and place an idempotent outbound message in the durable outbox. The API returns `queued`; it does not say `sent` until a provider adapter acknowledges it. `/outbox` and `/outbox/:messageId/ack` are provider-adapter endpoints.
-- `POST /channels/:channelId/messages/inbound`: provider adapters post authenticated inbound messages. AgentPort derives `owner`, `delegate`, or `external` from its trusted-sender registry and creates `message.received` events for subscribers.
+- `POST /channels/:channelId/threads`, `GET /channels/:channelId/threads`, `GET /threads/:threadId/message-references`: retain provider conversation and thread IDs separately from runtime sessions. An optional `sessionBinding` is opaque; AgentPort does not create or own sessions. Reference listings contain metadata only.
+- `POST /threads/:threadId/actions/authorize`: check an agent's `messages.read` or `messages.send` grant and return provider resource references. The agent/runtime then fetches or sends the actual content through the provider's authorized API/MCP connector. This endpoint does not issue provider credentials or perform the action.
+- `POST /channels/:channelId/message-events/inbound`: provider adapters post authenticated provider message/thread/sender IDs and timestamp only. AgentPort derives `owner`, `delegate`, or `external` from its trusted-sender registry and creates a `message.received` event for subscribers. The event's `dataRef` points to the provider message; content and attachments stay with the provider.
 - `POST /accounts/:id/dependencies`: record resource dependencies and reject unresolved provisioning cycles.
 - `POST /events/subscriptions`, `POST /events`, `GET /events/pending`, `POST /events/:id/claim`, `POST /events/:id/ack`: persist subscriptions and event deliveries with retry and dead-letter handling.
 - `POST /activity/leases`, `POST /activity/leases/:id/renew`, `DELETE /activity/leases/:id`: maintain expiring event-consumer leases. A lease applies to its subscription; it does not lock the account or define the agent's Naelao session.
@@ -42,7 +42,9 @@ Base URL: `https://agentport.naelao.com/v1` (set `AGENTPORT_API_URL` for another
 - `DELETE /account`: erase the current AgentPort organization and its tenant data.
 - `POST /mcp`: MCP Streamable HTTP; initialize protocol negotiation, list tools, and call AgentPort tools with the same API key.
 
-A provider service registration declares an existing provider/client integration. It does not itself provision an external account. The provider must allow the requested model and an existing authorized API/MCP/Composio connection must perform the provider action. AgentPort records the resulting account, grants, dependencies, costs metadata and event subscriptions. Provider-side scopes and terms remain authoritative. The registry does not yet execute provider APIs or dispatch outbound webhooks; queued channel messages remain pending until an authorized adapter is configured.
+Channel event receipts expose a provider pointer as `dataRef`, alongside `threadRef` and event metadata. For example, a `message.received` event can point to a provider message ID. The runtime uses the provider's own authorized connector to read that message. It sends replies through that connector after checking the agent's grant with `POST /threads/:threadId/actions/authorize`; message text and attachments are never passed to AgentPort.
+
+A provider service registration declares an existing provider/client integration. It does not itself provision an external account. The provider must allow the requested model and an existing authorized API/MCP/Composio connection must perform the provider action. AgentPort records the resulting account, grants, dependencies, costs metadata, event subscriptions, and provider-native resource references. Provider-side scopes and terms remain authoritative. AgentPort does not store message bodies, attachment data, or a message outbox; provider API/MCP execution and outbound webhook delivery still require an authorized adapter.
 
 ### TypeScript SDK
 
@@ -52,6 +54,14 @@ const session = await registerDeveloper({ email, password, org_name: "Example" }
 const { apiKey } = await createDeveloperApiKey({ userToken: session.token, scopes: ["agentport:read", "agentport:write", "agentport:events"] });
 const port = new AgentPortClient({ apiKey });
 const { agent } = await port.registerAgent({ hostPlatform: "openclaw", runtime: "external" });
+const threadId = "thread_123"; // obtained from listThreads()
+// Fetch messageReferences, then use the provider connector to fetch their contents.
+const { decision, providerChannelId, providerThreadId } = await port.authorizeChannelAction(threadId, {
+  agentId: agent.id, action: "messages.send", idempotencyKey: crypto.randomUUID(),
+});
+if (decision === "allow") {
+  // Send the reply with the provider's authorized API/MCP connector.
+}
 ```
 
 ### Provider onboarding SDK
@@ -87,4 +97,4 @@ MCP/CLI/SDK/API share the same REST core and scope checks. Event subscriptions w
 
 ## Deployment setup
 
-Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0163 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.
+Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0164 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.
