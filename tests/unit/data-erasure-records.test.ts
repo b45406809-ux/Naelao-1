@@ -34,6 +34,8 @@ describe("data erasure D1 records", () => {
       "portal_domains", "space_provisioning_leases", "usage_events", "website_connections",
       "assistant_communication_identities",
       "decision_call_reservations",
+      "sandbox_connections", "sandbox_grants", "sandbox_operations", "sandbox_executions",
+      "sandbox_publications", "sandbox_usage_events",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const scoped = new Set<string>();
@@ -64,6 +66,8 @@ describe("data erasure D1 records", () => {
       "agentport_identity_keys", "agentport_issued_credentials", "agentport_api_keys", "agentport_developers",
       "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",
       "assistant_agentmail_operations", "assistant_agentmail_pods",
+      "sandbox_connections", "sandbox_grants", "sandbox_operations", "sandbox_executions",
+      "sandbox_publications", "sandbox_usage_events",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -82,6 +86,39 @@ describe("data erasure D1 records", () => {
     const unclassifiedTenantTables = [...tenantScoped].filter((table) => !classified.has(table)).sort();
     expect(unclassifiedTenantTables, `Unclassified tenant tables: ${unclassifiedTenantTables.join(", ")}`).toEqual([]);
     expect([...handledTenantScoped, ...retainedTenantScoped].filter((table) => !tenantScoped.has(table)).sort()).toEqual([]);
+  });
+
+  it("erases project computers and dependent records while retaining a tenant BYO connection until tenant erasure", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare(`INSERT INTO sandbox_connections (id,tenant_id,owner_id,provider,ownership,status,created_at,updated_at)
+      VALUES ('connection-a','tenant-a','owner-a','agent37','customer_owned','configured_unverified','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_filesystems (id,tenant_id,owner_id,space_id,project_id,branch,mode,consistency,status,created_at,updated_at)
+      VALUES ('filesystem-a','tenant-a','owner-a','space-a','project-a','main','snapshot_diff','file_cas','active','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_computers (id,tenant_id,owner_id,space_id,project_id,template_id,template_version,ownership,filesystem_id,filesystem_mode,provider_preference,state,resources_json,created_at,updated_at)
+      VALUES ('computer-a','tenant-a','owner-a','space-a','project-a','node','1','customer_owned','filesystem-a','snapshot_diff','agent37','configured','{}','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_allocations (id,computer_id,connection_id,provider,generation,status,operation_id,created_at,updated_at)
+      VALUES ('allocation-a','computer-a','connection-a','agent37',1,'sleeping','operation-a','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_operations (id,tenant_id,computer_id,operation,idempotency_key,payload_hash,status,generation,created_at,updated_at)
+      VALUES ('operation-a','tenant-a','computer-a','start','start-a','hash','complete',1,'now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_executions (id,tenant_id,owner_id,computer_id,idempotency_key,payload_hash,status,created_at,updated_at)
+      VALUES ('execution-a','tenant-a','owner-a','computer-a','exec-a','hash','succeeded','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_publications (id,tenant_id,filesystem_id,computer_id,branch,status,changes_json,created_at,updated_at)
+      VALUES ('publication-a','tenant-a','filesystem-a','computer-a','main','published','{}','now','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_grants (id,tenant_id,owner_id,computer_id,filesystem_id,grantee_type,grantee_id,permissions_json,created_at)
+      VALUES ('grant-a','tenant-a','owner-a','computer-a','filesystem-a','agent','agent-a','[]','now')`).run();
+    db.db.prepare(`INSERT INTO sandbox_usage_events (id,tenant_id,computer_id,kind,quantity_micros,rate_version,source_url,observed_at,created_at)
+      VALUES ('usage-a','tenant-a','computer-a','estimate',0,'test','https://example.test','now','now')`).run();
+
+    await eraseSpaceD1Records(db as never, "space-a");
+    for (const table of ["sandbox_allocations", "sandbox_computers", "sandbox_filesystems", "sandbox_operations", "sandbox_executions", "sandbox_publications", "sandbox_grants"]) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM sandbox_connections").get()).toEqual({ count: 1 });
+
+    await eraseOrgOperationalRecords(db as never, "tenant-a");
+    for (const table of ["sandbox_connections", "sandbox_usage_events"]) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
   });
 
   it("removes searchable chunks and parent threads as well as session shadows", async () => {

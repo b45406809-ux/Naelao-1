@@ -20,6 +20,8 @@ The user-approved first implementation scope was the core computer platform: per
 | `workers/sandboxes/src/providers/opensandbox.ts` | HTTPS-only OpenSandbox lifecycle client; guest execution intentionally fails until a verified Naelao runtime endpoint is configured. |
 | `workers/router/src/index.ts`, `workers/router/wrangler.toml` | Authenticated API proxy for computer, provider, template, file-system, execution, and desktop routes to the new service. |
 | `workers/sandboxes/wrangler.toml` | New worker definition sharing the existing platform D1 and migration history. |
+| `.github/workflows/deploy-staging.yml`, `.github/workflows/deploy-prod.yml` | Adds the Worker to existing secondary-worker deployment loops; it will deploy with the current platform only when those workflows are run. |
+| `workers/workflows/src/workflows/erasure-cleanup.ts` | Erases per-Space computers, filesystems, allocations, grants, executions, operations, and publications in FK-safe order; tenant-level provider connections and usage are removed during tenant erasure. A BYO connection remains available to other projects until the tenant itself is erased. |
 | `apps/shell/src/components/ProjectComputersPanel.tsx`, project page | Project settings list/configure/remove panel; explicitly labels configured resources as not allocated. |
 | `workers/agents/src/script-engine/prebuilt/computer-use.ts` | Propagates human actor, run/task IDs, branch, max tier, and cancellation into Tier 6 as required by `runContainer` authorization. |
 | `new plan/NAELAO-SANDBOXES-REQUIREMENTS.csv` | Requirement source, implementation, verification, completion status, and blocker index. |

@@ -18,6 +18,7 @@ export const SPACE_ERASURE_TABLES = [
   "project_access", "project_agent_email_addresses", "project_steward_decisions", "project_steward_runs",
   "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
   "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
+  "sandbox_computers", "sandbox_filesystems",
   "webhook_subscriptions", "workflow_budget_reservations", "workflow_executions_v2",
   // Assistant communication and provisioning D1 rows contain identity and message metadata.
   // Their external profiles/callbacks are purged before this final scoped database cleanup.
@@ -102,6 +103,11 @@ export interface ErasureDocument {
 export async function eraseSpaceD1Records(db: D1Database, spaceId: string): Promise<void> {
   // Children precede parents where the migrations declare foreign keys.
   await db.batch([
+    db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_executions WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_operations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_grants WHERE tenant_id IN (SELECT tenant_id FROM sandbox_computers WHERE space_id = ?) AND (computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?) OR filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId, spaceId, spaceId),
     db.prepare("DELETE FROM assistant_agentmail_event_receipts WHERE account_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM assistant_agentport_event_receipts WHERE account_id IN (SELECT agentport_account_id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
@@ -139,6 +145,17 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM assistant_agentmail_operations WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM assistant_agentmail_pods WHERE tenant_id = ?").bind(orgId),
+    // Sandbox credentials and execution history are tenant-owned. Child records are removed
+    // before computers/filesystems so foreign keys remain valid even when cascades are off.
+    db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE tenant_id = ?)").bind(orgId),
+    db.prepare("DELETE FROM sandbox_executions WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_operations WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_publications WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_grants WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_usage_events WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_computers WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_filesystems WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_connections WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
     // OAuth grants must be removed before AgentPort developer and organization identity rows.
