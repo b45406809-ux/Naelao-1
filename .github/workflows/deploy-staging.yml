@@ -63,6 +63,9 @@ jobs:
         run: |
           DB_ID="${{ vars.D1_DATABASE_ID_STAGING }}"
           for migration in infra/migrations/*.sql; do
+            if [[ "$migration" == *0164_agentport_channel_message_refs.sql ]] && ! npx wrangler d1 execute "$DB_ID" --command="SELECT content_text FROM agentport_messages LIMIT 0" --remote --env=staging >/dev/null 2>&1; then
+              continue
+            fi
             echo "Applying $migration..."
             npx wrangler d1 execute "$DB_ID" \
               --file="$migration" \
