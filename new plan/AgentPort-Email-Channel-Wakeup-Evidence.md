@@ -22,4 +22,9 @@ Scope: complete the email portion of `Replace_AgentMail_Cloudflare.txt` using th
 
 - `vitest run workers/agents/src/communications/communications.test.ts workers/agents/src/channels/session-queue.test.ts workers/agentport/src/core/routes.test.ts workers/spaces/src/infra-migrations.test.ts`: 4 files, 18 tests passed.
 - TypeScript checks passed for `workers/agents/tsconfig.json` and `workers/agentport/tsconfig.json`.
+- TypeScript check passed for `packages/agentport-sdk/tsconfig.json`; `git diff --check` passed.
+- AgentPort Wrangler dry-run passed and confirmed the email binding. The Agents Wrangler dry-run began building its existing ToolSandbox Docker image, which installs a full browser/desktop toolchain; it was stopped before Worker bundling completed. No production deploy was attempted.
+- The broader local communications/AgentPort suite reported 126 passing and 2 skipped tests; one unrelated integration file could not load the Cloudflare-only `cloudflare:workers` module in Vitest. The focused changed-path suite and migration test pass.
+- `biome check` over touched files reported pre-existing formatting and lint violations in the repository's compact AgentPort files and SDK; it did not modify files. No repository-wide formatting was applied.
+- GitHub Actions run `42177011431` on commit `ee0de951`: repository, workspace, Node, conformance, runtime acceptance, typecheck, security lint, router dependency, binding probe, and agent authorization jobs passed. The browser journey job was still running at last inspection; GitHub had not published its suite result/artifact yet.
 - Earlier assistant claims and examples in the source transcript were treated as proposals; the implementation follows the user's explicit later corrections and existing repository contracts.
