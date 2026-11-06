@@ -13,6 +13,9 @@ migrations_dir = "../../infra/migrations"
 [[send_email]]
 name = "EMAIL"
 
+[triggers]
+crons = ["* * * * *"]
+
 [vars]
 ENVIRONMENT = "development"
 AGENTPORT_ISSUER = "https://agentport.naelao.com"
@@ -25,6 +28,8 @@ EMAIL_PROVISIONING_ENABLED = "false"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false" }
+[env.staging.triggers]
+crons = ["* * * * *"]
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -38,6 +43,8 @@ zone_name = "naelao.com"
 
 [env.production]
 vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "", EMAIL_PROVISIONING_ENABLED = "false" }
+[env.production.triggers]
+crons = ["* * * * *"]
 [[env.production.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

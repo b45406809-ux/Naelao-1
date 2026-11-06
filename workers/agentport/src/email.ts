@@ -113,15 +113,21 @@ export async function handleAgentPortEmail(message: ForwardableEmailMessage, env
     .bind(`mref_${row.account_id}_${await shortHash(providerMessageId)}`, row.tenant_id, channel.id, thread.id, providerMessageId, message.from.slice(0, 512), occurredAt, now).run();
   await env.PLATFORM_DB.prepare("UPDATE agentport_threads SET last_message_at=?,updated_at=? WHERE id=? AND tenant_id=?")
     .bind(occurredAt, now, thread.id, row.tenant_id).run();
-  const apEventId = `evt_${row.account_id}_${await shortHash(providerMessageId)}`;
+  const candidateEventId = `evt_${row.account_id}_${await shortHash(providerMessageId)}`;
   await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
-    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(apEventId, row.tenant_id, serviceId, row.account_id, providerMessageId, thread.id, providerMessageId, now, now).run();
+    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(candidateEventId, row.tenant_id, serviceId, row.account_id, providerMessageId, thread.id, providerMessageId, now, now).run();
+  const event = await env.PLATFORM_DB.prepare("SELECT id,account_id,event_type FROM agentport_events WHERE tenant_id=? AND service_id=? AND provider_event_id=?")
+    .bind(row.tenant_id, serviceId, providerMessageId).first<{ id: string; account_id: string; event_type: string }>();
+  if (!event || event.account_id !== row.account_id || event.event_type !== "message.received") {
+    message.setReject("AgentPort email event conflicts with an existing provider event");
+    return;
+  }
   const subscriptions = await env.PLATFORM_DB.prepare(`SELECT id,agent_id FROM agentport_event_subscriptions WHERE tenant_id=? AND service_id=?
     AND event_type='message.received' AND status='active' AND (account_id IS NULL OR account_id=?)`).bind(row.tenant_id, serviceId, row.account_id).all<{ id: string; agent_id: string }>();
   for (const subscription of subscriptions.results ?? []) {
     await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO agentport_event_deliveries
       (id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`)
-      .bind(`dlv_${subscription.id}_${await shortHash(providerMessageId)}`, row.tenant_id, apEventId, subscription.id, subscription.agent_id, now, now, now).run();
+      .bind(`dlv_${subscription.id}_${await shortHash(providerMessageId)}`, row.tenant_id, event.id, subscription.id, subscription.agent_id, now, now, now).run();
   }
   const secret = await deriveEmailWebhookSecret(env.AGENTPORT_JWT_SECRET, row.tenant_id, row.account_id);
   const signature = await emailWebhookSignature(secret, timestamp, eventId, raw);

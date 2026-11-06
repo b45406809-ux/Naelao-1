@@ -3,6 +3,7 @@ import { verifyInternalToken } from "@naelao/http";
 import { accountModelRequiresParent, inspectDependencyGraph, leaseExpiry, validateServiceRegistration, type AccountModel, type AccountDependency, type DependencyType } from "./core.js";
 import { createSealedAgentKey, signAgentCredential } from "./identity.js";
 import { deriveEmailWebhookSecret, normalizedEmailDomain, validEmailAddress, validInboundWebhookUrl } from "../email.js";
+import { eventWebhookSecret } from "../notifications.js";
 
 interface AgentPortEnv {
   PLATFORM_DB: D1Database; PLATFORM_SECRET: string; AGENTPORT_JWT_SECRET?: string; AGENTPORT_ISSUER?: string;
@@ -381,6 +382,9 @@ routes.post("/accounts/:accountId/dependencies", async (c) => {
 routes.post("/events/subscriptions", async (c) => {
   const body = await c.req.json<{ agentId?: string; serviceId?: string; accountId?: string; eventType?: string; deliveryMode?: "webhook" | "poll" | "mcp"; consumerGroup?: string; routing?: unknown }>().catch(() => null);
   if (!body?.agentId || !body.serviceId || !body.eventType || !body.deliveryMode || !["webhook", "poll", "mcp"].includes(body.deliveryMode)) return c.json({ error_code: "invalid_subscription" }, 400);
+  const routing = body.routing && typeof body.routing === "object" && !Array.isArray(body.routing) ? body.routing as Record<string, unknown> : {};
+  if (body.deliveryMode === "webhook" && (typeof routing.webhookUrl !== "string" || !validInboundWebhookUrl(routing.webhookUrl) || !c.env.AGENTPORT_JWT_SECRET))
+    return c.json({ error_code: "invalid_webhook_configuration" }, 400);
   if (c.req.header("x-agentport-actor-role") === "agent" && body.agentId !== c.req.header("x-agentport-actor-id")) return c.json({ error_code: "agent_identity_mismatch" }, 403);
   const tenantId = c.get("tenantId"); const db = c.env.PLATFORM_DB;
   const [agent, service] = await Promise.all([
@@ -398,9 +402,36 @@ routes.post("/events/subscriptions", async (c) => {
   const subId = id("sub"); const at = stamp();
   try { await db.prepare(`INSERT INTO agentport_event_subscriptions(id,tenant_id,agent_id,service_id,account_id,event_type,delivery_mode,consumer_group,routing_json,created_at,updated_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(subId, tenantId, body.agentId, body.serviceId, body.accountId ?? null, body.eventType, body.deliveryMode,
-    body.consumerGroup ?? "default", JSON.stringify(body.routing ?? {}), at, at).run(); }
+    body.consumerGroup ?? "default", JSON.stringify(body.deliveryMode === "webhook" ? { webhookUrl: routing.webhookUrl } : {}), at, at).run(); }
   catch { return c.json({ error_code: "subscription_conflict" }, 409); }
-  return c.json({ subscription: { id: subId, agentId: body.agentId, serviceId: body.serviceId, eventType: body.eventType, deliveryMode: body.deliveryMode } }, 201);
+  return c.json({ subscription: { id: subId, agentId: body.agentId, serviceId: body.serviceId, eventType: body.eventType, deliveryMode: body.deliveryMode },
+    ...(body.deliveryMode === "webhook" ? { webhookSecret: await eventWebhookSecret(c.env.AGENTPORT_JWT_SECRET!, tenantId, subId) } : {}) }, 201);
+});
+
+async function ownedSubscription(c: Context<{ Bindings: AgentPortEnv; Variables: { tenantId: string } }>) {
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT s.id,s.agent_id,s.service_id,s.account_id,s.event_type,s.delivery_mode,s.consumer_group,s.routing_json,s.status,
+    p.external_id,p.principal_type FROM agentport_event_subscriptions s JOIN agentport_agents a ON a.id=s.agent_id AND a.tenant_id=s.tenant_id
+    JOIN agentport_principals p ON p.id=a.principal_id AND p.tenant_id=a.tenant_id WHERE s.id=? AND s.tenant_id=?`)
+    .bind(c.req.param("subscriptionId"), c.get("tenantId")).first<{ id: string; agent_id: string; service_id: string; account_id: string | null; event_type: string; delivery_mode: string; consumer_group: string; routing_json: string; status: string; external_id: string; principal_type: string }>();
+  if (!row) return null;
+  const role = c.req.header("x-agentport-actor-role");
+  if (role === "agent" && c.req.header("x-agentport-actor-id") !== row.agent_id) return null;
+  if (role === "agentport_api" && (c.req.header("x-agentport-owner-id") !== row.external_id || c.req.header("x-agentport-owner-type") !== row.principal_type)) return null;
+  return row;
+}
+routes.get("/events/subscriptions/:subscriptionId", async c => {
+  const row = await ownedSubscription(c);
+  if (!row) return c.json({ error_code: "subscription_unavailable" }, 404);
+  return c.json({ subscription: { id: row.id, agentId: row.agent_id, serviceId: row.service_id, accountId: row.account_id,
+    eventType: row.event_type, deliveryMode: row.delivery_mode, consumerGroup: row.consumer_group, routing: JSON.parse(row.routing_json), status: row.status },
+    ...(row.delivery_mode === "webhook" && row.status === "active" && c.env.AGENTPORT_JWT_SECRET ? { webhookSecret: await eventWebhookSecret(c.env.AGENTPORT_JWT_SECRET, c.get("tenantId"), row.id) } : {}) });
+});
+routes.delete("/events/subscriptions/:subscriptionId", async c => {
+  const row = await ownedSubscription(c);
+  if (!row) return c.json({ error_code: "subscription_unavailable" }, 404);
+  const result = await c.env.PLATFORM_DB.prepare("UPDATE agentport_event_subscriptions SET status='revoked',updated_at=? WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(stamp(), row.id, c.get("tenantId")).run();
+  return c.json({ revoked: result.meta.changes > 0 });
 });
 
 routes.post("/events", async (c) => {
@@ -416,25 +447,29 @@ routes.post("/events", async (c) => {
     const account = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_accounts WHERE id=? AND tenant_id=? AND service_id=? AND status='active'").bind(accountId, tenantId, serviceId).first();
     if (!account) return c.json({ error_code: "account_service_mismatch" }, 404);
   }
-  const eventId = eventIdInput ?? id("evt"); const at = stamp();
-  try { await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(eventId, tenantId, serviceId, accountId ?? null, providerEventId, eventType, threadRef ?? null, dataRef ?? null, at, at).run(); }
-  catch { return c.json({ accepted: true, duplicate: true }); }
+  const candidateId = eventIdInput ?? id("evt"); const at = stamp();
+  const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(candidateId, tenantId, serviceId, accountId ?? null, providerEventId, eventType, threadRef ?? null, dataRef ?? null, at, at).run();
+  const stored = await c.env.PLATFORM_DB.prepare("SELECT id,account_id,event_type FROM agentport_events WHERE tenant_id=? AND service_id=? AND provider_event_id=?")
+    .bind(tenantId, serviceId, providerEventId).first<{ id: string; account_id: string | null; event_type: string }>();
+  if (!stored || stored.account_id !== (accountId ?? null) || stored.event_type !== eventType) return c.json({ error_code: "event_idempotency_conflict" }, 409);
+  const eventId = stored.id;
   const subscriptions = await c.env.PLATFORM_DB.prepare(`SELECT s.id,s.agent_id FROM agentport_event_subscriptions s
     WHERE s.tenant_id=? AND s.service_id=? AND s.event_type=? AND s.status='active'
       AND (s.account_id IS NULL OR s.account_id=?)`).bind(tenantId, serviceId, eventType, accountId ?? null).all<{ id: string; agent_id: string }>();
   for (const sub of subscriptions.results ?? []) await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO agentport_event_deliveries
     (id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`)
     .bind(id("dlv"), tenantId, eventId, sub.id, sub.agent_id, at, at, at).run();
-  return c.json({ accepted: true, duplicate: false, id: eventId }, 202);
+  return c.json({ accepted: true, duplicate: !inserted.meta.changes, id: eventId }, 202);
 });
 
 routes.get("/events/pending", async (c) => {
   const agentId = c.req.query("agentId"); if (!agentId) return c.json({ error_code: "agent_id_required" }, 400);
   if (c.req.header("x-agentport-actor-role") === "agent" && agentId !== c.req.header("x-agentport-actor-id")) return c.json({ error_code: "agent_identity_mismatch" }, 403);
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT d.id AS delivery_id,e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.attempts,d.available_at
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT d.id AS delivery_id,e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.attempts,d.available_at,n.status AS notification_status,n.attempts AS notification_attempts
     FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id
     JOIN agentport_event_subscriptions s ON s.id=d.subscription_id AND s.tenant_id=d.tenant_id
+    LEFT JOIN agentport_event_notifications n ON n.delivery_id=d.id
     WHERE d.tenant_id=? AND d.agent_id=? AND s.status='active' AND d.status='pending' AND d.available_at<=?
       AND (e.account_id IS NULL OR EXISTS (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=d.tenant_id AND g.account_id=e.account_id AND g.agent_id=d.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?)))
     ORDER BY d.created_at LIMIT 100`)
@@ -443,7 +478,7 @@ routes.get("/events/pending", async (c) => {
 });
 
 routes.post("/events/:eventId/claim", async (c) => {
-  const body = await c.req.json<{ agentId?: string; consumerId?: string; ttlSeconds?: number }>().catch(() => null);
+  const body = await c.req.json<{ agentId?: string; consumerId?: string; ttlSeconds?: number; deliveryId?: string }>().catch(() => null);
   if (!body?.agentId || !body.consumerId || body.consumerId.length > 200) return c.json({ error_code: "invalid_claim" }, 400);
   if (c.req.header("x-agentport-actor-role") === "agent" && body.agentId !== c.req.header("x-agentport-actor-id")) return c.json({ error_code: "agent_identity_mismatch" }, 403);
   const tenantId = c.get("tenantId"); const at = stamp();
@@ -452,15 +487,17 @@ routes.post("/events/:eventId/claim", async (c) => {
     WHERE event_id=? AND tenant_id=? AND agent_id=? AND status='claimed' AND attempts>=8 AND claim_expires_at<=?`)
     .bind(at, c.req.param("eventId"), tenantId, body.agentId, at).run();
   const result = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_event_deliveries SET status='claimed',claim_owner=?,claim_expires_at=?,attempts=attempts+1,updated_at=?
-    WHERE event_id=? AND tenant_id=? AND agent_id=? AND (status='pending' OR (status='claimed' AND claim_expires_at<=?))
+    WHERE id=(SELECT candidate.id FROM agentport_event_deliveries candidate WHERE candidate.event_id=? AND candidate.tenant_id=? AND candidate.agent_id=? AND (? IS NULL OR candidate.id=?)
+      AND (candidate.status='pending' OR (candidate.status='claimed' AND candidate.claim_expires_at<=?)) AND candidate.attempts<8 AND candidate.available_at<=?
+      AND EXISTS (SELECT 1 FROM agentport_event_subscriptions s WHERE s.id=candidate.subscription_id AND s.status='active') ORDER BY candidate.created_at,candidate.id LIMIT 1)
     AND attempts<8 AND available_at<=? AND EXISTS (SELECT 1 FROM agentport_event_subscriptions s WHERE s.id=subscription_id AND s.status='active')
     AND EXISTS (SELECT 1 FROM agentport_events e WHERE e.id=event_id AND e.tenant_id=agentport_event_deliveries.tenant_id AND (e.account_id IS NULL OR EXISTS
-      (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=e.tenant_id AND g.account_id=e.account_id AND g.agent_id=agentport_event_deliveries.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?))))`)
-    .bind(body.consumerId, claimExpiry, at, c.req.param("eventId"), tenantId, body.agentId, at, at, at).run();
-  if (!result.meta.changes) return c.json({ error_code: "event_unavailable" }, 409);
+      (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=e.tenant_id AND g.account_id=e.account_id AND g.agent_id=agentport_event_deliveries.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?)))) RETURNING id`)
+    .bind(body.consumerId, claimExpiry, at, c.req.param("eventId"), tenantId, body.agentId, body.deliveryId ?? null, body.deliveryId ?? null, at, at, at, at).first<{ id: string }>();
+  if (!result) return c.json({ error_code: "event_unavailable" }, 409);
   const event = await c.env.PLATFORM_DB.prepare(`SELECT e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.id AS delivery_id,d.attempts,d.claim_expires_at
-    FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id WHERE d.event_id=? AND d.tenant_id=? AND d.agent_id=? AND d.claim_owner=?`)
-    .bind(c.req.param("eventId"), tenantId, body.agentId, body.consumerId).first();
+    FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id WHERE d.id=? AND d.tenant_id=?`)
+    .bind(result.id, tenantId).first();
   if (event && "payload_ref" in event) {
     const { payload_ref, ...rest } = event as Record<string, unknown>;
     return c.json({ claimed: true, event: { ...rest, dataRef: payload_ref } });
@@ -469,18 +506,20 @@ routes.post("/events/:eventId/claim", async (c) => {
 });
 
 routes.post("/events/:eventId/ack", async (c) => {
-  const body = await c.req.json<{ agentId?: string; consumerId?: string; result?: "delivered" | "retry" | "dead_letter" }>().catch(() => null);
+  const body = await c.req.json<{ agentId?: string; consumerId?: string; deliveryId?: string; result?: "delivered" | "retry" | "dead_letter" }>().catch(() => null);
   if (!body?.agentId || !body.consumerId || !["delivered", "retry", "dead_letter"].includes(String(body.result))) return c.json({ error_code: "invalid_ack" }, 400);
   if (c.req.header("x-agentport-actor-role") === "agent" && body.agentId !== c.req.header("x-agentport-actor-id")) return c.json({ error_code: "agent_identity_mismatch" }, 403);
   const retryAt = new Date(Date.now() + 5000).toISOString();
   const result = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_event_deliveries SET
     status=CASE WHEN ?='retry' AND attempts>=8 THEN 'dead_letter' WHEN ?='retry' THEN 'pending' ELSE ? END,
     claim_owner=NULL,claim_expires_at=NULL,available_at=?,updated_at=?
-    WHERE event_id=? AND tenant_id=? AND agent_id=? AND claim_owner=? AND status='claimed' AND claim_expires_at>?`)
-    .bind(body.result, body.result, body.result, retryAt, stamp(), c.req.param("eventId"), c.get("tenantId"), body.agentId, body.consumerId, stamp()).run();
-  if (!result.meta.changes) return c.json({ error_code: "event_unavailable" }, 404);
-  const delivery = await c.env.PLATFORM_DB.prepare("SELECT status FROM agentport_event_deliveries WHERE event_id=? AND tenant_id=? AND agent_id=?").bind(c.req.param("eventId"), c.get("tenantId"), body.agentId).first<{ status: string }>();
-  return c.json({ acknowledged: true, status: delivery?.status ?? "unavailable" });
+    WHERE id=(SELECT id FROM agentport_event_deliveries WHERE event_id=? AND tenant_id=? AND agent_id=? AND claim_owner=? AND status='claimed'
+      AND claim_expires_at>? AND (? IS NULL OR id=?) ORDER BY created_at,id LIMIT 1) RETURNING id,status`)
+    .bind(body.result, body.result, body.result, retryAt, stamp(), c.req.param("eventId"), c.get("tenantId"), body.agentId, body.consumerId, stamp(), body.deliveryId ?? null, body.deliveryId ?? null).first<{ id: string; status: string }>();
+  if (!result) return c.json({ error_code: "event_unavailable" }, 404);
+  if (body.result === "retry" && result.status === "pending") await c.env.PLATFORM_DB.prepare("UPDATE agentport_event_notifications SET status='pending',attempts=0,available_at=?,updated_at=? WHERE delivery_id=?")
+    .bind(retryAt, stamp(), result.id).run();
+  return c.json({ acknowledged: true, status: result.status, deliveryId: result.id });
 });
 
 routes.post("/activity/leases", async (c) => {
@@ -638,18 +677,23 @@ routes.post("/channels/:channelId/message-events/inbound", async (c) => {
   if (!thread) return c.json({ error_code: "thread_store_unavailable" }, 503);
   const sender = await db.prepare("SELECT role FROM agentport_trusted_senders WHERE tenant_id=? AND channel_id=? AND provider_sender_id=? AND status='active'").bind(tenantId, channelId, senderId).first<{ role: "owner" | "delegate" }>();
   const senderRole = sender?.role ?? "external"; const trustLevel = sender ? "verified" : "unverified"; const messageRefId = id("mref");
-  try { await db.prepare(`INSERT INTO agentport_channel_message_refs(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at,created_at)
-    VALUES(?,?,?,?,?,'inbound',?,?,?,'received',?,?)`).bind(messageRefId, tenantId, channelId, thread.id, providerMessageId, senderId, senderRole, trustLevel, messageAt, at).run(); }
-  catch { return c.json({ accepted: true, duplicate: true }); }
+  const inserted = await db.prepare(`INSERT OR IGNORE INTO agentport_channel_message_refs(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at,created_at)
+    VALUES(?,?,?,?,?,'inbound',?,?,?,'received',?,?)`).bind(messageRefId, tenantId, channelId, thread.id, providerMessageId, senderId, senderRole, trustLevel, messageAt, at).run();
+  const storedRef = await db.prepare("SELECT thread_id,sender_id FROM agentport_channel_message_refs WHERE tenant_id=? AND channel_id=? AND provider_message_id=?")
+    .bind(tenantId, channelId, providerMessageId).first<{ thread_id: string; sender_id: string }>();
+  if (!storedRef || storedRef.thread_id !== thread.id || storedRef.sender_id !== senderId) return c.json({ error_code: "event_idempotency_conflict" }, 409);
   await db.prepare("UPDATE agentport_threads SET last_message_at=?,updated_at=? WHERE id=? AND tenant_id=?").bind(messageAt, at, thread.id, tenantId).run();
-  const eventId = id("evt");
-  await db.prepare(`INSERT INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
-    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(eventId, tenantId, channel.service_id, channel.account_id, providerMessageId, thread.id, providerMessageId, at, at).run();
+  await db.prepare(`INSERT OR IGNORE INTO agentport_events(id,tenant_id,service_id,account_id,provider_event_id,event_type,thread_ref,payload_ref,available_at,created_at)
+    VALUES(?,?,?,?,?,'message.received',?,?,?,?)`).bind(id("evt"), tenantId, channel.service_id, channel.account_id, providerMessageId, thread.id, providerMessageId, at, at).run();
+  const storedEvent = await db.prepare("SELECT id,account_id,thread_ref,event_type FROM agentport_events WHERE tenant_id=? AND service_id=? AND provider_event_id=?")
+    .bind(tenantId, channel.service_id, providerMessageId).first<{ id: string; account_id: string; thread_ref: string; event_type: string }>();
+  if (!storedEvent || storedEvent.account_id !== channel.account_id || storedEvent.thread_ref !== thread.id || storedEvent.event_type !== "message.received") return c.json({ error_code: "event_idempotency_conflict" }, 409);
+  const eventId = storedEvent.id;
   const subscriptions = await db.prepare(`SELECT id,agent_id FROM agentport_event_subscriptions WHERE tenant_id=? AND service_id=? AND event_type='message.received' AND status='active' AND (account_id IS NULL OR account_id=?)`)
     .bind(tenantId, channel.service_id, channel.account_id).all<{ id: string; agent_id: string }>();
   for (const sub of subscriptions.results ?? []) await db.prepare(`INSERT OR IGNORE INTO agentport_event_deliveries(id,tenant_id,event_id,subscription_id,agent_id,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`)
     .bind(id("dlv"), tenantId, eventId, sub.id, sub.agent_id, at, at, at).run();
-  return c.json({ accepted: true, duplicate: false, messageReference: { providerMessageId, threadId: thread.id, senderRole, trustLevel }, eventId, contentLocation: "channel_provider" }, 202);
+  return c.json({ accepted: true, duplicate: !inserted.meta.changes, messageReference: { providerMessageId, threadId: thread.id, senderRole, trustLevel }, eventId, contentLocation: "channel_provider" }, 202);
 });
 
 // Runtimes send/read through the channel provider's own authorized API/MCP connector. AgentPort

@@ -30,6 +30,19 @@ export type AgentPortCredentialVerification =
   | { valid: true; claims: AgentPortCredentialClaims }
   | { valid: false; reason: string };
 
+/** Verify the exact JSON bytes of an AgentPort event wake notification before acting on it. */
+export async function verifyAgentPortEventWebhook(input: { secret: string; timestamp: string; signature: string; raw: Uint8Array; now?: number }) {
+  const seconds = Number(input.timestamp);
+  if (!Number.isSafeInteger(seconds) || Math.abs(Math.floor((input.now ?? Date.now()) / 1000) - seconds) > 300) return { valid: false as const, reason: "timestamp_outside_window" };
+  if (!/^v1=[A-Za-z0-9_-]{43}$/.test(input.signature)) return { valid: false as const, reason: "malformed_signature" };
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(input.secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const prefix = encoder.encode(`${input.timestamp}\n`);
+  const data = new Uint8Array(prefix.length + input.raw.length); data.set(prefix); data.set(input.raw, prefix.length);
+  const signature = Uint8Array.from(atob(input.signature.slice(3).replaceAll("-", "+").replaceAll("_", "/")), ch => ch.charCodeAt(0));
+  return await crypto.subtle.verify("HMAC", key, signature, data) ? { valid: true as const } : { valid: false as const, reason: "invalid_signature" };
+}
+
 /** Validate AgentPort's signed raw RFC 822 inbound webhook. The handler must deduplicate eventId. */
 export async function verifyAgentPortEmailWebhook(input: {
   secret: string; timestamp: string; eventId: string; signature: string; raw: Uint8Array; now?: number;
@@ -190,10 +203,12 @@ export class AgentPortClient {
   listMessageReferences(threadId: string, agentId: string) { return this.request<{ messageReferences: Array<{ providerMessageId: string | null; direction: string; senderId: string | null; senderRole: string; trustLevel: string; status: string; occurredAt: string }>; contentLocation: "channel_provider" }>(`/threads/${encodeURIComponent(threadId)}/message-references?agentId=${encodeURIComponent(agentId)}`); }
   authorizeChannelAction(threadId: string, input: { agentId: string; action: "messages.read" | "messages.send"; resourceRef?: string; idempotencyKey: string }) { return this.request<{ decision: "allow" | "deny"; authorizationId: string; serviceId: string; providerChannelId: string; providerThreadId: string; providerMessageId?: string; contentLocation: "channel_provider" }>(`/threads/${encodeURIComponent(threadId)}/actions/authorize`, { method: "POST", body: JSON.stringify(input) }); }
   grantAccount(accountId: string, input: { agentId: string; permissions: string[]; expiresAt?: string }) { return this.request<{ grant: unknown }>(`/accounts/${encodeURIComponent(accountId)}/grants`, { method: "POST", body: JSON.stringify(input) }); }
-  subscribe(input: { agentId: string; serviceId: string; accountId?: string; eventType: string; deliveryMode: "webhook" | "poll" | "mcp"; consumerGroup?: string; routing?: unknown }) { return this.request<{ subscription: unknown }>("/events/subscriptions", { method: "POST", body: JSON.stringify(input) }); }
+  subscribe(input: { agentId: string; serviceId: string; accountId?: string; eventType: string; deliveryMode: "webhook" | "poll" | "mcp"; consumerGroup?: string; routing?: { webhookUrl: string } }) { return this.request<{ subscription: { id: string }; webhookSecret?: string }>("/events/subscriptions", { method: "POST", body: JSON.stringify(input) }); }
+  getSubscription(subscriptionId: string) { return this.request<{ subscription: Record<string, unknown>; webhookSecret?: string }>(`/events/subscriptions/${encodeURIComponent(subscriptionId)}`); }
+  unsubscribe(subscriptionId: string) { return this.request<{ revoked: boolean }>(`/events/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" }); }
   pendingEvents(agentId: string) { return this.request<{ events: unknown[] }>(`/events/pending?agentId=${encodeURIComponent(agentId)}`); }
-  claimEvent(eventId: string, input: { agentId: string; consumerId: string; ttlSeconds?: number }) { return this.request<{ claimed: boolean; event: unknown }>(`/events/${encodeURIComponent(eventId)}/claim`, { method: "POST", body: JSON.stringify(input) }); }
-  acknowledgeEvent(eventId: string, input: { agentId: string; consumerId: string; result: "delivered" | "retry" | "dead_letter" }) { return this.request<{ acknowledged: boolean; status: string }>(`/events/${encodeURIComponent(eventId)}/ack`, { method: "POST", body: JSON.stringify(input) }); }
+  claimEvent(eventId: string, input: { agentId: string; consumerId: string; deliveryId?: string; ttlSeconds?: number }) { return this.request<{ claimed: boolean; event: unknown }>(`/events/${encodeURIComponent(eventId)}/claim`, { method: "POST", body: JSON.stringify(input) }); }
+  acknowledgeEvent(eventId: string, input: { agentId: string; consumerId: string; deliveryId?: string; result: "delivered" | "retry" | "dead_letter" }) { return this.request<{ acknowledged: boolean; status: string }>(`/events/${encodeURIComponent(eventId)}/ack`, { method: "POST", body: JSON.stringify(input) }); }
   acquireActivity(input: { agentId: string; subscriptionId: string; consumerId: string; ttlSeconds?: number }) { return this.request<{ lease: { id: string; expiresAt: string } }>("/activity/leases", { method: "POST", body: JSON.stringify(input) }); }
   renewActivity(leaseId: string, input: { agentId: string; ttlSeconds?: number }) { return this.request<{ renewed: boolean; expiresAt: string }>(`/activity/leases/${encodeURIComponent(leaseId)}/renew`, { method: "POST", body: JSON.stringify(input) }); }
   releaseActivity(leaseId: string) { return this.request<{ released: boolean }>(`/activity/leases/${encodeURIComponent(leaseId)}`, { method: "DELETE" }); }

@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentPortClient, AgentPortError, buildAgentPortAuthorizationUrl, createAgentPortPKCE, createDeveloperApiKey, createOAuthClient, exchangeAgentPortOAuthCode, refreshAgentPortOAuthToken, registerDeveloper, revokeAgentPortToken, verifyAgentCredential, verifyAgentPortEmailWebhook } from "./index.js";
+import { AgentPortClient, AgentPortError, buildAgentPortAuthorizationUrl, createAgentPortPKCE, createDeveloperApiKey, createOAuthClient, exchangeAgentPortOAuthCode, refreshAgentPortOAuthToken, registerDeveloper, revokeAgentPortToken, verifyAgentCredential, verifyAgentPortEmailWebhook, verifyAgentPortEventWebhook } from "./index.js";
 
 describe("AgentPort public SDK", () => {
+  it("verifies signed event bytes and rejects stale and altered notifications", async () => {
+    const secret = "event-secret", timestamp = "1000", raw = new TextEncoder().encode('{"id":"evt_1"}');
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const prefix = new TextEncoder().encode(`${timestamp}\n`); const bytes = new Uint8Array(prefix.length + raw.length); bytes.set(prefix); bytes.set(raw, prefix.length);
+    const signed = new Uint8Array(await crypto.subtle.sign("HMAC", key, bytes));
+    const signature = `v1=${btoa(String.fromCharCode(...signed)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+    expect(await verifyAgentPortEventWebhook({ secret, timestamp, signature, raw, now: 1_000_000 })).toEqual({ valid: true });
+    expect(await verifyAgentPortEventWebhook({ secret, timestamp, signature, raw, now: 2_000_000 })).toMatchObject({ valid: false });
+    expect(await verifyAgentPortEventWebhook({ secret, timestamp, signature, raw: new TextEncoder().encode("{}"), now: 1_000_000 })).toMatchObject({ valid: false });
+  });
   it("verifies inbound email webhook HMACs over the original bytes and rejects stale callbacks", async () => {
     const secret = "per-mailbox-secret"; const timestamp = "1000"; const eventId = "message-1";
     const raw = new TextEncoder().encode("From: sender@example.org\r\n\r\nprivate body");

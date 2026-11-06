@@ -49,6 +49,8 @@ describe("latest D1 deployment migration batch", () => {
     storage.sql.exec(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at)
       SELECT 'mailbox-old','t1',id,'old@mail.example','https://hooks.example.com/mail','old-key','2026-01-01','2026-01-02' FROM agentport_agents WHERE host_space_id='s1' LIMIT 1`);
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0170_agentport_email_channels.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0171_agentport_event_notifications.sql"), "utf8"));
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0171_agentport_event_notifications.sql"), "utf8"))).not.toThrow();
     expect(storage.sql.exec<{ id: string; account_id: string; provider_channel_id: string; status: string }>(
       "SELECT id,account_id,provider_channel_id,status FROM agentport_channels WHERE account_id='mailbox-old'"
     ).toArray()).toEqual([{ id: "chn-email:mailbox-old", account_id: "mailbox-old", provider_channel_id: "old@mail.example", status: "active" }]);

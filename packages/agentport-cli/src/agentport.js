@@ -56,6 +56,8 @@ else if (resource === "threads" && command === "create" && flags.channel && inpu
 else if (resource === "threads" && command === "list" && flags.channel) await request("GET", `/channels/${encodeURIComponent(flags.channel)}/threads${flags.agent ? `?agentId=${encodeURIComponent(flags.agent)}` : ""}`);
 else if (resource === "messages" && command === "references" && flags.thread && flags.agent) await request("GET", `/threads/${encodeURIComponent(flags.thread)}/message-references?agentId=${encodeURIComponent(flags.agent)}`);
 else if (resource === "events" && command === "subscribe" && input) await request("POST", "/events/subscriptions", input);
+else if (resource === "events" && command === "subscription" && flags.id) await request("GET", `/events/subscriptions/${encodeURIComponent(flags.id)}`);
+else if (resource === "events" && command === "unsubscribe" && flags.id) await request("DELETE", `/events/subscriptions/${encodeURIComponent(flags.id)}`);
 else if (resource === "events" && command === "pending" && flags.agent) await request("GET", `/events/pending?agentId=${encodeURIComponent(flags.agent)}`);
 else if (resource === "events" && command === "claim" && flags.id && input) await request("POST", `/events/${encodeURIComponent(flags.id)}/claim`, input);
 else if (resource === "events" && command === "ack" && flags.id && input) await request("POST", `/events/${encodeURIComponent(flags.id)}/ack`, input);

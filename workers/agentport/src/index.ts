@@ -3,6 +3,7 @@ import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt } from "@naelao/auth";
 import { agentPortRoutes } from "./core/routes.js";
 import { handleAgentPortEmail } from "./email.js";
+import { deliverEventNotifications } from "./notifications.js";
 
 interface Env {
   PLATFORM_DB: D1Database;
@@ -547,10 +548,12 @@ app.post("/mcp", async c => {
     { name: "agentport_threads_create", description: "Create a provider-thread record; an optional runtime session binding is opaque to AgentPort.", inputSchema: { type: "object", properties: { channelId: { type: "string" }, providerThreadId: { type: "string" }, participants: { type: "array", items: { type: "string" } }, sessionBinding: { type: "object" } }, required: ["channelId", "providerThreadId"] } },
     { name: "agentport_message_references_list", description: "List provider-native message IDs and trust metadata only. Fetch conversation content from the channel provider using its authorized API or MCP tools.", inputSchema: { type: "object", properties: { threadId: { type: "string" }, agentId: { type: "string" } }, required: ["threadId", "agentId"] } },
     { name: "agentport_channel_action_authorize", description: "Check an agent's read/send grant and return provider channel/thread references. Perform the actual read or send through the provider; never send message content to AgentPort.", inputSchema: { type: "object", properties: { threadId: { type: "string" }, agentId: { type: "string" }, action: { type: "string", enum: ["messages.read", "messages.send"] }, resourceRef: { type: "string" }, idempotencyKey: { type: "string" } }, required: ["threadId", "agentId", "action", "idempotencyKey"] } },
-    { name: "agentport_events_subscribe", description: "Subscribe an agent to a provider-declared event. This stores delivery intent; a runtime must still poll or receive a configured webhook.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, serviceId: { type: "string" }, accountId: { type: "string" }, eventType: { type: "string" }, deliveryMode: { type: "string", enum: ["webhook", "poll", "mcp"] }, consumerGroup: { type: "string" } }, required: ["agentId", "serviceId", "eventType", "deliveryMode"] } },
+    { name: "agentport_events_subscribe", description: "Subscribe an agent to a provider event. A webhook receives a signed wake notification; the runtime claims and acknowledges the event.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, serviceId: { type: "string" }, accountId: { type: "string" }, eventType: { type: "string" }, deliveryMode: { type: "string", enum: ["webhook", "poll", "mcp"] }, consumerGroup: { type: "string" }, routing: { type: "object", properties: { webhookUrl: { type: "string" } } } }, required: ["agentId", "serviceId", "eventType", "deliveryMode"] } },
+    { name: "agentport_events_subscription", description: "Inspect an event subscription and retrieve its webhook verification secret.", inputSchema: { type: "object", properties: { subscriptionId: { type: "string" } }, required: ["subscriptionId"] } },
+    { name: "agentport_events_unsubscribe", description: "Revoke an event subscription.", inputSchema: { type: "object", properties: { subscriptionId: { type: "string" } }, required: ["subscriptionId"] } },
     { name: "agentport_events_pending", description: "Read pending event notifications for an agent.", inputSchema: { type: "object", properties: { agentId: { type: "string" } }, required: ["agentId"] } },
-    { name: "agentport_events_claim", description: "Claim a pending delivery with an expiring lease for one consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, ttlSeconds: { type: "integer" } }, required: ["eventId", "agentId", "consumerId"] } },
-    { name: "agentport_events_ack", description: "Acknowledge, retry, or dead-letter an event delivery claimed by this consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, result: { type: "string", enum: ["delivered", "retry", "dead_letter"] } }, required: ["eventId", "agentId", "consumerId", "result"] } },
+    { name: "agentport_events_claim", description: "Claim a pending delivery with an expiring lease for one consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, deliveryId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, ttlSeconds: { type: "integer" } }, required: ["eventId", "agentId", "consumerId"] } },
+    { name: "agentport_events_ack", description: "Acknowledge, retry, or dead-letter an event delivery claimed by this consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, deliveryId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, result: { type: "string", enum: ["delivered", "retry", "dead_letter"] } }, required: ["eventId", "agentId", "consumerId", "result"] } },
     { name: "agentport_activity_acquire", description: "Acquire or renew an expiring lease showing this consumer is handling a subscription. It does not lock the account.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, subscriptionId: { type: "string" }, consumerId: { type: "string" }, ttlSeconds: { type: "integer" } }, required: ["agentId", "subscriptionId", "consumerId"] } },
   ] } });
   if (request.method !== "tools/call") return c.json({ jsonrpc: "2.0", id: request.id ?? null, error: { code: -32601, message: "Method not found" } }, 404);
@@ -574,6 +577,8 @@ app.post("/mcp", async c => {
     case "agentport_message_references_list": path = `/threads/${encodeURIComponent(String(args.threadId ?? ""))}/message-references?agentId=${encodeURIComponent(String(args.agentId ?? ""))}`; break;
     case "agentport_channel_action_authorize": method = "POST"; path = `/threads/${encodeURIComponent(String(args.threadId ?? ""))}/actions/authorize`; delete args.threadId; break;
     case "agentport_events_subscribe": method = "POST"; path = "/events/subscriptions"; break;
+    case "agentport_events_subscription": path = `/events/subscriptions/${encodeURIComponent(String(args.subscriptionId ?? ""))}`; break;
+    case "agentport_events_unsubscribe": method = "DELETE"; path = `/events/subscriptions/${encodeURIComponent(String(args.subscriptionId ?? ""))}`; delete args.subscriptionId; break;
     case "agentport_events_pending": path = `/events/pending?agentId=${encodeURIComponent(String(args.agentId ?? ""))}`; break;
     case "agentport_events_claim": method = "POST"; path = `/events/${encodeURIComponent(String(args.eventId ?? ""))}/claim`; delete args.eventId; break;
     case "agentport_events_ack": method = "POST"; path = `/events/${encodeURIComponent(String(args.eventId ?? ""))}/ack`; delete args.eventId; break;
@@ -594,5 +599,6 @@ app.get("/mcp", c => c.json({ error_code: "method_not_allowed", message: "MCP St
 app.notFound(c => c.json({ error_code: "not_found" }, 404));
 const handler = Object.assign(app, {
   email: (message: ForwardableEmailMessage, env: Env) => handleAgentPortEmail(message, env),
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => ctx.waitUntil(deliverEventNotifications(env)),
 });
 export default handler;

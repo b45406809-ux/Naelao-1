@@ -5,6 +5,7 @@ import { mintInternalToken } from "@naelao/http";
 import { verifyAgentCredentialLocal } from "./identity.js";
 import { agentPortRoutes } from "./routes.js";
 import { handleAgentPortEmail } from "../email.js";
+import { deliverEventNotifications, eventWebhookSignature } from "../notifications.js";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
@@ -22,6 +23,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0167_agentport_apps_capabilities.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0168_agentport_client_neutral_host_resources.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0169_agentport_email_accounts.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0171_agentport_event_notifications.sql", import.meta.url), "utf8"));
   const platformDb = { prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -36,6 +38,69 @@ function fixture() {
 }
 
 describe("AgentPort internal registry API", () => {
+  it("does not send an account event after the subscriber's grant is revoked", async () => {
+    const { db, platformDb } = fixture(); const secret = "platform-secret", master = "independent-event-webhook-secret-long-enough";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: master, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    await call("/services", "POST", { id: "events-provider", name: "Provider", type: "api", accountModels: ["agent_native"], capabilities: ["read"], events: ["item.changed"], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "owner", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "events-provider", accountModel: "agent_native", ownerType: "individual", ownerId: "owner" })).json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    const { grant } = await (await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "owner", permissions: ["read"] })).json() as { grant: { id: string } };
+    await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "events-provider", accountId: account.id, eventType: "item.changed", deliveryMode: "webhook", routing: { webhookUrl: "https://hooks.builder.com/events" } });
+    await call("/events", "POST", { serviceId: "events-provider", accountId: account.id, eventType: "item.changed", providerEventId: "source-event" });
+    await call(`/grants/${grant.id}`, "DELETE");
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    expect(fetcher).not.toHaveBeenCalled();
+    db.close();
+  });
+  it("delivers signed provider-neutral wake notifications and keeps event acknowledgment separate", async () => {
+    const { db, platformDb } = fixture(); const secret = "platform-secret"; const master = "independent-event-webhook-secret";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: master, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    await call("/services", "POST", { id: "provider", name: "Provider", type: "api", accountModels: ["agent_native"], capabilities: ["read"], events: ["item.changed"], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "owner", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const invalid = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "provider", eventType: "item.changed", deliveryMode: "webhook", routing: { webhookUrl: "http://127.0.0.1/private" } });
+    expect(invalid.status).toBe(400);
+    const sub = await (await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "provider", eventType: "item.changed", deliveryMode: "webhook", routing: { webhookUrl: "https://hooks.builder.com/events" } })).json() as { subscription: { id: string }; webhookSecret: string };
+    expect(sub.webhookSecret).toBeTruthy();
+    const pollSub = await (await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "provider", eventType: "item.changed", deliveryMode: "poll", consumerGroup: "independent" })).json() as { subscription: { id: string } };
+    const event = await (await call("/events", "POST", { serviceId: "provider", providerEventId: "provider-1", eventType: "item.changed", dataRef: "item-1" })).json() as { id: string };
+    db.prepare("DELETE FROM agentport_event_deliveries WHERE event_id=?").run(event.id);
+    const replay = await (await call("/events", "POST", { serviceId: "provider", providerEventId: "provider-1", eventType: "item.changed", dataRef: "item-1" })).json();
+    expect(replay).toMatchObject({ duplicate: true, id: event.id });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_event_deliveries WHERE event_id=?").get(event.id)).toMatchObject({ n: 2 });
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response("temporary", { status: 503 })).mockResolvedValue(new Response(null, { status: 204 }));
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    expect(db.prepare("SELECT status,attempts FROM agentport_event_notifications").get()).toMatchObject({ status: "pending", attempts: 1 });
+    db.prepare("UPDATE agentport_event_notifications SET available_at='2000-01-01T00:00:00.000Z'").run();
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const request = fetcher.mock.calls[1]![1] as RequestInit; const requestHeaders = request.headers as Record<string, string>;
+    const payload = String(request.body);
+    expect(JSON.parse(payload)).toMatchObject({ id: event.id, subscriptionId: sub.subscription.id, type: "item.changed", dataRef: "item-1" });
+    expect(requestHeaders["x-agentport-signature"]).toBe(await eventWebhookSignature(sub.webhookSecret, requestHeaders["x-agentport-timestamp"]!, payload));
+    expect(db.prepare("SELECT status FROM agentport_event_notifications").get()).toMatchObject({ status: "sent" });
+    expect(db.prepare("SELECT status FROM agentport_event_deliveries WHERE subscription_id=?").get(sub.subscription.id)).toMatchObject({ status: "pending" });
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const deliveryId = (JSON.parse(payload) as { deliveryId: string }).deliveryId;
+    expect((await call(`/events/${event.id}/claim`, "POST", { agentId: agent.id, consumerId: "runtime", deliveryId })).status).toBe(200);
+    expect((await call(`/events/${event.id}/ack`, "POST", { agentId: agent.id, consumerId: "runtime", deliveryId, result: "retry" })).status).toBe(200);
+    db.prepare("UPDATE agentport_event_deliveries SET available_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(deliveryId);
+    db.prepare("UPDATE agentport_event_notifications SET available_at='2000-01-01T00:00:00.000Z' WHERE delivery_id=?").run(deliveryId);
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect((await call(`/events/${event.id}/claim`, "POST", { agentId: agent.id, consumerId: "runtime", deliveryId })).status).toBe(200);
+    expect((await call(`/events/${event.id}/ack`, "POST", { agentId: agent.id, consumerId: "runtime", deliveryId, result: "delivered" })).status).toBe(200);
+    expect(db.prepare("SELECT status FROM agentport_event_deliveries WHERE subscription_id=?").get(pollSub.subscription.id)).toMatchObject({ status: "pending" });
+    expect((await (await call(`/events/subscriptions/${sub.subscription.id}`, "GET")).json() as { webhookSecret: string }).webhookSecret).toBe(sub.webhookSecret);
+    expect((await call(`/events/subscriptions/${sub.subscription.id}`, "DELETE")).status).toBe(200);
+    db.close();
+  });
   it("creates an idempotent platform-managed AgentPort principal only for a trusted host system", async () => {
     const { db, platformDb } = fixture(); const secret = "test-platform-secret";
     const base = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
@@ -93,7 +158,7 @@ describe("AgentPort internal registry API", () => {
     expect((await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: "host:run-2" })).status).toBe(409);
     expect((await call(`/events/${eventId}/ack`, "POST", { agentId: agent.id, consumerId: "wrong-run", result: "delivered" })).status).toBe(404);
     expect((await call(`/events/${eventId}/ack`, "POST", { agentId: agent.id, consumerId: "host:run-1", result: "delivered" })).status).toBe(200);
-    const retry = await call("/events", "POST", { serviceId: "mail-provider", providerEventId: "provider-evt-1", eventType: "message.received" });
+    const retry = await call("/events", "POST", { serviceId: "mail-provider", accountId: account.id, providerEventId: "provider-evt-1", eventType: "message.received" });
     expect((await retry.json() as { duplicate: boolean }).duplicate).toBe(true);
     db.close();
   });
