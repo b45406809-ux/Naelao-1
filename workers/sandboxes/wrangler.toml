@@ -1,0 +1,28 @@
+name = "naelao-sandboxes"
+main = "src/index.ts"
+compatibility_date = "2026-09-29"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+[env.staging]
+name = "naelao-sandboxes-staging"
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+[env.production]
+name = "naelao-sandboxes-production"
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"

@@ -22,10 +22,10 @@ export function assertExtensionId(value: string): asserts value is ExtensionId {
 export type ContainerBackend =
   | "webcontainer"
   | "cloudflare_container"
-  | "local_workstation";
+  | "local_workstation"
+  | "naelao_sandboxes";
 
-export interface Tier6ContainerOptions {
-  backend: ContainerBackend;
+interface Tier6ContainerCommonOptions {
   /** Owner/user identity required when routing through LocalTunnelDO. */
   localUserId?: string;
   /** Explicit named machine; legacy user-only targeting is rejected. */
@@ -34,6 +34,17 @@ export interface Tier6ContainerOptions {
   lockfiles?: Readonly<Partial<Record<"package.json" | "package-lock.json", string>>>;
   migration?: Readonly<{ from: "webcontainer"; previewId: string }>;
 }
+
+/** The new backend always names a preconfigured computer; other backends cannot smuggle one in. */
+export type Tier6ContainerOptions =
+  | (Tier6ContainerCommonOptions & {
+      backend: "naelao_sandboxes";
+      computerId: string;
+    })
+  | (Tier6ContainerCommonOptions & {
+      backend: Exclude<ContainerBackend, "naelao_sandboxes">;
+      computerId?: never;
+    });
 
 export type SpaceCabinetWorkerId = "project_manager_worker" | "treasury_worker" | "identity_worker" | "comms_worker";
 export interface SpaceCabinetTask { operation: string; params?: Record<string, unknown> }

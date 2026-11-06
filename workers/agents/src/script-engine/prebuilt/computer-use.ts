@@ -5,6 +5,14 @@ async function invoke(ctx: PrebuiltOpContext, name: string, args: Record<string,
   const result = await ctx.env.codeRunner.run({
     name, code: "", args, tier: 6, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId,
     tenantId: ctx.env.tenantId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+    ...(ctx.env.userId ? { userId: ctx.env.userId } : {}),
+    ...(ctx.env.runId ? { runId: ctx.env.runId } : {}),
+    ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}),
+    ...(ctx.env.workspaceBranch
+      ? { workspaceBranch: ctx.env.workspaceBranch }
+      : {}),
+    ...(ctx.env.maxTier ? { maxTier: ctx.env.maxTier } : {}),
+    ...(ctx.env.executionSignal ? { signal: ctx.env.executionSignal } : {}),
   });
   if (!result.ok) throw new Error(result.error ?? "computer-use failed");
   return result.output;

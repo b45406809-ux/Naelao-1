@@ -31,6 +31,8 @@ export interface Env {
   ANALYTICS_WORKER?: Fetcher;
   /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
   BILLING_WORKER?: Fetcher;
+  /** Project computer and sandbox configuration API. */
+  SANDBOXES_WORKER?: Fetcher;
   MARKETPLACE_WORKER?: Fetcher;
   /** Owner/admin portal domain mapping API; public requests still pass through JWT auth. */
   PORTAL_ROUTER?: Fetcher;
@@ -1372,6 +1374,42 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
 );
 
 // First-run bootstrap (create projects + run setup scripts) → agents worker
+
+// Project computers and sandbox control-plane resources use the same authenticated tenant
+// claims and internal HMAC boundary as other worker-owned APIs.
+for (const path of [
+  "/computers",
+  "/computers/*",
+  "/providers",
+  "/templates",
+  "/connections",
+  "/connections/*",
+  "/usage",
+  "/estimates",
+  "/filesystems",
+  "/filesystems/*",
+  "/executions",
+  "/executions/*",
+  "/desktop",
+  "/desktop/*",
+]) {
+  api.all(path, async (c) =>
+    c.env.SANDBOXES_WORKER
+      ? proxyTo(
+          c.env.SANDBOXES_WORKER,
+          c.get("claims"),
+          c.req.raw,
+          c.env.PLATFORM_SECRET
+        )
+      : c.json(
+          {
+            error_code: "sandboxes_unavailable",
+            message: "Sandbox service is not configured",
+          },
+          503
+        )
+  );
+}
 
 // Customer-bot channel observability + human-takeover admin control → agents worker
 // (proxies straight through to the space's agent DO).
