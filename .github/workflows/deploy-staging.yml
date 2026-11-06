@@ -177,10 +177,14 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0163_agentport_provider_auth.sql --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0164_agentport_channel_message_refs.sql --remote --env=staging
+          if npx wrangler d1 execute "$DB_ID" --command="SELECT content_text FROM agentport_messages LIMIT 0" --remote --env=staging >/dev/null 2>&1; then
+            npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0164_agentport_channel_message_refs.sql --remote --env=staging
+          fi
           npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0165_agentport_oauth.sql --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --command="SELECT token_hash FROM agentport_oauth_tokens LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0166_drop_agentport_message_store.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote --env=staging
 
       - name: Deploy router worker (staging)

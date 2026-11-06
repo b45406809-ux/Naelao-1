@@ -31,6 +31,8 @@ describe("latest D1 deployment migration batch", () => {
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0163_agentport_provider_auth.sql"), "utf8"))).not.toThrow();
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0164_agentport_channel_message_refs.sql"), "utf8"))).not.toThrow();
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0165_agentport_oauth.sql"), "utf8"))).not.toThrow();
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0166_drop_agentport_message_store.sql"), "utf8"));
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0166_drop_agentport_message_store.sql"), "utf8"))).not.toThrow();
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",
@@ -47,12 +49,13 @@ describe("latest D1 deployment migration batch", () => {
       "agentport_events", "agentport_activity_leases",
       "agentport_api_keys",
       "agentport_organizations", "agentport_developers", "agentport_auth_rate_limits",
-      "agentport_channels", "agentport_threads", "agentport_messages", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
+      "agentport_channels", "agentport_threads", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
       "agentport_service_manifests",
       "agentport_identity_keys", "agentport_issued_credentials",
       "agentport_provider_auth",
       "agentport_oauth_clients", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",
     ]));
+    expect(tables).not.toContain("agentport_messages");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('users')").toArray().map(row => row.name)).toContain("preferred_language");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('product_end_users')").toArray().map(row => row.name)).toContain("preferred_language");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('channel_links')").toArray().map(row => row.name)).toContain("model_override");

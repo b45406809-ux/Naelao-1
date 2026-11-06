@@ -417,7 +417,6 @@ app.delete("/v1/account", async c => {
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_events WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_action_receipts WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_channel_message_refs WHERE tenant_id=?").bind(tenantId),
-    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_messages WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_threads WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_trusted_senders WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_channels WHERE tenant_id=?").bind(tenantId),

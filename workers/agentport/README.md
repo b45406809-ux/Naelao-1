@@ -104,4 +104,4 @@ MCP/CLI/SDK/API share the same REST core and scope checks. Event subscriptions w
 
 ## Deployment setup
 
-Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0165 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.
+Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0166 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.

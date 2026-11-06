@@ -115,9 +115,8 @@ describe("AgentPort internal registry API", () => {
       ('legacy-msg-2','tenant-a',?,?,'legacy-provider-msg-2','outbound','agent-a','provider','verified','queued body',NULL,'["r2://queued-file"]','queued','2026-01-01','2026-01-01')`)
       .run(channel.id, threadRows[0]!.id, channel.id, threadRows[0]!.id);
     db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
-    const legacyRows = db.prepare("SELECT content_text,content_ref,attachments_json FROM agentport_messages").all();
-    expect(legacyRows).toHaveLength(2);
-    expect(legacyRows).toEqual([{ content_text: null, content_ref: null, attachments_json: "[]" }, { content_text: null, content_ref: null, attachments_json: "[]" }]);
+    db.exec(readFileSync(new URL("../../../../infra/migrations/0166_drop_agentport_message_store.sql", import.meta.url), "utf8"));
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agentport_messages'").get()).toBeUndefined();
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_channel_message_refs WHERE provider_message_id IS NOT NULL").get()).toMatchObject({ n: 4 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_events WHERE event_type='message.received'").get()).toMatchObject({ n: 2 });
     expect(db.prepare("SELECT payload_ref FROM agentport_events WHERE event_type='message.received' AND provider_event_id='provider-msg-1'").get()).toMatchObject({ payload_ref: "provider-msg-1" });
