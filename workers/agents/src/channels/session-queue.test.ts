@@ -25,6 +25,7 @@ const inbound = {
   channel_type: "slack",
   space_id: "space-a",
   tenant_id: "tenant-a",
+  project_id: "project-a",
   end_user_id: "slack:user-a",
   content: "hello",
   metadata: { slack_ts: "1" },

@@ -450,6 +450,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
    *  enqueueAgentTicks/handleAgentTicksQueue below. */
   AGENT_TICKS: Queue<AgentTickMessage>;
+  /** Durable event-to-session wake queue shared by supported inbound channels. */
+  CHANNEL_SESSIONS?: Queue<ChannelSessionQueueMessage>;
   /** Shared lock namespace for multi-file agent-config bundle writes. */
   CONCURRENCY_DO?: DurableObjectNamespace;
 }
@@ -1930,8 +1932,8 @@ async function isActiveTenantSpace(env: AgentsEnv, spaceId: string, tenantId: st
   return !!row;
 }
 
-async function stableChannelSessionId(spaceId: string, channelType: string, endUserId: string): Promise<string> {
-  const value = new TextEncoder().encode(`${spaceId}\0${channelType}\0${endUserId}`);
+async function stableChannelSessionId(spaceId: string, channelType: string, endUserId: string, projectId?: string): Promise<string> {
+  const value = new TextEncoder().encode(`${spaceId}\0${projectId ?? ""}\0${channelType}\0${endUserId}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
   return `channel-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
@@ -1940,7 +1942,7 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
   const inbound = message.type === "inbound_channel";
   const spaceId = inbound ? message.space_id : message.spaceId;
   const tenantId = inbound ? message.tenant_id : message.tenantId;
-  const projectId = inbound ? undefined : message.projectId;
+  const projectId = inbound ? message.project_id : message.projectId;
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(queueMessageId)) throw new Error("invalid_queue_message_id");
   const sessionIdForDelivery = `queue-${queueMessageId}`;
   if (!await isActiveTenantSpace(env, spaceId, tenantId)) return; // Stale delivery for an inactive tenant/space.
@@ -1949,15 +1951,27 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
   let goal: string;
   let context: Record<string, unknown>;
   if (inbound) {
-    sessionId = await stableChannelSessionId(spaceId, message.channel_type, message.end_user_id);
+    sessionId = await stableChannelSessionId(spaceId, message.channel_type, message.end_user_id, projectId);
     const headers = {
       "content-type": "application/json",
       "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
     };
+    let threadId: string | undefined;
+    if (projectId) {
+      const threadResponse = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/threads`,
+        { method: "POST", headers, body: JSON.stringify({ project_id: projectId, channel: message.channel_type, channel_session_id: sessionId,
+          title: `${message.channel_type}: ${message.end_user_id}`, thread_kind: "channel", thread_tier: "tier_2_task" }) },
+      ));
+      if (!threadResponse.ok) throw new Error(`channel_thread_create_failed:${threadResponse.status}`);
+      const thread = await threadResponse.json<{ id?: string }>();
+      if (!thread.id) throw new Error("channel_thread_create_id_missing");
+      threadId = thread.id;
+    }
     const created = await env.SPACES_WORKER.fetch(new Request(
       `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions`,
-      { method: "POST", headers, body: JSON.stringify({ id: sessionId, end_user_id: message.end_user_id, metadata: { session_kind: "channel", channel_type: message.channel_type } }) },
+      { method: "POST", headers, body: JSON.stringify({ id: sessionId, ...(threadId ? { thread_id: threadId } : {}), end_user_id: message.end_user_id, metadata: { session_kind: "channel", channel_type: message.channel_type, ...(projectId ? { project_id: projectId } : {}) } }) },
     ));
     if (!created.ok) throw new Error(`channel_session_create_failed:${created.status}`);
     const actualSessionId = (await created.json<{ id?: string }>()).id;

@@ -42,6 +42,19 @@ describe("latest D1 deployment migration batch", () => {
     expect(storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM agentport_agents").toArray()[0]?.count).toBe(legacyAgentCount);
     expect(storage.sql.exec<{ host_resource_id: string }>("SELECT host_resource_id FROM agentport_agents WHERE host_space_id='s1' LIMIT 1").toArray()[0]?.host_resource_id).toBe("s1");
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0169_agentport_email_accounts.sql"), "utf8"));
+    storage.sql.exec(`INSERT INTO agentport_services(id,tenant_id,name,service_type,account_models_json,capabilities_json,events_json,billing_json,connection_purpose,partnership_status,status,created_at,updated_at)
+      VALUES('ap_email:t1','t1','AgentPort Email','managed','["agent_native"]','["email.send","email.receive"]','["message.received"]','{}','agent_resource','approved','active','2026-01-01','2026-01-01')`);
+    storage.sql.exec(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,external_account_id,metadata_json,status,created_at,updated_at)
+      VALUES('mailbox-old','t1','ap_email:t1','agent_native','individual','u1','old@mail.example','{}','active','2026-01-01','2026-01-02')`);
+    storage.sql.exec(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at)
+      SELECT 'mailbox-old','t1',id,'old@mail.example','https://hooks.example.com/mail','old-key','2026-01-01','2026-01-02' FROM agentport_agents WHERE host_space_id='s1' LIMIT 1`);
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0170_agentport_email_channels.sql"), "utf8"));
+    expect(storage.sql.exec<{ id: string; account_id: string; provider_channel_id: string; status: string }>(
+      "SELECT id,account_id,provider_channel_id,status FROM agentport_channels WHERE account_id='mailbox-old'"
+    ).toArray()).toEqual([{ id: "chn-email:mailbox-old", account_id: "mailbox-old", provider_channel_id: "old@mail.example", status: "active" }]);
+    expect(storage.sql.exec<{ owner_id: string; address: string; status: string }>(
+      "SELECT a.owner_id,e.address,e.status FROM agentport_accounts a JOIN agentport_email_accounts e ON e.account_id=a.id WHERE a.id='mailbox-old'"
+    ).toArray()).toEqual([{ owner_id: "u1", address: "old@mail.example", status: "active" }]);
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",

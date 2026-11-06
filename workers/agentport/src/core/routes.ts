@@ -238,7 +238,10 @@ routes.post("/email/accounts", async c => {
     .bind(tenantId, body.idempotencyKey).first<{ account_id: string; agent_id: string; address: string; status: string }>();
   if (existing) {
     if (existing.agent_id !== body.agentId) return c.json({ error_code: "idempotency_conflict" }, 409);
+    const channel = await db.prepare("SELECT id FROM agentport_channels WHERE tenant_id=? AND account_id=? AND status='active' LIMIT 1")
+      .bind(tenantId, existing.account_id).first<{ id: string }>();
     return c.json({ account: { id: existing.account_id, address: existing.address, agentId: body.agentId, status: existing.status },
+      serviceId: `ap_email:${tenantId}`, channel: channel ? { id: channel.id, provider: "email", address: existing.address } : null,
       webhookSecret: await deriveEmailWebhookSecret(c.env.AGENTPORT_JWT_SECRET, tenantId, existing.account_id), idempotent: true });
   }
   const activeMailboxes = await db.prepare("SELECT COUNT(*) AS count FROM agentport_email_accounts WHERE tenant_id=? AND status='active'")
@@ -250,7 +253,7 @@ routes.post("/email/accounts", async c => {
   try {
     await db.batch([
       db.prepare(`INSERT OR IGNORE INTO agentport_services(id,tenant_id,name,service_type,account_models_json,capabilities_json,events_json,billing_json,connection_purpose,partnership_status,status,created_at,updated_at)
-        VALUES(?,?,'AgentPort Email','managed','["agent_native"]','["email.send","email.receive"]','["message.received"]','{"model":"usage"}','agent_resource','approved','active',?,?)`).bind(serviceId, tenantId, at, at),
+        VALUES(?,?,'AgentPort Email','managed','["agent_native"]','["channels","email.send","email.receive","messages.read","messages.send"]','["message.received"]','{"model":"usage"}','agent_resource','approved','active',?,?)`).bind(serviceId, tenantId, at, at),
       db.prepare(`INSERT OR IGNORE INTO agentport_provider_auth(tenant_id,service_id,auth_json,updated_at) VALUES(?,?,'{"type":"provider_managed"}',?)`).bind(tenantId, serviceId, at),
       db.prepare(`INSERT OR IGNORE INTO agentport_service_manifests(tenant_id,service_id,provisioning_json,capability_schemas_json,updated_at) VALUES(?,?,'{"mode":"self_service"}','{}',?)`).bind(tenantId, serviceId, at),
     ]);
@@ -258,13 +261,19 @@ routes.post("/email/accounts", async c => {
       db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,external_account_id,metadata_json,status,created_at,updated_at)
         VALUES(?,?,?,'agent_native',?,?,?,'{"provisioner":"agentport-email"}','active',?,?)`)
         .bind(accountId, tenantId, serviceId, agent.principal_type, agent.external_id, address, at, at),
+      db.prepare(`INSERT INTO agentport_channels(id,tenant_id,service_id,account_id,provider_channel_id,display_name,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?)`).bind(id("chn"), tenantId, serviceId, accountId, address, address, at, at),
       db.prepare(`INSERT INTO agentport_email_accounts(account_id,tenant_id,agent_id,address,inbound_webhook_url,idempotency_key,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?)`).bind(accountId, tenantId, body.agentId, address, body.inboundWebhookUrl, body.idempotencyKey, at, at),
       db.prepare(`INSERT INTO agentport_account_grants(id,tenant_id,account_id,agent_id,granted_by,permissions_json,created_at,updated_at)
         VALUES(?,?,?,?,?,'["email.send","email.receive"]',?,?)`).bind(id("grt"), tenantId, accountId, body.agentId, ownerId, at, at),
     ]);
   } catch { return c.json({ error_code: "email_account_provisioning_failed" }, 503); }
-  return c.json({ account: { id: accountId, address, agentId: body.agentId, status: "active", permissions: ["email.send", "email.receive"] },
+  const createdChannel = await db.prepare("SELECT id FROM agentport_channels WHERE tenant_id=? AND service_id=? AND account_id=? AND status='active' LIMIT 1")
+    .bind(tenantId, serviceId, accountId).first<{ id: string }>();
+  return c.json({ account: { id: accountId, address, agentId: body.agentId, status: "active", permissions: ["email.send", "email.receive", "messages.read", "messages.send"] },
+    serviceId,
+    channel: createdChannel ? { id: createdChannel.id, provider: "email", address } : null,
     webhookSecret: await deriveEmailWebhookSecret(c.env.AGENTPORT_JWT_SECRET, tenantId, accountId), contentStored: false }, 201);
 });
 

@@ -4,6 +4,7 @@ export type AgentPortScope = "agentport:read" | "agentport:write" | "agentport:e
 export interface AgentPortOptions { apiKey?: string; accessToken?: string; baseUrl?: string; fetch?: typeof fetch; }
 export interface AgentPortOAuthToken { access_token: string; token_type: "Bearer"; expires_in: number; refresh_token?: string; scope: string; }
 export interface AgentPortEmailAccount { id: string; address: string; agentId: string; status: string; permissions?: string[]; }
+export interface AgentPortChannel { id: string; provider: string; address?: string; }
 export interface AgentPortEmailSend { id: string; status: "sending" | "sent" | "indeterminate"; providerMessageId?: string | null; }
 export interface AgentPortPKCEChallenge { codeVerifier: string; codeChallenge: string; state: string; }
 export interface ServiceManifest {
@@ -179,7 +180,7 @@ export class AgentPortClient {
   }
   registerAgent(input: { hostPlatform: string; hostResourceId?: string; runtime?: string }) { return this.request<{ agent: { id: string; principalId: string; status: string } }>("/agents", { method: "POST", body: JSON.stringify(input) }); }
   createAccount(input: { serviceId: string; accountModel: AccountModel; ownerType: string; ownerId: string; parentAccountId?: string; externalAccountId?: string; credentialRef?: string; metadata?: unknown }) { return this.request<{ account: { id: string; status: string } }>("/accounts", { method: "POST", body: JSON.stringify(input) }); }
-  provisionEmailAccount(input: { agentId: string; inboundWebhookUrl: string; idempotencyKey: string }) { return this.request<{ account: AgentPortEmailAccount; webhookSecret?: string; contentStored?: false; idempotent?: boolean }>("/email/accounts", { method: "POST", body: JSON.stringify(input) }); }
+  provisionEmailAccount(input: { agentId: string; inboundWebhookUrl: string; idempotencyKey: string }) { return this.request<{ account: AgentPortEmailAccount; serviceId?: string; channel?: AgentPortChannel | null; webhookSecret?: string; contentStored?: false; idempotent?: boolean }>("/email/accounts", { method: "POST", body: JSON.stringify(input) }); }
   sendEmail(accountId: string, input: { agentId: string; to: string; subject: string; text: string; idempotencyKey: string }) { return this.request<{ send: AgentPortEmailSend; contentStored?: false; idempotent?: boolean }>(`/email/accounts/${encodeURIComponent(accountId)}/send`, { method: "POST", body: JSON.stringify(input) }); }
   revokeEmailAccount(accountId: string) { return this.request<{ revoked: boolean; contentStored?: false }>(`/email/accounts/${encodeURIComponent(accountId)}/revoke`, { method: "POST", body: "{}" }); }
   createChannel(input: { serviceId: string; accountId: string; agentId: string; providerChannelId: string; displayName: string; trustPolicy?: Record<string, unknown> }) { return this.request<{ channel: { id: string; status: string; trustPolicy: Record<string, unknown> } }>("/channels", { method: "POST", body: JSON.stringify(input) }); }

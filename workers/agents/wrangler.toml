@@ -246,6 +246,10 @@ dataset = "naelao_agent_events"
 binding = "AGENT_TICKS"
 queue = "naelao-agent-ticks"
 
+[[queues.producers]]
+binding = "CHANNEL_SESSIONS"
+queue = "naelao-channel-sessions"
+
 [[queues.consumers]]
 queue = "naelao-agent-ticks"
 # A tick can run an agent planner or connector workflow. Keep each long-running job in its own
@@ -662,6 +666,10 @@ dataset = "naelao_agent_events"
 binding = "AGENT_TICKS"
 queue = "naelao-agent-ticks"
 
+[[env.staging.queues.producers]]
+binding = "CHANNEL_SESSIONS"
+queue = "naelao-channel-sessions"
+
 
 [[env.staging.queues.consumers]]
 queue = "naelao-agent-ticks"
@@ -934,6 +942,10 @@ dataset = "naelao_agent_events"
 [[env.production.queues.producers]]
 binding = "AGENT_TICKS"
 queue = "naelao-agent-ticks"
+
+[[env.production.queues.producers]]
+binding = "CHANNEL_SESSIONS"
+queue = "naelao-channel-sessions"
 
 
 [[env.production.queues.consumers]]

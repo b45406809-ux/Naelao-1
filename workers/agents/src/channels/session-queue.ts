@@ -3,6 +3,7 @@ export interface SessionQueueMessage {
   channel_type: string;
   space_id: string;
   tenant_id: string;
+  project_id?: string;
   end_user_id: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -53,6 +54,7 @@ export function isChannelSessionQueueMessage(
       typeof value.tenant_id === "string" &&
       value.tenant_id.length > 0 &&
       value.tenant_id.length <= 160 &&
+      (value.project_id === undefined || (typeof value.project_id === "string" && value.project_id.length > 0 && value.project_id.length <= 160)) &&
       typeof value.end_user_id === "string" &&
       value.end_user_id.length > 0 &&
       value.end_user_id.length <= 320 &&

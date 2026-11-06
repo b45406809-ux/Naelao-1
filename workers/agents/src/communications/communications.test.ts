@@ -128,6 +128,12 @@ describe("scoped assistant communications", () => {
           .first<{ status: string }>()
       )?.status
     ).toBe("pending");
+    expect(f.env.CHANNEL_SESSIONS?.send).toHaveBeenCalledTimes(1);
+    expect(f.env.CHANNEL_SESSIONS?.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "inbound_channel", channel_type: "email", space_id: "space", tenant_id: "tenant",
+      end_user_id: "owner@example.com", content: expect.stringContaining("Subject: Hello"),
+      metadata: expect.objectContaining({ providerMessageId: "<message-1@example.com>", trustLevel: "unverified" }),
+    }));
     expect(f.env.AGENTS_WORKER.fetch).not.toHaveBeenCalled();
   });
   it("blocks protected worker operations and unsigned requests", async () => {

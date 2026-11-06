@@ -87,6 +87,7 @@ export function fixture() {
     PLATFORM_DB: db,
     SPACES_WORKER: { fetch },
     EMAIL: { send },
+    CHANNEL_SESSIONS: { send: vi.fn(async () => undefined) },
     SCRIPTS_R2: {
       delete: async (keys: string | string[]) => {
         for (const key of Array.isArray(keys) ? keys : [keys])

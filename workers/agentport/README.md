@@ -18,7 +18,7 @@ A new Naelao account receives a managed AgentPort principal as a first-party con
 - `POST /v1/agents`, `GET /v1/agents`, `GET /v1/agents/:id/identity`: create identities owned by the API-key/OAuth principal and inspect the public identity record.
 - `POST /v1/agents/:id/credentials`: issue an audience-bound, expiring AgentPort mandate after owner authorization.
 - `POST /v1/accounts`, `POST /v1/accounts/:id/activate`, `POST /v1/accounts/:id/grants`: register generic service-account references and scoped access. Generic provider registration does not itself provision an upstream account.
-- `POST /v1/email/accounts`, `POST /v1/email/accounts/:id/send`, `POST /v1/email/accounts/:id/revoke`: natively provision a managed email identity, send through Cloudflare Email Service, deliver inbound raw RFC 822 messages to the owner's HTTPS webhook with an HMAC signature, and revoke the mailbox and grants. AgentPort stores only mailbox metadata and send idempotency/delivery receipts; it does not store message bodies, recipients, subjects, or attachments.
+- `POST /v1/email/accounts`, `POST /v1/email/accounts/:id/send`, `POST /v1/email/accounts/:id/revoke`: natively provision a managed email identity as an ordinary AgentPort channel, send through Cloudflare Email Service, deliver inbound raw RFC 822 messages to the owner's HTTPS webhook with an HMAC signature, and revoke the mailbox and grants. Inbound mail also emits `message.received` into the same event subscription, claim, and acknowledgment API used by other channels. AgentPort stores only mailbox/channel/thread/message references and send idempotency/delivery receipts; it does not store message bodies, recipients, subjects, or attachments.
 - `POST /v1/channels`, `/v1/channels/:id/threads`, `/v1/threads/:id/message-references`: store provider identifiers and trust metadata. Read or send message content through the channel provider using its authorized API/MCP tools.
 - `POST /v1/events/subscriptions`, `POST /v1/events`, `/v1/events/pending`: store event delivery intent and opaque provider references, not message payloads.
 - `POST /v1/activity/leases`: maintain expiring event-consumer leases.
@@ -72,8 +72,10 @@ agentport email send --account <account-id> --json '{"agentId":"<agent-id>","to"
 agentport email revoke --account <account-id>
 ```
 
+After provisioning, subscribe the agent to `message.received` using `serviceId: "ap_email:<tenant-id>"` and the returned account ID. Polling/MCP clients can claim and acknowledge events through the normal `/v1/events` API. The event's `dataRef` is the provider message ID; message content arrives only at the signed callback or through the provider's authorized mail API.
+
 ## Development and deployment
 
-Run `pnpm --filter @agentport/sdk test`, `pnpm --filter @agentport/cli test`, and the AgentPort worker tests through the repository's workspace scripts. Apply migrations through `0169_agentport_email_accounts.sql` before deployment. Migration `0168` copies existing host workspace identifiers into the opaque host-resource field and retains legacy relationships; migration `0169` adds mailbox metadata and content-free send receipts.
+Run `pnpm --filter @agentport/sdk test`, `pnpm --filter @agentport/cli test`, and the AgentPort worker tests through the repository's workspace scripts. Apply migrations through `0170_agentport_email_channels.sql` before deployment. Migration `0168` copies existing host workspace identifiers into the opaque host-resource field and retains legacy relationships; migration `0169` adds mailbox metadata and content-free send receipts; migration `0170` promotes existing email mailboxes into the channel registry without changing their account relationships.
 
 Production uses `agentport.naelao.com`; staging uses `agentport-staging.naelao.com`. These are AgentPort's current service domains, not required client-platform domains.

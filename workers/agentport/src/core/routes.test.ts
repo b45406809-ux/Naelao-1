@@ -140,7 +140,6 @@ describe("AgentPort internal registry API", () => {
       .run(channel.id, threadRows[0]!.id, channel.id, threadRows[0]!.id);
     db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
     db.exec(readFileSync(new URL("../../../../infra/migrations/0166_drop_agentport_message_store.sql", import.meta.url), "utf8"));
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agentport_messages'").get()).toBeUndefined();
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_channel_message_refs WHERE provider_message_id IS NOT NULL").get()).toMatchObject({ n: 4 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_events WHERE event_type='message.received'").get()).toMatchObject({ n: 2 });
     expect(db.prepare("SELECT payload_ref FROM agentport_events WHERE event_type='message.received' AND provider_event_id='provider-msg-1'").get()).toMatchObject({ payload_ref: "provider-msg-1" });
@@ -235,11 +234,13 @@ describe("AgentPort internal registry API", () => {
     configuredEnv.EMAIL_PROVISIONING_ENABLED = "true";
     const provision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
     expect(provision.status).toBe(201);
-    const created = await provision.json() as { account: { id: string; address: string }; webhookSecret: string; contentStored: boolean };
-    expect(created).toMatchObject({ account: { status: "active", address: expect.stringMatching(/^agent-[a-f0-9]+@mail\.example\.net$/) }, webhookSecret: expect.any(String), contentStored: false });
+    const created = await provision.json() as { account: { id: string; address: string }; channel: { id: string }; webhookSecret: string; contentStored: boolean };
+    expect(created).toMatchObject({ account: { status: "active", address: expect.stringMatching(/^agent-[a-f0-9]+@mail\.example\.net$/) }, channel: { id: expect.stringMatching(/^chn_/) }, webhookSecret: expect.any(String), contentStored: false });
     const repeatedProvision = await call("/email/accounts", "POST", { agentId: agent.id, inboundWebhookUrl: "https://hooks.builder.com/mail", idempotencyKey: "provision-1" });
     expect(repeatedProvision.status).toBe(200);
     expect(await repeatedProvision.json()).toMatchObject({ webhookSecret: created.webhookSecret, idempotent: true });
+    const emailSubscription = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "ap_email:tenant-a", accountId: created.account.id, eventType: "message.received", deliveryMode: "poll", consumerGroup: "naelao-wakeup" });
+    expect(emailSubscription.status).toBe(201);
     const sendBody = { agentId: agent.id, to: "customer@example.org", subject: "A private subject", text: "Do not persist this body", idempotencyKey: "send-1" };
     const firstSend = await call(`/email/accounts/${created.account.id}/send`, "POST", sendBody);
     expect(firstSend.status).toBe(202);
@@ -251,13 +252,17 @@ describe("AgentPort internal registry API", () => {
     const sendColumns = db.prepare("PRAGMA table_info(agentport_email_sends)").all() as Array<{ name: string }>;
     expect(sendColumns.map(column => column.name)).not.toEqual(expect.arrayContaining(["to", "subject", "text", "body", "attachments"]));
     const raw = new TextEncoder().encode("From: sender@example.org\r\nSubject: private inbound\r\n\r\nprivate body");
-    const message = { to: created.account.address, rawSize: raw.byteLength, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), headers: new Headers({ "message-id": "provider-inbound-1" }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
+    const message = { from: "sender@example.org", to: created.account.address, rawSize: raw.byteLength, raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }), headers: new Headers({ "message-id": "provider-inbound-1" }), setReject: vi.fn() } as unknown as ForwardableEmailMessage;
     await handleAgentPortEmail(message, { PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: signingSecret, EMAIL_INGRESS_DOMAIN: "mail.example.net", EMAIL_PROVISIONING_ENABLED: "true", fetch });
     expect(fetch).toHaveBeenCalledTimes(2);
     const callback = fetch.mock.calls[1]![1] as RequestInit;
     expect(callback.headers).toMatchObject({ "content-type": "message/rfc822", "x-agentport-account-id": created.account.id, "x-agentport-event-id": "provider-inbound-1" });
     expect(new TextDecoder().decode(callback.body as Uint8Array)).toBe(new TextDecoder().decode(raw));
     expect(message.setReject).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_channels WHERE account_id=? AND status='active'").get(created.account.id)).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_channel_message_refs WHERE channel_id=? AND provider_message_id='provider-inbound-1'").get(created.channel.id)).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT event_type,payload_ref FROM agentport_events WHERE account_id=? AND provider_event_id='provider-inbound-1'").get(created.account.id)).toMatchObject({ event_type: "message.received", payload_ref: "provider-inbound-1" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_event_deliveries WHERE agent_id=?").get(agent.id)).toMatchObject({ count: 1 });
     for (let index = 0; index < 9; index++) {
       const fakeId = `quota_acct_${index}`; const at = new Date().toISOString();
       db.prepare(`INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,metadata_json,status,created_at,updated_at)

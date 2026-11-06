@@ -232,6 +232,7 @@ export async function receiveAssistantEmail(
     )
     .run();
   if (!inserted.meta.changes || verification) return true;
+  let commandDispatched = false;
   const controller = await env.PLATFORM_DB.prepare(
     "SELECT user_id FROM assistant_communication_controllers WHERE identity_id=? AND channel='email' AND address=? AND status='active'"
   )
@@ -257,14 +258,38 @@ export async function receiveAssistantEmail(
         )
         .first();
       const controllerScope = { ...scope, userId: controller.user_id };
-      if (consumed && (await scopeAccess(env, controllerScope, true)))
+      if (consumed && (await scopeAccess(env, controllerScope, true))) {
         await dispatchCommunicationCommand(
           env,
           controllerScope,
           identity,
           commandId
         );
+        commandDispatched = true;
+      }
     }
+  }
+  // Approved owner commands already start their own run. Ordinary inbound email uses the same
+  // durable wake queue as messaging channels and is scoped to the Space or project assistant.
+  if (!commandDispatched && env.CHANNEL_SESSIONS) {
+    await env.CHANNEL_SESSIONS.send({
+      type: "inbound_channel",
+      channel_type: "email",
+      space_id: identity.space_id,
+      tenant_id: identity.tenant_id,
+      ...(identity.project_id ? { project_id: identity.project_id } : {}),
+      end_user_id: parsed.from.toLowerCase(),
+      content: `Subject: ${subject}\n\n${parsed.text.replace(/\[naelao:[a-f0-9]{64}\]/gi, "[owner command]").slice(0, 8_000)}`,
+      metadata: {
+        provider: identity.email_provider,
+        providerMessageId: externalId,
+        emailMessageId: id,
+        identityId: identity.id,
+        projectId: identity.project_id,
+        trustLevel: "unverified",
+        attachments: attachments.map(({ id: attachmentId, filename, mimeType, sizeBytes }) => ({ id: attachmentId, filename, mimeType, sizeBytes })),
+      },
+    });
   }
   return true;
 }
