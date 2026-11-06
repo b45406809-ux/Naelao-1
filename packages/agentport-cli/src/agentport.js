@@ -51,8 +51,7 @@ else if (resource === "channels" && command === "list") await request("GET", `/c
 else if (resource === "channels" && command === "register" && input) await request("POST", "/channels", input);
 else if (resource === "threads" && command === "create" && flags.channel && input) await request("POST", `/channels/${encodeURIComponent(flags.channel)}/threads`, input);
 else if (resource === "threads" && command === "list" && flags.channel) await request("GET", `/channels/${encodeURIComponent(flags.channel)}/threads${flags.agent ? `?agentId=${encodeURIComponent(flags.agent)}` : ""}`);
-else if (resource === "messages" && command === "list" && flags.thread && flags.agent) await request("GET", `/threads/${encodeURIComponent(flags.thread)}/messages?agentId=${encodeURIComponent(flags.agent)}`);
-else if (resource === "messages" && command === "send" && flags.thread && input) await request("POST", `/threads/${encodeURIComponent(flags.thread)}/messages`, input);
+else if (resource === "messages" && command === "references" && flags.thread && flags.agent) await request("GET", `/threads/${encodeURIComponent(flags.thread)}/message-references?agentId=${encodeURIComponent(flags.agent)}`);
 else if (resource === "events" && command === "subscribe" && input) await request("POST", "/events/subscriptions", input);
 else if (resource === "events" && command === "pending" && flags.agent) await request("GET", `/events/pending?agentId=${encodeURIComponent(flags.agent)}`);
 else if (resource === "events" && command === "claim" && flags.id && input) await request("POST", `/events/${encodeURIComponent(flags.id)}/claim`, input);

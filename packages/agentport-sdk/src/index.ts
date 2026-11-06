@@ -1,7 +1,9 @@
 export type AccountModel = "agent_native" | "user_parent" | "agentport_parent" | "delegated";
 export type ServiceType = "api" | "mcp" | "a2a" | "channel" | "managed";
 export type AgentPortScope = "agentport:read" | "agentport:write" | "agentport:events" | "agentport:admin";
-export interface AgentPortOptions { apiKey: string; baseUrl?: string; fetch?: typeof fetch; }
+export interface AgentPortOptions { apiKey?: string; accessToken?: string; baseUrl?: string; fetch?: typeof fetch; }
+export interface AgentPortOAuthToken { access_token: string; token_type: "Bearer"; expires_in: number; refresh_token?: string; scope: string; }
+export interface AgentPortPKCEChallenge { codeVerifier: string; codeChallenge: string; state: string; }
 export interface ServiceManifest {
   id: string; name: string; type: ServiceType; endpoint?: string; accountModels: AccountModel[];
   capabilities: string[]; events: string[]; connectionPurpose: "user_delegation" | "agent_resource" | "parent_provisioning";
@@ -71,6 +73,51 @@ async function authRequest(baseUrl: string, action: "register" | "login", body: 
 /** Register or sign in a human/organization owner before creating the first AgentPort API key. */
 export const registerDeveloper = (body: { email: string; password: string; org_name?: string }, baseUrl = "https://agentport.naelao.com", requestFetch: typeof fetch = fetch) => authRequest(baseUrl, "register", body, requestFetch);
 export const loginDeveloper = (body: { email: string; password: string }, baseUrl = "https://agentport.naelao.com", requestFetch: typeof fetch = fetch) => authRequest(baseUrl, "login", body, requestFetch);
+export async function createOAuthClient(input: { userToken: string; name: string; redirectUris: string[]; baseUrl?: string; fetch?: typeof fetch }) {
+  const baseUrl = (input.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "");
+  const response = await (input.fetch ?? fetch)(`${baseUrl}/v1/oauth/clients`, { method: "POST", headers: { authorization: `Bearer ${input.userToken}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ name: input.name, redirectUris: input.redirectUris }) });
+  const data = await response.json() as { client?: { clientId: string; name: string; redirectUris: string[] }; error_code?: string };
+  if (!response.ok || !data.client) throw new AgentPortError(data.error_code ?? response.statusText, response.status, data.error_code, data);
+  return data.client;
+}
+/** Build a public-client Authorization Code + PKCE URL. Store verifier/state in the app session. */
+export function buildAgentPortAuthorizationUrl(input: { clientId: string; redirectUri: string; state: string; codeChallenge: string; scopes?: string[]; baseUrl?: string }) {
+  const url = new URL("/oauth/authorize", input.baseUrl ?? "https://agentport.naelao.com");
+  url.searchParams.set("response_type", "code"); url.searchParams.set("client_id", input.clientId); url.searchParams.set("redirect_uri", input.redirectUri);
+  url.searchParams.set("state", input.state); url.searchParams.set("code_challenge", input.codeChallenge); url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("scope", (input.scopes ?? ["agentport:read", "agentport:write"]).join(" "));
+  return url.toString();
+}
+/** Generate a public-client PKCE verifier/challenge and a CSRF state value. Store these in the user's server-side login session. */
+export async function createAgentPortPKCE(): Promise<AgentPortPKCEChallenge> {
+  const encode = (value: Uint8Array) => {
+    let binary = ""; for (const byte of value) binary += String.fromCharCode(byte);
+    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  };
+  const codeVerifier = encode(crypto.getRandomValues(new Uint8Array(32)));
+  const codeChallenge = encode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier))));
+  const state = encode(crypto.getRandomValues(new Uint8Array(32)));
+  return { codeVerifier, codeChallenge, state };
+}
+export async function exchangeAgentPortOAuthCode(input: { code: string; clientId: string; redirectUri: string; codeVerifier: string; baseUrl?: string; fetch?: typeof fetch }) {
+  const body = new URLSearchParams({ grant_type: "authorization_code", code: input.code, client_id: input.clientId, redirect_uri: input.redirectUri, code_verifier: input.codeVerifier });
+  const response = await (input.fetch ?? fetch)(`${(input.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "")}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body });
+  const data = await response.json() as AgentPortOAuthToken & { error?: string };
+  if (!response.ok || !data.access_token) throw new AgentPortError(data.error ?? response.statusText, response.status, data.error, data);
+  return data;
+}
+export async function refreshAgentPortOAuthToken(input: { clientId: string; refreshToken: string; baseUrl?: string; fetch?: typeof fetch }) {
+  const body = new URLSearchParams({ grant_type: "refresh_token", client_id: input.clientId, refresh_token: input.refreshToken });
+  const response = await (input.fetch ?? fetch)(`${(input.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "")}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body });
+  const data = await response.json() as AgentPortOAuthToken & { error?: string };
+  if (!response.ok || !data.access_token) throw new AgentPortError(data.error ?? response.statusText, response.status, data.error, data);
+  return data;
+}
+export async function revokeAgentPortToken(input: { clientId: string; token: string; baseUrl?: string; fetch?: typeof fetch }) {
+  const body = new URLSearchParams({ client_id: input.clientId, token: input.token });
+  const response = await (input.fetch ?? fetch)(`${(input.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "")}/oauth/revoke`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body });
+  if (!response.ok) throw new AgentPortError(response.statusText, response.status);
+}
 export async function changeDeveloperPassword(input: { userToken: string; password: string; baseUrl?: string; fetch?: typeof fetch }) {
   const response = await (input.fetch ?? fetch)(`${(input.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "")}/v1/auth/password`, { method: "POST", headers: { authorization: `Bearer ${input.userToken}`, "content-type": "application/json" }, body: JSON.stringify({ password: input.password }) });
   const data = await response.json() as { changed?: boolean; token?: string; error_code?: string };
@@ -87,13 +134,13 @@ export class AgentPortClient {
   private readonly baseUrl: string;
   private readonly requestFetch: typeof fetch;
   constructor(private readonly options: AgentPortOptions) {
-    if (!options.apiKey) throw new Error("AgentPort apiKey is required");
+    if (!options.apiKey && !options.accessToken) throw new Error("AgentPort apiKey or OAuth accessToken is required");
     this.baseUrl = (options.baseUrl ?? "https://agentport.naelao.com").replace(/\/$/, "");
     this.requestFetch = options.fetch ?? fetch;
   }
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
-    headers.set("authorization", `Bearer ${this.options.apiKey}`);
+    headers.set("authorization", `Bearer ${this.options.accessToken ?? this.options.apiKey}`);
     if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
     headers.set("accept", "application/json");
     const response = await this.requestFetch(`${this.baseUrl}/v1${path.startsWith("/") ? path : `/${path}`}`, { ...init, headers });

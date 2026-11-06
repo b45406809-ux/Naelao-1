@@ -12,15 +12,27 @@ interface Env {
   AGENTPORT_ISSUER?: string;
 }
 interface ApiKeyRow { id: string; tenant_id: string; owner_type: string; owner_id: string; scopes_json: string; expires_at: string | null; }
-interface AuthContext { key?: ApiKeyRow; tenantId: string; ownerId: string; ownerType: string; scopes: string[]; userClaims?: NaelaoJwtClaims; }
+interface AuthContext { key?: ApiKeyRow; tenantId: string; ownerId: string; ownerType: string; scopes: string[]; userClaims?: NaelaoJwtClaims; developerId?: string; }
 const app = new Hono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const encoder = new TextEncoder();
 async function digest(value: string) { const bytes = await crypto.subtle.digest("SHA-256", encoder.encode(value)); return [...new Uint8Array(bytes)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+function base64url(value: Uint8Array) { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""); }
+async function challengeFor(verifier: string) { return base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier)))); }
 function tokenSecret() { const bytes = crypto.getRandomValues(new Uint8Array(32)); return [...bytes].map(x => x.toString(16).padStart(2, "0")).join(""); }
 function tokenId() { return [...crypto.getRandomValues(new Uint8Array(12))].map(x => x.toString(16).padStart(2, "0")).join(""); }
+function opaqueToken(prefix: string) { return `${prefix}${base64url(crypto.getRandomValues(new Uint8Array(32)))}`; }
+function sessionCookie(token: string, maxAge = 3600) { return `agentport_session=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`; }
+function cookieValue(header: string | undefined, name: string) { return header?.split(";").map(item => item.trim()).find(item => item.startsWith(`${name}=`))?.slice(name.length + 1); }
+function safeRedirectUri(value: string) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) &&
+      !url.username && !url.password && !url.hash && value.length <= 2048;
+  } catch { return false; }
+}
 const DUMMY_PASSWORD_HASH = JSON.stringify({ hash: "0".repeat(64), salt: "00".repeat(16), iterations: 100_000 });
 async function hashPassword(password: string) {
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
@@ -62,6 +74,18 @@ async function issueDeveloperToken(env: Env, user: { id: string; tenant_id: stri
 async function authenticate(c: { req: { header(name: string): string | undefined }; env: Env }): Promise<AuthContext | null> {
   const header = c.req.header("authorization") ?? "";
   const match = /^Bearer (ap_live_[a-f0-9]{24})\.([a-f0-9]{64})$/.exec(header);
+  const oauthMatch = /^Bearer (ap_oauth_[A-Za-z0-9_-]{43})$/.exec(header);
+  if (oauthMatch) {
+    const hash = await digest(oauthMatch[1]!);
+    const row = await c.env.PLATFORM_DB.prepare(`SELECT t.client_id AS id,t.tenant_id,'organization' AS owner_type,t.tenant_id AS owner_id,t.scopes_json,t.expires_at,t.developer_id
+      FROM agentport_oauth_tokens t JOIN agentport_oauth_clients c ON c.client_id=t.client_id AND c.status='active'
+      JOIN agentport_developers d ON d.id=t.developer_id AND d.tenant_id=t.tenant_id
+      JOIN agentport_organizations o ON o.id=t.tenant_id
+      WHERE t.token_hash=? AND t.revoked_at IS NULL AND t.expires_at>? AND d.status='active' AND o.status='active'`)
+      .bind(hash, now()).first<ApiKeyRow>();
+    if (!row) return null;
+    return { key: row, tenantId: row.tenant_id, ownerId: row.owner_id, ownerType: row.owner_type, scopes: JSON.parse(row.scopes_json) as string[], developerId: (row as ApiKeyRow & { developer_id: string }).developer_id };
+  }
   if (!match) return null;
   const keyId = match[1]!; const secret = match[2]!;
   const keyHash = await digest(secret);
@@ -92,7 +116,120 @@ app.get("/.well-known/agentport/credentials/:jti/status", async c => {
   const valid = !row.revoked_at && Date.parse(row.expires_at) > Date.now();
   return c.json({ status: valid ? "active" : row.revoked_at ? "revoked" : "expired" }, 200, { "cache-control": "no-store" });
 });
-app.get("/auth", c => c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentPort · Sign in</title><style>body{font:16px system-ui;margin:4rem auto;max-width:42rem;padding:0 1rem;color:#18212f}h1{font-size:2rem}form{display:grid;gap:.8rem;margin:2rem 0}label{display:grid;gap:.3rem}input,button{font:inherit;padding:.7rem;border:1px solid #9aa4b2;border-radius:.4rem}button{cursor:pointer;background:#172c4c;color:white}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f7;padding:1rem;border-radius:.5rem}#key{display:none}.muted{color:#566274}</style><main><h1>AgentPort</h1><p class="muted">Independent identity, account and event infrastructure for agents.</p><form id="auth"><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" autocomplete="current-password" minlength="12" required></label><label>Organization name (registration only)<input name="org_name" autocomplete="organization"></label><div><button type="submit" value="login">Sign in</button> <button type="submit" value="register">Create account</button></div></form><p id="status" role="status"></p><section id="key"><h2>Create your first API key</h2><button id="create-key" type="button">Create API key</button><p class="muted">The key is shown once. Copy it into your runtime's secret manager.</p><pre id="key-output"></pre></section></main><script>let token="";const form=document.querySelector("#auth");form.addEventListener("submit",async e=>{e.preventDefault();const mode=e.submitter?.value||"login";const values=Object.fromEntries(new FormData(form));delete values.mode;const res=await fetch("/v1/auth/"+mode,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(values)});const data=await res.json();document.querySelector("#status").textContent=res.ok?"Signed in. Create an API key to connect your agent.":(data.message||data.error_code||"Sign-in failed");if(res.ok){token=data.data.token;document.querySelector("#key").style.display="block"}});document.querySelector("#create-key").addEventListener("click",async()=>{const res=await fetch("/v1/keys",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({scopes:["agentport:read","agentport:write","agentport:events"]})});const data=await res.json();document.querySelector("#key-output").textContent=res.ok?data.apiKey:(data.message||data.error_code||"Key creation failed")});</script></html>`));
+app.get("/auth", c => c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentPort · Sign in</title><style>body{font:16px system-ui;margin:4rem auto;max-width:42rem;padding:0 1rem;color:#18212f}h1{font-size:2rem}form{display:grid;gap:.8rem;margin:2rem 0}label{display:grid;gap:.3rem}input,button{font:inherit;padding:.7rem;border:1px solid #9aa4b2;border-radius:.4rem}button{cursor:pointer;background:#172c4c;color:white}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f7;padding:1rem;border-radius:.5rem}#key{display:none}.muted{color:#566274}</style><main><h1>AgentPort</h1><p class="muted">Independent identity, account and event infrastructure for agents.</p><form id="auth"><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" autocomplete="current-password" minlength="12" required></label><label>Organization name (registration only)<input name="org_name" autocomplete="organization"></label><div><button type="submit" value="login">Sign in</button> <button type="submit" value="register">Create account</button></div></form><p id="status" role="status"></p><section id="key"><h2>Create your first API key</h2><button id="create-key" type="button">Create API key</button><p class="muted">The key is shown once. Copy it into your runtime's secret manager.</p><pre id="key-output"></pre></section></main><script>let token="";const form=document.querySelector("#auth");form.addEventListener("submit",async e=>{e.preventDefault();const mode=e.submitter?.value||"login";const values=Object.fromEntries(new FormData(form));delete values.mode;const res=await fetch("/v1/auth/"+mode,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(values)});const data=await res.json();document.querySelector("#status").textContent=res.ok?"Signed in. Create an API key to connect your agent.":(data.message||data.error_code||"Sign-in failed");if(res.ok){token=data.data.token;const returnTo=new URLSearchParams(location.search).get("return_to");if(returnTo){const target=new URL(returnTo,location.origin);if(target.origin===location.origin&&target.pathname==="/oauth/authorize"){location.assign(target.href);return}}document.querySelector("#key").style.display="block"}});document.querySelector("#create-key").addEventListener("click",async()=>{const res=await fetch("/v1/keys",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:JSON.stringify({scopes:["agentport:read","agentport:write","agentport:events"]})});const data=await res.json();document.querySelector("#key-output").textContent=res.ok?data.apiKey:(data.message||data.error_code||"Key creation failed")});</script></html>`));
+
+function oauthError(error: string, status = 400) { return new Response(JSON.stringify({ error }), { status, headers: { "content-type": "application/json", "cache-control": "no-store", "pragma": "no-cache" } }); }
+function htmlEscape(value: string) { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"); }
+const OAUTH_SCOPES = new Set(["agentport:read", "agentport:write", "agentport:events", "offline_access"]);
+async function oauthClient(db: D1Database, clientId: string) {
+  return db.prepare("SELECT client_id,owner_tenant_id,owner_developer_id,client_name,redirect_uris_json FROM agentport_oauth_clients WHERE client_id=? AND status='active'")
+    .bind(clientId).first<{ client_id: string; owner_tenant_id: string; owner_developer_id: string; client_name: string; redirect_uris_json: string }>();
+}
+async function validateAuthorizeRequest(db: D1Database, params: URLSearchParams) {
+  const clientId = params.get("client_id") ?? ""; const redirectUri = params.get("redirect_uri") ?? "";
+  const challenge = params.get("code_challenge") ?? ""; const method = params.get("code_challenge_method"); const state = params.get("state") ?? "";
+  const client = await oauthClient(db, clientId);
+  if (params.get("response_type") !== "code" || !client || !safeRedirectUri(redirectUri) || !(JSON.parse(client.redirect_uris_json) as string[]).includes(redirectUri)) return { error: "invalid_request" as const };
+  if (method !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(challenge) || !state || state.length > 512 || /[\u0000-\u001f\u007f]/.test(state)) return { error: "invalid_request" as const };
+  const scopes = [...new Set((params.get("scope") ?? "agentport:read").split(/\s+/).filter(Boolean))];
+  if (!scopes.length || scopes.some(scope => !OAUTH_SCOPES.has(scope))) return { error: "invalid_scope" as const };
+  return { client, clientId, redirectUri, challenge, state, scopes };
+}
+
+app.get("/.well-known/oauth-authorization-server", c => {
+  const issuer = c.env.AGENTPORT_ISSUER ?? new URL(c.req.url).origin;
+  return c.json({ issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`, revocation_endpoint: `${issuer}/oauth/revoke`, registration_endpoint: `${issuer}/v1/oauth/clients`, response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"], scopes_supported: [...OAUTH_SCOPES] }, 200, { "cache-control": "public, max-age=300" });
+});
+
+app.get("/oauth/authorize", async c => {
+  const params = new URL(c.req.url).searchParams;
+  const request = await validateAuthorizeRequest(c.env.PLATFORM_DB, params);
+  if ("error" in request) return oauthError(request.error);
+  const user = await authenticateHuman(c);
+  if (!user?.userClaims) {
+    const returnTo = `${new URL(c.req.url).pathname}${new URL(c.req.url).search}`;
+    return c.redirect(`/auth?return_to=${encodeURIComponent(returnTo)}`, 302);
+  }
+  const formFields = ["client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope"]
+    .map(name => `<input type="hidden" name="${name}" value="${htmlEscape(params.get(name) ?? "")}">`).join("");
+  const scopeText = request.scopes.filter(scope => scope !== "offline_access").join(", ");
+  return c.html(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect AgentPort</title><style>body{font:16px system-ui;margin:4rem auto;max-width:38rem;padding:0 1rem;color:#18212f}button{font:inherit;padding:.7rem 1rem;border:0;border-radius:.4rem;cursor:pointer}button[name=decision][value=allow]{background:#172c4c;color:white}form{display:inline-block;margin-right:.5rem}</style><main><h1>Connect AgentPort</h1><p><strong>${htmlEscape(request.client.client_name)}</strong> is requesting access to your AgentPort workspace.</p><p>Requested access: ${htmlEscape(scopeText || "basic identity")}${request.scopes.includes("offline_access") ? " and continued access until you revoke it" : ""}.</p><p>Messages, channel content, and provider account data remain with their providers.</p><form method="post" action="/oauth/authorize">${formFields}<button name="decision" value="allow">Allow</button></form><form method="post" action="/oauth/authorize">${formFields}<button name="decision" value="deny">Deny</button></form></main></html>`, 200, { "cache-control": "no-store", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" });
+});
+
+app.post("/oauth/authorize", async c => {
+  const origin = c.req.header("origin");
+  if (origin && origin !== new URL(c.req.url).origin) return oauthError("invalid_request", 403);
+  const form = await c.req.parseBody();
+  const params = new URLSearchParams();
+  for (const name of ["client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope"]) if (typeof form[name] === "string") params.set(name, form[name] as string);
+  params.set("response_type", "code");
+  const request = await validateAuthorizeRequest(c.env.PLATFORM_DB, params);
+  if ("error" in request) return oauthError(request.error);
+  const user = await authenticateHuman(c);
+  if (!user?.userClaims) return c.redirect(`/auth?return_to=${encodeURIComponent(`/oauth/authorize?${params}`)}`, 302);
+  const returnUrl = new URL(request.redirectUri);
+  if (form.decision !== "allow") {
+    returnUrl.searchParams.set("error", "access_denied"); returnUrl.searchParams.set("state", request.state);
+    return c.redirect(returnUrl.toString(), 302);
+  }
+  const code = opaqueToken("ap_code_"); const createdAt = now(); const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_codes(code_hash,client_id,tenant_id,developer_id,redirect_uri,code_challenge,scopes_json,expires_at,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`).bind(await digest(code), request.clientId, user.tenantId, user.userClaims.sub, request.redirectUri, request.challenge, JSON.stringify(request.scopes), expiresAt, createdAt).run();
+  returnUrl.searchParams.set("code", code); returnUrl.searchParams.set("state", request.state);
+  return c.redirect(returnUrl.toString(), 302);
+});
+
+app.post("/oauth/token", async c => {
+  const form = await c.req.parseBody();
+  if (form.grant_type === "authorization_code") {
+    const code = typeof form.code === "string" ? form.code : ""; const clientId = typeof form.client_id === "string" ? form.client_id : "";
+    const redirectUri = typeof form.redirect_uri === "string" ? form.redirect_uri : ""; const verifier = typeof form.code_verifier === "string" ? form.code_verifier : "";
+    if (!code || !clientId || !safeRedirectUri(redirectUri) || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || !await oauthClient(c.env.PLATFORM_DB, clientId)) return oauthError("invalid_grant");
+    const challenge = await challengeFor(verifier); const at = Date.now(); const token = opaqueToken("ap_oauth_");
+    const row = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_oauth_codes SET consumed_at=? WHERE code_hash=? AND client_id=? AND redirect_uri=? AND code_challenge=? AND consumed_at IS NULL AND expires_at>?
+      RETURNING tenant_id,developer_id,scopes_json`).bind(now(), await digest(code), clientId, redirectUri, challenge, new Date(at).toISOString())
+      .first<{ tenant_id: string; developer_id: string; scopes_json: string }>();
+    if (!row) return oauthError("invalid_grant");
+    const expiresAt = new Date(at + 3600_000).toISOString(); const tokenHash = await digest(token); const createdAt = now();
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_tokens(token_hash,client_id,tenant_id,developer_id,scopes_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`)
+      .bind(tokenHash, clientId, row.tenant_id, row.developer_id, row.scopes_json, expiresAt, createdAt).run();
+    const result: Record<string, unknown> = { access_token: token, token_type: "Bearer", expires_in: 3600, scope: (JSON.parse(row.scopes_json) as string[]).join(" ") };
+    if ((JSON.parse(row.scopes_json) as string[]).includes("offline_access")) {
+      const refresh = opaqueToken("ap_refresh_"); const refreshExpires = new Date(at + 30 * 24 * 3600_000).toISOString();
+      await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_refresh_tokens(token_hash,client_id,tenant_id,developer_id,scopes_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .bind(await digest(refresh), clientId, row.tenant_id, row.developer_id, row.scopes_json, refreshExpires, createdAt).run();
+      result.refresh_token = refresh;
+    }
+    return c.json(result, 200, { "cache-control": "no-store", pragma: "no-cache" });
+  }
+  if (form.grant_type === "refresh_token") {
+    const clientId = typeof form.client_id === "string" ? form.client_id : ""; const refresh = typeof form.refresh_token === "string" ? form.refresh_token : "";
+    if (!clientId || !/^ap_refresh_[A-Za-z0-9_-]{43}$/.test(refresh)) return oauthError("invalid_grant");
+    const nextAccess = opaqueToken("ap_oauth_"); const nextRefresh = opaqueToken("ap_refresh_"); const at = Date.now(); const createdAt = now();
+    const row = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_oauth_refresh_tokens SET revoked_at=?,replaced_by_hash=? WHERE token_hash=? AND client_id=? AND revoked_at IS NULL AND expires_at>?
+      RETURNING tenant_id,developer_id,scopes_json`).bind(createdAt, await digest(nextRefresh), await digest(refresh), clientId, createdAt)
+      .first<{ tenant_id: string; developer_id: string; scopes_json: string }>();
+    if (!row) return oauthError("invalid_grant");
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_tokens(token_hash,client_id,tenant_id,developer_id,scopes_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .bind(await digest(nextAccess), clientId, row.tenant_id, row.developer_id, row.scopes_json, new Date(at + 3600_000).toISOString(), createdAt),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_refresh_tokens(token_hash,client_id,tenant_id,developer_id,scopes_json,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .bind(await digest(nextRefresh), clientId, row.tenant_id, row.developer_id, row.scopes_json, new Date(at + 30 * 24 * 3600_000).toISOString(), createdAt),
+    ]);
+    return c.json({ access_token: nextAccess, token_type: "Bearer", expires_in: 3600, refresh_token: nextRefresh, scope: (JSON.parse(row.scopes_json) as string[]).join(" ") }, 200, { "cache-control": "no-store", pragma: "no-cache" });
+  }
+  return oauthError("unsupported_grant_type");
+});
+
+app.post("/oauth/revoke", async c => {
+  const form = await c.req.parseBody(); const token = typeof form.token === "string" ? form.token : ""; const clientId = typeof form.client_id === "string" ? form.client_id : "";
+  if (!token || !clientId) return c.body(null, 200, { "cache-control": "no-store" });
+  const at = now();
+  if (token.startsWith("ap_oauth_")) await c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_tokens SET revoked_at=? WHERE token_hash=? AND client_id=? AND revoked_at IS NULL").bind(at, await digest(token), clientId).run();
+  else if (token.startsWith("ap_refresh_")) await c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_refresh_tokens SET revoked_at=? WHERE token_hash=? AND client_id=? AND revoked_at IS NULL").bind(at, await digest(token), clientId).run();
+  return c.body(null, 200, { "cache-control": "no-store" });
+});
+
 app.route("/internal/agentport", agentPortRoutes);
 app.route("/spaces/:spaceId/agentport", agentPortRoutes);
 
@@ -129,6 +266,7 @@ app.post("/v1/auth/register", async c => {
     c.env.PLATFORM_DB.prepare("INSERT INTO agentport_developers(id,tenant_id,email,email_normalized,password_hash,role,status,token_version,created_at,updated_at) VALUES(?,?,?,?,?,'owner','active',0,?,?)").bind(userId, tenantId, email, normalizedEmail, await hashPassword(password), at, at),
   ]);
   const token = await issueDeveloperToken(c.env, { id: userId, tenant_id: tenantId, email, role: "owner", token_version: 0 });
+  c.header("Set-Cookie", sessionCookie(token));
   return c.json({ data: { token, user: { id: userId, email, role: "owner" }, organization: { id: tenantId, name: orgName } } }, 201);
 });
 app.post("/v1/auth/login", async c => {
@@ -147,7 +285,15 @@ app.post("/v1/auth/login", async c => {
   if (!user || user.status !== "active" || user.organization_status !== "active" || !passwordOk) return c.json({ error_code: "invalid_credentials", message: "Invalid email or password." }, 401);
   await c.env.PLATFORM_DB.prepare("UPDATE agentport_developers SET last_login_at=?,updated_at=? WHERE id=?").bind(now(), now(), user.id).run();
   const token = await issueDeveloperToken(c.env, user);
+  c.header("Set-Cookie", sessionCookie(token));
   return c.json({ data: { token, user: { id: user.id, email: user.email, role: user.role }, organization: { id: user.tenant_id } } });
+});
+app.post("/v1/auth/logout", async c => {
+  const auth = await authenticateHuman(c);
+  if (auth?.userClaims) await c.env.PLATFORM_DB.prepare("UPDATE agentport_developers SET token_version=token_version+1,updated_at=? WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(now(), auth.userClaims.sub, auth.userClaims.tid).run();
+  c.header("Set-Cookie", sessionCookie("", 0));
+  return c.json({ loggedOut: true }, 200, { "cache-control": "no-store" });
 });
 app.post("/v1/auth/password", async c => {
   const auth = await authenticateHuman(c);
@@ -161,11 +307,13 @@ app.post("/v1/auth/password", async c => {
   if (!changed.meta.changes) return c.json({ error_code: "account_unavailable" }, 404);
   const user = await c.env.PLATFORM_DB.prepare("SELECT id,tenant_id,email,role,token_version FROM agentport_developers WHERE id=? AND tenant_id=?").bind(auth.userClaims.sub, auth.userClaims.tid).first<{ id: string; tenant_id: string; email: string; role: string; token_version: number }>();
   if (!user) return c.json({ error_code: "account_unavailable" }, 404);
-  return c.json({ changed: true, token: await issueDeveloperToken(c.env, user) });
+  const token = await issueDeveloperToken(c.env, user);
+  c.header("Set-Cookie", sessionCookie(token));
+  return c.json({ changed: true, token });
 });
 
 async function authenticateHuman(c: { req: { header(name: string): string | undefined }; env: Env }): Promise<AuthContext | null> {
-  const header = c.req.header("authorization") ?? "";
+  const header = c.req.header("authorization") ?? `Bearer ${cookieValue(c.req.header("cookie"), "agentport_session") ?? ""}`;
   const match = /^Bearer (.+)$/.exec(header);
   if (!match) return null;
   try {
@@ -174,7 +322,7 @@ async function authenticateHuman(c: { req: { header(name: string): string | unde
     const current = await c.env.PLATFORM_DB.prepare(`SELECT d.status,d.tenant_id,d.token_version,d.role,o.status AS organization_status FROM agentport_developers d
       JOIN agentport_organizations o ON o.id=d.tenant_id WHERE d.id=? AND d.tenant_id=?`).bind(claims.sub, claims.tid).first<{ status: string; tenant_id: string; token_version: number; role: string; organization_status: string }>();
     if (!current || current.status !== "active" || current.organization_status !== "active" || (claims.tv ?? 0) !== (current.token_version ?? 0) || !["owner", "admin"].includes(current.role)) return null;
-    return { tenantId: claims.tid, ownerId: claims.tid, ownerType: "organization", scopes: ["agentport:read", "agentport:write", "agentport:events", "agentport:admin"], userClaims: claims };
+    return { tenantId: claims.tid, ownerId: claims.tid, ownerType: "organization", scopes: ["agentport:read", "agentport:write", "agentport:events", "agentport:admin"], userClaims: claims, developerId: claims.sub };
   } catch { return null; }
 }
 
@@ -188,14 +336,53 @@ async function ownsAgent(db: D1Database, auth: AuthContext, agentId: string) {
 app.use("/v1/*", async (c, next) => {
   const pathname = new URL(c.req.url).pathname;
   const auth = await authenticate(c);
-  const human = !auth && pathname === "/v1/keys" && c.req.method === "POST" ? await authenticateHuman(c) : null;
+  const humanRoute = (pathname === "/v1/keys" && c.req.method === "POST") || (pathname === "/v1/oauth/clients" && ["POST", "GET"].includes(c.req.method)) || (/^\/v1\/oauth\/clients\/[^/]+$/.test(pathname) && c.req.method === "DELETE");
+  const human = !auth && humanRoute ? await authenticateHuman(c) : null;
   const selected = auth ?? human;
-  if (!selected) return c.json({ error_code: "unauthorized", message: "Use an AgentPort API key or an authenticated organization owner/admin token." }, 401);
-  if (human && pathname !== "/v1/keys") return c.json({ error_code: "unauthorized" }, 401);
+  if (!selected) return c.json({ error_code: "unauthorized", message: "Use an AgentPort API key, OAuth access token, or authenticated organization owner/admin token." }, 401);
+  if (human && !humanRoute) return c.json({ error_code: "unauthorized" }, 401);
   const scope = requiredScope(c.req.method, pathname);
   if (!hasScope(selected.scopes, scope)) return c.json({ error_code: "insufficient_scope", required: scope }, 403);
   c.set("auth", selected);
   return next();
+});
+
+app.post("/v1/oauth/clients", async c => {
+  const auth = c.get("auth"); const body = await c.req.json<{ name?: string; redirectUris?: string[] }>().catch(() => null);
+  if (!auth.userClaims || !auth.developerId) return c.json({ error_code: "oauth_client_owner_required" }, 403);
+  if (!body || !body.name?.trim() || body.name.length > 120 || !Array.isArray(body.redirectUris) || body.redirectUris.length < 1 || body.redirectUris.length > 8 || body.redirectUris.some(uri => typeof uri !== "string" || !safeRedirectUri(uri)) || new Set(body.redirectUris).size !== body.redirectUris.length) return c.json({ error_code: "invalid_oauth_client" }, 400);
+  const owner = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_developers WHERE id=? AND tenant_id=? AND role IN ('owner','admin') AND status='active'").bind(auth.developerId, auth.tenantId).first();
+  if (!owner) return c.json({ error_code: "oauth_client_owner_required" }, 403);
+  const clientId = `apc_${id()}`; const createdAt = now();
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_oauth_clients(client_id,owner_tenant_id,owner_developer_id,client_name,redirect_uris_json,created_at)
+    VALUES(?,?,?,?,?,?)`).bind(clientId, auth.tenantId, auth.developerId, body.name.trim(), JSON.stringify(body.redirectUris), createdAt).run();
+  return c.json({ client: { clientId, name: body.name.trim(), redirectUris: body.redirectUris, createdAt }, publicClient: true, pkceRequired: true }, 201);
+});
+app.get("/v1/oauth/clients", async c => {
+  const auth = c.get("auth"); if (!auth.userClaims || !auth.developerId) return c.json({ error_code: "oauth_client_owner_required" }, 403);
+  const rows = await c.env.PLATFORM_DB.prepare("SELECT client_id,client_name,redirect_uris_json,status,created_at FROM agentport_oauth_clients WHERE owner_tenant_id=? AND owner_developer_id=? ORDER BY created_at DESC")
+    .bind(auth.tenantId, auth.developerId).all<Record<string, unknown>>();
+  return c.json({ clients: (rows.results ?? []).map(row => ({ clientId: row.client_id, name: row.client_name, redirectUris: JSON.parse(String(row.redirect_uris_json)), status: row.status, createdAt: row.created_at })) });
+});
+app.delete("/v1/oauth/clients/:clientId", async c => {
+  const auth = c.get("auth"); if (!auth.userClaims || !auth.developerId) return c.json({ error_code: "oauth_client_owner_required" }, 403);
+  const clientId = c.req.param("clientId"); const at = now();
+  const result = await c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_clients SET status='revoked',revoked_at=? WHERE client_id=? AND owner_tenant_id=? AND owner_developer_id=? AND status='active'")
+    .bind(at, clientId, auth.tenantId, auth.developerId).run();
+  if (result.meta.changes) await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_codes SET consumed_at=COALESCE(consumed_at,?) WHERE client_id=?").bind(at, clientId),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE client_id=?").bind(at, clientId),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_oauth_refresh_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE client_id=?").bind(at, clientId),
+  ]);
+  return c.json({ revoked: result.meta.changes > 0 });
+});
+app.get("/v1/auth/me", async c => {
+  const auth = c.get("auth");
+  if (!auth.developerId) return c.json({ error_code: "developer_identity_unavailable" }, 403);
+  const user = await c.env.PLATFORM_DB.prepare(`SELECT d.id,d.email,d.role,o.id AS organization_id,o.name AS organization_name FROM agentport_developers d
+    JOIN agentport_organizations o ON o.id=d.tenant_id WHERE d.id=? AND d.tenant_id=? AND d.status='active' AND o.status='active'`).bind(auth.developerId, auth.tenantId).first();
+  if (!user) return c.json({ error_code: "account_unavailable" }, 404);
+  return c.json({ user, scopes: auth.scopes });
 });
 
 app.post("/v1/keys", async c => {
@@ -243,6 +430,10 @@ app.delete("/v1/account", async c => {
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_service_manifests WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_provider_auth WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_services WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_oauth_codes WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_oauth_tokens WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_oauth_refresh_tokens WHERE tenant_id=?").bind(tenantId),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_oauth_clients WHERE owner_tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_api_keys WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_developers WHERE tenant_id=?").bind(tenantId),
     c.env.PLATFORM_DB.prepare("DELETE FROM agentport_organizations WHERE id=?").bind(tenantId),

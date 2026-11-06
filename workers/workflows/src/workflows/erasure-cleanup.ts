@@ -133,6 +133,11 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
+    // OAuth grants must be removed before AgentPort developer and organization identity rows.
+    db.prepare("DELETE FROM agentport_oauth_codes WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_oauth_tokens WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_oauth_refresh_tokens WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_oauth_clients WHERE owner_tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_api_keys WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_developers WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_organizations WHERE id = ?").bind(orgId),

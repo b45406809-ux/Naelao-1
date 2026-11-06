@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentPortClient, AgentPortError, verifyAgentCredential } from "./index.js";
-import { createDeveloperApiKey, registerDeveloper } from "./index.js";
+import { AgentPortClient, AgentPortError, buildAgentPortAuthorizationUrl, createAgentPortPKCE, createDeveloperApiKey, createOAuthClient, exchangeAgentPortOAuthCode, refreshAgentPortOAuthToken, registerDeveloper, revokeAgentPortToken, verifyAgentCredential } from "./index.js";
 
 describe("AgentPort public SDK", () => {
   it("verifies signed mandates against the trusted issuer, audience, key set and revocation status", async () => {
@@ -51,5 +50,37 @@ describe("AgentPort public SDK", () => {
     expect(key.apiKey).toBe("ap_live_secret");
     expect(calls.map(call => call.url)).toEqual(["https://agentport.example/v1/auth/register", "https://agentport.example/v1/keys"]);
     expect(new Headers(calls[1]!.init?.headers).get("authorization")).toBe("Bearer owner-jwt");
+  });
+  it("supports third-party OAuth client registration and PKCE token exchange without a Naelao-specific SDK path", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return calls.length === 1
+        ? Response.json({ client: { clientId: "apc_example", name: "Builder", redirectUris: ["https://builder.example/callback"] } }, { status: 201 })
+        : Response.json({ access_token: "ap_oauth_access", refresh_token: "ap_refresh_next", token_type: "Bearer", expires_in: 3600, scope: "agentport:read offline_access" });
+    }) as typeof fetch;
+    const client = await createOAuthClient({ userToken: "developer-jwt", name: "Builder", redirectUris: ["https://builder.example/callback"], baseUrl: "https://agentport.example", fetch: fetcher });
+    expect(client.clientId).toBe("apc_example");
+    const url = new URL(buildAgentPortAuthorizationUrl({ clientId: client.clientId, redirectUri: client.redirectUris[0]!, state: "random-state", codeChallenge: "a".repeat(43), scopes: ["agentport:read", "offline_access"], baseUrl: "https://agentport.example" }));
+    expect(url.origin + url.pathname).toBe("https://agentport.example/oauth/authorize");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    const token = await exchangeAgentPortOAuthCode({ code: "one-use-code", clientId: client.clientId, redirectUri: client.redirectUris[0]!, codeVerifier: "v".repeat(64), baseUrl: "https://agentport.example", fetch: fetcher });
+    expect(token.refresh_token).toBe("ap_refresh_next");
+    const agentPort = new AgentPortClient({ accessToken: token.access_token, baseUrl: "https://agentport.example", fetch: (async () => Response.json({ services: [] })) as typeof fetch });
+    await agentPort.listServices();
+    expect(new Headers(calls[1]!.init?.headers).get("content-type")).toContain("application/x-www-form-urlencoded");
+    const refreshed = await refreshAgentPortOAuthToken({ clientId: client.clientId, refreshToken: token.refresh_token!, baseUrl: "https://agentport.example", fetch: (async () => Response.json({ access_token: "new-token", token_type: "Bearer", expires_in: 3600, scope: "agentport:read" })) as typeof fetch });
+    expect(refreshed.access_token).toBe("new-token");
+  });
+  it("generates fresh PKCE state and revokes OAuth tokens", async () => {
+    const first = await createAgentPortPKCE(); const second = await createAgentPortPKCE();
+    expect(first.codeVerifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(first.codeChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(first.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(first.state).not.toBe(second.state);
+    const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+    await revokeAgentPortToken({ clientId: "apc_client", token: "ap_refresh_token", baseUrl: "https://agentport.example", fetch: fetcher as typeof fetch });
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://agentport.example/oauth/revoke");
+    expect(String((fetcher.mock.calls[0]?.[1] as RequestInit).body)).toBe("client_id=apc_client&token=ap_refresh_token");
   });
 });

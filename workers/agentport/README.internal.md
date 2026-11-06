@@ -2,6 +2,8 @@
 
 AgentPort is a standalone service at `https://agentport.naelao.com` with independent developer registration, API keys, REST, SDK, CLI, and MCP access. External developers use that public AgentPort API directly. Naelao also exposes a protected `/spaces/:spaceId/agentport/...` client proxy: the router authenticates the Naelao user or hosted agent, and the worker verifies the tenant-bound internal signature. The proxy is one first-party integration path, not the product boundary.
 
+Naelao-hosted agents receive a managed AgentPort identity during agent creation, before the agent definition is published. This is the no-extra-login default, scoped under the Naelao tenant and creator principal. A user or organization that wants to use its independently owned AgentPort workspace can authorize a platform OAuth client using Authorization Code + PKCE; this is an explicit link with separate grants and revocation. OAuth access tokens authorize AgentPort API operations only, and the external provider remains responsible for provider accounts and channel data.
+
 ## Resource model
 
 - A principal is a person, organization, or platform that controls resources.
