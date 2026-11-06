@@ -45,13 +45,13 @@ Commands and outcomes from this implementation run:
 | `workers/agents/src/script-engine/prebuilt/computer-use.test.ts` | pass | Included in the 3-file Agents worker focused run; suite total 24 assertions. |
 | Wrangler dry-run for new worker | pass | Latest dry run included worker routes, provider adapters, and D1 binding. |
 | Full Turbo test inventory | blocked | `CI=true pnpm exec turbo run test --concurrency=2` invoked package installs and npm registry connections failed/timed out in this environment. Workspace dependencies were restored with frozen lockfile install; focused checks listed above pass. |
-| GitHub Actions and recorded suite JSON outcomes | pending | Dispatch the full-test inventory on the pushed commit, inspect every job and the uploaded JSON artifact. Earlier artifact-storage access was denied; retry on the new run. |
+| GitHub Actions `Naelao full test inventory` run `42249022998` (`844f8de7`) | partial; overall failure | Passed: node, conformance, typecheck, security-lint, runtime-acceptance, and all 3 connected worker checks. Repository suite: 3,130 passed / 7 failed; none were sandbox deployment coverage or erasure classification after this fix. Workspace suite: 2,525 passed / 4 failed (language-preference routes). Browser journey: 6 failed (signup expected 201, got 404 across desktop/mobile). Summary job fails because repository/workspace/browser suites failed. The recorded summary was inspected in job logs; ZIP artifact download returned HTTP 403 from GitHub artifact storage. |
 
 ## External verification and blockers
 
 No Agent37 API key/instance key, Agent37 account, customer OpenSandbox host/key, custom guest image, deployed R2 bridge, Cloudflare account check, or desktop ingress was available. Provider adapters have not been live-run. The Agents37 endpoint schema and runtime behavior must be acceptance tested before status can become `verified`; current worker status is hardcoded `unavailable` and auto-scheduling is false. OpenSandbox `invoke()` explicitly rejects until the Naelao guest endpoint is designed and verified.
 
-The GitHub Actions full-test workflow requires explicit dispatch for this branch. Prior runs had failed summary jobs despite all displayed component jobs being green; uploaded suite JSON was inaccessible in the environment due artifact-storage access denial. Do not describe the prior check summary as a pass. The current implementation checks are green except full Turbo tests; a new Actions run and suite-level artifact inspection are still required.
+The full-test workflow was dispatched on `844f8de7` as run `42249022998`. The job summary and test logs were read directly; the uploaded artifact ZIP also returned HTTP 403, so its JSON files could not be fetched. Sandbox deployment coverage and data-erasure classification pass in that run. Overall summary remains failed due the unrelated repository, language-preference, and browser signup failures listed in the verification table.
 
 ## Unresolved requirements and decisions
 
