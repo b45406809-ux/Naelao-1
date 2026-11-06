@@ -16,10 +16,27 @@ export interface SpaceTriggerQueueMessage {
   tenantId: string;
   message: string;
 }
+export interface ProviderEventReferenceQueueMessage {
+  type:"provider_event_reference";
+  tenantId:string;
+  spaceId:string;
+  projectId?:string;
+  agentId:string;
+  connectionId:string;
+  accountId:string;
+  subscriptionId:string;
+  eventId:string;
+  deliveryId:string;
+  serviceId:string;
+  eventType:string;
+  threadRef:string;
+  dataRef:string;
+}
 
 export type ChannelSessionQueueMessage =
   | SessionQueueMessage
-  | SpaceTriggerQueueMessage;
+  | SpaceTriggerQueueMessage
+  | ProviderEventReferenceQueueMessage;
 
 export interface QueueMessageLike {
   id: string;
@@ -81,6 +98,7 @@ export function isChannelSessionQueueMessage(
       value.message.length <= 10_000
     );
   }
+  if(value.type==="provider_event_reference")return !["body","content","text","html","attachments","raw"].some(key=>key in value)&&["tenantId","spaceId","agentId","connectionId","accountId","subscriptionId","eventId","deliveryId","serviceId","eventType","threadRef","dataRef"].every(key=>typeof value[key]==="string"&&(value[key] as string).length>0&&(value[key] as string).length<=1024)&&(value.projectId===undefined||(typeof value.projectId==="string"&&value.projectId.length<=160));
   return false;
 }
 

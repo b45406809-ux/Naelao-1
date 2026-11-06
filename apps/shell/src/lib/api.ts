@@ -2277,7 +2277,7 @@ export async function listMySpaces(productSpaceId: string, session: SessionCrede
 export async function createSpace(
   productSpaceId: string,
   session: SessionCredentials,
-  input: { name: string; template_listing_id?: string; blueprint_id?: string }
+  input: { name: string; template_listing_id?: string; blueprint_id?: string; assistant_email_mode?: "none"|"naelao_managed"|"user_connected" }
 ): Promise<{ id: string; name: string; status: string; pending_blueprint_id?: string }> {
   return apiFetch(`/v1/spaces/${productSpaceId}/spaces`, { method: "POST", body: JSON.stringify(input), session });
 }
@@ -2886,10 +2886,10 @@ export async function websiteBrowser(spaceId: string, session: SessionCredential
   return apiFetch<{result?: import("@naelao/agent-sdk").BrowserObservation;image_base64?:string}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-browser`,{session,method:"POST",body:JSON.stringify(input)});
 }
 
-export interface AssistantChannelSettings {preferences: import("@naelao/agent-sdk").AssistantChannelPreferences; overrides: import("@naelao/agent-sdk").AssistantChannelPatch; templateDefaults: import("@naelao/agent-sdk").AssistantChannelTemplateDefaults}
+export interface AssistantChannelSettings {preferences: import("@naelao/agent-sdk").AssistantChannelPreferences; overrides: import("@naelao/agent-sdk").AssistantChannelPatch; templateDefaults: import("@naelao/agent-sdk").AssistantChannelTemplateDefaults; emailProvisioning?:import("@naelao/agent-sdk").AssistantEmailProvisioning; emailProvisioningOverride?:import("@naelao/agent-sdk").AssistantEmailProvisioning|null}
 function assistantChannelsPath(spaceId:string,scope:{projectId?:string;projectDefaults?:boolean}={}) {const query=new URLSearchParams({...scope.projectId?{project_id:scope.projectId}:{},...scope.projectDefaults?{project_defaults:"true"}:{}});return `/v1/spaces/${encodeURIComponent(spaceId)}/assistant-channels?${query}`;}
 export function getAssistantChannels(spaceId:string,session:SessionCredentials,scope:{projectId?:string;projectDefaults?:boolean}={}) {return apiFetch<AssistantChannelSettings>(assistantChannelsPath(spaceId,scope),{session});}
-export function saveAssistantChannels(spaceId:string,session:SessionCredentials,body:{preferences?:import("@naelao/agent-sdk").AssistantChannelPatch;templateDefaults?:import("@naelao/agent-sdk").AssistantChannelTemplateDefaults},scope:{projectId?:string;projectDefaults?:boolean}={}) {return apiFetch<AssistantChannelSettings>(assistantChannelsPath(spaceId,scope),{session,method:"PATCH",body:JSON.stringify(body)});}
+export function saveAssistantChannels(spaceId:string,session:SessionCredentials,body:{preferences?:import("@naelao/agent-sdk").AssistantChannelPatch;templateDefaults?:import("@naelao/agent-sdk").AssistantChannelTemplateDefaults;emailProvisioning?:import("@naelao/agent-sdk").AssistantEmailProvisioning},scope:{projectId?:string;projectDefaults?:boolean}={}) {return apiFetch<AssistantChannelSettings>(assistantChannelsPath(spaceId,scope),{session,method:"PATCH",body:JSON.stringify(body)});}
 
 export type AssistantVoiceSettings = import("@naelao/agent-sdk").AssistantVoiceSettings;
 function assistantVoicePath(spaceId:string,projectId?:string) {const query=new URLSearchParams(projectId?{project_id:projectId}:{});return `/v1/spaces/${encodeURIComponent(spaceId)}/assistant-voice${query.size?`?${query}`:""}`;}

@@ -7,9 +7,12 @@ import {
   readBoundedResponseJson,
 } from "@naelao/http";
 import { hashEmailAddress } from "../channels/cloudflare-email.js";
+import { connectUserAgentMail, callAgentMailTool, getAssistantAgentMailStatus, provisionManagedAgentMail, receiveAgentMailWebhook, receiveAgentPortNotification } from "./agentmail.js";
 import {
   channelPreferences,
+  assistantEmailProvisioning,
   ensureIdentity,
+  ensureAgentPortAssistantIdentity,
   scopeAccess,
   storeBody,
   readBody,
@@ -193,9 +196,52 @@ async function handle(c: C, agent: boolean) {
     ].includes(action)
   )
     return c.json({ error_code: "human_control_required" }, 403);
+  if(action==="identity"&&body.emailProvisioningOverride!==undefined){
+    if(c.req.method==="GET")return c.json({error_code:"method_not_allowed"},405);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    let emailProvisioning:unknown;
+    try{emailProvisioning=(await import("@naelao/agent-sdk")).validateAssistantEmailProvisioning(body.emailProvisioningOverride);}catch{return c.json({error_code:"invalid_assistant_email_provisioning"},400);}
+    const targets=scope.projectId?[false]:[false,true];
+    for(const projectDefaults of targets){
+      const query=new URLSearchParams({...scope.projectId?{project_id:scope.projectId}:{},...projectDefaults?{project_defaults:"true"}:{}});
+      const response=await c.env.SPACES_WORKER.fetch(new Request(`http://spaces/spaces/${encodeURIComponent(space)}/assistant-channels?${query}`,{method:"PATCH",headers:{"content-type":"application/json","x-naelao-tenant-id":tenant,"x-naelao-user-id":user,"x-naelao-role":c.req.header("x-naelao-role")??"owner","x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify({emailProvisioning})}));
+      if(!response.ok)return c.json({error_code:"assistant_email_override_save_failed"},503);
+    }
+  }
   const preferences = await channelPreferences(c.env, scope);
-  if (action === "identity" && !preferences.enabled.email)
+  if(action.startsWith("agentmail-")) {
+    let connectedIdentity:CommunicationIdentity;
+    try {
+      if(action==="agentmail-status")return c.json(await getAssistantAgentMailStatus(c.env,scope));
+      connectedIdentity=await ensureIdentity(c.env,scope);
+      if(!(await manageIdentity(c.env,scope,connectedIdentity)))return c.json({error_code:"owner_authorization_required"},403);
+      if(action==="agentmail-connect") {
+        if(c.req.method!=="POST"||typeof body.inbox_id!=="string"||typeof body.api_key!=="string")return c.json({error_code:"invalid_agentmail_connection"},400);
+        const connection=await connectUserAgentMail(c.env,scope,connectedIdentity,{inboxId:body.inbox_id,apiKey:body.api_key});
+        return c.json({connection},201);
+      }
+      if(action==="agentmail-provision"){
+        const result=await provisionManagedAgentMail(c.env,scope,connectedIdentity,typeof body.display_name==="string"?body.display_name:undefined);
+        return c.json({connection:result},result.pending?202:201);
+      }
+      if(action==="agentmail-operation") {
+        const operation=typeof body.operation==="string"?body.operation:"";
+        const result=await callAgentMailTool(c.env,scope,operation,body.args&&typeof body.args==="object"&&!Array.isArray(body.args)?body.args as Record<string,unknown>:{});
+        return c.json({result});
+      }
+      return c.json({error_code:"agentmail_action_unsupported"},400);
+    } catch(error) {
+      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_unavailable";
+      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")?409:502);
+    }
+  }
+  if (action === "identity" && !preferences.enabled.email) {
+    try { await ensureAgentPortAssistantIdentity(c.env, scope); }
+    catch { return c.json({ error_code: "agentport_identity_unavailable" }, 503); }
     return c.json({ identity: null, preferences, email_status: "disabled" });
+  }
   if (action.startsWith("learning-")) {
     if (agent) return c.json({ error_code: "human_control_required" }, 403);
     if (!c.env.SCRIPTS_R2)
@@ -371,7 +417,18 @@ async function handle(c: C, agent: boolean) {
       );
     }
   }
-  if (action === "identity")
+  if (action === "identity") {
+    let managedInbox:unknown=null;
+    try {
+      const provisioning=await assistantEmailProvisioning(c.env,scope);
+      if(provisioning.provider==="agentmail"&&provisioning.defaultMode==="naelao_managed"&&provisioning.provisionOnCreate){
+        if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+        managedInbox=await provisionManagedAgentMail(c.env,scope,identity,provisioning.displayName);
+      }
+    } catch(error) {
+      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_auto_provision_failed";
+      return c.json({identity:{id:identity.id,email_address:identity.email_address,email_status:identity.email_status,kind:identity.project_id?"project_assistant":"space_assistant",provider:identity.email_provider},preferences,managedInbox:{status:"failed",error_code:code}},code.includes("not_configured")?503:502);
+    }
     return c.json({
       identity: {
         id: identity.id,
@@ -382,7 +439,9 @@ async function handle(c: C, agent: boolean) {
       },
       preferences,
       autonomy: JSON.parse(identity.autonomy_json),
+      ...(managedInbox?{managedInbox}:{}),
     });
+  }
 
   if (action === "verification-begin") {
     const connectionId = String(body.connection_id ?? ""),
@@ -885,6 +944,8 @@ async function handle(c: C, agent: boolean) {
 export function registerCommunicationRoutes(
   app: Hono<{ Bindings: AgentsEnv }>
 ) {
+  app.post("/internal/agentmail/webhook/:connectionId",async c=>receiveAgentMailWebhook(c.env,c.req.param("connectionId"),c.req.raw));
+  app.post("/internal/agentport/event/:connectionId",async c=>receiveAgentPortNotification(c.env,c.req.param("connectionId"),c.req.raw));
   app.on(["GET", "POST"], "/spaces/:spaceId/assistant-communications", (c) =>
     handle(c, false)
   );

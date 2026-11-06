@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   resolveAssistantChannels,
   validateAssistantChannelDefaults,
+  validateAssistantEmailProvisioning,
 } from "./assistant-channels.js";
 import { instantiateBlueprint } from "./blueprint.js";
 describe("assistant channel defaults", () => {
@@ -45,6 +46,12 @@ describe("assistant channel defaults", () => {
         projectAssistants: { purchasePhone: true },
       })
     ).toThrow();
+  });
+  it("validates email provisioning independently from the enabled email preference",()=>{
+    expect(validateAssistantEmailProvisioning({provider:"agentmail",defaultMode:"naelao_managed",provisionOnCreate:true,suggestedLocalPart:"support-bot",displayName:"Support"}))
+      .toEqual({provider:"agentmail",defaultMode:"naelao_managed",provisionOnCreate:true,suggestedLocalPart:"support-bot",displayName:"Support"});
+    expect(()=>validateAssistantEmailProvisioning({provider:"agentmail",defaultMode:"naelao_managed",provisionOnCreate:true,apiKey:"secret"})).toThrow();
+    expect(validateAssistantChannelDefaults({emailProvisioning:{spaceAssistant:{provider:"agentmail",defaultMode:"none",provisionOnCreate:false}}}).emailProvisioning?.spaceAssistant?.defaultMode).toBe("none");
   });
   it("preserves validated channel defaults in detached blueprint copies", () => {
     const bp = {

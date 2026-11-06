@@ -35,6 +35,7 @@ import {
   deleteScheduledJob,
   listScheduledJobRuns,
   listAssistantChannels,
+  assistantMailApi,
   listSubAgents,
   listGoalActivity,
   listConversationGoalActivity,
@@ -1002,11 +1003,38 @@ function ChannelsPanel({
   const [channels, setChannels] = React.useState<ChannelLink[] | null>(null);
   const [canManage, setCanManage] = React.useState(false);
   const [showConnect, setShowConnect] = React.useState(false);
+  const [agentMail,setAgentMail]=React.useState<{connections:Array<{id:string;mode:string;address:string;status:string;receivedMessages:number;sentMessages:number;activity30d:"active"|"idle";lastActivityAt:string|null}>;lastProvisioningFailure?:{errorCode:string|null;occurredAt:string}}|null>(null);
+  const [agentMailInbox,setAgentMailInbox]=React.useState("");
+  const [agentMailKey,setAgentMailKey]=React.useState("");
+  const [agentMailBusy,setAgentMailBusy]=React.useState(false);
+  const [agentMailProvisionBusy,setAgentMailProvisionBusy]=React.useState(false);
+  const [agentMailError,setAgentMailError]=React.useState<string|null>(null);
+  const [agentMailLoadError,setAgentMailLoadError]=React.useState<string|null>(null);
 
   const load = React.useCallback(() => {
     listAssistantChannels(spaceId, session, { projectId: projectId ?? null }).then(setChannels).catch(() => setChannels([]));
   }, [spaceId, session, projectId]);
   React.useEffect(() => { setChannels(null); load(); }, [load]);
+  const loadAgentMail=React.useCallback(()=>assistantMailApi<{connections:Array<{id:string;mode:string;address:string;status:string;receivedMessages:number;sentMessages:number;activity30d:"active"|"idle";lastActivityAt:string|null}>;lastProvisioningFailure?:{errorCode:string|null;occurredAt:string}}>(spaceId,session,{action:"agentmail-status",...(projectId?{projectId}:{})})
+    .then(value=>{setAgentMail(value);setAgentMailLoadError(null);}).catch(error=>{setAgentMail(null);setAgentMailLoadError(error instanceof Error?error.message:"AgentMail status is unavailable.");}),[spaceId,session,projectId]);
+  React.useEffect(()=>{setAgentMail(null);loadAgentMail();},[loadAgentMail]);
+  const connectAgentMail=async()=>{
+    if(!agentMailInbox.trim()||!agentMailKey.trim())return;
+    setAgentMailBusy(true);setAgentMailError(null);
+    try{
+      await assistantMailApi(spaceId,session,{action:"agentmail-connect",...(projectId?{projectId}:{}),inbox_id:agentMailInbox.trim(),api_key:agentMailKey.trim()},true);
+      setAgentMailKey("");setAgentMailInbox("");await loadAgentMail();
+    }catch(error){setAgentMailError(error instanceof Error?error.message:"Unable to connect AgentMail inbox");}
+    finally{setAgentMailBusy(false);}
+  };
+  const provisionAgentMail=async()=>{
+    setAgentMailProvisionBusy(true);setAgentMailError(null);
+    try{
+      await assistantMailApi(spaceId,session,{action:"agentmail-provision",...(projectId?{projectId}:{})},true);
+      await loadAgentMail();
+    }catch(error){setAgentMailError(error instanceof Error?error.message:"Unable to provision a managed inbox");}
+    finally{setAgentMailProvisionBusy(false);}
+  };
 
   // Public channels can be attached to a project; management still follows the business
   // owner/admin role rather than project membership alone.
@@ -1064,6 +1092,20 @@ function ChannelsPanel({
       )}
       {showConnect && (
         <div style={{ padding: "8px 10px" }}>
+          <div className="tp-section" style={{marginTop:8}}>AgentMail inbox</div>
+          {agentMailLoadError&&<div role="alert" style={{fontSize:11,color:"var(--danger,#b42318)"}}>Connection status unavailable: {agentMailLoadError}</div>}
+          {agentMail?.lastProvisioningFailure&&<div role="alert" style={{fontSize:11,color:"var(--danger,#b42318)"}}>Last managed inbox setup failed ({agentMail.lastProvisioningFailure.errorCode??"unknown error"}). Try again or connect your own inbox.</div>}
+          {(agentMail?.connections??[]).map(connection=><div className="tp-tool-row" key={connection.id}><div className="tp-tool-name">{connection.address}<small style={{display:"block",color:"var(--text3)"}}>{connection.mode==="user_connected"?"Your AgentMail account":"Naelao managed"} · {connection.receivedMessages+connection.sentMessages} messages · {connection.activity30d} in 30 days</small></div><div className="tp-tool-badge">{connection.status}</div></div>)}
+          {canManage&&<div style={{display:"grid",gap:7,padding:"8px 2px 12px"}}>
+            <button type="button" className="btn btn-primary btn-sm" disabled={agentMailProvisionBusy||agentMailBusy} onClick={()=>void provisionAgentMail()}>{agentMailProvisionBusy?"Provisioning…":"Add Naelao managed inbox · $3/month"}</button>
+            <div style={{fontSize:10,color:"var(--text3)"}}>300 credits monthly. A managed inbox is charged after successful provisioning. If you connect your own AgentMail inbox below, Naelao does not charge the inbox rental.</div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>Connect an AgentMail inbox with an inbox scoped API key. The key is encrypted for this assistant and never shown to its tools.</div>
+            <input aria-label="AgentMail inbox ID" placeholder="AgentMail inbox ID" value={agentMailInbox} onChange={event=>setAgentMailInbox(event.target.value)} />
+            <input aria-label="AgentMail scoped API key" placeholder="Inbox scoped API key" type="password" autoComplete="off" value={agentMailKey} onChange={event=>setAgentMailKey(event.target.value)} />
+            {agentMailError&&<div role="alert" style={{fontSize:11,color:"var(--danger,#b42318)"}}>{agentMailError}</div>}
+            <button type="button" className="btn btn-primary btn-sm" disabled={agentMailBusy||!agentMailInbox.trim()||!agentMailKey.trim()} onClick={()=>void connectAgentMail()}>{agentMailBusy?"Connecting…":"Connect AgentMail inbox"}</button>
+            <div style={{fontSize:10,color:"var(--text3)"}}>Using your AgentMail account does not add a Naelao inbox rental charge.</div>
+          </div>}
           <ChannelConnect
             spaceId={spaceId}
             session={session}

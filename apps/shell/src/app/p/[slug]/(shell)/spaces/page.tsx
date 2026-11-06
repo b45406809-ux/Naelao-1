@@ -39,6 +39,7 @@ export default function SpacesPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [newSpaceName, setNewSpaceName] = React.useState("");
   const [templateId, setTemplateId] = React.useState("");
+  const [assistantEmailMode,setAssistantEmailMode]=React.useState<""|"none"|"naelao_managed"|"user_connected">("");
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
@@ -85,6 +86,7 @@ export default function SpacesPage() {
         name: newSpaceName.trim(),
         ...(listing ? { template_listing_id: listing.id } : {}),
         ...(fork ? { blueprint_id: fork.space_type_id } : {}),
+        ...(fork&&assistantEmailMode?{assistant_email_mode:assistantEmailMode}:{}),
       });
       setNewSpaceName("");
       // Production spaces install the blueprint at the end of background provisioning. Local
@@ -338,7 +340,7 @@ export default function SpacesPage() {
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12 }}>Name<FormInput autoFocus maxLength={100} placeholder="What is this Space for?" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} required /></label>
           {templates.some((template) => template.price_cents === 0) && (
-            <label style={{ fontSize: 12 }}>Space Template (optional)<FormSelect value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
+            <label style={{ fontSize: 12 }}>Space Template (optional)<FormSelect value={templateId} onChange={(event) => {setTemplateId(event.target.value);setAssistantEmailMode("");}}>
               <option value="">Start with a blank Space</option>
               {templates.filter((template) => template.price_cents === 0).map((template) => <option key={template.id} value={template.id}>{template.name} · by {template.author_name}</option>)}
             </FormSelect></label>
@@ -397,6 +399,9 @@ export default function SpacesPage() {
                       {grant.access === "READ_WRITE" && <option value="READ_WRITE">Read and write</option>}
                     </select>
                   </label>)}
+          {selectedTemplate&&<label style={{fontSize:12}}>Assistant email setup<FormSelect aria-label="Template assistant email setup" value={assistantEmailMode} onChange={event=>setAssistantEmailMode(event.target.value as typeof assistantEmailMode)}>
+            <option value="">Use the template default</option><option value="none">No automatic inbox</option><option value="naelao_managed">Naelao managed · $3/month per inbox</option><option value="user_connected">I’ll connect my AgentMail account</option>
+          </FormSelect><small style={{display:"block",color:"var(--text3)"}}>You can choose before installation. Managed inboxes cost 300 credits each month. Connecting your own AgentMail inbox has no Naelao inbox rental charge.</small></label>}
                 </div>}
                 {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation}; ${role.primitive_ids.join(", ") || "no primitives"}${role.gadget_actions.length ? `; ${role.gadget_actions.map(action => `${action.gadget_id} ${action.operations.join("/")} on ${action.tables.join(",")}`).join("; ")}` : ""})`).join("; ")}</div>}
               </div>}

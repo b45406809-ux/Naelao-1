@@ -337,6 +337,11 @@ async function ownsAgent(db: D1Database, auth: AuthContext, agentId: string) {
     WHERE a.id=? AND a.tenant_id=? AND a.status='active' AND p.external_id=? AND p.principal_type=?`)
     .bind(agentId, auth.tenantId, auth.ownerId, auth.ownerType).first();
 }
+async function ownsAccount(db: D1Database, auth: AuthContext, accountId: string) {
+  return !!await db.prepare(`SELECT id FROM agentport_accounts WHERE id=? AND tenant_id=? AND
+    ((owner_id=? AND owner_type=?) OR (owner_id=? AND owner_type='agentport'))`)
+    .bind(accountId,auth.tenantId,auth.ownerId,auth.ownerType,auth.tenantId).first();
+}
 
 app.use("/v1/*", async (c, next) => {
   const pathname = new URL(c.req.url).pathname;
@@ -464,6 +469,15 @@ async function forward(c: Context<{ Bindings: Env; Variables: { auth: AuthContex
   if (c.req.method === "GET" && path === "/events/pending") {
     const agentId = incoming.searchParams.get("agentId");
     if (!agentId || !await ownsAgent(c.env.PLATFORM_DB, auth, agentId)) return json({ error_code: "agent_unavailable" }, 404);
+  }
+  const accountMatch = /^\/accounts\/([^/]+)\/(activate|grants|dependencies)$/.exec(path);
+  if (accountMatch && !await ownsAccount(c.env.PLATFORM_DB, auth, decodeURIComponent(accountMatch[1]!))) return json({ error_code: "account_unavailable" }, 404);
+  if (c.req.method === "DELETE" && path.startsWith("/grants/")) {
+    const grantId = decodeURIComponent(path.slice("/grants/".length));
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM agentport_account_grants g JOIN agentport_accounts a ON a.id=g.account_id AND a.tenant_id=g.tenant_id
+      WHERE g.id=? AND g.tenant_id=? AND ((a.owner_id=? AND a.owner_type=?) OR (a.owner_type='agentport' AND a.owner_id=?))`)
+      .bind(grantId, auth.tenantId, auth.ownerId, auth.ownerType, auth.tenantId).first();
+    if (!owned) return json({ error_code: "grant_unavailable" }, 404);
   }
   // `agentPortRoutes` is invoked directly below, so address its route table at `/services`,
   // `/agents`, etc. The `/internal/agentport` prefix is only used when mounted in a Worker.

@@ -432,8 +432,14 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // extension access or create template projects on the owner's behalf.
 
     if(msg.userId&&env.AGENTS_WORKER){
-      try { await env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":msg.userId,"x-naelao-role":"owner","x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})); }
-      catch { console.warn("[provisioner] Assistant email setup deferred until first use"); }
+      try {
+        const stored=await env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id=? AND tenant_id=?").bind(spaceId,tenantId).first<{config_json:string}>();
+        const setting=(JSON.parse(stored?.config_json??"{}") as Record<string,unknown>).assistantEmailProvisioning as Record<string,unknown>|undefined;
+        const mode=setting?.defaultMode;
+        const emailProvisioningOverride=["none","naelao_managed","user_connected"].includes(String(mode))?{provider:"agentmail",defaultMode:mode,provisionOnCreate:mode==="naelao_managed"}:undefined;
+        const response=await env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":msg.userId,"x-naelao-role":"owner","x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity",...(emailProvisioningOverride?{emailProvisioningOverride}:{})})}));if(!response.ok)console.warn(`[provisioner] Assistant identity or template inbox setup deferred: ${response.status}`);
+      }
+      catch { console.warn("[provisioner] Assistant identity or template inbox setup deferred"); }
     }
     console.log(`[provisioner] Space ${spaceId} (${spaceTypeId}) provisioned successfully`);
   } catch (err) {

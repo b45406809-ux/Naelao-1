@@ -750,6 +750,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@agentport/sdk':
+        specifier: workspace:*
+        version: link:../../packages/agentport-sdk
       '@cloudflare/dynamic-workflows':
         specifier: 0.1.1
         version: 0.1.1

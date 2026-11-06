@@ -29,7 +29,7 @@ import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInte
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateWidgetHostEvent, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
-import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, type AssistantChannelPatch, type AssistantChannelTemplateDefaults } from "@naelao/agent-sdk";
+import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
 import { projectFactRelevance } from "@naelao/agent-sdk";
@@ -3196,10 +3196,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!userId) return Response.json({error_code:"user_required"},{status:400});
         const key = projectId ? `channels:project:${projectId}` : url.searchParams.get("project_defaults") === "true" ? "channels:project-defaults" : `channels:user:${userId}`;
         if (method === "PATCH") {
-          const body = await request.json<{preferences?:unknown;templateDefaults?:unknown}>();
+          const body = await request.json<{preferences?:unknown;emailProvisioning?:unknown;templateDefaults?:unknown}>();
           try {
             const writes: Record<string,unknown> = {};
             if (body.preferences !== undefined) writes[key] = validateAssistantChannelPatch(body.preferences);
+            if(body.emailProvisioning!==undefined)writes[projectId?`channels:email-project:${projectId}:user:${userId}`:url.searchParams.get("project_defaults")==="true"?"channels:project-email-defaults":`channels:email:user:${userId}`]=validateAssistantEmailProvisioning(body.emailProvisioning);
             if (body.templateDefaults !== undefined) writes["channels:template"] = validateAssistantChannelDefaults(body.templateDefaults);
             if(Object.keys(writes).length) await this.ctx.storage.put(writes);
           } catch { return Response.json({error_code:"invalid_channel_settings"},{status:400}); }
@@ -3209,7 +3210,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const projectTemplate = projectId ? await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${projectId}`) : undefined;
         const projectDefaults = projectId ? await this.ctx.storage.get<AssistantChannelPatch>("channels:project-defaults") : undefined;
         const isProject = !!projectId || url.searchParams.get("project_defaults") === "true";
-        return Response.json({preferences:resolveAssistantChannels(isProject?"project_assistant":"space_assistant",isProject?template.projectAssistants:template.spaceAssistant,projectTemplate,projectDefaults,overrides),overrides:overrides??{},templateDefaults:template});
+        const emailUserOverride=await this.ctx.storage.get<AssistantEmailProvisioning>(projectId?`channels:email-project:${projectId}:user:${userId}`:`channels:email:user:${userId}`);
+        const emailProjectTemplate=projectId?await this.ctx.storage.get<AssistantEmailProvisioning>(`channels:template-email-project:${projectId}`):undefined;
+        const emailProjectDefaults=isProject?await this.ctx.storage.get<AssistantEmailProvisioning>("channels:project-email-defaults"):undefined;
+        const emailTemplate=template.emailProvisioning?.[isProject?"projectAssistants":"spaceAssistant"];
+        const emailProvisioning=emailUserOverride??emailProjectTemplate??emailProjectDefaults??emailTemplate??{provider:"agentmail",defaultMode:"none",provisionOnCreate:false} satisfies AssistantEmailProvisioning;
+        return Response.json({preferences:resolveAssistantChannels(isProject?"project_assistant":"space_assistant",isProject?template.projectAssistants:template.spaceAssistant,projectTemplate,projectDefaults,overrides),overrides:overrides??{},emailProvisioning,emailProvisioningOverride:emailUserOverride??null,templateDefaults:template});
       }
       if (method === "POST" && url.pathname === "/blueprints/export") {
         const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; required_extension_versions?: Record<string, string>; name?: string; description?: string; template_category?: string }>();
@@ -4270,7 +4276,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         id: project.id, name: project.name, kind: project.kind as ProjectKind, templateMode: project.template_mode,
         viewports: safeJsonParseObj(project.viewport_config),
         ...(safeJsonParseObj(project.channel_config).runtime_requirements ? { runtimeRequirements: safeJsonParseObj(project.channel_config).runtime_requirements as import("@naelao/agent-sdk").TemplateRuntimeRequirement[] } : {}),
-        configuration: { ...(await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) ? { assistantChannels: await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) } : {}), executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
+        configuration: { ...(await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) ? { assistantChannels: await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) } : {}), ...(await this.ctx.storage.get<AssistantEmailProvisioning>(`channels:template-email-project:${project.id}`)?{assistantEmailProvisioning:await this.ctx.storage.get<AssistantEmailProvisioning>(`channels:template-email-project:${project.id}`)}:{}), executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
         systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
         initialTasks: tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, dependencies: safeJsonParseArr(task.dependencies).filter((id): id is string => typeof id === "string"), ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}) })),
         starterFiles: files.map((file) => ({ path: `/workspace/${file.path.replace(/^\/+/, "")}`, content: file.content })),
@@ -4452,6 +4458,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       });
       if (compiled.assistantChannels !== undefined) await this.ctx.storage.put("channels:template",compiled.assistantChannels);
       for (const project of compiled.projects) if(project.configuration?.assistantChannels !== undefined) await this.ctx.storage.put(`channels:template-project:${ids.get(project.id ?? project.name)!}`,validateAssistantChannelPatch(project.configuration.assistantChannels));
+      for (const project of compiled.projects) if(project.configuration?.assistantEmailProvisioning!==undefined)await this.ctx.storage.put(`channels:template-email-project:${ids.get(project.id??project.name)!}`,validateAssistantEmailProvisioning(project.configuration.assistantEmailProvisioning));
       return { projectIds: [...ids.values()], taskCount, fileCount: preparedFiles.length };
     } catch (error) {
       if (this.env.SCRIPTS_R2 && stagedKeys.length) {

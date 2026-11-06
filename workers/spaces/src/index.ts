@@ -491,11 +491,12 @@ app.post("/spaces/:spaceId/spaces", async (c) => {
     return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "payload_too_large" : "invalid_request_body" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return c.json({ error_code: "invalid_request_body" }, 400);
-  const body = value as { name?: unknown; blueprint_id?: unknown; template_listing_id?: unknown };
+  const body = value as { name?: unknown; blueprint_id?: unknown; template_listing_id?: unknown; assistant_email_mode?: unknown };
   if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 100) return c.json({ error_code: "invalid_space_name" }, 400);
   if (body.blueprint_id !== undefined && (typeof body.blueprint_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.blueprint_id))) return c.json({ error_code: "invalid_blueprint_id" }, 400);
   if (body.template_listing_id !== undefined && (typeof body.template_listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.template_listing_id))) return c.json({ error_code: "invalid_template_listing_id" }, 400);
   if (body.template_listing_id && !body.blueprint_id) return c.json({ error_code: "template_fork_required" }, 400);
+  if(body.assistant_email_mode!==undefined&&(!body.blueprint_id||!['none','naelao_managed','user_connected'].includes(String(body.assistant_email_mode))))return c.json({error_code:"invalid_assistant_email_mode"},400);
   if (body.blueprint_id) {
     const fork = await c.env.PLATFORM_DB.prepare(
       `SELECT 1 FROM marketplace_forks f JOIN marketplace_listings l ON l.id = f.listing_id
@@ -511,6 +512,7 @@ app.post("/spaces/:spaceId/spaces", async (c) => {
       name: body.name,
       spacetypeId: owner.root.spacetype_id,
       ...(typeof body.blueprint_id === "string" ? { blueprintId: body.blueprint_id } : {}),
+      ...(typeof body.assistant_email_mode==="string"?{configOverrides:{assistantEmailProvisioning:{provider:"agentmail",defaultMode:body.assistant_email_mode,provisionOnCreate:body.assistant_email_mode==="naelao_managed"}}}:{}),
       initialMembership: { productSpaceId: owner.root.id, endUserId: owner.userId, role: "owner" },
     });
     return c.json({ id: created.id, name: body.name, status: created.status,
@@ -822,7 +824,19 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   }
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json=json_remove(COALESCE(config_json,'{}'),'$.pending_blueprint_id') WHERE id=? AND tenant_id=? AND json_extract(config_json,'$.pending_blueprint_id')=?")
     .bind(spaceId, tenantId, blueprint.id).run();
-  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  const assistantEmailSetups:Array<{kind:"space"|"project";projectId?:string;status:"ready"|"deferred";errorCode?:string}>=[];
+  if(c.env.AGENTS_WORKER){
+    const targets:["space"|"project",string|undefined][]=[["space",undefined],...(activation.projectIds??[]).map(projectId=>["project",projectId] as ["project",string])];
+    for(const [kind,projectId] of targets){
+      const query=new URLSearchParams(projectId?{project_id:projectId}:{});
+      try{
+        const setup=await c.env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications${query.size?`?${query}`:""}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":identity.userId,"x-naelao-role":identity.role,"x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})}));
+        if(setup.ok)assistantEmailSetups.push({kind,...(projectId?{projectId}:{}),status:"ready"});
+        else{const failure=await setup.json<{managedInbox?:{error_code?:string};error_code?:string}>().catch(()=>({} as {managedInbox?:{error_code?:string};error_code?:string}));assistantEmailSetups.push({kind,...(projectId?{projectId}:{}),status:"deferred",errorCode:failure.managedInbox?.error_code??failure.error_code??`http_${setup.status}`});}
+      }catch{assistantEmailSetups.push({kind,...(projectId?{projectId}:{}),status:"deferred",errorCode:"assistant_setup_unavailable"});}
+    }
+  }
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,
@@ -2817,7 +2831,7 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   );
   if(res.ok&&identity.userId&&c.env.AGENTS_WORKER){
     const created=await res.clone().json<{id:string}>();
-    c.executionCtx.waitUntil(c.env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?project_id=${encodeURIComponent(created.id)}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":identity.userId,"x-naelao-role":identity.role,"x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})).then(()=>undefined).catch(()=>{console.warn("Project assistant identity provisioning deferred");}));
+    c.executionCtx.waitUntil(c.env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?project_id=${encodeURIComponent(created.id)}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":identity.userId,"x-naelao-role":identity.role,"x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})).then(response=>{if(!response.ok)console.warn(`Project assistant identity or template inbox setup deferred: ${response.status}`);}).catch(()=>{console.warn("Project assistant identity or template inbox setup deferred");}));
   }
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });

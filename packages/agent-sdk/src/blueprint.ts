@@ -1,6 +1,6 @@
 import { validateTemplateRuntimes } from "./execution-environments.js";
 import type { SpaceBlueprint } from "./types.js";
-import { validateAssistantChannelDefaults, validateAssistantChannelPatch } from "./assistant-channels.js";
+import { validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning } from "./assistant-channels.js";
 import { PROJECT_KINDS } from "./canvas-runtime.js";
 
 /** Validate and detach a blueprint before it crosses a trust boundary. */
@@ -27,6 +27,7 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   for (const project of copy.projects) {
     if (project.runtimeRequirements !== undefined) validateTemplateRuntimes(project.runtimeRequirements);
     if (project.configuration?.assistantChannels !== undefined) project.configuration.assistantChannels = validateAssistantChannelPatch(project.configuration.assistantChannels);
+    if (project.configuration?.assistantEmailProvisioning !== undefined) project.configuration.assistantEmailProvisioning = validateAssistantEmailProvisioning(project.configuration.assistantEmailProvisioning);
     if (!project.name.trim() || !(PROJECT_KINDS as readonly string[]).includes(project.kind)) {
       throw new Error("Every project requires a name and one of the supported project kinds");
     }

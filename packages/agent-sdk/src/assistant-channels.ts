@@ -10,6 +10,15 @@ export const ASSISTANT_CHANNELS = [
 ] as const;
 export type AssistantChannel = (typeof ASSISTANT_CHANNELS)[number];
 export type AssistantKind = "space_assistant" | "project_assistant";
+export type AssistantEmailMode = "none" | "naelao_managed" | "user_connected";
+/** Email channel spending is kept separate from the enabled.email display preference. */
+export interface AssistantEmailProvisioning {
+  defaultMode: AssistantEmailMode;
+  provisionOnCreate: boolean;
+  provider: "agentmail";
+  suggestedLocalPart?: string;
+  displayName?: string;
+}
 export interface AssistantChannelPreferences {
   enabled: Record<AssistantChannel, boolean>;
   phonePrompt: "optional" | "recommended" | "required";
@@ -21,6 +30,17 @@ export interface AssistantChannelPatch {
 export interface AssistantChannelTemplateDefaults {
   spaceAssistant?: AssistantChannelPatch;
   projectAssistants?: AssistantChannelPatch;
+  emailProvisioning?: { spaceAssistant?: AssistantEmailProvisioning; projectAssistants?: AssistantEmailProvisioning };
+}
+export function validateAssistantEmailProvisioning(value: unknown): AssistantEmailProvisioning {
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("invalid_assistant_email_provisioning");
+  const raw=value as Record<string,unknown>;
+  if(Object.keys(raw).some(key=>!["defaultMode","provisionOnCreate","provider","suggestedLocalPart","displayName"].includes(key)))throw new Error("unknown_assistant_email_provisioning_field");
+  if(!["none","naelao_managed","user_connected"].includes(String(raw.defaultMode))||typeof raw.provisionOnCreate!=="boolean"||raw.provider!=="agentmail")throw new Error("invalid_assistant_email_provisioning");
+  const result:AssistantEmailProvisioning={defaultMode:raw.defaultMode as AssistantEmailMode,provisionOnCreate:raw.provisionOnCreate,provider:"agentmail"};
+  if(raw.suggestedLocalPart!==undefined){if(typeof raw.suggestedLocalPart!=="string"||! /^[a-z0-9][a-z0-9._-]{0,63}$/.test(raw.suggestedLocalPart))throw new Error("invalid_assistant_email_local_part");result.suggestedLocalPart=raw.suggestedLocalPart;}
+  if(raw.displayName!==undefined){if(typeof raw.displayName!=="string"||raw.displayName.trim().length>120)throw new Error("invalid_assistant_email_display_name");result.displayName=raw.displayName.trim();}
+  return result;
 }
 export function validateAssistantChannelPatch(
   value: unknown
@@ -65,6 +85,14 @@ export function validateAssistantChannelDefaults(
     throw new Error("invalid_assistant_channel_defaults");
   const result: AssistantChannelTemplateDefaults = {};
   for (const [key, patch] of Object.entries(value)) {
+    if (key === "emailProvisioning") {
+      if(!patch||typeof patch!=="object"||Array.isArray(patch))throw new Error("invalid_assistant_email_defaults");
+      const settings=patch as Record<string,unknown>;
+      if(Object.keys(settings).some(scope=>scope!=="spaceAssistant"&&scope!=="projectAssistants"))throw new Error("unknown_assistant_email_scope");
+      result.emailProvisioning={};
+      for(const [scope,config] of Object.entries(settings)) result.emailProvisioning[scope as "spaceAssistant"|"projectAssistants"]=validateAssistantEmailProvisioning(config);
+      continue;
+    }
     if (key !== "spaceAssistant" && key !== "projectAssistants")
       throw new Error("unknown_assistant_channel_scope");
     result[key] = validateAssistantChannelPatch(patch);

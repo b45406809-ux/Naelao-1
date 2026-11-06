@@ -38,6 +38,47 @@ function fixture() {
 }
 
 describe("AgentPort internal registry API", () => {
+  it("persists distinct owner-bound identities idempotently and never revives suspended identities", async () => {
+    const { db, platformDb } = fixture(); const secret="platform-secret";
+    const headers={"content-type":"application/json","x-agentport-tenant-id":"tenant-a","x-agentport-internal-token":await mintInternalToken(secret,"tenant-a"),"x-agentport-actor-role":"agentport_api","x-agentport-owner-id":"owner-a","x-agentport-owner-type":"individual"};
+    const env={PLATFORM_SECRET:secret,AGENTPORT_JWT_SECRET:"agentport-signing-secret-that-is-at-least-thirty-two-bytes",PLATFORM_DB:platformDb} as never;
+    const call=(body:unknown,custom=headers)=>agentPortRoutes.fetch(new Request("https://agentport.test/agents",{method:"POST",headers:custom,body:JSON.stringify(body)}),env);
+    const input={id:"naelao-space-agent-a",principalId:"owner-a",principalType:"individual",createdBy:"owner-a",hostPlatform:"naelao",hostResourceId:"space-assistant:space-a"};
+    const first=await call(input); expect(first.status).toBe(201);
+    const firstPayload=await first.json() as {agent:{id:string;identity:{kid:string;publicJwk:JsonWebKey}}};
+    const retry=await call(input); expect(retry.status).toBe(200);
+    const retryPayload=await retry.json() as {agent:{id:string;identity:{kid:string;publicJwk:JsonWebKey}};idempotent:boolean};
+    expect(retryPayload).toMatchObject({idempotent:true,agent:{id:firstPayload.agent.id,identity:{kid:firstPayload.agent.identity.kid,publicJwk:firstPayload.agent.identity.publicJwk}}});
+    expect((await call({...input,hostResourceId:"space-assistant:space-b"})).status).toBe(409);
+    const inputB={...input,id:"naelao-space-agent-b",hostResourceId:"space-assistant:space-b"};
+    expect((await call(inputB)).status).toBe(201);
+    const spaceHeaders={...headers,"x-agentport-host-resource-id":"space-assistant:space-a"};
+    const scopedList=await agentPortRoutes.fetch(new Request("https://agentport.test/agents?principalId=owner-a&principalType=individual",{headers:spaceHeaders}),env);
+    expect(await scopedList.json()).toMatchObject({agents:[{id:"naelao-space-agent-a"}]});
+    const crossSpace=await agentPortRoutes.fetch(new Request("https://agentport.test/agents/naelao-space-agent-b/identity",{headers:spaceHeaders}),env);
+    expect(crossSpace.status).toBe(404);
+    db.prepare("UPDATE agentport_agents SET status='suspended' WHERE id=?").run(input.id);
+    expect((await call(input)).status).toBe(409);
+    expect(db.prepare("SELECT status FROM agentport_agents WHERE id=?").get(input.id)).toMatchObject({status:"suspended"});
+    db.close();
+  });
+
+  it("enforces principal ownership on account activation and grants", async () => {
+    const {db,platformDb}=fixture();const secret="platform-secret";
+    const makeHeaders=(owner:string)=>({"content-type":"application/json","x-agentport-tenant-id":"tenant-a","x-agentport-internal-token":"","x-agentport-actor-role":"agentport_api","x-agentport-owner-id":owner,"x-agentport-owner-type":"individual"});
+    const base=makeHeaders("owner-a");base["x-agentport-internal-token"]=await mintInternalToken(secret,"tenant-a");
+    const env={PLATFORM_SECRET:secret,PLATFORM_DB:platformDb} as never;
+    const call=(path:string,method:string,body?:unknown,headers=base)=>agentPortRoutes.fetch(new Request(`https://agentport.test${path}`,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)})}),env);
+    await call("/services","POST",{id:"owned-service",name:"Owned",type:"api",accountModels:["agent_native"],capabilities:["read"],events:[],connectionPurpose:"user_delegation"});
+    const {agent}=await(await call("/agents","POST",{principalId:"owner-a",principalType:"individual",createdBy:"owner-a",hostPlatform:"external"})).json() as {agent:{id:string}};
+    const {account}=await(await call("/accounts","POST",{serviceId:"owned-service",accountModel:"agent_native",ownerType:"individual",ownerId:"owner-a"})).json() as {account:{id:string}};
+    const other=makeHeaders("owner-b");other["x-agentport-internal-token"]=base["x-agentport-internal-token"];
+    expect((await call(`/accounts/${account.id}/activate`,"POST",{},other)).status).toBe(404);
+    expect((await call(`/accounts/${account.id}/grants`,"POST",{agentId:agent.id,grantedBy:"owner-a",permissions:["read"]},other)).status).toBe(404);
+    expect((await call(`/accounts/${account.id}/activate`,"POST")).status).toBe(200);
+    db.close();
+  });
+
   it("does not send an account event after the subscriber's grant is revoked", async () => {
     const { db, platformDb } = fixture(); const secret = "platform-secret", master = "independent-event-webhook-secret-long-enough";
     const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };

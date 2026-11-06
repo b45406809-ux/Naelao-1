@@ -13,7 +13,7 @@ import {
 } from "../channels/cloudflare-email.js";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
-import type { AssistantChannelPreferences } from "@naelao/agent-sdk";
+import type { AssistantChannelPreferences, AssistantEmailProvisioning } from "@naelao/agent-sdk";
 export interface CommunicationScope {
   tenantId: string;
   spaceId: string;
@@ -34,6 +34,28 @@ export interface CommunicationIdentity {
   email_status: string;
   status: string;
   autonomy_json: string;
+}
+export async function ensureAgentPortAssistantIdentity(env: AgentsEnv, scope: CommunicationScope): Promise<string> {
+  if (!env.AGENTPORT_WORKER) throw new Error("agentport_worker_unavailable");
+  const resource = scope.projectId ? `project:${scope.projectId}` : `space-assistant:${scope.spaceId}`;
+  const material = new TextEncoder().encode(JSON.stringify([scope.tenantId, scope.spaceId, resource]));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", material));
+  const hex = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const agentId = `naelao_${hex}`;
+  const response = await env.AGENTPORT_WORKER.fetch(new Request("https://agentport.internal/internal/agentport/agents", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-agentport-tenant-id": scope.tenantId,
+      "x-agentport-actor-id": scope.tenantId,
+      "x-agentport-actor-role": "client_system",
+      "x-agentport-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId),
+    },
+    body: JSON.stringify({ id: agentId, principalId: scope.tenantId, principalType: "organization", createdBy: scope.tenantId,
+      hostPlatform: "naelao", hostResourceId: resource, runtime: "naelao-agents-worker" }),
+  }));
+  if (!response.ok) throw new Error("agentport_identity_provisioning_failed");
+  return agentId;
 }
 export async function scopeAccess(
   env: AgentsEnv,
@@ -124,6 +146,13 @@ export async function channelPreferences(
   if (!r.ok) throw new Error("assistant_channel_settings_unavailable");
   return (await r.json<{ preferences: AssistantChannelPreferences }>())
     .preferences;
+}
+export async function assistantEmailProvisioning(env:AgentsEnv,scope:CommunicationScope):Promise<AssistantEmailProvisioning>{
+  const q=new URLSearchParams({actor_id:scope.userId,...(scope.projectId?{project_id:scope.projectId}:{})});
+  const response=await env.SPACES_WORKER.fetch(new Request(`http://spaces/internal/spaces/${encodeURIComponent(scope.spaceId)}/assistant-channels?${q}`,{headers:{"x-naelao-tenant-id":scope.tenantId,"x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,scope.tenantId)}}));
+  if(!response.ok)throw new Error("assistant_channel_settings_unavailable");
+  const payload=await response.json<{emailProvisioning?:AssistantEmailProvisioning}>();
+  return payload.emailProvisioning??{provider:"agentmail",defaultMode:"none",provisionOnCreate:false};
 }
 export async function ensureIdentity(
   env: AgentsEnv,
@@ -239,6 +268,7 @@ export async function ensureIdentity(
         .run();
   if (!row || row.status !== "active")
     throw new Error("assistant_identity_disabled");
+  await ensureAgentPortAssistantIdentity(env, scope);
   if (!row.email_address && address) {
     await env.PLATFORM_DB.prepare(
       "UPDATE assistant_communication_identities SET email_address=?,address_hash=?,email_status='configured' WHERE id=? AND email_address IS NULL"

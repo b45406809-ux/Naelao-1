@@ -30,10 +30,13 @@ const inbound = {
   content: "hello",
   metadata: { slack_ts: "1" },
 };
+const providerEvent={type:"provider_event_reference",tenantId:"tenant-a",spaceId:"space-a",projectId:"project-a",agentId:"naelao_agent-a",connectionId:"conn-a",accountId:"acct-a",subscriptionId:"sub-a",eventId:"evt-a",deliveryId:"delivery-a",serviceId:"email-provider-a",eventType:"message.received",threadRef:"provider-thread-a",dataRef:"provider-message-a"};
 
 describe("channel session queue", () => {
   it("validates both supported message shapes and rejects oversized content", () => {
     expect(isChannelSessionQueueMessage(inbound)).toBe(true);
+    expect(isChannelSessionQueueMessage(providerEvent)).toBe(true);
+    expect(isChannelSessionQueueMessage({...providerEvent,body:"must-not-be-queued"})).toBe(false);
     expect(
       isChannelSessionQueueMessage({
         type: "space_trigger",
@@ -49,6 +52,7 @@ describe("channel session queue", () => {
     expect(isChannelSessionQueueMessage({ ...inbound, metadata: [] })).toBe(
       false
     );
+    expect(isChannelSessionQueueMessage({...providerEvent,deliveryId:""})).toBe(false);
   });
 
   it("acks successful dispatches and retries transient failures without stopping the batch", async () => {

@@ -51,6 +51,8 @@ describe("latest D1 deployment migration batch", () => {
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0170_agentport_email_channels.sql"), "utf8"));
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0171_agentport_event_notifications.sql"), "utf8"));
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0171_agentport_event_notifications.sql"), "utf8"))).not.toThrow();
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0172_assistant_agentmail_accounts.sql"), "utf8"));
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0172_assistant_agentmail_accounts.sql"), "utf8"))).not.toThrow();
     expect(storage.sql.exec<{ id: string; account_id: string; provider_channel_id: string; status: string }>(
       "SELECT id,account_id,provider_channel_id,status FROM agentport_channels WHERE account_id='mailbox-old'"
     ).toArray()).toEqual([{ id: "chn-email:mailbox-old", account_id: "mailbox-old", provider_channel_id: "old@mail.example", status: "active" }]);
@@ -76,6 +78,8 @@ describe("latest D1 deployment migration batch", () => {
       "agentport_organizations", "agentport_developers", "agentport_auth_rate_limits",
       "agentport_channels", "agentport_threads", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
       "agentport_service_manifests",
+      "assistant_agentmail_pods", "assistant_agentmail_accounts", "assistant_agentmail_event_receipts",
+      "assistant_agentmail_sends", "assistant_agentport_event_receipts", "assistant_agentport_event_runs", "assistant_agentmail_operations",
       "agentport_identity_keys", "agentport_issued_credentials",
       "agentport_provider_auth",
       "agentport_oauth_clients", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",

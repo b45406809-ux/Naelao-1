@@ -67,6 +67,7 @@ export function fixture() {
   for (const migration of ["0140_telnyx_live_calls.sql", "0141_managed_carrier_billing.sql", "0142_managed_phone_rentals.sql", "0143_managed_telnyx_inbound_costs.sql", "0155_telnyx_extension_calls.sql"]) {
     db.db.exec(readFileSync(new URL(`../../infra/migrations/${migration}`, import.meta.url), "utf8"));
   }
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0172_assistant_agentmail_accounts.sql", import.meta.url), "utf8"));
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")
@@ -82,6 +83,8 @@ export function fixture() {
   const send = vi.fn(async (_input: unknown) => ({ messageId: "provider-id" }));
   const env = {
     PLATFORM_SECRET: "secret",
+    AGENTMAIL_WEBHOOK_URL:"https://api.example.test/internal/agentmail/webhook",
+    AGENTPORT_EVENT_RECEIVER_URL:"https://api.example.test/internal/agentport/event",
     EMAIL_INGRESS_DOMAIN: "mail.example.com",
     EMAIL_SENDING_DOMAIN: "mail.example.com",
     PLATFORM_DB: db,
@@ -104,6 +107,20 @@ export function fixture() {
     },
     AGENTS_WORKER: {
       fetch: vi.fn(async () => Response.json({ run_id: "run" })),
+    },
+    AGENTPORT_WORKER: {
+      fetch: vi.fn(async (request:Request) => {
+        const path=new URL(request.url).pathname;
+        if(path.endsWith("/agents"))return Response.json({agent:{id:"naelao_agent",status:"active"}},{status:201});
+        if(path.endsWith("/accounts"))return Response.json({account:{id:"ap_account",status:"pending"}},{status:201});
+        if(path.endsWith("/channels")&&request.method==="GET")return Response.json({channels:[]});
+        if(path.endsWith("/channels"))return Response.json({channel:{id:"ap_channel"}},{status:201});
+        if(path.endsWith("/access/check"))return Response.json({authorized:true});
+        if(path.endsWith("/events/subscriptions"))return Response.json({subscription:{id:"ap_subscription"},webhookSecret:"agentport-event-webhook-secret"},{status:201});
+        if(path.endsWith("/claim"))return Response.json({claimed:true,event:{id:"event-1"}});
+        if(path.endsWith("/ack"))return Response.json({acknowledged:true,status:"delivered"});
+        return Response.json({active:true,revoked:true,subscription:{id:"sub"},grant:{id:"grant"}});
+      }),
     },
   } as unknown as AgentsEnv;
   return { db, objects, env, send, fetch };

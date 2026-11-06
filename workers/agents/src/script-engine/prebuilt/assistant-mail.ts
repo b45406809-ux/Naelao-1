@@ -33,6 +33,7 @@ export async function callAssistantCommunication(
     throw new Error(String(result.error_code ?? "assistant_mail_unavailable"));
   return result;
 }
+const callAgentMail = (ctx:PrebuiltOpContext,operation:string,args:Record<string,unknown>) => callAssistantCommunication(ctx,"agentmail-operation",{operation,args});
 export const assistantMail: PrebuiltScript = {
   name: "assistant-mail",
   domain: "comms",
@@ -57,6 +58,16 @@ Space assistants and project assistants have distinct mailboxes. Call mail.ident
         reply_to: a.reply_to,
       }),
     "mail.send": (a, c) => callAssistantCommunication(c, "send", { id: a.id }),
+    "agentmail.inbox":(a,c)=>callAgentMail(c,"agentmail.inbox",a),
+    "agentmail.search":(a,c)=>callAgentMail(c,"agentmail.search",a),
+    "agentmail.threads":(a,c)=>callAgentMail(c,"agentmail.threads",a),
+    "agentmail.read":(a,c)=>callAgentMail(c,"agentmail.read",a),
+    "agentmail.attachment":(a,c)=>callAgentMail(c,"agentmail.attachment",a),
+    "agentmail.draft":(a,c)=>callAgentMail(c,"agentmail.draft",a),
+    "agentmail.send":(a,c)=>callAgentMail(c,"agentmail.send",a),
+    "agentmail.reply":(a,c)=>callAgentMail(c,"agentmail.reply",a),
+    "agentmail.reply_all":(a,c)=>callAgentMail(c,"agentmail.reply_all",a),
+    "agentmail.forward":(a,c)=>callAgentMail(c,"agentmail.forward",a),
   },
   paramHints: {
     "mail.identity":
@@ -66,5 +77,15 @@ Space assistants and project assistants have distinct mailboxes. Call mail.ident
     "mail.draft": "{to,subject,text,reply_to?}: create a draft; does not send.",
     "mail.send":
       "{id}: send an approved draft, or a draft within standing recipient permissions. An indeterminate send is not retried.",
+    "agentmail.inbox":"List messages from the connected AgentMail inbox: {limit?,page_token?,labels?,before?,after?}. Provider content is returned only to this authorized assistant tool call.",
+    "agentmail.search":"Search the connected AgentMail inbox: {query or provider search fields}. Requires an active AgentPort email.read grant.",
+    "agentmail.threads":"List provider threads with pagination filters.",
+    "agentmail.read":"Read one provider message by {messageId}.",
+    "agentmail.attachment":"Read one provider attachment by {messageId,attachmentId}; the provider controls availability and size.",
+    "agentmail.draft":"Create an AgentMail draft. This does not send.",
+    "agentmail.send":"Send a new message using AgentMail's supported send fields and idempotency controls.",
+    "agentmail.reply":"Reply to an existing AgentMail message by {messageId}.",
+    "agentmail.reply_all":"Reply to all participants of an AgentMail message by {messageId}.",
+    "agentmail.forward":"Forward an AgentMail message by {messageId}.",
   },
 };

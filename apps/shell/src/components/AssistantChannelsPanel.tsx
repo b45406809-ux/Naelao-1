@@ -6,6 +6,7 @@ import {
   ASSISTANT_CHANNELS,
   resolveAssistantChannels,
   type AssistantChannelPreferences,
+  type AssistantEmailProvisioning,
 } from "@naelao/agent-sdk";
 import {
   getAssistantChannels,
@@ -100,6 +101,20 @@ export function AssistantChannelsPanel({
       setBusy(false);
     }
   }
+  async function saveEmailProvisioning(mode:AssistantEmailProvisioning["defaultMode"]){
+    if(!settings)return;
+    const config:AssistantEmailProvisioning={provider:"agentmail",defaultMode:mode,provisionOnCreate:template&&mode==="naelao_managed"};
+    setBusy(true);setError("");
+    try{
+      setSettings(await saveAssistantChannels(spaceId,session,template
+        ?{templateDefaults:{...settings.templateDefaults,emailProvisioning:{...settings.templateDefaults.emailProvisioning,[target==="template-space"?"spaceAssistant":"projectAssistants"]:config}}}
+        :{emailProvisioning:config},scope));
+    }catch(e){setError(e instanceof Error?e.message:"Could not save email provisioning");}
+    finally{setBusy(false);}
+  }
+  const emailProvisioning=template
+    ? settings?.templateDefaults.emailProvisioning?.[target==="template-space"?"spaceAssistant":"projectAssistants"]??{provider:"agentmail" as const,defaultMode:"none" as const,provisionOnCreate:false}
+    : settings?.emailProvisioningOverride??settings?.emailProvisioning??{provider:"agentmail" as const,defaultMode:"none" as const,provisionOnCreate:false};
   return (
     <section className="settings-section">
       <h3>{onboarding ? "Your assistants’ channels" : "Assistant channels"}</h3>
@@ -193,6 +208,15 @@ export function AssistantChannelsPanel({
             numbers still need setup. Changing these preferences does not
             release existing numbers.
           </p>
+          <label>
+            {template?"Template email setup default":"This assistant’s email setup"}
+            <FormSelect aria-label="Assistant email provisioning" disabled={busy||(!template&&!canManage)} value={emailProvisioning.defaultMode} onChange={event=>void saveEmailProvisioning(event.target.value as AssistantEmailProvisioning["defaultMode"])}>
+              <option value="none">No automatic inbox</option>
+              <option value="naelao_managed">Naelao managed · $3/month</option>
+              <option value="user_connected">Installer connects their AgentMail inbox</option>
+            </FormSelect>
+          </label>
+          <p>{template?"Managed provisioning starts on install when selected. Installers can change the default to their own AgentMail inbox or no inbox.":emailProvisioning.defaultMode==="naelao_managed"?"This managed inbox costs 300 credits ($3) each month.":"Connect your own AgentMail inbox from the Channels tab; Naelao does not charge an inbox rental."}</p>
           <Button
             disabled={busy}
             variant="secondary"

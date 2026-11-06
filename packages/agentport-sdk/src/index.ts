@@ -2,6 +2,7 @@ export type AccountModel = "agent_native" | "user_parent" | "agentport_parent" |
 export type ServiceType = "api" | "mcp" | "a2a" | "channel" | "managed";
 export type AgentPortScope = "agentport:read" | "agentport:write" | "agentport:events" | "agentport:admin";
 export interface AgentPortOptions { apiKey?: string; accessToken?: string; baseUrl?: string; fetch?: typeof fetch; }
+export interface AgentPortServiceClientOptions { baseUrl?: string; headers: HeadersInit; fetch: typeof fetch; }
 export interface AgentPortOAuthToken { access_token: string; token_type: "Bearer"; expires_in: number; refresh_token?: string; scope: string; }
 export interface AgentPortEmailAccount { id: string; address: string; agentId: string; status: string; permissions?: string[]; }
 export interface AgentPortChannel { id: string; provider: string; address?: string; }
@@ -215,4 +216,18 @@ export class AgentPortClient {
   createApiKey(scopes: AgentPortScope[], expiresAt?: string) { return this.request<{ apiKey: string; id: string; scopes: AgentPortScope[] }>("/keys", { method: "POST", body: JSON.stringify({ scopes, expiresAt }) }); }
   listApiKeys() { return this.request<{ keys: unknown[] }>("/keys"); }
   revokeApiKey(id: string) { return this.request<{ revoked: boolean }>(`/keys/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+}
+
+/** Generic service-to-service adapter for trusted client backends. Public apps should use
+ * AgentPortClient with OAuth or API keys; this adapter is for a backend that already holds a
+ * tenant-bound AgentPort service credential and needs to call the internal Worker contract. */
+export class AgentPortServiceClient {
+  private readonly baseUrl:string;
+  constructor(private readonly options:AgentPortServiceClientOptions){this.baseUrl=(options.baseUrl??"https://agentport.internal/internal/agentport").replace(/\/$/,"");}
+  request(path:string,init:RequestInit={}):Promise<Response>{
+    if(!path.startsWith("/")||path.startsWith("//")||path.includes(".."))throw new AgentPortError("invalid_internal_path",400,"invalid_internal_path");
+    const headers=new Headers(this.options.headers);new Headers(init.headers).forEach((value,key)=>headers.set(key,value));
+    if(init.body&&!headers.has("content-type"))headers.set("content-type","application/json");
+    return this.options.fetch(`${this.baseUrl}${path}`,{...init,headers,redirect:"error"});
+  }
 }
