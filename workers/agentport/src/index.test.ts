@@ -46,10 +46,9 @@ describe("standalone AgentPort API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ result: { protocolVersion: "2026-07-28", serverInfo: { name: "AgentPort" } } });
     const toolsResponse = await app.fetch(new Request("https://agentport.test/mcp", { method: "POST", headers: { authorization: bindings.bearer, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) }), bindings);
-    expect(await toolsResponse.json()).toMatchObject({ result: { tools: expect.arrayContaining([expect.objectContaining({ name: "agentport_apps_create" }), expect.objectContaining({ name: "agentport_capabilities_provision" })]) } });
-    const createResponse = await app.fetch(new Request("https://agentport.test/mcp", { method: "POST", headers: { authorization: bindings.bearer, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "agentport_apps_create", arguments: { name: "MCP app", ownerType: "individual", ownerId: "owner-1", billing: "byok", budget: { monthlyUSD: 50 } } } }) }), bindings);
-    expect(createResponse.status).toBe(200);
-    expect(await createResponse.json()).toMatchObject({ result: { content: [{ type: "text", text: expect.stringContaining('"billing":"byok"') }], isError: false } });
+    const toolList = await toolsResponse.json() as { result: { tools: Array<{ name: string }> } };
+    expect(toolList.result.tools.map(tool => tool.name)).toContain("agentport_accounts_create");
+    expect(toolList.result.tools.some(tool => tool.name.includes("apps") || tool.name.includes("capabilities_provision"))).toBe(false);
   });
   it("registers developer identity inside AgentPort and rate limits signup", async () => {
     const bindings = env();

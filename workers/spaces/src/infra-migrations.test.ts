@@ -35,6 +35,12 @@ describe("latest D1 deployment migration batch", () => {
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0166_drop_agentport_message_store.sql"), "utf8"))).not.toThrow();
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0167_agentport_apps_capabilities.sql"), "utf8"));
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0167_agentport_apps_capabilities.sql"), "utf8"))).not.toThrow();
+    const legacyAgentCount = storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM agentport_agents").toArray()[0]?.count;
+    storage.sql.exec("INSERT INTO agentport_organizations(id,name,owner_developer_id,status,created_at,updated_at) VALUES('legacy-org','Legacy','naelao-managed:legacy-org','active','now','now')");
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0168_agentport_client_neutral_host_resources.sql"), "utf8"));
+    expect(storage.sql.exec<{ owner_developer_id: string }>("SELECT owner_developer_id FROM agentport_organizations WHERE id='legacy-org'").toArray()[0]?.owner_developer_id).toBe("platform-managed:legacy-org");
+    expect(storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM agentport_agents").toArray()[0]?.count).toBe(legacyAgentCount);
+    expect(storage.sql.exec<{ host_resource_id: string }>("SELECT host_resource_id FROM agentport_agents WHERE host_space_id='s1' LIMIT 1").toArray()[0]?.host_resource_id).toBe("s1");
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",

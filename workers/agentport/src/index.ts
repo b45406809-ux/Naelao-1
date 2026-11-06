@@ -1,7 +1,6 @@
 import { Hono, type Context } from "hono";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt } from "@naelao/auth";
-import type { NaelaoJwtClaims } from "@naelao/types";
 import { agentPortRoutes } from "./core/routes.js";
 
 interface Env {
@@ -12,7 +11,8 @@ interface Env {
   AGENTPORT_ISSUER?: string;
 }
 interface ApiKeyRow { id: string; tenant_id: string; owner_type: string; owner_id: string; scopes_json: string; expires_at: string | null; }
-interface AuthContext { key?: ApiKeyRow; tenantId: string; ownerId: string; ownerType: string; scopes: string[]; userClaims?: NaelaoJwtClaims; developerId?: string; }
+interface DeveloperTokenClaims { sub: string; tid: string; email: string; role: string; scopes: string[]; iat: number; exp: number; jti: string; tv?: number; }
+interface AuthContext { key?: ApiKeyRow; tenantId: string; ownerId: string; ownerType: string; scopes: string[]; userClaims?: DeveloperTokenClaims; developerId?: string; }
 const app = new Hono<{ Bindings: Env; Variables: { auth: AuthContext } }>();
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 const now = () => new Date().toISOString();
@@ -231,12 +231,11 @@ app.post("/oauth/revoke", async c => {
 });
 
 app.route("/internal/agentport", agentPortRoutes);
-app.route("/spaces/:spaceId/agentport", agentPortRoutes);
 
-// Key enrollment is a platform control-plane operation, protected by the same tenant HMAC used by Naelao.
+// Key enrollment is a platform control-plane operation, protected by the host platform tenant HMAC.
 app.post("/internal/v1/keys", async c => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const tenantId = c.req.header("x-agentport-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-agentport-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const body = await c.req.json<{ ownerType?: string; ownerId?: string; scopes?: string[]; expiresAt?: string }>().catch(() => null);
   if (!body) return c.json({ error_code: "invalid_api_key" }, 400);
   const allowedScopes = new Set(["agentport:read", "agentport:write", "agentport:events", "agentport:admin"]);
@@ -463,9 +462,9 @@ async function forward(c: Context<{ Bindings: Env; Variables: { auth: AuthContex
   const destination = new URL(`${path}${incoming.search}`, "https://agentport.internal");
   const headers = new Headers(c.req.raw.headers);
   headers.delete("authorization");
-  headers.set("x-naelao-tenant-id", auth.tenantId);
-  headers.set("x-naelao-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, auth.tenantId));
-  headers.set("x-naelao-role", "agentport_api");
+  headers.set("x-agentport-tenant-id", auth.tenantId);
+  headers.set("x-agentport-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, auth.tenantId));
+  headers.set("x-agentport-actor-role", "agentport_api");
   headers.set("x-agentport-owner-id", auth.ownerId);
   headers.set("x-agentport-owner-type", auth.ownerType);
   headers.set("x-agentport-scopes", auth.scopes.join(" "));
@@ -478,7 +477,6 @@ async function forward(c: Context<{ Bindings: Env; Variables: { auth: AuthContex
       input.principalId = auth.ownerId;
       input.createdBy = auth.ownerId;
       input.hostPlatform = input.hostPlatform.slice(0, 120);
-      delete input.hostSpaceId;
       body = encoder.encode(JSON.stringify(input)).buffer;
     } else if (c.req.method === "POST" && /\/accounts\/[^/]+\/grants$/.test(path)) {
       const input = await c.req.json<Record<string, unknown>>().catch(() => null);
@@ -530,17 +528,8 @@ app.post("/mcp", async c => {
     { name: "agentport_inspect", description: "Inspect one provider's declared provisioning modes, account models, events, billing metadata and capability schemas.", inputSchema: { type: "object", properties: { serviceId: { type: "string" } }, required: ["serviceId"] } },
     { name: "agentport_services_list", description: "List registered services and their declared account models and events.", inputSchema: { type: "object", properties: {} } },
     { name: "agentport_services_register", description: "Publish an existing API, MCP, A2A, channel, or managed service manifest. Providers cannot self-approve partnership status; provisioning metadata does not execute provider actions.", inputSchema: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, type: { type: "string", enum: ["api", "mcp", "a2a", "channel", "managed"] }, endpoint: { type: "string" }, accountModels: { type: "array", items: { type: "string" } }, capabilities: { type: "array", items: { type: "string" } }, events: { type: "array", items: { type: "string" } }, connectionPurpose: { type: "string", enum: ["user_delegation", "agent_resource", "parent_provisioning"] }, partnershipStatus: { type: "string", enum: ["unaffiliated", "restricted", "unavailable"] }, auth: { type: "object" }, provisioning: { type: "object" }, billing: { type: "object" } }, required: ["id", "name", "type", "accountModels", "capabilities", "events", "connectionPurpose"] } },
-    { name: "agentport_agents_register", description: "Register a persistent agent identity under the API key owner.", inputSchema: { type: "object", properties: { hostPlatform: { type: "string" }, runtime: { type: "string" } }, required: ["hostPlatform"] } },
+    { name: "agentport_agents_register", description: "Register a persistent agent identity under the API key owner.", inputSchema: { type: "object", properties: { hostPlatform: { type: "string" }, hostResourceId: { type: "string" }, runtime: { type: "string" } }, required: ["hostPlatform"] } },
     { name: "agentport_accounts_create", description: "Register a provider resource after the provider has provisioned it using an authorized API, MCP server or other supported interface.", inputSchema: { type: "object", properties: { serviceId: { type: "string" }, accountModel: { type: "string", enum: ["agent_native", "user_parent", "agentport_parent", "delegated"] }, ownerType: { type: "string", enum: ["individual", "organization", "agentport", "provider"] }, ownerId: { type: "string" }, parentAccountId: { type: "string" }, externalAccountId: { type: "string" }, credentialRef: { type: "string" } }, required: ["serviceId", "accountModel", "ownerType", "ownerId"] } },
-    { name: "agentport_apps_create", description: "Create an isolated microapp owner with managed, BYOK, or customer billing and a required monthly budget.", inputSchema: { type: "object", properties: { name: { type: "string" }, ownerType: { type: "string", enum: ["individual", "organization", "agentport"] }, ownerId: { type: "string" }, billing: { type: "string", enum: ["managed", "byok", "customer"] }, budget: { type: "object", properties: { monthlyUSD: { type: "number", minimum: 0 } }, required: ["monthlyUSD"] } }, required: ["name", "ownerType", "ownerId", "billing", "budget"] } },
-    { name: "agentport_apps_list", description: "List microapps owned by the authenticated AgentPort organization.", inputSchema: { type: "object", properties: {} } },
-    { name: "agentport_apps_get", description: "Inspect one microapp and its scoped capability handles.", inputSchema: { type: "object", properties: { appId: { type: "string" } }, required: ["appId"] } },
-    { name: "agentport_apps_archive", description: "Archive an app and revoke its capability handles without deleting shared provider accounts.", inputSchema: { type: "object", properties: { appId: { type: "string" } }, required: ["appId"] } },
-    { name: "agentport_capabilities_provision", description: "Request a build-time or runtime capability handle. Provider approval and an authorized provider account are required; this returns a scoped reference and never a provider credential.", inputSchema: { type: "object", properties: { appId: { type: "string" }, capability: { type: "string" }, provider: { type: "string" }, serviceId: { type: "string" }, authorization: { type: "string", enum: ["managed", "byok", "customer_oauth"] }, accountId: { type: "string" }, phase: { type: "string", enum: ["build_time", "runtime"] }, limits: { type: "object" } }, required: ["appId", "capability"] } },
-    { name: "agentport_capabilities_approve", description: "Approve an agent-requested capability for an app after checking its provider readiness and spending limits. Agents cannot approve their own requests.", inputSchema: { type: "object", properties: { appId: { type: "string" }, capabilityId: { type: "string" } }, required: ["appId", "capabilityId"] } },
-    { name: "agentport_capabilities_revoke", description: "Revoke one app capability without deleting or revoking a provider account shared under the owner's policy.", inputSchema: { type: "object", properties: { appId: { type: "string" }, capabilityId: { type: "string" } }, required: ["appId", "capabilityId"] } },
-    { name: "agentport_capability_usage_report", description: "Record an idempotent app-reported usage and budget signal; it is not provider-confirmed settlement.", inputSchema: { type: "object", properties: { appId: { type: "string" }, capabilityId: { type: "string" }, idempotencyKey: { type: "string" }, quantity: { type: "integer" }, customerRef: { type: "string" }, reportedCostUSD: { type: "number" } }, required: ["appId", "capabilityId", "idempotencyKey", "quantity"] } },
-    { name: "agentport_apps_usage", description: "Read app-reported usage totals and budget estimates.", inputSchema: { type: "object", properties: { appId: { type: "string" } }, required: ["appId"] } },
     { name: "agentport_accounts_grant", description: "Grant an agent scoped access to a registered account.", inputSchema: { type: "object", properties: { accountId: { type: "string" }, agentId: { type: "string" }, permissions: { type: "array", items: { type: "string" } }, expiresAt: { type: "string" } }, required: ["accountId", "agentId", "permissions"] } },
     { name: "agentport_channels_list", description: "List channel accounts available to an agent.", inputSchema: { type: "object", properties: { agentId: { type: "string" } }, required: ["agentId"] } },
     { name: "agentport_channels_register", description: "Register an existing provider channel under an active AgentPort account.", inputSchema: { type: "object", properties: { serviceId: { type: "string" }, accountId: { type: "string" }, agentId: { type: "string" }, providerChannelId: { type: "string" }, displayName: { type: "string" }, trustPolicy: { type: "object" } }, required: ["serviceId", "accountId", "agentId", "providerChannelId", "displayName"] } },
@@ -548,7 +537,7 @@ app.post("/mcp", async c => {
     { name: "agentport_threads_create", description: "Create a provider-thread record; an optional runtime session binding is opaque to AgentPort.", inputSchema: { type: "object", properties: { channelId: { type: "string" }, providerThreadId: { type: "string" }, participants: { type: "array", items: { type: "string" } }, sessionBinding: { type: "object" } }, required: ["channelId", "providerThreadId"] } },
     { name: "agentport_message_references_list", description: "List provider-native message IDs and trust metadata only. Fetch conversation content from the channel provider using its authorized API or MCP tools.", inputSchema: { type: "object", properties: { threadId: { type: "string" }, agentId: { type: "string" } }, required: ["threadId", "agentId"] } },
     { name: "agentport_channel_action_authorize", description: "Check an agent's read/send grant and return provider channel/thread references. Perform the actual read or send through the provider; never send message content to AgentPort.", inputSchema: { type: "object", properties: { threadId: { type: "string" }, agentId: { type: "string" }, action: { type: "string", enum: ["messages.read", "messages.send"] }, resourceRef: { type: "string" }, idempotencyKey: { type: "string" } }, required: ["threadId", "agentId", "action", "idempotencyKey"] } },
-    { name: "agentport_events_subscribe", description: "Subscribe an agent to a provider-declared event. This stores delivery intent; a runtime must still poll or receive a configured webhook.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, serviceId: { type: "string" }, accountId: { type: "string" }, eventType: { type: "string" }, deliveryMode: { type: "string", enum: ["webhook", "poll", "naelao", "mcp"] }, consumerGroup: { type: "string" } }, required: ["agentId", "serviceId", "eventType", "deliveryMode"] } },
+    { name: "agentport_events_subscribe", description: "Subscribe an agent to a provider-declared event. This stores delivery intent; a runtime must still poll or receive a configured webhook.", inputSchema: { type: "object", properties: { agentId: { type: "string" }, serviceId: { type: "string" }, accountId: { type: "string" }, eventType: { type: "string" }, deliveryMode: { type: "string", enum: ["webhook", "poll", "mcp"] }, consumerGroup: { type: "string" } }, required: ["agentId", "serviceId", "eventType", "deliveryMode"] } },
     { name: "agentport_events_pending", description: "Read pending event notifications for an agent.", inputSchema: { type: "object", properties: { agentId: { type: "string" } }, required: ["agentId"] } },
     { name: "agentport_events_claim", description: "Claim a pending delivery with an expiring lease for one consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, ttlSeconds: { type: "integer" } }, required: ["eventId", "agentId", "consumerId"] } },
     { name: "agentport_events_ack", description: "Acknowledge, retry, or dead-letter an event delivery claimed by this consumer.", inputSchema: { type: "object", properties: { eventId: { type: "string" }, agentId: { type: "string" }, consumerId: { type: "string" }, result: { type: "string", enum: ["delivered", "retry", "dead_letter"] } }, required: ["eventId", "agentId", "consumerId", "result"] } },
@@ -564,15 +553,6 @@ app.post("/mcp", async c => {
     case "agentport_services_register": method = "POST"; path = "/services"; break;
     case "agentport_agents_register": method = "POST"; path = "/agents"; args.hostPlatform = args.hostPlatform ?? "external"; break;
     case "agentport_accounts_create": method = "POST"; path = "/accounts"; break;
-    case "agentport_apps_create": method = "POST"; path = "/apps"; break;
-    case "agentport_apps_list": path = "/apps"; break;
-    case "agentport_apps_get": path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}`; break;
-    case "agentport_apps_archive": method = "DELETE"; path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}`; delete args.appId; break;
-    case "agentport_capabilities_provision": method = "POST"; path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}/capabilities/provision`; delete args.appId; break;
-    case "agentport_capabilities_approve": method = "POST"; path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}/capabilities/${encodeURIComponent(String(args.capabilityId ?? ""))}/approve`; delete args.appId; delete args.capabilityId; break;
-    case "agentport_capabilities_revoke": method = "DELETE"; path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}/capabilities/${encodeURIComponent(String(args.capabilityId ?? ""))}`; delete args.appId; delete args.capabilityId; break;
-    case "agentport_capability_usage_report": method = "POST"; path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}/capabilities/${encodeURIComponent(String(args.capabilityId ?? ""))}/usage`; delete args.appId; delete args.capabilityId; break;
-    case "agentport_apps_usage": path = `/apps/${encodeURIComponent(String(args.appId ?? ""))}/usage`; break;
     case "agentport_accounts_grant": method = "POST"; path = `/accounts/${encodeURIComponent(String(args.accountId ?? ""))}/grants`; delete args.accountId; break;
     case "agentport_channels_list": path = `/channels?agentId=${encodeURIComponent(String(args.agentId ?? ""))}`; break;
     case "agentport_channels_register": method = "POST"; path = "/channels"; break;

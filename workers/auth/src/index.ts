@@ -305,18 +305,17 @@ app.post("/register", async (c) => {
   const orgName = typeof body.org_name === "string" && body.org_name.trim() ? body.org_name.trim() : email.split("@")[0] ?? "My Org";
   const subId = crypto.randomUUID();
 
-  // Every Naelao signup gets an AgentPort principal in the Naelao-managed tenant. This is the
-  // default identity for Naelao agents; an independently owned AgentPort org can be linked later
-  // through AgentPort's generic OAuth flow. It is intentionally a principal, not a second login.
+  // Every first-party client signup receives a platform-managed AgentPort principal. The client
+  // may later link an independently owned AgentPort organization through OAuth.
   if (c.env.AGENTPORT_WORKER) {
     const response = await c.env.AGENTPORT_WORKER.fetch(new Request("https://agentport.internal/internal/agentport/principals", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-naelao-role": "system",
-        "x-naelao-user-id": userId,
-        "x-naelao-tenant-id": orgId,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, orgId),
+        "x-agentport-actor-role": "client_system",
+        "x-agentport-actor-id": userId,
+        "x-agentport-tenant-id": orgId,
+        "x-agentport-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, orgId),
       },
       body: JSON.stringify({ id: `prn-user:${orgId}:${userId}`, externalId: userId, organizationName: orgName }),
     }));

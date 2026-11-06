@@ -503,13 +503,14 @@ const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
   const spaceId = c.req.param("spaceId");
   if (!userId || !spaceId || !await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "space_unavailable" }, 404);
   const incoming = new URL(c.req.url);
-  const target = new URL(incoming.pathname + incoming.search, "https://agentport.internal");
+  const suffix = incoming.pathname.replace(/^\/spaces\/[^/]+\/agentport/, "");
+  const target = new URL(`/internal/agentport${suffix}${incoming.search}`, "https://agentport.internal");
   const headers = new Headers(c.req.raw.headers);
   headers.delete("authorization");
-  headers.set("x-naelao-tenant-id", tenantId);
-  headers.set("x-naelao-user-id", userId);
-  headers.set("x-naelao-role", role);
-  headers.set("x-naelao-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, tenantId));
+  headers.set("x-agentport-tenant-id", tenantId);
+  headers.set("x-agentport-actor-id", userId);
+  headers.set("x-agentport-actor-role", role);
+  headers.set("x-agentport-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, tenantId));
   const body = ["GET", "HEAD"].includes(c.req.method) ? undefined : await c.req.raw.arrayBuffer();
   return c.env.AGENTPORT_WORKER.fetch(new Request(target, { method: c.req.method, headers, ...(body ? { body } : {}) }));
 };
@@ -5481,18 +5482,17 @@ async function createCustomAgent(
     }
   );
 
-  // Naelao-hosted agents receive their AgentPort identity before their agent definition is
-  // published. The creating user is the unverified principal by default; a Space or org is not
-  // evidence of legal entity authority. A later approved verification/delegation flow can attach
-  // an organization principal without changing the agent's canonical ID.
+  // Register the first-party client agent identity under its creating user; the workspace is
+  // an opaque host resource and is not treated as evidence of legal entity authority.
   if (callerUserId) {
     const identityResponse = await env.AGENTPORT_WORKER.fetch(new Request("https://agentport.internal/internal/agentport/agents", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-user-id": callerUserId,
-        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        "x-agentport-tenant-id": tenantId,
+        "x-agentport-actor-id": callerUserId,
+        "x-agentport-actor-role": "client_system",
+        "x-agentport-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
       },
       body: JSON.stringify({
         id: agentId,
@@ -5500,8 +5500,8 @@ async function createCustomAgent(
         principalType: "individual",
         createdBy: callerUserId,
         hostPlatform: "naelao",
-        hostSpaceId: spaceId,
-        runtime: "naelao-agents-worker",
+        hostResourceId: spaceId,
+        runtime: "agents-worker",
       }),
     }));
     if (!identityResponse.ok) {

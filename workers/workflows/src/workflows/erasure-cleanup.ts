@@ -168,7 +168,7 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_services WHERE tenant_id = ?").bind(orgId),
     // Remove only the AgentPort tenant created for Naelao's managed identity. Independently
     // registered AgentPort organizations retain their own lifecycle and are not erased here.
-    db.prepare("DELETE FROM agentport_organizations WHERE id = ? AND owner_developer_id = ?").bind(orgId, `naelao-managed:${orgId}`),
+    db.prepare("DELETE FROM agentport_organizations WHERE id = ? AND owner_developer_id = ?").bind(orgId, `platform-managed:${orgId}`),
     db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),

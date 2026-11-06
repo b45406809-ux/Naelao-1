@@ -30,7 +30,7 @@ export async function createSealedAgentKey(secret: string, agentId: string, issu
 export async function signAgentCredential(input: {
   secret: string; agentId: string; kid: string; ciphertext: string; iv: string;
   issuer: string; audience: string; principal: { id: string; type: string; verificationLevel: string };
-  host: { platform: string; spaceId?: string | null }; actions: string[]; ttlSeconds: number; now?: number;
+  host: { platform: string; resourceId?: string | null }; actions: string[]; ttlSeconds: number; now?: number;
 }) {
   const privateKeyBytes = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64url(input.iv) }, await sealingKey(input.secret, input.agentId), unb64url(input.ciphertext));
   const privateKey = await crypto.subtle.importKey("pkcs8", privateKeyBytes, ED25519, false, ["sign"]);

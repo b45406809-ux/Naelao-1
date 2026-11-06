@@ -32,27 +32,20 @@ describe("AgentPort public SDK", () => {
     expect(String(url)).toBe("https://agentport.naelao.com/v1/services");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ap_live_example");
   });
-  it("exposes microapp provisioning and budget usage through the portable AgentPort SDK", async () => {
+  it("registers agent identities and provider accounts through the client-neutral SDK", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(input), init });
       return calls.length === 1
-        ? Response.json({ app: { id: "app_1", name: "Reels", ownerType: "organization", ownerId: "org_1", billing: "managed", budget: { monthlyUSD: 100 }, status: "active" } }, { status: 201 })
-        : calls.length === 2
-          ? Response.json({ capability: { id: "cap_1", appId: "app_1", capability: "ai.video.generate", serviceId: "video", providerId: "video", authorization: "managed", phase: "build_time", accountId: "acct_1", status: "active", limits: { perCustomer: 20, monthlyUSD: 50 }, execution: "authorized_provider_connector_required" } }, { status: 201 })
-          : Response.json({ recorded: true, duplicate: false, providerSettlement: "not_verified" }, { status: 201 });
+        ? Response.json({ agent: { id: "agt_1", principalId: "prn_1", status: "active" } }, { status: 201 })
+        : Response.json({ account: { id: "acct_1", status: "pending" } }, { status: 201 });
     }) as typeof fetch;
-    const port = new AgentPortClient({ accessToken: "host-oauth-token", baseUrl: "https://agentport.test", fetch: fetcher });
-    const { app } = await port.createApp({ name: "Reels", ownerType: "organization", ownerId: "org_1", billing: "managed", budget: { monthlyUSD: 100 } });
-    const { capability } = await port.provisionCapability(app.id, { capability: "ai.video.generate", provider: "auto", phase: "build_time", limits: { perCustomer: 20, monthlyUSD: 50 } });
-    await port.reportCapabilityUsage(app.id, capability.id, { idempotencyKey: "job_1", customerRef: "customer_1", quantity: 1, reportedCostUSD: 0.1 });
-    expect(calls.map(call => call.url)).toEqual([
-      "https://agentport.test/v1/apps",
-      "https://agentport.test/v1/apps/app_1/capabilities/provision",
-      "https://agentport.test/v1/apps/app_1/capabilities/cap_1/usage",
-    ]);
-    expect(new Headers(calls[2]!.init?.headers).get("authorization")).toBe("Bearer host-oauth-token");
-    expect(JSON.parse(String(calls[1]!.init?.body))).toMatchObject({ capability: "ai.video.generate", provider: "auto", phase: "build_time" });
+    const port = new AgentPortClient({ accessToken: "builder-oauth-token", baseUrl: "https://agentport.test", fetch: fetcher });
+    await port.registerAgent({ hostPlatform: "builder.example", runtime: "external" });
+    await port.createAccount({ serviceId: "mail", accountModel: "delegated", ownerType: "organization", ownerId: "org_1" });
+    expect(calls.map(call => call.url)).toEqual(["https://agentport.test/v1/agents", "https://agentport.test/v1/accounts"]);
+    expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({ hostPlatform: "builder.example" });
+    expect(JSON.parse(String(calls[1]!.init?.body))).toMatchObject({ serviceId: "mail", ownerId: "org_1" });
   });
   it("surfaces API errors with code and status", async () => {
     const client = new AgentPortClient({ apiKey: "key", fetch: (async () => new Response(JSON.stringify({ error_code: "scope_denied" }), { status: 403 })) as typeof fetch });
