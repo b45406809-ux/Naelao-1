@@ -66,13 +66,6 @@ describe("connector catalogue", () => {
     }
   });
 
-  it("AgentMail stays coming_soon — Composio reports no managed credentials for that toolkit", () => {
-    // A real reason, not an unprovisioned config: one-click connect genuinely cannot work until
-    // we register our own OAuth app for it.
-    const c = getConnector("agentmail");
-    expect(c?.status).toBe("coming_soon");
-    expect(c?.composio?.toolkit_slug).toBe("agent_mail");
-  });
 
   it("Meta Ads uses the toolkit slug Composio actually has", () => {
     // Was "facebook_ads", which Composio rejects as nonexistent — caught by connecting it for real.

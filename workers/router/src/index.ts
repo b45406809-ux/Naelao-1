@@ -1375,6 +1375,10 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
 
 // Customer-bot channel observability + human-takeover admin control → agents worker
 // (proxies straight through to the space's agent DO).
+// AgentPort registry, account grants and event delivery use the same authenticated Space and
+// agent-key boundary as the rest of the platform API.
+api.all("/spaces/:spaceId/agentport", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/spaces/:spaceId/agentport/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/spaces/:spaceId/channels/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

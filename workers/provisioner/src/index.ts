@@ -64,9 +64,7 @@ export interface Env {
   SCRIPTS_R2: R2Bucket;
   /** Workspace R2 bucket for the external portal slug→spaceId KV route. */
   PORTAL_KV?: KVNamespace;
-  /** Service binding to naelao-agents — used only for the best-effort AgentMail email seed
-   *  (holds AGENTMAIL_API_KEY). Optional: the seed degrades to a no-op when unbound or the key
-   *  isn't configured, so email provisioning happens on-demand via the assistant instead. */
+  /** Service binding to naelao-agents for the shared agent-config lock gateway. */
   AGENTS_WORKER?: Fetcher;
 }
 
@@ -110,8 +108,7 @@ export async function installLaunchpadAgents(
     "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, spaceId),
   };
   // Provisioning is a multi-file write and must fail closed if the shared lock service binding
-  // is absent. The optional binding remains useful for unrelated best-effort AgentMail paths,
-  // but it is never acceptable to install an agent bundle without its mutex.
+  // is absent. It is never acceptable to install an agent bundle without its mutex.
   if (!env.AGENTS_WORKER) throw new Error("agent_config_lock_unavailable");
   const lockGateway = createRemoteAgentConfigLockGateway(env.AGENTS_WORKER, lockHeaders, spaceId);
   await writeAgentConfig(

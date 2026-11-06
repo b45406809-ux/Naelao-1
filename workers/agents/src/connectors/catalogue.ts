@@ -370,7 +370,6 @@ export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   // Stays coming_soon, and for a real reason rather than an unprovisioned config: Composio
   // reports it has no managed credentials for this toolkit, so one-click connect genuinely can't
   // work until we register our own OAuth app for it.
-  comingSoonComposio("agentmail", "AgentMail", "email", "agent_mail", "COMPOSIO_AGENTMAIL_AUTH_CONFIG_ID", "Dedicated agent-managed inbox — beyond the built-in business-email default."),
   // Course / product platforms
   comingSoon("stan-store", "Stan Store", "course_product", "Link-in-bio storefront, courses and bookings.", "STAN_API_KEY"),
   comingSoon("teachable", "Teachable", "course_product", "Online courses and coaching.", "TEACHABLE_API_KEY"),

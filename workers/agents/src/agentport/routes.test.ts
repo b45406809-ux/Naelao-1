@@ -1,0 +1,118 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { describe, expect, it } from "vitest";
+import { mintInternalToken } from "@naelao/http";
+import { agentPortRoutes } from "./routes.js";
+
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+
+function fixture() {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,created_by TEXT)");
+  db.exec("CREATE TABLE agent_email_addresses(address_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,agent_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL)");
+  db.exec("CREATE TABLE project_agent_email_addresses(address_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,agent_id TEXT NOT NULL,project_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL)");
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0158_agentport_registry.sql", import.meta.url), "utf8"));
+  const platformDb = { prepare(sql: string) {
+    let values: unknown[] = [];
+    const statement = {
+      bind(...args: unknown[]) { values = args; return statement; },
+      async run() { const result = db.prepare(sql).run(...(values as never[])); return { success: true, meta: { changes: Number(result.changes ?? 0) } }; },
+      async first<T>() { return db.prepare(sql).get(...(values as never[])) as T | undefined; },
+      async all<T>() { return { success: true, results: db.prepare(sql).all(...(values as never[])) as T[] }; },
+    };
+    return statement;
+  } };
+  return { db, platformDb };
+}
+
+describe("AgentPort internal registry API", () => {
+  it("requires an internal tenant token and registers services, agents, shared grants and durable events", async () => {
+    const { db, platformDb } = fixture();
+    const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown, suppliedHeaders = headers) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, {
+      method, headers: suppliedHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }), env);
+
+    const denied = await call("/services", "GET", undefined, { "x-naelao-tenant-id": "tenant-a" });
+    expect(denied.status).toBe(403);
+    const service = await call("/services", "POST", { id: "mail-provider", name: "Cloudflare Email", type: "managed", accountModels: ["agent_native"], capabilities: ["email.send", "email.read"], events: ["message.received"], connectionPurpose: "agent_resource" });
+    expect(service.status).toBe(201);
+    const agentResponse = await call("/agents", "POST", { principalId: "org-1", principalType: "organization", createdBy: "user-1", hostPlatform: "naelao", hostSpaceId: "space-1" });
+    const { agent } = await agentResponse.json() as { agent: { id: string } };
+    const accountResponse = await call("/accounts", "POST", { serviceId: "mail-provider", accountModel: "agent_native", ownerType: "organization", ownerId: "org-1" });
+    const { account } = await accountResponse.json() as { account: { id: string; status: string } };
+    expect(account.status).toBe("pending");
+    expect((await call(`/accounts/${account.id}/activate`, "POST")).status).toBe(200);
+    const grant = await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "user-1", permissions: ["email.read"] });
+    expect(grant.status).toBe(201);
+    const subscription = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "mail-provider", accountId: account.id, eventType: "message.received", deliveryMode: "naelao", consumerGroup: "support" });
+    expect(subscription.status).toBe(201);
+    const accountMismatch = await call("/events", "POST", { serviceId: "mail-provider", accountId: "another-service-account", providerEventId: "provider-evt-mismatch", eventType: "message.received" });
+    expect(accountMismatch.status).toBe(404);
+    const event = await call("/events", "POST", { serviceId: "mail-provider", accountId: account.id, providerEventId: "provider-evt-1", eventType: "message.received", payloadRef: "r2://event/1" });
+    expect(event.status).toBe(202);
+    const { id: eventId } = await event.json() as { id: string };
+    const pending = await call(`/events/pending?agentId=${agent.id}`, "GET");
+    expect((await pending.json() as { events: unknown[] }).events).toHaveLength(1);
+    const claim = await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: "naelao:run-1", ttlSeconds: 60 });
+    expect(claim.status).toBe(200);
+    expect((await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: "naelao:run-2" })).status).toBe(409);
+    expect((await call(`/events/${eventId}/ack`, "POST", { agentId: agent.id, consumerId: "wrong-run", result: "delivered" })).status).toBe(404);
+    expect((await call(`/events/${eventId}/ack`, "POST", { agentId: agent.id, consumerId: "naelao:run-1", result: "delivered" })).status).toBe(200);
+    const retry = await call("/events", "POST", { serviceId: "mail-provider", providerEventId: "provider-evt-1", eventType: "message.received" });
+    expect((await retry.json() as { duplicate: boolean }).duplicate).toBe(true);
+    db.close();
+  });
+
+  it("blocks provider models the manifest did not declare and unresolved provisioning cycles", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, body: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method: "POST", headers, body: JSON.stringify(body) }), env);
+    await call("/services", { id: "svc", name: "Service", type: "api", accountModels: ["agent_native"], capabilities: [], events: [], connectionPurpose: "agent_resource" });
+    expect((await call("/accounts", { serviceId: "svc", accountModel: "user_parent", ownerType: "organization", ownerId: "org", parentAccountId: "parent" })).status).toBe(422);
+    const agentResponse = await call("/agents", { principalId: "org", principalType: "organization", createdBy: "user", hostPlatform: "naelao" });
+    const { agent } = await agentResponse.json() as { agent: { id: string } };
+    const accountIds: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      const response = await call("/accounts", { serviceId: "svc", accountModel: "agent_native", ownerType: "organization", ownerId: name });
+      accountIds.push(((await response.json()) as { account: { id: string } }).account.id);
+      await call(`/accounts/${accountIds.at(-1)}/activate`, {});
+    }
+    await call(`/accounts/${accountIds[0]}/dependencies`, { dependsOnAccountId: accountIds[1], type: "provisioning" });
+    await call(`/accounts/${accountIds[1]}/dependencies`, { dependsOnAccountId: accountIds[2], type: "provisioning" });
+    const cycle = await call(`/accounts/${accountIds[2]}/dependencies`, { dependsOnAccountId: accountIds[0], type: "provisioning" });
+    expect(cycle.status).toBe(409);
+    expect((await cycle.json() as { error_code: string }).error_code).toBe("provisioning_dependency_cycle");
+    expect(agent.id).toBeTruthy();
+    db.close();
+  });
+
+  it("requires a live account grant before subscribing and dead-letters after eight claims", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, body: JSON.stringify(body) }), env);
+    await call("/services", "POST", { id: "svc", name: "Mail", type: "managed", accountModels: ["agent_native"], capabilities: [], events: ["message.received"], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "user", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "svc", accountModel: "agent_native", ownerType: "individual", ownerId: "owner" })).json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    const denied = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "svc", accountId: account.id, eventType: "message.received", deliveryMode: "poll" });
+    expect(denied.status).toBe(403);
+    await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "user", permissions: ["mail.read"] });
+    expect((await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "svc", accountId: account.id, eventType: "message.received", deliveryMode: "poll" })).status).toBe(201);
+    const { id: eventId } = await (await call("/events", "POST", { serviceId: "svc", accountId: account.id, providerEventId: "evt", eventType: "message.received" })).json() as { id: string };
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      expect((await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: `consumer-${attempt}` })).status).toBe(200);
+      const ack = await call(`/events/${eventId}/ack`, "POST", { agentId: agent.id, consumerId: `consumer-${attempt}`, result: "retry" });
+      const payload = await ack.json() as { status: string };
+      if (attempt < 8) {
+        expect(payload.status).toBe("pending");
+        db.prepare("UPDATE agentport_event_deliveries SET available_at='2000-01-01T00:00:00.000Z' WHERE event_id=?").run(eventId);
+      } else expect(payload.status).toBe("dead_letter");
+    }
+    db.close();
+  }, 30000);
+});

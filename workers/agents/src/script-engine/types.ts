@@ -1040,10 +1040,7 @@ export interface ScriptEngineEnv {
   notificationsWorker?: Fetcher;
   /** Host checks current template/user settings before assistant channel use. */
   assistantChannelAllowed?: (channel: import("@naelao/agent-sdk").AssistantChannel) => Promise<boolean>;
-  /** The agents worker's own self-binding (AGENTS_WORKER). Lets a prebuilt reach an internal
-   *  route on this same worker that holds a secret the isolate must never see — currently the
-   *  business-email prebuilt calling /internal/business-email/{provision,send} for the AgentMail
-   *  path (AGENTMAIL_API_KEY lives on the worker, not in the isolate env). */
+  /** The agents worker's own self-binding (AGENTS_WORKER), used for authenticated host operations. */
   agentsWorker?: Fetcher;
   /** Billing worker — holds Lemon Squeezy creds + Naelao store; the only money-in path. */
   billingWorker?: Fetcher;

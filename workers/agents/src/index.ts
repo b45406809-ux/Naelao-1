@@ -92,10 +92,6 @@ import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
   extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
 } from "./launchpad/channel-pairing.js";
-import {
-  agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
-  verifySvixSignature, parseInboundMessageReceived, uniqueInboxUsername,
-} from "./channels/agentmail.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { customAgentToConfig } from "./agent-templates.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
@@ -115,6 +111,7 @@ import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES,
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, queryEmailImage, rasterImageDimensions, reserveEmailOcrAttempt } from "./channels/email-ocr.js";
 import { handleChannelSessionQueue, type ChannelSessionQueueMessage } from "./channels/session-queue.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
+import { agentPortRoutes } from "./agentport/routes.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -386,10 +383,6 @@ export interface AgentsEnv extends Cloudflare.Env {
   PIPEDREAM_ENVIRONMENT?: string;
   /** Explicit app slug allowlist. An unset/empty list means no Pipedream app is advertised or selectable. */
   PIPEDREAM_SUPPORTED_APPS?: string;
-  /** AgentMail — auto-provisioned, INBOUND-capable business mailbox (AgentMail hosts the domain,
-   *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset leaves
-   *  the optional Cloudflare Email Service and Resend outbound paths available, but no AgentMail inbox. */
-  AGENTMAIL_API_KEY?: string;
   /** Optional Cloudflare Email Service binding. It is used only when the sender domain below is
    *  configured; arbitrary-recipient sending requires an onboarded domain and a Workers Paid plan. */
   EMAIL?: SendEmail;
@@ -501,6 +494,8 @@ function validateEnv(env: AgentsEnv): void {
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
+app.route("/internal/agentport", agentPortRoutes);
+app.route("/spaces/:spaceId/agentport", agentPortRoutes);
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerCommunicationRoutes(app);
@@ -5469,6 +5464,36 @@ async function createCustomAgent(
     }
   );
 
+  // Naelao-hosted agents receive their AgentPort identity before their agent definition is
+  // published. The creating user is the unverified principal by default; a Space or org is not
+  // evidence of legal entity authority. A later approved verification/delegation flow can attach
+  // an organization principal without changing the agent's canonical ID.
+  if (callerUserId) {
+    const identityResponse = await agentPortRoutes.fetch(new Request("https://agents.internal/agents", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": callerUserId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({
+        id: agentId,
+        principalId: callerUserId,
+        principalType: "individual",
+        createdBy: callerUserId,
+        hostPlatform: "naelao",
+        hostSpaceId: spaceId,
+        runtime: "naelao-agents-worker",
+      }),
+    }), env);
+    if (!identityResponse.ok) {
+      await Promise.all(["agents.md", "system-prompt.md", "scripts.json", "skills.json"].map((file) =>
+        env.SCRIPTS_R2!.delete(`spaces/${spaceId}/agents/${agentId}/${file}`).catch(() => undefined)));
+      return { error: "AgentPort identity provisioning failed; the agent was not created", status: 503 };
+    }
+  }
+
   const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
   const headers = {
     "content-type": "application/json",
@@ -6773,7 +6798,7 @@ app.post("/internal/attachments/ocr", async (c) => {
 
 
 
-// AgentMail inbound mailbox webhooks were removed with business mailbox provisioning.
+// Inbound mail uses Cloudflare Email Routing; outbound delivery uses Cloudflare Email Service.
 
 app.get("/spaces/:spaceId/channels/sessions", async (c) => {
   const spaceId = c.req.param("spaceId");

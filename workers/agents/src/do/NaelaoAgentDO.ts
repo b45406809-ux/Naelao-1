@@ -1066,8 +1066,7 @@ export interface AgentDOEnv {
   AI?: Ai;
   /** Notifications worker — owner/customer notifications + HITL surface. */
   NOTIFICATIONS_WORKER?: Fetcher;
-  /** The agents worker's own self-binding — lets the business-email prebuilt reach an internal
-   *  route on this same worker that holds AGENTMAIL_API_KEY (the isolate never sees the key). */
+  /** The agents worker's own self-binding for authenticated host operations. */
   AGENTS_WORKER?: Fetcher;
   /** Billing worker — holds Lemon Squeezy creds; the only money-in path (commerce script). */
   BILLING_WORKER?: Fetcher;
@@ -2724,8 +2723,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
     if (!airGappedOnly && this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
-    // Self-binding — lets the business-email prebuilt reach /internal/business-email/{provision,send}
-    // (the AgentMail path, whose API key lives on the worker, never in the isolate).
+    // Self-binding is available to host-managed prebuilt operations; provider credentials remain
+    // outside the script isolate.
     if (!airGappedOnly && this.env.AGENTS_WORKER) env.agentsWorker = this.env.AGENTS_WORKER;
     if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
     if (!airGappedOnly && this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;

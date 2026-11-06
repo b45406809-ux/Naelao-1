@@ -3,7 +3,7 @@ import { readBoundedResponseJson } from "@naelao/http";
 /**
  * Composio "Connect Link" hosted-auth helpers — the mechanism behind a real "click Install"
  * connector experience (Claude/ChatGPT-style bundled connectors), for any of Composio's 500+
- * app toolkits (Twitter/X, LinkedIn, Instagram, TikTok, HubSpot, Google Ads, AgentMail, …).
+ * app toolkits (Twitter/X, LinkedIn, Instagram, TikTok, HubSpot, Google Ads, …).
  *
  * Unlike the bespoke per-platform OAuth2+PKCE flow in oauth.ts (Whop's own bring-your-account
  * app), Composio HOSTS the entire OAuth dance itself: Naelao holds one platform Composio API key
