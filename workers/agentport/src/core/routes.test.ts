@@ -33,7 +33,7 @@ function fixture() {
       async all<T>() { return { success: true, results: db.prepare(sql).all(...(values as never[])) as T[] }; },
     };
     return statement;
-  }, async batch(statements: Array<{ run(): Promise<unknown> }>) { for (const statement of statements) await statement.run(); return []; } };
+  }, async batch(statements: Array<{ run(): Promise<unknown> }>) { const results = []; for (const statement of statements) results.push(await statement.run()); return results; } };
   return { db, platformDb };
 }
 
@@ -98,7 +98,9 @@ describe("AgentPort internal registry API", () => {
     expect((await call(`/events/${event.id}/ack`, "POST", { agentId: agent.id, consumerId: "runtime", deliveryId, result: "delivered" })).status).toBe(200);
     expect(db.prepare("SELECT status FROM agentport_event_deliveries WHERE subscription_id=?").get(pollSub.subscription.id)).toMatchObject({ status: "pending" });
     expect((await (await call(`/events/subscriptions/${sub.subscription.id}`, "GET")).json() as { webhookSecret: string }).webhookSecret).toBe(sub.webhookSecret);
-    expect((await call(`/events/subscriptions/${sub.subscription.id}`, "DELETE")).status).toBe(200);
+    expect(await (await call(`/events/subscriptions/${sub.subscription.id}`, "DELETE")).json()).toMatchObject({ revoked: true });
+    const reactivated = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "provider", eventType: "item.changed", deliveryMode: "webhook", routing: { webhookUrl: "https://hooks.builder.com/new" } });
+    expect(await reactivated.json()).toMatchObject({ subscription: { id: sub.subscription.id }, webhookSecret: sub.webhookSecret });
     db.close();
   });
   it("creates an idempotent platform-managed AgentPort principal only for a trusted host system", async () => {

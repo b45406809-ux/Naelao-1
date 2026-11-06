@@ -399,11 +399,14 @@ routes.post("/events/subscriptions", async (c) => {
       AND (expires_at IS NULL OR expires_at>?)`).bind(tenantId, body.accountId, body.agentId, stamp()).first();
     if (!grant) return c.json({ error_code: "account_grant_required" }, 403);
   }
-  const subId = id("sub"); const at = stamp();
-  try { await db.prepare(`INSERT INTO agentport_event_subscriptions(id,tenant_id,agent_id,service_id,account_id,event_type,delivery_mode,consumer_group,routing_json,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(subId, tenantId, body.agentId, body.serviceId, body.accountId ?? null, body.eventType, body.deliveryMode,
-    body.consumerGroup ?? "default", JSON.stringify(body.deliveryMode === "webhook" ? { webhookUrl: routing.webhookUrl } : {}), at, at).run(); }
-  catch { return c.json({ error_code: "subscription_conflict" }, 409); }
+  const at = stamp();
+  const subscription = await db.prepare(`INSERT INTO agentport_event_subscriptions(id,tenant_id,agent_id,service_id,account_id,event_type,delivery_mode,consumer_group,routing_json,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,agent_id,service_id,event_type,consumer_group) DO UPDATE SET
+    account_id=excluded.account_id,delivery_mode=excluded.delivery_mode,routing_json=excluded.routing_json,status='active',updated_at=excluded.updated_at
+    WHERE agentport_event_subscriptions.status='revoked' RETURNING id`).bind(id("sub"), tenantId, body.agentId, body.serviceId, body.accountId ?? null, body.eventType, body.deliveryMode,
+    body.consumerGroup ?? "default", JSON.stringify(body.deliveryMode === "webhook" ? { webhookUrl: routing.webhookUrl } : {}), at, at).first<{ id: string }>();
+  if (!subscription) return c.json({ error_code: "subscription_conflict" }, 409);
+  const subId = subscription.id;
   return c.json({ subscription: { id: subId, agentId: body.agentId, serviceId: body.serviceId, eventType: body.eventType, deliveryMode: body.deliveryMode },
     ...(body.deliveryMode === "webhook" ? { webhookSecret: await eventWebhookSecret(c.env.AGENTPORT_JWT_SECRET!, tenantId, subId) } : {}) }, 201);
 });
@@ -429,9 +432,14 @@ routes.get("/events/subscriptions/:subscriptionId", async c => {
 routes.delete("/events/subscriptions/:subscriptionId", async c => {
   const row = await ownedSubscription(c);
   if (!row) return c.json({ error_code: "subscription_unavailable" }, 404);
-  const result = await c.env.PLATFORM_DB.prepare("UPDATE agentport_event_subscriptions SET status='revoked',updated_at=? WHERE id=? AND tenant_id=? AND status='active'")
-    .bind(stamp(), row.id, c.get("tenantId")).run();
-  return c.json({ revoked: result.meta.changes > 0 });
+  const at = stamp();
+  const results = await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_event_subscriptions SET status='revoked',updated_at=? WHERE id=? AND tenant_id=? AND status='active'").bind(at, row.id, c.get("tenantId")),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_event_notifications SET status='dead_letter',lease_expires_at=NULL,updated_at=? WHERE delivery_id IN (SELECT id FROM agentport_event_deliveries WHERE subscription_id=? AND tenant_id=? AND status IN ('pending','claimed'))").bind(at, row.id, c.get("tenantId")),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_event_deliveries SET status='dead_letter',claim_owner=NULL,claim_expires_at=NULL,updated_at=? WHERE subscription_id=? AND tenant_id=? AND status IN ('pending','claimed')").bind(at, row.id, c.get("tenantId")),
+    c.env.PLATFORM_DB.prepare("DELETE FROM agentport_activity_leases WHERE subscription_id=? AND tenant_id=?").bind(row.id, c.get("tenantId")),
+  ]);
+  return c.json({ revoked: (results[0]?.meta.changes ?? 0) > 0 });
 });
 
 routes.post("/events", async (c) => {

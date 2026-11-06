@@ -6,6 +6,7 @@
 - Subscription owners configure a public HTTPS callback, get a per-subscription verification secret, inspect or revoke the subscription through REST, SDK, CLI, or MCP, and verify the raw bytes and timestamp with the SDK helper. Callback responses confirm receipt of the notification; event claims and acknowledgments remain separate operations.
 - Migration 0171 adds durable notification attempt state without changing existing events or storing provider content. The scheduled dispatcher claims attempts, retries with bounded backoff, honors active service/account/grant/agent/subscription state, and recovers expired processing claims. Individual delivery IDs allow independent subscriptions to claim and acknowledge the same event.
 - Generic event and channel-event ingestion now repair missing delivery records on a repeated provider event instead of treating every insert failure as a duplicate. Email ingress reuses the actual stored event ID when a provider retries.
+- Revoking a subscription closes its pending deliveries and activity leases. A developer may subsequently reactivate the same subscription group with a new callback; previously closed events do not become new wakeups.
 
 ## Verification and boundaries
 
