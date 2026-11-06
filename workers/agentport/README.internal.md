@@ -1,6 +1,6 @@
-# AgentPort registry API (Naelao internal preview)
+# AgentPort registry API (internal integration notes)
 
-This is the first AgentPort control-plane slice in the Agents Worker. It is available through Naelao's authenticated `POST|GET|... /spaces/:spaceId/agentport/...` proxy. The router authenticates the Naelao user or hosted agent, and the worker verifies the tenant-bound internal signature. It is not a public external-developer API and does not yet issue AgentPort API keys.
+AgentPort is a standalone service at `https://agentport.naelao.com` with independent developer registration, API keys, REST, SDK, CLI, and MCP access. External developers use that public AgentPort API directly. Naelao also exposes a protected `/spaces/:spaceId/agentport/...` client proxy: the router authenticates the Naelao user or hosted agent, and the worker verifies the tenant-bound internal signature. The proxy is one first-party integration path, not the product boundary.
 
 ## Resource model
 
