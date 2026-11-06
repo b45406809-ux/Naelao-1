@@ -176,18 +176,18 @@ describe("space D1 erasure", () => {
       batch: vi.fn(async () => []),
     };
     await eraseSpaceD1Records(db as never, "space-a");
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     expect(statements.slice(0, 5)).toEqual([
-      "DELETE FROM active_sessions WHERE space_id = ?",
-      "DELETE FROM thread_sessions WHERE space_id = ?",
-      "DELETE FROM threads WHERE space_id = ?",
-      "DELETE FROM kb_chunks WHERE space_id = ?",
-      "DELETE FROM kb_documents WHERE space_id = ?",
+      "DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
+      "DELETE FROM sandbox_executions WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
+      "DELETE FROM sandbox_operations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
+      "DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))",
+      "DELETE FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)",
     ]);
     expect(statements).toContain("DELETE FROM space_credentials WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM mcp_servers WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM webhook_subscriptions WHERE space_id = ?");
-    expect(statements).toHaveLength(SPACE_ERASURE_TABLES.length);
+    expect(statements.slice(-SPACE_ERASURE_TABLES.length)).toHaveLength(SPACE_ERASURE_TABLES.length);
     expect(statements).toContain("DELETE FROM fde_graduations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM llm_token_reservations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM workflow_budget_reservations WHERE space_id = ?");

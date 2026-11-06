@@ -100,13 +100,34 @@ export interface ErasureDocument {
   chunk_count: number | null;
 }
 
-export async function eraseSpaceD1Records(db: D1Database, spaceId: string): Promise<void> {
+async function eraseSandboxWorkspaceBlobs(db: D1Database, bucket: R2Bucket | undefined, scope: { spaceId?: string; tenantId?: string }): Promise<void> {
+  if (!bucket) return;
+  let afterKey = "";
+  for (;;) {
+    const query = scope.spaceId
+      ? db.prepare("SELECT b.object_key FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE f.space_id=? AND b.object_key>? ORDER BY b.object_key LIMIT 1000").bind(scope.spaceId, afterKey)
+      : db.prepare("SELECT object_key FROM sandbox_workspace_blobs WHERE tenant_id=? AND object_key>? ORDER BY object_key LIMIT 1000").bind(scope.tenantId, afterKey);
+    const { results } = await query.all<{ object_key: string }>();
+    if (!results.length) return;
+    await bucket.delete(results.map((row) => row.object_key));
+    const next = results[results.length - 1]?.object_key;
+    if (!next || next <= afterKey) throw new Error("Invalid sandbox blob erasure cursor");
+    afterKey = next;
+  }
+}
+
+export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucket?: R2Bucket): Promise<void> {
+  await eraseSandboxWorkspaceBlobs(db, bucket, { spaceId });
   // Children precede parents where the migrations declare foreign keys.
   await db.batch([
     db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_executions WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_operations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId),
     db.prepare("DELETE FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_workspace_snapshot_entries WHERE snapshot_id IN (SELECT id FROM sandbox_workspace_snapshots WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_workspace_blobs WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM sandbox_workspace_snapshots WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_grants WHERE tenant_id IN (SELECT tenant_id FROM sandbox_computers WHERE space_id = ?) AND (computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?) OR filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId, spaceId, spaceId),
     db.prepare("DELETE FROM assistant_agentmail_event_receipts WHERE account_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
@@ -118,7 +139,8 @@ export async function eraseSpaceD1Records(db: D1Database, spaceId: string): Prom
 }
 
 /** Retain financial/audit records, but remove tenant login, notification, API, and registry state. */
-export async function eraseOrgOperationalRecords(db: D1Database, orgId: string): Promise<void> {
+export async function eraseOrgOperationalRecords(db: D1Database, orgId: string, bucket?: R2Bucket): Promise<void> {
+  await eraseSandboxWorkspaceBlobs(db, bucket, { tenantId: orgId });
   await db.batch([
     db.prepare("DELETE FROM org_members WHERE org_id = ?").bind(orgId),
     db.prepare("DELETE FROM api_keys WHERE org_id = ?").bind(orgId),
@@ -150,7 +172,11 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM sandbox_executions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_operations WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM sandbox_publications WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_workspace_snapshot_entries WHERE snapshot_id IN (SELECT id FROM sandbox_workspace_snapshots WHERE tenant_id = ?)").bind(orgId),
+    db.prepare("DELETE FROM sandbox_workspace_blobs WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_workspace_snapshots WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_grants WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_usage_events WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_computers WHERE tenant_id = ?").bind(orgId),

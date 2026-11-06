@@ -217,7 +217,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           } },
         ));
         if (!businessServiceErasure.ok) throw new Error(`Space-domain erasure failed with status ${businessServiceErasure.status}`);
-        await eraseSpaceD1Records(this.env.PLATFORM_DB, spaceId);
+        await eraseSpaceD1Records(this.env.PLATFORM_DB, spaceId, this.env.SCRIPTS_R2);
 
         console.log(`[DataErasure] Cleaned space=${spaceId} for org=${params.orgId}`);
       },
@@ -236,7 +236,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     await step.do("delete-user-pii", async () => {
       // Preserve IDs needed by retained audit records, but remove credentials and direct PII.
       await anonymizeOrgUsers(this.env.PLATFORM_DB, params.orgId);
-      await eraseOrgOperationalRecords(this.env.PLATFORM_DB, params.orgId);
+      await eraseOrgOperationalRecords(this.env.PLATFORM_DB, params.orgId, this.env.SCRIPTS_R2);
 
       console.log(`[DataErasure] PII anonymized for users in org=${params.orgId}`);
       return { piiErased: true };

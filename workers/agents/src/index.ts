@@ -112,6 +112,7 @@ import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES,
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, queryEmailImage, rasterImageDimensions, reserveEmailOcrAttempt } from "./channels/email-ocr.js";
 import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type ProviderEventReferenceQueueMessage } from "./channels/session-queue.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
+import { handleSandboxWorkspaceBridge, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -506,6 +507,7 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.all("/internal/sandbox-workspaces/*", (c) => handleSandboxWorkspaceBridge(c.req.raw, c.env));
 const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId, role } = getCallerIdentity(c);
@@ -8991,6 +8993,7 @@ export default {
   async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
     if (controller.cron === "*/5 * * * *") {
       if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
+      await sweepExpiredWorkspaceBlobs(env).catch(() => { console.warn("Sandbox workspace blob cleanup postponed"); });
       await expireEmailIngressData(env);
       _ctx.waitUntil(sweepPendingProviderEventRuns(env).catch(()=>{console.warn("Pending provider event wake sweep postponed");}));
       _ctx.waitUntil((await import("./communications/agentmail.js")).sweepManagedAgentMailRentals(env).catch(()=>{console.warn("AgentMail rental billing sweep postponed");}));

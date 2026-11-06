@@ -2,6 +2,7 @@ import type {
   ComputerConfig,
   ExecutionResult,
   ProviderConnection,
+  WorkspaceChange,
   WorkspacePublication,
   WorkspaceSnapshot,
 } from "@naelao/sandboxes-core";
@@ -10,6 +11,7 @@ export type {
   ComputerScope,
   ExecutionResult,
   ProviderConnection,
+  WorkspaceChange,
   WorkspacePublication,
   WorkspaceSnapshot,
 } from "@naelao/sandboxes-core";
@@ -102,11 +104,35 @@ export class SandboxesClient {
       }
     );
   }
-  sync(id: string) {
+  sync(id: string, input?: { snapshotId: string; changes: WorkspaceChange[]; idempotencyKey: string }) {
     return this.request<{
-      snapshot: WorkspaceSnapshot;
+      snapshot?: WorkspaceSnapshot;
       publication?: WorkspacePublication;
-    }>(`/v1/computers/${encodeURIComponent(id)}/sync`, { method: "POST" });
+    }>(`/v1/computers/${encodeURIComponent(id)}/sync`, {
+      method: "POST",
+      body: JSON.stringify(input ? { operation: "publish", ...input } : { operation: "snapshot" }),
+    });
+  }
+  async stageBlob(id: string, snapshotId: string, bytes: Uint8Array, sha256: string, executable = false) {
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return this.request<{ blobId: string; sha256: string; size: number }>(
+      `/v1/computers/${encodeURIComponent(id)}/sync`,
+      { method: "POST", body: JSON.stringify({ operation: "stageBlob", snapshotId, sha256, contentBase64: btoa(binary), executable }) },
+    );
+  }
+  async readBlob(blobId: string, expectedSha256?: string): Promise<AsyncIterable<Uint8Array>> {
+    const fetcher = this.options.fetch ?? fetch;
+    const response = await fetcher(new URL(`/v1/sandbox-workspace-blobs/${encodeURIComponent(blobId)}`, this.options.baseUrl), {
+      headers: { authorization: `Bearer ${this.options.accessToken}` },
+    });
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const actualSha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const expected = expectedSha256 ?? response.headers.get("x-content-sha256") ?? undefined;
+    if (expected && actualSha256 !== expected) throw new Error("sandbox_blob_integrity_failed");
+    return { async *[Symbol.asyncIterator]() { yield bytes; } };
   }
   listProviders() {
     return this.request<{

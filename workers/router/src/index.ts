@@ -1380,6 +1380,7 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
 for (const path of [
   "/computers",
   "/computers/*",
+  "/sandbox-workspace-blobs/*",
   "/providers",
   "/templates",
   "/connections",

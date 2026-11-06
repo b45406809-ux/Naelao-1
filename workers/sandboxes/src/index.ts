@@ -1,4 +1,4 @@
-import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import {
   type ComputerScope,
   type ComputerState,
@@ -14,6 +14,7 @@ import { sealConnection } from "./connection-crypto.js";
 interface Env {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
+  AGENTS_WORKER?: Fetcher;
 }
 type Vars = { tenantId: string; userId: string; role: string };
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
@@ -662,17 +663,53 @@ app.post("/computers/:id/executions", async (c) => {
 });
 app.post("/computers/:id/sync", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL"
+    "SELECT id,filesystem_id FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND filesystem_mode='snapshot_diff' AND deleted_at IS NULL"
   )
     .bind(c.req.param("id"), c.get("tenantId"), c.get("userId"))
     .first();
-  return row
-    ? fail(
-        "filesystem_bridge_unavailable",
-        503,
-        "Filesystem snapshots are not exposed until the R2 publication bridge is connected."
-      )
-    : fail("computer_not_found", 404);
+  if (!row) return fail("computer_not_found", 404);
+  if (!c.env.AGENTS_WORKER) return fail("filesystem_bridge_unavailable", 503, "The Agents workspace bridge is not bound.");
+  let input: Record<string, unknown> = {};
+  if (c.req.raw.body) {
+    try { input = JSON.parse(await readBoundedRequestText(c.req.raw, 6 * 1024 * 1024)) as Record<string, unknown>; }
+    catch (error) { return fail(error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "invalid_sync_request", error instanceof RequestBodyTooLargeError ? 413 : 400); }
+  }
+  const operation = input.operation ?? "snapshot";
+  const route = operation === "snapshot" ? "snapshot" : operation === "stageBlob" ? "blobs" : operation === "publish" ? "publish" : null;
+  if (!route) return fail("invalid_sync_operation", 400);
+  const body = {
+    filesystemId: row.filesystem_id,
+    computerId: row.id,
+    ...(operation === "stageBlob" ? { snapshotId: input.snapshotId, sha256: input.sha256, contentBase64: input.contentBase64 } : {}),
+    ...(operation === "publish" ? { snapshotId: input.snapshotId, changes: input.changes, idempotencyKey: input.idempotencyKey } : {}),
+  };
+  const responseFromAgents = await c.env.AGENTS_WORKER.fetch(new Request(`http://agents-worker/internal/sandbox-workspaces/${route}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": c.get("tenantId"),
+      "x-naelao-user-id": c.get("userId"),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, c.get("tenantId")),
+    },
+    body: JSON.stringify(body),
+  }));
+  return new Response(responseFromAgents.body, { status: responseFromAgents.status, headers: { "content-type": responseFromAgents.headers.get("content-type") ?? "application/json", "cache-control": "no-store" } });
+});
+app.get("/sandbox-workspace-blobs/:blobId", async (c) => {
+  if (!c.env.AGENTS_WORKER) return fail("filesystem_bridge_unavailable", 503);
+  const responseFromAgents = await c.env.AGENTS_WORKER.fetch(new Request(`http://agents-worker/internal/sandbox-workspaces/blobs/${encodeURIComponent(c.req.param("blobId"))}`, {
+    headers: {
+      "x-naelao-tenant-id": c.get("tenantId"),
+      "x-naelao-user-id": c.get("userId"),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, c.get("tenantId")),
+    },
+  }));
+  return new Response(responseFromAgents.body, { status: responseFromAgents.status, headers: {
+    "content-type": responseFromAgents.headers.get("content-type") ?? "application/json",
+    ...(responseFromAgents.headers.get("x-content-sha256") ? { "x-content-sha256": responseFromAgents.headers.get("x-content-sha256")! } : {}),
+    ...(responseFromAgents.headers.get("content-length") ? { "content-length": responseFromAgents.headers.get("content-length")! } : {}),
+    "cache-control": "no-store",
+  } });
 });
 app.delete("/computers/:id", async (c) => {
   const now = new Date().toISOString();

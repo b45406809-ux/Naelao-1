@@ -35,7 +35,7 @@ describe("data erasure D1 records", () => {
       "assistant_communication_identities",
       "decision_call_reservations",
       "sandbox_connections", "sandbox_grants", "sandbox_operations", "sandbox_executions",
-      "sandbox_publications", "sandbox_usage_events",
+      "sandbox_publications", "sandbox_usage_events", "sandbox_workspace_blobs", "sandbox_workspace_snapshots",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const scoped = new Set<string>();
@@ -67,7 +67,7 @@ describe("data erasure D1 records", () => {
       "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",
       "assistant_agentmail_operations", "assistant_agentmail_pods",
       "sandbox_connections", "sandbox_grants", "sandbox_operations", "sandbox_executions",
-      "sandbox_publications", "sandbox_usage_events",
+      "sandbox_publications", "sandbox_usage_events", "sandbox_workspace_blobs", "sandbox_workspace_snapshots",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -110,7 +110,7 @@ describe("data erasure D1 records", () => {
       VALUES ('usage-a','tenant-a','computer-a','estimate',0,'test','https://example.test','now','now')`).run();
 
     await eraseSpaceD1Records(db as never, "space-a");
-    for (const table of ["sandbox_allocations", "sandbox_computers", "sandbox_filesystems", "sandbox_operations", "sandbox_executions", "sandbox_publications", "sandbox_grants"]) {
+    for (const table of ["sandbox_allocations", "sandbox_computers", "sandbox_filesystems", "sandbox_operations", "sandbox_executions", "sandbox_publications", "sandbox_workspace_blobs", "sandbox_workspace_snapshots", "sandbox_grants"]) {
       expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
     }
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM sandbox_connections").get()).toEqual({ count: 1 });

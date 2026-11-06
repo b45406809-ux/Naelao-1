@@ -9,6 +9,10 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
 
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.staging]
 name = "naelao-sandboxes-staging"
 
@@ -18,6 +22,10 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents-staging"
+
 [env.production]
 name = "naelao-sandboxes-production"
 
@@ -26,3 +34,7 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents-production"
