@@ -9,6 +9,7 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof
 
 function fixture() {
   const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE agentport_organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL,owner_developer_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)");
   db.exec("CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,created_by TEXT)");
   db.exec("CREATE TABLE agent_email_addresses(address_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,agent_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL)");
   db.exec("CREATE TABLE project_agent_email_addresses(address_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,space_id TEXT NOT NULL,agent_id TEXT NOT NULL,project_id TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL)");
@@ -17,6 +18,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0162_agentport_signed_identity.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0163_agentport_provider_auth.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0167_agentport_apps_capabilities.sql", import.meta.url), "utf8"));
   const platformDb = { prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -31,6 +33,115 @@ function fixture() {
 }
 
 describe("AgentPort internal registry API", () => {
+  it("creates an idempotent managed AgentPort principal only for Naelao system signup", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const base = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (role: string) => agentPortRoutes.fetch(new Request("https://agentport.test/principals", {
+      method: "POST", headers: { ...base, "x-naelao-role": role }, body: JSON.stringify({ id: "prn-user:tenant-a:user-1", externalId: "user-1", organizationName: "Managed tenant" }),
+    }), env);
+    expect((await call("owner")).status).toBe(403);
+    const created = await call("system");
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({ accountModel: "naelao_managed", principal: { id: "prn-user:tenant-a:user-1", principal_type: "individual", external_id: "user-1" } });
+    expect((await call("system")).status).toBe(201);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_principals WHERE tenant_id='tenant-a'").get()).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT name,owner_developer_id FROM agentport_organizations WHERE id='tenant-a'").get()).toEqual({ name: "Managed tenant", owner_developer_id: "naelao-managed:tenant-a" });
+    db.close();
+  });
+
+  it("creates isolated microapps, provisions phased capability handles, and enforces idempotent usage budgets", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"), "x-naelao-role": "agentport_api", "x-agentport-owner-id": "owner-1", "x-agentport-owner-type": "organization" };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown, customHeaders = headers) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers: customHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    const secretManifest = await call("/services", "POST", { id: "leaky", name: "Leaky service", type: "api", accountModels: ["delegated"], capabilities: ["ai.image.generate"], events: [], connectionPurpose: "agent_resource", auth: { type: "oauth2", client_secret: "must-not-persist" } }, { ...headers, "x-naelao-role": "owner" });
+    expect(secretManifest.status).toBe(400);
+    const registered = await call("/services", "POST", { id: "images", name: "Image API", type: "api", accountModels: ["agent_native", "delegated"], capabilities: ["ai.image.generate"], events: [], connectionPurpose: "agent_resource", auth: { type: "oauth2", scopes: ["images:write"] }, provisioning: { mode: "self_service" } }, { ...headers, "x-naelao-role": "owner" });
+    expect(registered.status).toBe(201);
+    expect((await call("/apps", "POST", { name: "Unbudgeted app", ownerType: "organization", ownerId: "owner-1", billing: "byok" })).status).toBe(400);
+    const created = await call("/apps", "POST", { name: "RestaurantReels", ownerType: "organization", ownerId: "owner-1", billing: "byok", budget: { monthlyUSD: 1 } });
+    expect(created.status).toBe(201);
+    const { app } = await created.json() as { app: { id: string } };
+    const wrongOwner = await call(`/apps/${app.id}`, "GET", undefined, { ...headers, "x-agentport-owner-id": "other" });
+    expect(wrongOwner.status).toBe(404);
+    expect((await call(`/apps/${app.id}`, "GET", undefined, { ...headers, "x-naelao-role": "owner", "x-naelao-user-id": "other-user" })).status).toBe(404);
+    const { account } = await (await call("/accounts", "POST", { serviceId: "images", accountModel: "agent_native", ownerType: "organization", ownerId: "owner-1" }, { ...headers, "x-naelao-role": "owner" })).json() as { account: { id: string } };
+    // Modelled external account activation occurs only after the provider's existing authorized workflow succeeds.
+    await call(`/accounts/${account.id}/activate`, "POST", {}, { ...headers, "x-naelao-role": "owner" });
+    const provisioned = await call(`/apps/${app.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", serviceId: "images", authorization: "byok", accountId: account.id, phase: "build_time", limits: { perCustomer: 3, monthlyUSD: 0.5 } });
+    expect(provisioned.status).toBe(201);
+    const customerAppResponse = await call("/apps", "POST", { name: "Customer connected app", ownerType: "organization", ownerId: "owner-1", billing: "customer", budget: { monthlyUSD: 20 } });
+    const { app: customerApp } = await customerAppResponse.json() as { app: { id: string } };
+    const customerCapability = await call(`/apps/${customerApp.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", serviceId: "images", accountId: account.id });
+    expect(customerCapability.status).toBe(201);
+    expect(await customerCapability.json()).toMatchObject({ capability: { authorization: "customer_oauth", status: "active" } });
+    const { capability } = await provisioned.json() as { capability: { id: string; status: string } };
+    const record = { idempotencyKey: "request-1", customerRef: "private-customer-42", quantity: 2, reportedCostUSD: 0.4 };
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", record)).status).toBe(201);
+    expect(await (await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", record)).json()).toMatchObject({ recorded: true, duplicate: true });
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { ...record, quantity: 1 })).status).toBe(409);
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { idempotencyKey: "missing-cost", customerRef: "new-customer", quantity: 1 })).status).toBe(400);
+    const overCustomerCap = await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { ...record, idempotencyKey: "request-2", quantity: 2, reportedCostUSD: 0 });
+    expect(overCustomerCap.status).toBe(409);
+    const overCapabilityBudget = await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { ...record, customerRef: "other-customer", idempotencyKey: "request-3", quantity: 1, reportedCostUSD: 0.2 });
+    expect(overCapabilityBudget.status).toBe(409);
+    const usage = await call(`/apps/${app.id}/usage`, "GET");
+    expect(await usage.json()).toMatchObject({ usage: [{ capabilityId: capability.id, quantity: 2, reportedCostUSD: 0.4, settlement: "app_reported_estimate" }] });
+    expect(db.prepare("SELECT customer_ref_hash FROM agentport_usage_records WHERE capability_handle_id=?").get(capability.id)).toMatchObject({ customer_ref_hash: expect.not.stringContaining("private-customer-42") });
+    const managed = await call(`/apps/${app.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", serviceId: "images", authorization: "managed" });
+    expect(managed.status).toBe(422);
+    db.prepare("UPDATE agentport_services SET partnership_status='approved' WHERE id='images'").run();
+    db.prepare("INSERT INTO agentport_accounts(id,tenant_id,service_id,account_model,owner_type,owner_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("managed-image-account", "tenant-a", "images", "agent_native", "agentport", "tenant-a", "active", "2026-01-01", "2026-01-01");
+    const managedAppResponse = await call("/apps", "POST", { name: "Managed app", ownerType: "organization", ownerId: "owner-1", billing: "managed", budget: { monthlyUSD: 5 } });
+    const { app: managedApp } = await managedAppResponse.json() as { app: { id: string } };
+    const gatedManaged = await call(`/apps/${managedApp.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", provider: "auto", authorization: "managed", limits: { monthlyUSD: 5 } });
+    expect(gatedManaged.status).toBe(202);
+    expect(await gatedManaged.json()).toMatchObject({ capability: { status: "adapter_unavailable" } });
+    db.close();
+  });
+
+  it("lets a Naelao agent request provisioning only for its owner and holds actions for owner approval", async () => {
+    const { db, platformDb } = fixture(); const secret = "test-platform-secret";
+    const base = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const ownerHeaders = { ...base, "x-naelao-role": "owner", "x-naelao-user-id": "owner-1" };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown, headers = ownerHeaders) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    await call("/services", "POST", { id: "image-api", name: "Image API", type: "api", accountModels: ["agent_native"], capabilities: ["ai.image.generate"], events: [], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner-1", principalType: "individual", createdBy: "owner-1", hostPlatform: "naelao", hostSpaceId: "space-1" })).json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "image-api", accountModel: "agent_native", ownerType: "individual", ownerId: "owner-1" })).json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    const agentHeaders = { ...base, "x-naelao-role": "agent", "x-naelao-user-id": agent.id };
+    const appResponse = await call("/apps", "POST", { name: "Owner app", ownerType: "individual", ownerId: "owner-1", billing: "byok", budget: { monthlyUSD: 25 } }, agentHeaders);
+    expect(appResponse.status).toBe(201);
+    const { app } = await appResponse.json() as { app: { id: string } };
+    expect(await (await call("/apps", "GET", undefined, agentHeaders)).json()).toMatchObject({ apps: [{ id: app.id }] });
+    expect((await call(`/apps/${app.id}`, "GET", undefined, agentHeaders)).status).toBe(200);
+    const requested = await call(`/apps/${app.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", serviceId: "image-api", authorization: "byok", accountId: account.id }, agentHeaders);
+    expect(requested.status).toBe(202);
+    const { capability } = await requested.json() as { capability: { id: string; status: string } };
+    expect(capability.status).toBe("owner_approval_required");
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { idempotencyKey: "job-1", quantity: 1 }, agentHeaders)).status).toBe(409);
+    const ownerApiHeaders = { ...base, "x-naelao-role": "agentport_api", "x-agentport-owner-id": "owner-1", "x-agentport-owner-type": "individual" };
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/approve`, "POST", {}, ownerApiHeaders)).status).toBe(200);
+    expect((await call(`/apps/${app.id}/capabilities/${capability.id}/usage`, "POST", { idempotencyKey: "job-1", quantity: 1, reportedCostUSD: 0.01 }, agentHeaders)).status).toBe(201);
+    const otherAgent = await call("/agents", "POST", { principalId: "intruder", principalType: "individual", createdBy: "intruder", hostPlatform: "naelao", hostSpaceId: "space-1" });
+    const { agent: intruder } = await otherAgent.json() as { agent: { id: string } };
+    const intruderHeaders = { ...base, "x-naelao-role": "agent", "x-naelao-user-id": intruder.id };
+    expect((await call("/apps", "GET", undefined, intruderHeaders)).status).toBe(200);
+    expect(await (await call("/apps", "GET", undefined, intruderHeaders)).json()).toMatchObject({ apps: [] });
+    expect((await call(`/apps/${app.id}`, "GET", undefined, intruderHeaders)).status).toBe(404);
+    expect((await call(`/apps/${app.id}/capabilities/provision`, "POST", { capability: "ai.image.generate", serviceId: "image-api", authorization: "byok", accountId: account.id }, intruderHeaders)).status).toBe(403);
+    const orgAppResponse = await call("/apps", "POST", { name: "Organization app", ownerType: "organization", ownerId: "tenant-a", billing: "managed", budget: { monthlyUSD: 10 } });
+    const { app: orgApp } = await orgAppResponse.json() as { app: { id: string } };
+    const orgAdminHeaders = { ...base, "x-naelao-role": "owner", "x-naelao-user-id": "org-admin" };
+    expect((await call("/apps", "GET", undefined, orgAdminHeaders)).status).toBe(200);
+    expect(await (await call("/apps", "GET", undefined, orgAdminHeaders)).json()).toMatchObject({ apps: [{ id: orgApp.id }] });
+    expect((await call(`/apps/${orgApp.id}`, "GET", undefined, orgAdminHeaders)).status).toBe(200);
+    db.close();
+  });
+
   it("requires an internal tenant token and registers services, agents, shared grants and durable events", async () => {
     const { db, platformDb } = fixture();
     const secret = "test-platform-secret";

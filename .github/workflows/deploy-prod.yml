@@ -171,6 +171,8 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0166_drop_agentport_message_store.sql --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0167_agentport_apps_capabilities.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT monthly_budget_micros FROM agentport_apps LIMIT 0" --remote
 
       - name: Deploy all workers (production)
         env:

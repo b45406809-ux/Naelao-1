@@ -28,6 +28,10 @@ migrations_dir = "../../infra/migrations"
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
+[[services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api"
+
 # F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
 # select an env with --env=<name>; without these blocks the worker deployed with the top-level
 # ENVIRONMENT="development" config (localhost links) even in production. wrangler REPLACES (not
@@ -53,6 +57,10 @@ migrations_dir = "../../infra/migrations"
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
+[[env.staging.services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api-staging"
+
 # F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
 # select an env with --env=<name>; without these blocks the worker deployed with the top-level
 # ENVIRONMENT="development" config (localhost links) even in production. wrangler REPLACES (not
@@ -70,6 +78,10 @@ migrations_dir = "../../infra/migrations"
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+[[env.production.services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api-production"
 
 # F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
 # select an env with --env=<name>; without these blocks the worker deployed with the top-level

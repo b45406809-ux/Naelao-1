@@ -6,7 +6,7 @@ function usage() {
 
 Usage: agentport auth <register|login|password> --json '{"email":"...","password":"..."}'
        agentport keys create --json '{"scopes":["agentport:read","agentport:write"]}'
-       agentport <services|agents|accounts|channels|threads|messages|events|activity|keys> <command> [--flag value]
+       agentport <services|agents|accounts|apps|channels|threads|messages|events|activity|keys> <command> [--flag value]
 
 Set AGENTPORT_API_URL to override the host. Auth returns a short-lived user token; export it as AGENTPORT_USER_TOKEN to create your first API key. Store AGENTPORT_API_KEY in your secret manager.`);
   process.exit(2);
@@ -47,6 +47,15 @@ else if (resource === "services" && command === "register" && input) await reque
 else if (resource === "agents" && command === "register") await request("POST", "/agents", input || { hostPlatform: flags.host || "external", runtime: flags.runtime });
 else if (resource === "accounts" && command === "create" && input) await request("POST", "/accounts", input);
 else if (resource === "accounts" && command === "grant" && flags.account && input) await request("POST", `/accounts/${encodeURIComponent(flags.account)}/grants`, input);
+else if (resource === "apps" && command === "create" && input) await request("POST", "/apps", input);
+else if (resource === "apps" && command === "list") await request("GET", "/apps");
+else if (resource === "apps" && command === "get" && flags.id) await request("GET", `/apps/${encodeURIComponent(flags.id)}`);
+else if (resource === "apps" && command === "archive" && flags.id) await request("DELETE", `/apps/${encodeURIComponent(flags.id)}`);
+else if (resource === "apps" && command === "provision" && flags.app && input) await request("POST", `/apps/${encodeURIComponent(flags.app)}/capabilities/provision`, input);
+else if (resource === "apps" && command === "approve" && flags.app && flags.capability) await request("POST", `/apps/${encodeURIComponent(flags.app)}/capabilities/${encodeURIComponent(flags.capability)}/approve`, {});
+else if (resource === "apps" && command === "revoke" && flags.app && flags.capability) await request("DELETE", `/apps/${encodeURIComponent(flags.app)}/capabilities/${encodeURIComponent(flags.capability)}`);
+else if (resource === "apps" && command === "report-usage" && flags.app && flags.capability && input) await request("POST", `/apps/${encodeURIComponent(flags.app)}/capabilities/${encodeURIComponent(flags.capability)}/usage`, input);
+else if (resource === "apps" && command === "usage" && flags.app) await request("GET", `/apps/${encodeURIComponent(flags.app)}/usage`);
 else if (resource === "channels" && command === "list") await request("GET", `/channels${flags.agent ? `?agentId=${encodeURIComponent(flags.agent)}` : ""}`);
 else if (resource === "channels" && command === "register" && input) await request("POST", "/channels", input);
 else if (resource === "threads" && command === "create" && flags.channel && input) await request("POST", `/channels/${encodeURIComponent(flags.channel)}/threads`, input);

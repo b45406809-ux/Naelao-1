@@ -56,6 +56,29 @@ function req(path: string, body: unknown, method = "POST"): Request {
 }
 
 describe("POST /register — builder signup", () => {
+  it("registers a Naelao-managed AgentPort organization and principal as part of signup", async () => {
+    const env = makeEnv();
+    const requests: Request[] = [];
+    (env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = {
+      fetch: async (request: Request) => { requests.push(request); return Response.json({ accountModel: "naelao_managed" }, { status: 201 }); },
+    } as Fetcher;
+    const res = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222", org_name: "Acme" }), env as never, execCtx);
+    expect(res.status).toBe(201);
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe("/internal/agentport/principals");
+    expect(requests[0]!.headers.get("x-naelao-role")).toBe("system");
+    expect(await requests[0]!.json()).toMatchObject({ organizationName: "Acme", externalId: expect.any(String) });
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first()).toMatchObject({ count: 1 });
+  });
+
+  it("does not complete signup when the configured AgentPort identity service is unavailable", async () => {
+    const env = makeEnv();
+    (env as unknown as { AGENTPORT_WORKER: Fetcher }).AGENTPORT_WORKER = { fetch: async () => new Response(null, { status: 503 }) } as Fetcher;
+    const res = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    expect(res.status).toBe(503);
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first()).toMatchObject({ count: 0 });
+  });
+
   it("creates a real account against the ACTUAL migration schema (regression: this used to fail with 'no such column')", async () => {
     const env = makeEnv();
     const res = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);

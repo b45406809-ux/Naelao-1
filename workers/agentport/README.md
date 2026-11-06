@@ -4,7 +4,7 @@ AgentPort is deployed as its own Worker at `https://agentport.naelao.com`; `/aut
 
 ## Sign in and choose how AgentPort is used
 
-AgentPort human accounts are separate from Naelao accounts. Developers can register or sign in at `https://agentport.naelao.com/auth` and create their own organization and API credentials. Naelao-created agents receive a Naelao-managed AgentPort identity by default, so using AgentPort inside Naelao does not require a second login. A user or organization can register its own AgentPort organization and authorize a host product to use it through the same generic OAuth API and SDK available to every builder. OAuth is Authorization Code with PKCE, exact registered redirect URIs, short-lived access tokens, and rotating refresh tokens when `offline_access` is requested. AgentPort acts as an identity/API provider here: it does not ingest connected provider message bodies, attachments, or service-account credentials.
+AgentPort human accounts are separate from Naelao accounts. Developers can register or sign in at `https://agentport.naelao.com/auth` and create their own organization and API credentials. Naelao signup creates a Naelao-managed AgentPort organization and principal by default, so Naelao agents can use AgentPort without a second login or user-managed API key. A user or organization can register its own AgentPort organization and authorize a host product to use it through the same generic OAuth API and SDK available to every builder. OAuth is Authorization Code with PKCE, exact registered redirect URIs, short-lived access tokens, and rotating refresh tokens when `offline_access` is requested. AgentPort acts as an identity/API provider here: it does not ingest connected provider message bodies, attachments, or service-account credentials.
 
 ## First API key
 
@@ -36,6 +36,9 @@ Base URL: `https://agentport.naelao.com/v1` (set `AGENTPORT_API_URL` for another
 - `POST /agents`, `GET /agents`: register and list persistent agent identities.
 - `POST /services`, `GET /services`: register and discover existing API, MCP, A2A, channel, or managed services. Manifests declare supported account models, capabilities, events, and partnership status.
 - `POST /accounts`, `GET /accounts`, `POST /accounts/:id/activate`, `POST /accounts/:id/grants`, `DELETE /grants/:id`: record provisioned resources and grant/revoke agent access.
+- `POST /apps`, `GET /apps`, `GET /apps/:id`: create and inspect isolated microapp identities with managed, BYOK, or customer billing mode and a monthly budget.
+- `POST /apps/:id/capabilities/provision`: request a scoped capability handle at build time or runtime, with optional provider/account selection, customer limits, and budget. Handles are references to an already-authorized provider connector; they never contain provider credentials.
+- `POST /apps/:id/capabilities/:handleId/usage`, `GET /apps/:id/usage`: record idempotent app-reported consumption and enforce configured per-customer and monthly limits. Customer references are hashed. The returned totals are app-reported estimates, not provider-confirmed settlement.
 - `GET /services?capability=...&accountModel=...`, `GET /services/:serviceId`: discover and inspect only provider-declared capabilities, account models, provisioning and billing metadata.
 - `POST /channels`, `GET /channels`: associate provider channels with active AgentPort accounts and list available channels. Trusted sender records classify provider-authenticated sender IDs; message text or model claims cannot assign sender roles.
 - `POST /channels/:channelId/threads`, `GET /channels/:channelId/threads`, `GET /threads/:threadId/message-references`: retain provider conversation and thread IDs separately from runtime sessions. An optional `sessionBinding` is opaque; AgentPort does not create or own sessions. Reference listings contain metadata only; call the provider directly to read or send messages.
@@ -47,6 +50,12 @@ Base URL: `https://agentport.naelao.com/v1` (set `AGENTPORT_API_URL` for another
 - `POST /keys`, `GET /keys`, `DELETE /keys/:id`: create scoped child keys, list, and revoke.
 - `DELETE /account`: erase the current AgentPort organization and its tenant data.
 - `POST /mcp`: MCP Streamable HTTP; initialize protocol negotiation, list tools, and call AgentPort tools with the same API key.
+
+Provisioning stays honest about provider readiness. `managed` handles require an independently approved AgentPort partnership and a provider declaration that permits self-service provisioning. Because no managed provider execution adapter is deployed yet, those handles remain `adapter_unavailable` even after provider approval; they cannot be used to imply working managed service. `byok` and `customer_oauth` handles require an active account created after the user's authorized provider flow. If authorization is missing, the capability request is saved with `authorization_required`; unapproved managed providers remain `provider_approval_required`. AgentPort returns no credentials and does not execute the provider API; the app/runtime calls the authorized provider connector. Provider-reported settlement is not available until that provider supplies a verified adapter.
+
+Naelao-hosted agents can create or request capabilities only for the individual principal that owns the agent. A ready request is held as `owner_approval_required` until its owner approves it through the AgentPort API, CLI, or MCP tool. An agent cannot approve or revoke its own handles. Every app must set its own monthly budget regardless of who pays upstream. `provider: "auto"` chooses an eligible registered service deterministically, preferring an already authorized account and then an available authorization/provisioning path; this is availability-based selection, not an unverified price optimizer.
+
+Apps should report usage before or immediately after each provider operation. AgentPort enforces configured limits when it receives a report, but it cannot prevent an operation already sent directly to a provider and cannot verify app-reported cost. Reported totals are estimates, not settlement. Consumers should use a provider-confirmed adapter for billable managed usage.
 
 Channel event receipts expose a provider pointer as `dataRef`, alongside `threadRef` and event metadata. For example, a `message.received` event can point to a provider message ID. The runtime uses the provider's own authorized connector to read that message. It sends replies through that connector after checking the agent's grant with `POST /threads/:threadId/actions/authorize`; message text and attachments are never passed to AgentPort.
 
@@ -96,6 +105,9 @@ agentport keys create --json '{"scopes":["agentport:read","agentport:write","age
 # Store returned apiKey as AGENTPORT_API_KEY.
 agentport agents register --host openclaw --runtime external
 agentport services list
+agentport apps create --json '{"name":"RestaurantReels","ownerType":"organization","ownerId":"org_123","billing":"byok","budget":{"monthlyUSD":100}}'
+agentport apps provision --app <app-id> --json '{"capability":"ai.video.generate","serviceId":"video-provider","authorization":"byok","phase":"build_time","limits":{"perCustomer":20}}'
+agentport apps report-usage --app <app-id> --capability <handle-id> --json '{"idempotencyKey":"job_123","customerRef":"customer_456","quantity":1,"reportedCostUSD":0.04}'
 agentport events pending --agent <agent-id>
 agentport messages references --thread <thread-id> --agent <agent-id>
 ```
@@ -104,4 +116,4 @@ MCP/CLI/SDK/API share the same REST core and scope checks. Event subscriptions w
 
 ## Deployment setup
 
-Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0166 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.
+Deploy `workers/agentport/wrangler.toml` to the `agentport.naelao.com` route. Configure `AGENTPORT_JWT_SECRET` and `PLATFORM_SECRET` with Wrangler secrets. Deployment applies migrations 0158–0167 before deploying this Worker. The AgentPort account and authentication store are independent of Naelao's developer accounts. Staging uses `agentport-staging.naelao.com`.

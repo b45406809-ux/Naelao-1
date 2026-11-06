@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { cors, requestId, errorResponse, badRequest, unauthorized, HttpError, readBoundedRequestText, RequestBodyTooLargeError } from "@naelao/http";
+import { cors, requestId, errorResponse, badRequest, unauthorized, HttpError, readBoundedRequestText, RequestBodyTooLargeError, mintInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt, AuthError } from "@naelao/auth";
 
 export interface AuthEnv {
@@ -9,6 +9,7 @@ export interface AuthEnv {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   NOTIFICATIONS_WORKER?: Fetcher;
+  AGENTPORT_WORKER?: Fetcher;
   /** Public base URL of apps/dashboard, used to build a clickable password-reset link. Left
    *  unset rather than guessing a production domain — when unset, the email still carries a raw
    *  token the dashboard's reset page accepts pasted in by hand. */
@@ -303,6 +304,24 @@ app.post("/register", async (c) => {
   const orgId = crypto.randomUUID();
   const orgName = typeof body.org_name === "string" && body.org_name.trim() ? body.org_name.trim() : email.split("@")[0] ?? "My Org";
   const subId = crypto.randomUUID();
+
+  // Every Naelao signup gets an AgentPort principal in the Naelao-managed tenant. This is the
+  // default identity for Naelao agents; an independently owned AgentPort org can be linked later
+  // through AgentPort's generic OAuth flow. It is intentionally a principal, not a second login.
+  if (c.env.AGENTPORT_WORKER) {
+    const response = await c.env.AGENTPORT_WORKER.fetch(new Request("https://agentport.internal/internal/agentport/principals", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-role": "system",
+        "x-naelao-user-id": userId,
+        "x-naelao-tenant-id": orgId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, orgId),
+      },
+      body: JSON.stringify({ id: `prn-user:${orgId}:${userId}`, externalId: userId, organizationName: orgName }),
+    }));
+    if (!response.ok) return c.json({ error_code: "agentport_identity_unavailable" }, 503);
+  }
 
   // Launch-readiness audit follow-up: this batch had THREE real, previously-undetected bugs
   // (workers/auth had zero test coverage of its own before this pass) that would have made

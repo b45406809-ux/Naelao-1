@@ -33,6 +33,8 @@ describe("latest D1 deployment migration batch", () => {
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0165_agentport_oauth.sql"), "utf8"))).not.toThrow();
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0166_drop_agentport_message_store.sql"), "utf8"));
     expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0166_drop_agentport_message_store.sql"), "utf8"))).not.toThrow();
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0167_agentport_apps_capabilities.sql"), "utf8"));
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0167_agentport_apps_capabilities.sql"), "utf8"))).not.toThrow();
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",
@@ -56,6 +58,9 @@ describe("latest D1 deployment migration batch", () => {
       "agentport_oauth_clients", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",
     ]));
     expect(tables).not.toContain("agentport_messages");
+    expect(tables).toContain("agentport_apps");
+    expect(tables).toContain("agentport_capability_handles");
+    expect(tables).toContain("agentport_usage_records");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('users')").toArray().map(row => row.name)).toContain("preferred_language");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('product_end_users')").toArray().map(row => row.name)).toContain("preferred_language");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('channel_links')").toArray().map(row => row.name)).toContain("model_override");

@@ -57,6 +57,7 @@ describe("data erasure D1 records", () => {
       "spaces", "products", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
       "website_connections", "assistant_communication_identities",
       "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_accounts",
+      "agentport_apps", "agentport_capability_handles", "agentport_usage_records",
       "agentport_agents", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events",
       "agentport_principals", "agentport_services", "agentport_service_manifests", "agentport_provider_auth", "agentport_channels",
       "agentport_threads", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
@@ -229,7 +230,7 @@ describe("data erasure D1 records", () => {
   it("erases AgentPort registry relationships child-first for the target tenant", async () => {
     const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO agentport_organizations(id,name,owner_developer_id,created_at,updated_at) VALUES(?,?,?,?,?)`)
-      .run("tenant-a", "AgentPort A", "developer-a", "2026-01-01", "2026-01-01");
+      .run("tenant-a", "AgentPort A", "naelao-managed:tenant-a", "2026-01-01", "2026-01-01");
     db.db.prepare(`INSERT INTO agentport_developers(id,tenant_id,email,email_normalized,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
       .run("developer-a", "tenant-a", "owner@example.test", "owner@example.test", "hash", "2026-01-01", "2026-01-01");
     db.db.prepare(`INSERT INTO agentport_oauth_clients(client_id,owner_tenant_id,owner_developer_id,client_name,redirect_uris_json,created_at) VALUES(?,?,?,?,?,?)`)
@@ -264,13 +265,20 @@ describe("data erasure D1 records", () => {
       VALUES(?,?,?,?,?,?)`).run("credential-a", "tenant-a", "agent-a", "https://service.test", "2026-01-01", "2026-01-02");
     db.db.prepare(`INSERT INTO agentport_service_manifests(tenant_id,service_id,updated_at) VALUES(?,?,?)`)
       .run("tenant-a", "svc-a", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_apps(id,tenant_id,name,owner_type,owner_id,created_by,agent_id,billing_mode,monthly_budget_micros,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run("app-a", "tenant-a", "App A", "individual", "user-a", "user-a", "agent-a", "byok", 1000000, "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_capability_handles(id,tenant_id,app_id,service_id,capability,provider_id,authorization_mode,provisioning_phase,status,readiness_status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run("cap-a", "tenant-a", "app-a", "svc-a", "mail.send", "svc-a", "byok", "runtime", "active", "active", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_usage_records(id,tenant_id,app_id,capability_handle_id,idempotency_key,quantity,period_month,created_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("usage-a", "tenant-a", "app-a", "cap-a", "request-a", 1, "2026-01", "2026-01-01");
 
     await eraseOrgOperationalRecords(db as never, "tenant-a");
 
-    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_account_grants", "agentport_accounts", "agentport_identity_keys", "agentport_issued_credentials", "agentport_service_manifests", "agentport_provider_auth", "agentport_agents", "agentport_principals", "agentport_services", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens"]) {
+    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_usage_records", "agentport_capability_handles", "agentport_apps", "agentport_account_grants", "agentport_accounts", "agentport_identity_keys", "agentport_issued_credentials", "agentport_service_manifests", "agentport_provider_auth", "agentport_agents", "agentport_principals", "agentport_services", "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens"]) {
       expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE tenant_id=?`).get("tenant-a"), table).toEqual({ count: 0 });
     }
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM agentport_oauth_clients WHERE owner_tenant_id=?").get("tenant-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM agentport_organizations WHERE id=?").get("tenant-a")).toEqual({ count: 0 });
   });
 
   it("clears credentials and login metadata while anonymizing only the target org", async () => {

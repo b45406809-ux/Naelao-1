@@ -13,6 +13,18 @@ export interface ServiceManifest {
   billing?: Record<string, unknown>;
   capabilitySchemas?: Record<string, unknown>;
 }
+export type AgentPortBillingMode = "managed" | "byok" | "customer";
+export interface AgentPortApp {
+  id: string; name: string; ownerType: "individual" | "organization" | "agentport"; ownerId: string;
+  billing: AgentPortBillingMode; budget: { monthlyUSD: number }; status: string;
+}
+export interface AgentPortCapability {
+  id: string; appId: string; capability: string; serviceId: string; providerId: string;
+  authorization: "managed" | "byok" | "customer_oauth"; phase: "build_time" | "runtime";
+  accountId: string | null; status: "active" | "authorization_required" | "provider_approval_required" | "adapter_unavailable" | "owner_approval_required" | "revoked";
+  limits: { perCustomer: number | null; monthlyUSD: number | null };
+  execution: "authorized_provider_connector_required";
+}
 export class AgentPortError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string, readonly details?: unknown) { super(message); this.name = "AgentPortError"; }
 }
@@ -161,6 +173,15 @@ export class AgentPortClient {
   }
   registerAgent(input: { hostPlatform: string; runtime?: string }) { return this.request<{ agent: { id: string; principalId: string; status: string } }>("/agents", { method: "POST", body: JSON.stringify(input) }); }
   createAccount(input: { serviceId: string; accountModel: AccountModel; ownerType: string; ownerId: string; parentAccountId?: string; externalAccountId?: string; credentialRef?: string; metadata?: unknown }) { return this.request<{ account: { id: string; status: string } }>("/accounts", { method: "POST", body: JSON.stringify(input) }); }
+  createApp(input: { name: string; ownerType: AgentPortApp["ownerType"]; ownerId: string; billing: AgentPortBillingMode; budget: { monthlyUSD: number } }) { return this.request<{ app: AgentPortApp }>("/apps", { method: "POST", body: JSON.stringify(input) }); }
+  listApps() { return this.request<{ apps: AgentPortApp[] }>("/apps"); }
+  getApp(appId: string) { return this.request<{ app: AgentPortApp & { capabilities: AgentPortCapability[] } }>(`/apps/${encodeURIComponent(appId)}`); }
+  archiveApp(appId: string) { return this.request<{ archived: boolean }>(`/apps/${encodeURIComponent(appId)}`, { method: "DELETE" }); }
+  provisionCapability(appId: string, input: { capability: string; provider?: string; serviceId?: string; authorization?: "managed" | "byok" | "customer_oauth"; accountId?: string; phase?: "build_time" | "runtime"; limits?: { perCustomer?: number; monthlyUSD?: number } }) { return this.request<{ capability: AgentPortCapability }>(`/apps/${encodeURIComponent(appId)}/capabilities/provision`, { method: "POST", body: JSON.stringify(input) }); }
+  approveCapability(appId: string, capabilityId: string) { return this.request<{ approved: boolean; status: string }>(`/apps/${encodeURIComponent(appId)}/capabilities/${encodeURIComponent(capabilityId)}/approve`, { method: "POST", body: "{}" }); }
+  revokeCapability(appId: string, capabilityId: string) { return this.request<{ revoked: boolean }>(`/apps/${encodeURIComponent(appId)}/capabilities/${encodeURIComponent(capabilityId)}`, { method: "DELETE" }); }
+  reportCapabilityUsage(appId: string, capabilityId: string, input: { idempotencyKey: string; quantity: number; customerRef?: string; reportedCostUSD?: number }) { return this.request<{ recorded: boolean; duplicate?: boolean; providerSettlement?: string }>(`/apps/${encodeURIComponent(appId)}/capabilities/${encodeURIComponent(capabilityId)}/usage`, { method: "POST", body: JSON.stringify(input) }); }
+  getAppUsage(appId: string) { return this.request<{ usage: Array<{ capabilityId: string; quantity: number; reportedCostUSD: number; period: string; settlement: "app_reported_estimate" }> }>(`/apps/${encodeURIComponent(appId)}/usage`); }
   createChannel(input: { serviceId: string; accountId: string; agentId: string; providerChannelId: string; displayName: string; trustPolicy?: Record<string, unknown> }) { return this.request<{ channel: { id: string; status: string; trustPolicy: Record<string, unknown> } }>("/channels", { method: "POST", body: JSON.stringify(input) }); }
   listChannels(agentId?: string) { return this.request<{ channels: unknown[] }>(`/channels${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`); }
   createThread(channelId: string, input: { providerThreadId: string; participants?: string[]; metadata?: Record<string, unknown>; sessionBinding?: Record<string, unknown> }) { return this.request<{ thread: { id: string; channelId: string; sessionBinding: Record<string, unknown> | null } }>(`/channels/${encodeURIComponent(channelId)}/threads`, { method: "POST", body: JSON.stringify(input) }); }

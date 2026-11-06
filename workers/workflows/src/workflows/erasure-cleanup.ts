@@ -140,7 +140,6 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_oauth_clients WHERE owner_tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_api_keys WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_developers WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM agentport_organizations WHERE id = ?").bind(orgId),
     // AgentPort registry rows are tenant-owned operational data. Delete dependents before
     // principals/services/accounts so no identity, event payload reference, or access grant
     // survives an organization erasure.
@@ -148,6 +147,9 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_event_deliveries WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_account_dependencies WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_account_grants WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_usage_records WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_capability_handles WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_apps WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_event_subscriptions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_events WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_action_receipts WHERE tenant_id = ?").bind(orgId),
@@ -164,6 +166,9 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_service_manifests WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_provider_auth WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_services WHERE tenant_id = ?").bind(orgId),
+    // Remove only the AgentPort tenant created for Naelao's managed identity. Independently
+    // registered AgentPort organizations retain their own lifecycle and are not erased here.
+    db.prepare("DELETE FROM agentport_organizations WHERE id = ? AND owner_developer_id = ?").bind(orgId, `naelao-managed:${orgId}`),
     db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),

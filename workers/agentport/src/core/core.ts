@@ -22,7 +22,7 @@ export interface RegisteredService {
   events: string[];
   connectionPurpose: ConnectionPurpose;
   partnershipStatus: "unaffiliated" | "approved" | "restricted" | "unavailable";
-  auth?: Record<string, unknown>;
+  auth?: { type?: "oauth2" | "api_key" | "mtls" | "provider_managed" | "none"; authorizationUrl?: string; scopes?: string[] };
   billing?: Record<string, unknown>;
   provisioning?: Record<string, unknown>;
   capabilitySchemas?: Record<string, unknown>;
@@ -59,14 +59,32 @@ export function validateServiceRegistration(value: unknown): RegisteredService |
   // may set `approved` after independent verification; public manifest input never can.
   const partnershipStatus = ["restricted", "unavailable"].includes(String(row.partnershipStatus))
     ? row.partnershipStatus as RegisteredService["partnershipStatus"] : "unaffiliated";
+  const authInput = row.auth && typeof row.auth === "object" && !Array.isArray(row.auth) ? row.auth as Record<string, unknown> : {};
+  const authKeys = new Set(["type", "authorizationUrl", "scopes"]);
+  if (Object.keys(authInput).some(key => !authKeys.has(key))) return null;
+  const authType = authInput.type;
+  if (authType !== undefined && !["oauth2", "api_key", "mtls", "provider_managed", "none"].includes(String(authType))) return null;
+  if (authInput.authorizationUrl !== undefined) {
+    if (typeof authInput.authorizationUrl !== "string") return null;
+    try {
+      const authUrl = new URL(authInput.authorizationUrl);
+      if (authUrl.protocol !== "https:" || authUrl.username || authUrl.password || authUrl.hash) return null;
+    } catch { return null; }
+  }
+  if (authInput.scopes !== undefined && (!Array.isArray(authInput.scopes) || authInput.scopes.some(scope => typeof scope !== "string" || !scope || scope.length > 160))) return null;
   const plainObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const auth = {
+    ...(authType ? { type: authType as "oauth2" | "api_key" | "mtls" | "provider_managed" | "none" } : {}),
+    ...(typeof authInput.authorizationUrl === "string" ? { authorizationUrl: authInput.authorizationUrl } : {}),
+    ...(Array.isArray(authInput.scopes) ? { scopes: [...new Set(authInput.scopes as string[])] } : {}),
+  };
   return {
     id: row.id, name: row.name.trim(), type: row.type as RegisteredService["type"],
     ...(typeof row.endpoint === "string" ? { endpoint: row.endpoint } : {}),
     accountModels: [...new Set(models as AccountModel[])], capabilities: [...new Set(row.capabilities as string[])],
     events: [...new Set(row.events as string[])], connectionPurpose: row.connectionPurpose as ConnectionPurpose,
     partnershipStatus,
-    auth: plainObject(row.auth), billing: plainObject(row.billing),
+    auth, billing: plainObject(row.billing),
     provisioning: plainObject(row.provisioning), capabilitySchemas: plainObject(row.capabilitySchemas),
   };
 }
