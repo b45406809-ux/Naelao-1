@@ -63,6 +63,7 @@ describe("data erasure D1 records", () => {
       "agentport_threads", "agentport_channel_message_refs", "agentport_trusted_senders", "agentport_action_receipts",
       "agentport_identity_keys", "agentport_issued_credentials", "agentport_api_keys", "agentport_developers",
       "agentport_oauth_codes", "agentport_oauth_tokens", "agentport_oauth_refresh_tokens",
+      "assistant_agentmail_operations", "assistant_agentmail_pods",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -118,6 +119,30 @@ describe("data erasure D1 records", () => {
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_credentials WHERE space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
+  });
+
+  it("erases AgentMail credentials and event references with their Space", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare(`INSERT INTO assistant_agentmail_accounts
+      (id, tenant_id, space_id, assistant_identity_id, agentport_agent_id, agentport_account_id, owner_user_id,
+       mode, inbox_id, email_address, status, created_at, updated_at)
+      VALUES ('connection-a','tenant-a','space-a','identity-a','agent-a','ap-account-a','user-a',
+       'user_connected','inbox-a','assistant@example.test','active','now','now')`).run();
+    db.db.prepare(`INSERT INTO assistant_agentmail_event_receipts (account_id,event_id,event_type,status,created_at,updated_at)
+      VALUES ('connection-a','event-a','message.received','queued','now','now')`).run();
+    db.db.prepare(`INSERT INTO assistant_agentmail_sends (connection_id,idempotency_hash,request_hash,status,first_attempt_at,updated_at)
+      VALUES ('connection-a','idem-a','request-a','sent','now','now')`).run();
+    db.db.prepare(`INSERT INTO assistant_agentport_event_receipts (delivery_id,account_id,event_id,status,payload_hash,created_at,updated_at)
+      VALUES ('delivery-a','ap-account-a','event-a','queued','hash-a','now','now')`).run();
+    db.db.prepare(`INSERT INTO assistant_agentport_event_runs
+      (delivery_id,tenant_id,space_id,agent_id,connection_id,account_id,subscription_id,event_id,service_id,event_type,thread_ref,data_ref,status,created_at,updated_at)
+      VALUES ('delivery-a','tenant-a','space-a','agent-a','connection-a','ap-account-a','sub-a','event-a','agentmail:tenant-a','message.received','thread-a','message-a','pending','now','now')`).run();
+
+    await eraseSpaceD1Records(db as never, "space-a");
+
+    for (const table of ["assistant_agentmail_accounts", "assistant_agentmail_event_receipts", "assistant_agentmail_sends", "assistant_agentport_event_receipts", "assistant_agentport_event_runs"]) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
   });
 
   it("deletes assistant ingress, project aliases, approval, voice, and provisioning state by Space", async () => {

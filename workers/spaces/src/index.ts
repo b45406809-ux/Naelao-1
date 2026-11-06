@@ -836,7 +836,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
       }catch{assistantEmailSetups.push({kind,...(projectId?{projectId}:{}),status:"deferred",errorCode:"assistant_setup_unavailable"});}
     }
   }
-  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups});
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups},{status:response.status});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,

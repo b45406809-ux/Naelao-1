@@ -23,6 +23,7 @@ export const SPACE_ERASURE_TABLES = [
   // Their external profiles/callbacks are purged before this final scoped database cleanup.
   "assistant_active_voice_endpoints", "assistant_approval_decisions", "assistant_live_calls",
   "assistant_mail_ingress_usage", "assistant_verification_waits", "space_provisioning_outbox",
+  "assistant_agentmail_accounts", "assistant_agentport_event_runs",
   // Blackboard content and delivery state is Space-owned operational data, not retained audit
   // history. Remove dependent rows before events so deletion also works where FK cascades are off.
   "space_blackboard_event_receipts", "space_blackboard_delivery", "space_blackboard_wakes",
@@ -100,6 +101,11 @@ export interface ErasureDocument {
 
 export async function eraseSpaceD1Records(db: D1Database, spaceId: string): Promise<void> {
   // Children precede parents where the migrations declare foreign keys.
+  await db.batch([
+    db.prepare("DELETE FROM assistant_agentmail_event_receipts WHERE account_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
+    db.prepare("DELETE FROM assistant_agentport_event_receipts WHERE account_id IN (SELECT agentport_account_id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
+  ]);
   await db.batch(SPACE_ERASURE_TABLES.map((table) =>
     db.prepare(`DELETE FROM ${table} WHERE space_id = ?`).bind(spaceId)
   ));
@@ -131,6 +137,8 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     // The queue has already accepted the request before the workflow can start. Once erasure
     // begins, remove the retry payload too; it contains the owner's ID and free-text reason.
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM assistant_agentmail_operations WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM assistant_agentmail_pods WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
     // OAuth grants must be removed before AgentPort developer and organization identity rows.

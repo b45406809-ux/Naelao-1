@@ -40,6 +40,9 @@ function makeEnv() {
         return new Response("not found", { status: 404 });
       },
     },
+    AGENTPORT_WORKER: {
+      async fetch() { return Response.json({ ok: true }, { status: 201 }); },
+    },
   } as unknown as AgentsEnv;
   return { env, files, calls };
 }
