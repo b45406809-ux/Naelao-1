@@ -230,7 +230,7 @@ describe("data erasure D1 records", () => {
   it("erases AgentPort registry relationships child-first for the target tenant", async () => {
     const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO agentport_organizations(id,name,owner_developer_id,created_at,updated_at) VALUES(?,?,?,?,?)`)
-      .run("tenant-a", "AgentPort A", "naelao-managed:tenant-a", "2026-01-01", "2026-01-01");
+      .run("tenant-a", "AgentPort A", "platform-managed:tenant-a", "2026-01-01", "2026-01-01");
     db.db.prepare(`INSERT INTO agentport_developers(id,tenant_id,email,email_normalized,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
       .run("developer-a", "tenant-a", "owner@example.test", "owner@example.test", "hash", "2026-01-01", "2026-01-01");
     db.db.prepare(`INSERT INTO agentport_oauth_clients(client_id,owner_tenant_id,owner_developer_id,client_name,redirect_uris_json,created_at) VALUES(?,?,?,?,?,?)`)

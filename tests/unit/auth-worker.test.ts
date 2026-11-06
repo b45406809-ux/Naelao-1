@@ -66,7 +66,7 @@ describe("POST /register — builder signup", () => {
     expect(res.status).toBe(201);
     expect(requests).toHaveLength(1);
     expect(new URL(requests[0]!.url).pathname).toBe("/internal/agentport/principals");
-    expect(requests[0]!.headers.get("x-naelao-role")).toBe("system");
+    expect(requests[0]!.headers.get("x-agentport-actor-role")).toBe("client_system");
     expect(await requests[0]!.json()).toMatchObject({ organizationName: "Acme", externalId: expect.any(String) });
     expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first()).toMatchObject({ count: 1 });
   });
