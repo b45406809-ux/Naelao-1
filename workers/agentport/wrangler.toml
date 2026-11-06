@@ -1,0 +1,39 @@
+name = "agentport-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-29"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+[vars]
+ENVIRONMENT = "development"
+AGENTPORT_ISSUER = "https://agentport.naelao.com"
+# AgentPort owns its developer JWT secret. Configure it and PLATFORM_SECRET via Wrangler secrets.
+# wrangler secret put AGENTPORT_JWT_SECRET; wrangler secret put PLATFORM_SECRET
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", AGENTPORT_ISSUER = "https://agentport-staging.naelao.com" }
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+[[env.staging.routes]]
+pattern = "agentport-staging.naelao.com/*"
+zone_name = "naelao.com"
+
+[env.production]
+vars = { ENVIRONMENT = "production", AGENTPORT_ISSUER = "https://agentport.naelao.com" }
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+[[env.production.routes]]
+pattern = "agentport.naelao.com/*"
+zone_name = "naelao.com"

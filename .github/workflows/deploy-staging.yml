@@ -164,6 +164,20 @@ jobs:
             --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" \
             --remote \
             --env=staging
+          # AgentPort standalone public API credential registry and control plane.
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0158_agentport_registry.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0159_agentport_api_keys.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT key_hash FROM agentport_api_keys LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0160_agentport_developer_identity.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT email_normalized FROM agentport_developers LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0161_agentport_channels_threads.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_channel_id,session_binding_json,receipt_hash FROM agentport_channels LEFT JOIN agentport_threads ON 1=0 LEFT JOIN agentport_action_receipts ON 1=0 LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0162_agentport_signed_identity.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT public_jwk_json,private_key_ciphertext FROM agentport_identity_keys LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0163_agentport_provider_auth.sql --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote --env=staging
 
       - name: Deploy router worker (staging)
         env:
@@ -176,6 +190,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: npx wrangler deploy --env=staging --config=workers/spaces/wrangler.toml
+
+      - name: Deploy AgentPort standalone API (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/agentport/wrangler.toml
 
       - name: Deploy agents worker (staging)
         env:

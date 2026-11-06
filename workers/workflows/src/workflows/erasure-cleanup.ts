@@ -133,6 +133,9 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_api_keys WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_developers WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_organizations WHERE id = ?").bind(orgId),
     // AgentPort registry rows are tenant-owned operational data. Delete dependents before
     // principals/services/accounts so no identity, event payload reference, or access grant
     // survives an organization erasure.
@@ -142,10 +145,19 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM agentport_account_grants WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_event_subscriptions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_events WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_action_receipts WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_messages WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_threads WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_trusted_senders WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_channels WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_issued_credentials WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_identity_keys WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_accounts WHERE tenant_id = ? AND parent_account_id IS NOT NULL").bind(orgId),
     db.prepare("DELETE FROM agentport_accounts WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_agents WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_principals WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_service_manifests WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM agentport_provider_auth WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM agentport_services WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM products WHERE tenant_id = ?)").bind(orgId),
@@ -159,6 +171,9 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("UPDATE gdpr_requests SET subject_id = 'erased', subject_email = NULL, status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END, updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     // Earnings rows reference these subscriptions; preserve financial history while stopping renewals.
     db.prepare("UPDATE template_subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
+    // Products no longer share their lifecycle with backing Spaces after the registry cutover.
+    // Sanitize the first-party Product row directly so erasure does not depend on old triggers.
+    db.prepare("UPDATE products SET name = 'Erased space', config_json = '{}', status = 'deleted', suspension_reason = 'erasure', updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE spacetypes SET name = 'Erased SpaceType', description = NULL, schema_json = '{}', status = 'archived' WHERE org_id = ?").bind(orgId),
     db.prepare("UPDATE spaces SET name = 'Erased space', config_json = '{}', created_by = NULL, status = 'deleted', suspension_reason = 'erasure', updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE users SET org_id = NULL WHERE org_id = ?").bind(orgId),

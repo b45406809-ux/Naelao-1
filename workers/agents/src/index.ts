@@ -111,7 +111,6 @@ import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES,
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, queryEmailImage, rasterImageDimensions, reserveEmailOcrAttempt } from "./channels/email-ocr.js";
 import { handleChannelSessionQueue, type ChannelSessionQueueMessage } from "./channels/session-queue.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
-import { agentPortRoutes } from "./agentport/routes.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -360,6 +359,8 @@ export interface AgentsEnv extends Cloudflare.Env {
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
+  /** Standalone AgentPort control plane, used by Naelao as its first party client. */
+  AGENTPORT_WORKER: Fetcher;
   /** MCP hub — connector registry + tool proxy (for the connect flow + status). */
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
@@ -494,10 +495,26 @@ function validateEnv(env: AgentsEnv): void {
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
-app.route("/internal/agentport", agentPortRoutes);
-app.route("/spaces/:spaceId/agentport", agentPortRoutes);
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId, role } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  if (!userId || !spaceId || !await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "space_unavailable" }, 404);
+  const incoming = new URL(c.req.url);
+  const target = new URL(incoming.pathname + incoming.search, "https://agentport.internal");
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("authorization");
+  headers.set("x-naelao-tenant-id", tenantId);
+  headers.set("x-naelao-user-id", userId);
+  headers.set("x-naelao-role", role);
+  headers.set("x-naelao-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, tenantId));
+  const body = ["GET", "HEAD"].includes(c.req.method) ? undefined : await c.req.raw.arrayBuffer();
+  return c.env.AGENTPORT_WORKER.fetch(new Request(target, { method: c.req.method, headers, ...(body ? { body } : {}) }));
+};
+app.all("/spaces/:spaceId/agentport", proxyAgentPortSpace);
+app.all("/spaces/:spaceId/agentport/*", proxyAgentPortSpace);
 registerCommunicationRoutes(app);
 app.post('/internal/phone-extension-dispatch',async c=>{
  const tenant=c.req.header('x-naelao-tenant-id')??'';
@@ -5469,7 +5486,7 @@ async function createCustomAgent(
   // evidence of legal entity authority. A later approved verification/delegation flow can attach
   // an organization principal without changing the agent's canonical ID.
   if (callerUserId) {
-    const identityResponse = await agentPortRoutes.fetch(new Request("https://agents.internal/agents", {
+    const identityResponse = await env.AGENTPORT_WORKER.fetch(new Request("https://agentport.internal/internal/agentport/agents", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -5486,7 +5503,7 @@ async function createCustomAgent(
         hostSpaceId: spaceId,
         runtime: "naelao-agents-worker",
       }),
-    }), env);
+    }));
     if (!identityResponse.ok) {
       await Promise.all(["agents.md", "system-prompt.md", "scripts.json", "skills.json"].map((file) =>
         env.SCRIPTS_R2!.delete(`spaces/${spaceId}/agents/${agentId}/${file}`).catch(() => undefined)));

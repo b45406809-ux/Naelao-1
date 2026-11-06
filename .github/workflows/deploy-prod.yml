@@ -146,6 +146,20 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" \
             --remote
+          # AgentPort standalone public API credential registry and control plane.
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0158_agentport_registry.sql --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0159_agentport_api_keys.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT key_hash FROM agentport_api_keys LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0160_agentport_developer_identity.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT email_normalized FROM agentport_developers LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0161_agentport_channels_threads.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_channel_id,session_binding_json,receipt_hash FROM agentport_channels LEFT JOIN agentport_threads ON 1=0 LEFT JOIN agentport_action_receipts ON 1=0 LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0162_agentport_signed_identity.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT public_jwk_json,private_key_ciphertext FROM agentport_identity_keys LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0163_agentport_provider_auth.sql --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote
 
       - name: Deploy all workers (production)
         env:
@@ -156,7 +170,7 @@ jobs:
           # F-16: a bash `for` loop's exit code is the LAST iteration's, so a mid-loop deploy
           # failure was silently masked by a later success — production could half-deploy and still
           # report green. Track every failure and fail the step (with a run summary) if any occurred.
-          WORKERS=(admin agents analytics artifact assistant auth billing browser \
+          WORKERS=(admin agentport agents analytics artifact assistant auth billing browser \
                    connector-gumroad connector-whop credentials eval knowledge marketplace \
                    mcp-hub notifications portal-router provisioner router \
                    security-gateway spaces sweeper synthetics threads workflows ws-gateway)

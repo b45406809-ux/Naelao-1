@@ -1,0 +1,9 @@
+{
+  "name": "@agentport/cli",
+  "version": "1.0.0",
+  "description": "CLI for AgentPort agent identities, services, accounts and events",
+  "type": "module",
+  "bin": { "agentport": "./src/agentport.js" },
+  "files": ["src"],
+  "scripts": { "test": "node --test src/*.test.mjs" }
+}

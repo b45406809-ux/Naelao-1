@@ -58,7 +58,9 @@ describe("data erasure D1 records", () => {
       "website_connections", "assistant_communication_identities",
       "agentport_activity_leases", "agentport_account_dependencies", "agentport_account_grants", "agentport_accounts",
       "agentport_agents", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events",
-      "agentport_principals", "agentport_services",
+      "agentport_principals", "agentport_services", "agentport_service_manifests", "agentport_provider_auth", "agentport_channels",
+      "agentport_threads", "agentport_messages", "agentport_trusted_senders", "agentport_action_receipts",
+      "agentport_identity_keys", "agentport_issued_credentials", "agentport_api_keys", "agentport_developers",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -243,10 +245,16 @@ describe("data erasure D1 records", () => {
       VALUES(?,?,?,?,?,?,?,?)`).run("delivery-a", "tenant-a", "event-a", "sub-a", "agent-a", "2026-01-01", "2026-01-01", "2026-01-01");
     db.db.prepare(`INSERT INTO agentport_activity_leases(id,tenant_id,agent_id,subscription_id,consumer_id,expires_at,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?,?)`).run("lease-a", "tenant-a", "agent-a", "sub-a", "run-a", "2026-01-02", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_identity_keys(id,tenant_id,agent_id,public_jwk_json,private_key_ciphertext,private_key_iv,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run("key-a", "tenant-a", "agent-a", "{}", "ciphertext", "iv", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO agentport_issued_credentials(jti,tenant_id,agent_id,audience,issued_at,expires_at)
+      VALUES(?,?,?,?,?,?)`).run("credential-a", "tenant-a", "agent-a", "https://service.test", "2026-01-01", "2026-01-02");
+    db.db.prepare(`INSERT INTO agentport_service_manifests(tenant_id,service_id,updated_at) VALUES(?,?,?)`)
+      .run("tenant-a", "svc-a", "2026-01-01");
 
     await eraseOrgOperationalRecords(db as never, "tenant-a");
 
-    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_account_grants", "agentport_accounts", "agentport_agents", "agentport_principals", "agentport_services"]) {
+    for (const table of ["agentport_activity_leases", "agentport_event_deliveries", "agentport_event_subscriptions", "agentport_events", "agentport_account_grants", "agentport_accounts", "agentport_identity_keys", "agentport_issued_credentials", "agentport_service_manifests", "agentport_provider_auth", "agentport_agents", "agentport_principals", "agentport_services"]) {
       expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE tenant_id=?`).get("tenant-a"), table).toEqual({ count: 0 });
     }
   });
@@ -282,6 +290,8 @@ describe("data erasure D1 records", () => {
       .run("n-a", "org-a", "user-a", "agent", "Private", "Body");
     db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, product_slug) VALUES (?, ?, ?, ?, ?)")
       .run("space-a", "org-a", "type-a", "Acme space", "legacy-product");
+    db.db.prepare("INSERT INTO products (id,tenant_id,spacetype_id,name,product_slug,status,config_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("space-a", "org-a", "type-a", "Acme space", "legacy-product", "active", '{"private":true}', "2026-01-01", "2026-01-01");
     db.db.prepare("INSERT INTO template_subscriptions (id, space_id, template_id, developer_user_id, attribution_channel) VALUES (?, ?, ?, ?, ?)")
       .run("sub-a", "space-a", "template-a", "developer-a", "MARKETPLACE_ORGANIC");
     db.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name) VALUES (?, ?, ?, ?)")

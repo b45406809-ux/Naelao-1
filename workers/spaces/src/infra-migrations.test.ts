@@ -21,6 +21,12 @@ describe("latest D1 deployment migration batch", () => {
     storage.sql.exec("INSERT INTO agent_email_addresses(address_hash,tenant_id,space_id,agent_id,status,created_at) VALUES ('hash-a','t1','s1','agent-a','active','2026-01-01')");
     storage.sql.exec("INSERT INTO project_agent_email_addresses(address_hash,tenant_id,space_id,agent_id,project_id,status,created_at) VALUES ('hash-p','t1','s2','agent-b','project-b','revoked','2026-02-01')");
     storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0158_agentport_registry.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0159_agentport_api_keys.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0160_agentport_developer_identity.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0161_agentport_channels_threads.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0162_agentport_signed_identity.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0163_agentport_provider_auth.sql"), "utf8"));
+    expect(() => storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0163_agentport_provider_auth.sql"), "utf8"))).not.toThrow();
     const tables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'").toArray().map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       "email_reply_routes", "agent_email_addresses", "web_push_subscriptions",
@@ -35,6 +41,12 @@ describe("latest D1 deployment migration batch", () => {
       "agentport_principals", "agentport_agents", "agentport_services", "agentport_accounts",
       "agentport_account_grants", "agentport_account_dependencies", "agentport_event_subscriptions",
       "agentport_events", "agentport_activity_leases",
+      "agentport_api_keys",
+      "agentport_organizations", "agentport_developers", "agentport_auth_rate_limits",
+      "agentport_channels", "agentport_threads", "agentport_messages", "agentport_trusted_senders", "agentport_action_receipts",
+      "agentport_service_manifests",
+      "agentport_identity_keys", "agentport_issued_credentials",
+      "agentport_provider_auth",
     ]));
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('users')").toArray().map(row => row.name)).toContain("preferred_language");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('product_end_users')").toArray().map(row => row.name)).toContain("preferred_language");

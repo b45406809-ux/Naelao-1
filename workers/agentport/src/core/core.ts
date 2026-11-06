@@ -22,6 +22,10 @@ export interface RegisteredService {
   events: string[];
   connectionPurpose: ConnectionPurpose;
   partnershipStatus: "unaffiliated" | "approved" | "restricted" | "unavailable";
+  auth?: Record<string, unknown>;
+  billing?: Record<string, unknown>;
+  provisioning?: Record<string, unknown>;
+  capabilitySchemas?: Record<string, unknown>;
 }
 
 export interface AccountDependency {
@@ -51,14 +55,19 @@ export function validateServiceRegistration(value: unknown): RegisteredService |
       !strings(row.capabilities) || !strings(row.events) ||
       typeof row.connectionPurpose !== "string" || !purposes.includes(row.connectionPurpose as ConnectionPurpose)) return null;
   if (row.endpoint !== undefined && (typeof row.endpoint !== "string" || row.endpoint.length > 2048)) return null;
-  const partnershipStatus = ["unaffiliated", "approved", "restricted", "unavailable"].includes(String(row.partnershipStatus))
+  // Provider submissions cannot approve themselves. A future AgentPort platform review flow
+  // may set `approved` after independent verification; public manifest input never can.
+  const partnershipStatus = ["restricted", "unavailable"].includes(String(row.partnershipStatus))
     ? row.partnershipStatus as RegisteredService["partnershipStatus"] : "unaffiliated";
+  const plainObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
     id: row.id, name: row.name.trim(), type: row.type as RegisteredService["type"],
     ...(typeof row.endpoint === "string" ? { endpoint: row.endpoint } : {}),
     accountModels: [...new Set(models as AccountModel[])], capabilities: [...new Set(row.capabilities as string[])],
     events: [...new Set(row.events as string[])], connectionPurpose: row.connectionPurpose as ConnectionPurpose,
     partnershipStatus,
+    auth: plainObject(row.auth), billing: plainObject(row.billing),
+    provisioning: plainObject(row.provisioning), capabilitySchemas: plainObject(row.capabilitySchemas),
   };
 }
 

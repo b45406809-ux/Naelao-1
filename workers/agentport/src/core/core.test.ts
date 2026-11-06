@@ -15,6 +15,10 @@ describe("AgentPort service and account contracts", () => {
       accountModels: ["user_parent", "delegated"], capabilities: ["payments.create"], events: ["payment.created"],
       connectionPurpose: "parent_provisioning",
     })).toMatchObject({ id: "stripe-mcp", partnershipStatus: "unaffiliated", accountModels: ["user_parent", "delegated"] });
+    expect(validateServiceRegistration({
+      id: "fake-approved", name: "Unverified", type: "api", accountModels: ["agent_native"], capabilities: ["send"], events: [],
+      connectionPurpose: "agent_resource", partnershipStatus: "approved",
+    })).toMatchObject({ partnershipStatus: "unaffiliated" });
   });
 
   it("rejects unsupported account models and oversized service identifiers", () => {
