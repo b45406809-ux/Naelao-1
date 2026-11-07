@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, SPACE_ERASURE_TABLES, validateBlueprintExportKey } from "./erasure-cleanup.js";
+import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, eraseWorkspaceCoordinatorsForSpace, SPACE_ERASURE_TABLES, validateBlueprintExportKey } from "./erasure-cleanup.js";
 
 describe("erasure workflow audit idempotency", () => {
   it("uses stable request-scoped identifiers for retried workflow audit steps", () => {
@@ -11,6 +11,26 @@ describe("erasure workflow audit idempotency", () => {
 });
 
 describe("space erasure workflow checkpointing", () => {
+  it("erases one bounded coordinator page and returns its continuation cursor", async () => {
+    let enumerationRequest: Request | undefined;
+    const spacesWorker = { fetch: vi.fn(async (request: Request) => {
+      enumerationRequest = request;
+      return Response.json({ projectIds: ["project-a", "project-b"], nextCursor: "project-b", hasMore: true });
+    }) } as unknown as Fetcher;
+    const erasedScopes: unknown[] = [];
+    const agentsWorker = { fetch: vi.fn(async (request: Request) => {
+      erasedScopes.push(await request.json());
+      return Response.json({ erased: true });
+    }) } as unknown as Fetcher;
+    const result = await eraseWorkspaceCoordinatorsForSpace({ tenantId: "tenant-a", spaceId: "space-a", jurisdiction: "eu", platformSecret: "secret", spacesWorker, agentsWorker, after: "project-0" });
+    expect(result).toEqual({ erasedCount: 2, nextCursor: "project-b", hasMore: true });
+    expect(enumerationRequest && new URL(enumerationRequest.url).searchParams.get("after")).toBe("project-0");
+    expect(erasedScopes).toEqual([
+      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", jurisdiction: "eu" } },
+      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-b", jurisdiction: "eu" } },
+    ]);
+  });
+
   it("runs every space in its own stable workflow step across D1 pages", async () => {
     const stepNames: string[] = [];
     const erased: string[] = [];
@@ -220,7 +240,7 @@ describe("space R2 erasure", () => {
 
     expect(artifactPrefixes).toEqual(["tenant-a/space-a/"]);
     expect(repositoryPrefixes).toEqual(["repositories/tenant-a/space-a/"]);
-    expect(workspacePrefixes).toEqual(["spaces/space-a/"]);
+    expect(workspacePrefixes).toEqual(["spaces/space-a/", "workspace-v1/tenant-a/space-a/"]);
     expect(deleted).toEqual(["conformance-jobs/tenant-a/export-a.json"]);
   });
 

@@ -140,4 +140,51 @@ describe("Agent37 adapter", () => {
     expect(result.status).toBe("indeterminate");
     expect(result.workspaceState).toBe("recovery_required");
   });
+
+  it("preserves the provider's truncation signal even when returned text is below the local cap", async () => {
+    const provider = new Agent37Provider(
+      { apiKey: "k", instanceKey: "k" },
+      { id: "approved", version: "4", instanceType: "default", region: "us", diskGiB: 20 },
+      vi.fn(async () => new Response(JSON.stringify({ exit_code: 0, stdout: "prefix only", stderr: "", truncated: true }), { status: 200 })) as typeof fetch,
+    );
+    const result = await provider.invoke({
+      executionId: "exec-truncated", computer, allocation: { provider: "agent37", externalId: "ab12cd34ef", generation: 1 },
+      command: "cat", args: ["large.log"], timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({ status: "succeeded", stdout: "prefix only", truncated: true });
+  });
+
+  it("limits Agent37 file access to the Naelao subtree and uses the provider's mtime compare on writes", async () => {
+    const oldBytes = new TextEncoder().encode("old value");
+    const fetcher = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/files" && init?.method !== "PUT") {
+        const path = url.searchParams.get("path");
+        return Response.json({ path, truncated: false, entries: path === "/home/node/workspace" ? [
+          { name: "notes", path: "/home/node/workspace/notes", type: "directory", size: null, modified: 1781049642.125 },
+        ] : path === "/home/node/workspace/notes" ? [
+          { name: "data.bin", path: "/home/node/workspace/notes/data.bin", type: "file", size: oldBytes.length, modified: 1781049642.125 },
+        ] : [] });
+      }
+      if (url.pathname === "/v1/files/content" && init?.method === "GET") return new Response(oldBytes);
+      if (url.pathname === "/v1/files/content" && init?.method === "PUT") {
+        expect(url.searchParams.get("overwrite")).toBe("true");
+        expect(new Headers(init.headers).get("x-expected-mtime")).toBe("1781049642.125");
+        expect(new Headers(init.headers).get("x-agent37-key")).toBe("instance-secret");
+        return Response.json({ path: "/home/node/workspace/notes/data.bin", type: "file", size: 3, modified: 1781049643.5 });
+      }
+      throw new Error(`unexpected Agent37 file request: ${init?.method} ${url}`);
+    });
+    const provider = new Agent37Provider(
+      { apiKey: "control-secret", instanceKey: "instance-secret" },
+      { id: "approved", version: "4", instanceType: "default", region: "us", diskGiB: 20 },
+      fetcher as typeof fetch,
+    );
+    const allocation = { provider: "agent37" as const, externalId: "ab12cd34ef", generation: 1 };
+    const listed = await provider.listWorkspace(allocation);
+    expect(listed).toEqual([{ path: "notes/data.bin", size: oldBytes.length, modified: 1781049642.125 }]);
+    await provider.writeWorkspaceFile(allocation, "notes/data.bin", new TextEncoder().encode("new"), await crypto.subtle.digest("SHA-256", oldBytes).then((value) => [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("")));
+    expect(fetcher).toHaveBeenCalledTimes(9);
+    await expect(provider.readWorkspaceFile(allocation, "../outside" )).rejects.toThrow("agent37_workspace_path_rejected");
+  });
 });

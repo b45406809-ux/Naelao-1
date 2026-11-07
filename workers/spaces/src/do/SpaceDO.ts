@@ -5780,6 +5780,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spaceId = params.get("space_id") ?? "";
     const subspaceId = params.get("subspace_id");
     const viewerId = params.get("viewer_id") ?? "";
+    const includeArchived = params.get("include_archived") === "1" && params.get("space_manager") === "1";
     const rows = queryAll<{
       id: string;
       space_id: string;
@@ -5814,11 +5815,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // subthreads alike) now takes precedence over created_at, so a project an assistant just
       // consulted an agent about really does come back to the top, not just one a human typed in.
       `SELECT id, space_id, subspace_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind, template_mode, viewport_config
-       FROM projects WHERE space_id = ? AND status != 'archived' AND (
+       FROM projects WHERE space_id = ? AND (? = 1 OR status != 'archived') AND (
          (? IS NULL AND subspace_id IS NULL) OR
          (? IS NOT NULL AND EXISTS (SELECT 1 FROM project_subspaces ps WHERE ps.project_id=projects.id AND ps.subspace_id=?))
        ) ORDER BY COALESCE(last_activity_at, created_at) DESC`,
-      spaceId, subspaceId, subspaceId, subspaceId
+      spaceId, includeArchived ? 1 : 0, subspaceId, subspaceId, subspaceId
     );
     const manager = params.get("space_manager") === "1";
     const visible = rows.filter((r) => {

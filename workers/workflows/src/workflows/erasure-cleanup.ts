@@ -1,4 +1,5 @@
 import type { WorkflowStep } from "cloudflare:workers";
+import { mintInternalToken } from "@naelao/http";
 
 const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
@@ -36,6 +37,41 @@ export const SPACE_ERASURE_TABLES = [
 export function erasureAuditId(kind: "requested" | "completed", requestId: string): string {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("Invalid erasure request identifier");
   return `erasure-${kind}-${requestId}`;
+}
+
+/** Erase every project coordinator before the broad R2 space-prefix sweep. Project IDs are
+ * enumerated by the owning SpaceDO through an internal HMAC route; caller input cannot select a
+ * different tenant or omit archived projects. */
+export async function eraseWorkspaceCoordinatorsForSpace(input: {
+  tenantId: string;
+  spaceId: string;
+  jurisdiction: "global" | "eu";
+  platformSecret: string;
+  spacesWorker: Fetcher;
+  agentsWorker: Fetcher;
+  after?: string;
+}): Promise<{ erasedCount: number; nextCursor: string | null; hasMore: boolean }> {
+  const token = await mintInternalToken(input.platformSecret, input.tenantId);
+  const headers = { "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": token };
+  const query = new URLSearchParams({ limit: "100" });
+  if (input.after) query.set("after", input.after);
+  const listed = await input.spacesWorker.fetch(new Request(`http://spaces/internal/spaces/${encodeURIComponent(input.spaceId)}/workspace-projects?${query}`, { headers }));
+  if (!listed.ok) throw new Error(`Workspace project enumeration failed (${listed.status})`);
+  const listBody = await listed.json<{ projectIds?: unknown; nextCursor?: unknown; hasMore?: unknown }>().catch(() => ({} as { projectIds?: unknown; nextCursor?: unknown; hasMore?: unknown }));
+  if (!Array.isArray(listBody.projectIds) || listBody.projectIds.length > 100 || typeof listBody.hasMore !== "boolean" ||
+      (listBody.nextCursor !== null && typeof listBody.nextCursor !== "string")) throw new Error("Invalid workspace project enumeration response");
+  let nextCursor: string | null = listBody.nextCursor as string | null;
+  if (listBody.hasMore && (!nextCursor || nextCursor === input.after)) throw new Error("Invalid workspace project enumeration cursor");
+  const projectIds = new Set(listBody.projectIds);
+  for (const projectId of projectIds) {
+    if (typeof projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId)) throw new Error("Invalid project identifier during workspace erasure");
+    const scope = { tenantId: input.tenantId, spaceId: input.spaceId, projectId, jurisdiction: input.jurisdiction };
+    const erased = await input.agentsWorker.fetch(new Request("http://agents/internal/workspaces/erase", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ scope }),
+    }));
+    if (!erased.ok) throw new Error(`Workspace coordinator erasure failed for ${projectId} (${erased.status})`);
+  }
+  return { erasedCount: projectIds.size, nextCursor, hasMore: listBody.hasMore };
 }
 
 /** Checkpoint tenant erasure after each space so large tenants do not occupy one workflow step. */
@@ -318,6 +354,10 @@ export async function eraseSpaceR2Prefixes(
   await deleteR2Prefix(artifactBucket, `${tenantId}/${spaceId}/`);
   await deleteR2Prefix(repositoryBucket, `repositories/${tenantId}/${spaceId}/`);
   await deleteR2Prefix(workspaceBucket, `spaces/${spaceId}/`);
+  // The unified workspace store is tenant/project scoped and does not live below spaces/{id}/.
+  // Remove its manifests, canonical content, staged uploads, and branch artifacts with the same
+  // space erasure operation while preserving every sibling space in the tenant.
+  await deleteR2Prefix(workspaceBucket, `workspace-v1/${tenantId}/${spaceId}/`);
 }
 
 export async function eraseTenantExportKeys(

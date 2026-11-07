@@ -58,6 +58,10 @@ class_name = "RiskGuardDO"
 name = "CONCURRENCY_DO"
 class_name = "ConcurrencyDO"
 
+[[durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["NaelaoAgentDO"]
@@ -125,6 +129,10 @@ new_sqlite_classes = ["DynamicSandboxDO"]
 [[migrations]]
 tag = "v15-retire-customer-voice-agent"
 deleted_classes = ["CustomerVoiceAgent"]
+
+[[migrations]]
+tag = "v16-workspace-coordinator"
+new_sqlite_classes = ["WorkspaceCoordinatorDO"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
@@ -348,6 +356,7 @@ migrations_dir = "../../infra/migrations"
 # only after verifying those app slugs are enabled in the project; unset disables overrides.
 [vars]
 DYNAMIC_CONTAINERS_ENABLED = "false"
+UNIFIED_WORKSPACE_ENABLED = "false"
 DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1"
 DYNAMIC_CONTAINER_MAX_INSTANCES = "5"
 DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false"
@@ -406,7 +415,7 @@ binding = "AI"
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
 # never actually activate.
-vars = { DYNAMIC_CONTAINERS_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
 [[env.staging.send_email]]
@@ -438,7 +447,7 @@ service = "naelao-browser"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { DYNAMIC_CONTAINERS_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
 [[env.production.send_email]]
@@ -527,6 +536,10 @@ class_name = "RiskGuardDO"
 [[env.staging.durable_objects.bindings]]
 name = "CONCURRENCY_DO"
 class_name = "ConcurrencyDO"
+
+[[env.staging.durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
 
 
 [[env.staging.durable_objects.bindings]]
@@ -804,6 +817,10 @@ class_name = "RiskGuardDO"
 [[env.production.durable_objects.bindings]]
 name = "CONCURRENCY_DO"
 class_name = "ConcurrencyDO"
+
+[[env.production.durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
 
 
 [[env.production.durable_objects.bindings]]

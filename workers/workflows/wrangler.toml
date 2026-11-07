@@ -92,6 +92,10 @@ service = "naelao-spaces"
 binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
 
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [vars]
 ENVIRONMENT = "development"
 
@@ -196,6 +200,11 @@ binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
 
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+
 [[env.production.workflows]]
 name = "SpaceProvisioningWorkflow"
 class_name = "SpaceProvisioningWorkflow"
@@ -289,3 +298,8 @@ service = "naelao-spaces"
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
+
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

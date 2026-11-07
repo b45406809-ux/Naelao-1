@@ -7,6 +7,10 @@ import { registerCommunicationRoutes } from "./communications/routes.js";
 import { scopeAccess } from "./communications/core.js";
 import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
+import { WorkspaceCoordinatorDO } from "./workspace/WorkspaceCoordinatorDO.js";
+export { WorkspaceCoordinatorDO };
+import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
+import { validateWorkspaceScope } from "./workspace/workspace-contract.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
 //
@@ -313,6 +317,7 @@ export { CompanyAutomationWorkflow } from "./workflows/company-automation-workfl
 export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
   DATA_JURISDICTION?: "eu";
+  UNIFIED_WORKSPACE_ENABLED?: string;
   OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
   SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
@@ -462,6 +467,7 @@ export interface AgentsEnv extends Cloudflare.Env {
   CHANNEL_SESSIONS?: Queue<ChannelSessionQueueMessage>;
   /** Shared lock namespace for multi-file agent-config bundle writes. */
   CONCURRENCY_DO?: DurableObjectNamespace;
+  WORKSPACE_COORDINATOR?: DurableObjectNamespace<WorkspaceCoordinatorDO>;
 }
 
 // One message per due tick — the unit of work scheduled()'s enumerate-and-enqueue phase
@@ -500,13 +506,21 @@ interface SpaceRow {
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
+    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO", "WORKSPACE_COORDINATOR",
   ]);
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.post("/internal/workspaces/erase", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ scope?: unknown }>().catch(() => ({} as { scope?: unknown }));
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_erasure_scope" }, 400);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/erase", { body: { scope: body.scope, confirm: true } });
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 app.all("/internal/sandbox-workspaces/*", (c) => handleSandboxWorkspaceBridge(c.req.raw, c.env));
 const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
   const tenantId = await requireVerifiedTenant(c);

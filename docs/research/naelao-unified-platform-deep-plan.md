@@ -1,6 +1,6 @@
 # Naelao unified workspace and execution platform: independently researched plan
 
-**Status:** proposed implementation plan; documentation only. No runtime, code, schema, deployment, or provider configuration is changed by this document.
+**Status:** implementation plan; implementation is in progress. See [phase progress and evidence](unified-platform-implementation-progress.md) and [fixed workspace requirements](unified-workspace-requirements.md). Runtime capability flags remain off until their phase gates pass.
 
 **Code inspected:** `Mcbt5s-Backup-2` at `cd01638c` (2026-11-07). Earlier workspace and platform research files were used only as a topic checklist. Their findings were rechecked against this checkout and external primary sources. This document is the consolidated plan and supersedes those drafts as an implementation guide; retain them as research history until the team chooses to archive them.
 

@@ -32,6 +32,7 @@ import {
   eraseSpaceKnowledgePrefixes,
   eraseSpaceR2Prefixes,
   eraseSpacesInSteps,
+  eraseWorkspaceCoordinatorsForSpace,
   eraseTenantExportKeys,
   validateBlueprintExportKey,
 } from "./erasure-cleanup.js";
@@ -166,6 +167,24 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           afterDocumentId = nextDocumentId;
         }
         await eraseSpaceKnowledgePrefixes(spaceId, this.env.KB_BUCKET);
+
+        let workspaceCursor: string | undefined;
+        let workspacePage = 0;
+        do {
+          const page = await step.do(`erase-workspace-coordinators-${spaceId.slice(0, 48)}-${workspacePage}`, () => eraseWorkspaceCoordinatorsForSpace({
+            tenantId: params.orgId,
+            spaceId,
+            jurisdiction: this.env.DATA_JURISDICTION === "eu" ? "eu" : "global",
+            platformSecret: this.env.PLATFORM_SECRET,
+            spacesWorker: this.env.SPACES_WORKER,
+            agentsWorker: this.env.AGENTS_WORKER,
+            ...(workspaceCursor ? { after: workspaceCursor } : {}),
+          }));
+          if (page.hasMore && (!page.nextCursor || page.nextCursor === workspaceCursor)) throw new Error("Invalid workspace erasure pagination cursor");
+          workspaceCursor = page.nextCursor ?? undefined;
+          workspacePage++;
+          if (!page.hasMore) break;
+        } while (true);
 
         await eraseSpaceR2Prefixes(params.orgId, spaceId, this.env.ARTIFACT_R2_BUCKET,
           this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);

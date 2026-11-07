@@ -46,6 +46,8 @@ import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
 import { TRUSTED_PACKAGE_HOSTS } from "../script-engine/package-egress.js";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
+import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
+import type { WorkspaceEntry, WorkspaceHead, WorkspaceScope } from "../workspace/workspace-contract.js";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -79,6 +81,9 @@ export interface SandboxWorkspaceScope {
 interface SandboxBindings {
   SCRIPTS_R2?: R2Bucket;
   CONCURRENCY_DO?: DurableObjectNamespace;
+  WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+  UNIFIED_WORKSPACE_ENABLED?: string;
+  DATA_JURISDICTION?: "eu";
   PLATFORM_SECRET?: string;
   BILLING_WORKER?: Fetcher;
   ANALYTICS?: AnalyticsEngineDataset;
@@ -263,6 +268,7 @@ export class ToolSandboxDO extends DurableObject {
     const previous = await this.ctx.storage.get<string>("container_owner");
     if (previous && previous !== owner) throw new Error("container_owner_mismatch");
     await this.ctx.storage.put("container_owner", owner);
+    await this.ctx.storage.put("container_invocation_scope", scope);
     return scope;
   }
 
@@ -516,6 +522,10 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async hydrateWorkspace(container: ContainerRuntime, scope: SandboxWorkspaceScope): Promise<void> {
+    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true") {
+      await this.hydrateUnifiedWorkspace(container, scope);
+      return;
+    }
     const prefix = this.workspacePrefix(scope);
     const expectedHashes: Record<string, string> = {};
     for await (const { path, bytes, hash } of this.listR2Workspace(prefix)) {
@@ -558,7 +568,123 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("workspace_hashes", expectedHashes);
   }
 
+  private async unifiedWorkspaceIdentity(scope: SandboxWorkspaceScope, tenantId: string): Promise<{ scope: WorkspaceScope; branch: string }> {
+    const jurisdiction = (this.env as unknown as SandboxBindings).DATA_JURISDICTION === "eu" ? "eu" : "global";
+    let projectId = scope.projectId;
+    if (!projectId && scope.installationId) {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope.installationId));
+      projectId = `extension-${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 48)}`;
+    }
+    return {
+      scope: { tenantId, spaceId: scope.spaceId, projectId: projectId ?? `space-assistant-${scope.spaceId}`, jurisdiction },
+      branch: scope.branch ?? this.activeExecution?.scope.workspaceBranch ?? "main",
+    };
+  }
+
+  private async workspaceCoordinatorCall(scope: WorkspaceScope, path: string, body?: unknown): Promise<Response> {
+    return workspaceCoordinatorRequest(this.env as unknown as SandboxBindings, scope, path, { ...(body === undefined ? {} : { body }) });
+  }
+
+  private async requireWorkspaceResponse(response: Response): Promise<Record<string, unknown>> {
+    const result = await response.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    if (!response.ok) {
+      const code = typeof result.error_code === "string" ? result.error_code : `http_${response.status}`;
+      throw new Error(`workspace_${code}`);
+    }
+    return result;
+  }
+
+  private async hydrateUnifiedWorkspace(container: ContainerRuntime, scope: SandboxWorkspaceScope): Promise<void> {
+    const bindings = this.env as unknown as SandboxBindings;
+    if (!bindings.SCRIPTS_R2 || !bindings.WORKSPACE_COORDINATOR || !bindings.PLATFORM_SECRET) throw new Error("workspace_coordinator_unavailable");
+    const invocation = this.activeExecution?.scope ?? await this.ctx.storage.get<ContainerInvocationScope>("container_invocation_scope");
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const tenantId = invocation?.tenantId ?? meter?.tenantId;
+    if (!tenantId) throw new Error("workspace_tenant_scope_required");
+    const identity = await this.unifiedWorkspaceIdentity(scope, tenantId);
+    let headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
+    if (headResponse.status === 404) {
+      const entries: WorkspaceEntry[] = [];
+      for await (const file of this.listR2Workspace(this.workspacePrefix(scope))) {
+        if (file.path.startsWith("shared/")) continue;
+        const objectKey = `workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/${file.hash}`;
+        const put = await bindings.SCRIPTS_R2.put(objectKey, file.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.hash, size: String(file.bytes.byteLength) } });
+        if (!put) {
+          const existing = await readBytesWithHash(bindings.SCRIPTS_R2, objectKey);
+          if (!existing || existing.hash !== file.hash) throw new Error("workspace_content_integrity_failed");
+        }
+        entries.push({ path: file.path, sha256: file.hash, size: file.bytes.byteLength, executable: false, objectKey });
+      }
+      const initialized = await this.workspaceCoordinatorCall(identity.scope, "/v1/initialize", { scope: identity.scope, branch: identity.branch, entries });
+      if (!initialized.ok && initialized.status !== 409) await this.requireWorkspaceResponse(initialized);
+      headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
+    }
+    const current = await this.requireWorkspaceResponse(headResponse) as { head?: WorkspaceHead };
+    if (!current.head) throw new Error("workspace_head_missing");
+    const runId = invocation?.runId ?? "sandbox-session";
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(runId)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const workingBranch = `runs/${runHash.slice(0, 32)}`;
+    const createdBranch = await this.workspaceCoordinatorCall(identity.scope, "/v1/branch", { scope: identity.scope, sourceBranch: identity.branch, branch: workingBranch });
+    if (!createdBranch.ok) await this.requireWorkspaceResponse(createdBranch);
+    const branchHead = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(workingBranch)}`)) as { head?: WorkspaceHead };
+    const read = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/read?branch=${encodeURIComponent(workingBranch)}`)) as { entries?: WorkspaceEntry[]; head?: WorkspaceHead };
+    if (!Array.isArray(read.entries) || !read.head || read.head.manifestHash !== branchHead.head?.manifestHash) throw new Error("workspace_head_changed_retry");
+    const expectedHashes: Record<string, string> = {};
+    for (const entry of read.entries) {
+      if (!isSyncableWorkspacePath(entry.path) || entry.path.startsWith("shared/")) continue;
+      if (!entry.objectKey.startsWith(`workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/`)) throw new Error("workspace_object_scope_mismatch");
+      const stored = await readBytesWithHash(bindings.SCRIPTS_R2, entry.objectKey);
+      if (!stored || stored.hash !== entry.sha256 || stored.bytes.byteLength !== entry.size) throw new Error(`workspace_content_integrity_failed:${entry.path}`);
+      const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
+        method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" },
+        body: JSON.stringify({ files_base64: { [entry.path]: bytesToBase64(stored.bytes) } }),
+      }));
+      if (!response.ok) throw new Error(`Workspace hydration failed (${response.status}): ${entry.path}`);
+      expectedHashes[entry.path] = entry.sha256;
+    }
+    for (const grant of scope.sharedFilesystemGrants ?? []) {
+      if (scope.installationScope !== "SPACE_SHARED" || !scope.installationId) throw new Error("sandbox_shared_filesystem_denied");
+      const relativePrefix = grant.path.slice("/space/shared/".length);
+      const sharedPrefix = `spaces/${scope.spaceId}/space-workspace/shared/${relativePrefix}`;
+      for await (const { path, bytes, hash } of this.listR2Workspace(sharedPrefix)) {
+        const virtualPath = `shared/${relativePrefix}${path}`;
+        const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
+          method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" },
+          body: JSON.stringify({ files_base64: { [virtualPath]: bytesToBase64(bytes) } }),
+        }));
+        if (!response.ok) throw new Error(`Shared workspace hydration failed (${response.status}): ${virtualPath}`);
+        expectedHashes[virtualPath] = hash;
+      }
+    }
+    const previous = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
+    const removed = Object.keys(previous).filter(path => isSyncableWorkspacePath(path) && !(path in expectedHashes));
+    if (removed.length) {
+      const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: removed }) }));
+      if (!response.ok) throw new Error(`Workspace refresh deletion failed (${response.status})`);
+    }
+    const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 1;
+    const existingSession = await this.ctx.storage.get<{ id: string; runId: string; generation: number; branch: string }>("workspace_session");
+    if (!existingSession || existingSession.runId !== runId || existingSession.generation !== generation || existingSession.branch !== workingBranch) {
+      if (existingSession) {
+        const closed = await this.workspaceCoordinatorCall(identity.scope, "/v1/close", { sessionId: existingSession.id });
+        if (!closed.ok) await this.requireWorkspaceResponse(closed);
+      }
+      const opened = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, "/v1/open", {
+        scope: identity.scope, branch: workingBranch, parentBranch: identity.branch, actorId: invocation?.actorId ?? "sandbox-runtime",
+        runtimeId: `tool-sandbox:${scope.spaceId}:${scope.projectId ?? "space"}`, allocationGeneration: generation,
+        mode: "checked_handoff",
+      })) as { session?: { id: string; fence: number; allocationGeneration: number; branch: string } };
+      if (!opened.session) throw new Error("workspace_session_missing");
+      await this.ctx.storage.put("workspace_session", { ...opened.session, runId, generation, scope: identity.scope, branch: workingBranch, parentBranch: identity.branch });
+    }
+    await this.ctx.storage.put("workspace_scope", scope);
+    await this.ctx.storage.put("workspace_hashes", expectedHashes);
+  }
+
   private async publishWorkspaceChanges(container: ContainerRuntime, scope: SandboxWorkspaceScope, holderId: string): Promise<{ changed: number }> {
+    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true") {
+      return this.publishUnifiedWorkspaceChanges(container, scope, holderId);
+    }
     const invocation = this.activeExecution?.scope;
     const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
@@ -603,6 +729,96 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("workspace_pending_publication", { scope, changes } satisfies WorkspacePublication);
     await this.replayWorkspacePublication(holderId);
     return { changed: changes.length };
+  }
+
+  private async publishUnifiedWorkspaceChanges(container: ContainerRuntime, scope: SandboxWorkspaceScope, holderId: string): Promise<{ changed: number }> {
+    const invocation = this.activeExecution?.scope ?? await this.ctx.storage.get<ContainerInvocationScope>("container_invocation_scope");
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const tenantId = invocation?.tenantId ?? meter?.tenantId;
+    if (!tenantId) throw new Error("workspace_tenant_scope_required");
+    if (!await this.tenantSpaceIsActive(tenantId, scope.spaceId)) throw new Error("tenant_suspended");
+    const identity = await this.unifiedWorkspaceIdentity(scope, tenantId);
+    const pendingCheckpoint = await this.ctx.storage.get<Record<string, unknown>>("workspace_pending_coordinator_checkpoint");
+    if (pendingCheckpoint) {
+      if (JSON.stringify(pendingCheckpoint.workspaceScope) !== JSON.stringify(identity.scope)) throw new Error("workspace_pending_scope_mismatch");
+      await this.stageAndCheckpointUnified(identity.scope, pendingCheckpoint);
+      const runtimeSession = await this.ctx.storage.get<{ branch: string }>("workspace_session");
+      if (!runtimeSession) throw new Error("workspace_session_missing");
+      const replayed = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/read?branch=${encodeURIComponent(runtimeSession.branch)}`)) as { entries?: WorkspaceEntry[] };
+      if (!Array.isArray(replayed.entries)) throw new Error("workspace_recovery_manifest_missing");
+      const recovered = Object.fromEntries(replayed.entries.filter(entry => !entry.path.startsWith("shared/")).map(entry => [entry.path, entry.sha256]));
+      await this.ctx.storage.put("workspace_hashes", recovered);
+      await this.ctx.storage.delete("workspace_pending_coordinator_checkpoint");
+    }
+    const port = container.getTcpPort(HARNESS_PORT);
+    const listed = await port.fetch(new Request("http://sandbox/workspace/list", { method: "POST" }));
+    if (!listed.ok) throw new Error(`Workspace listing failed (${listed.status})`);
+    const listResult = await listed.json<{ files: string[] }>();
+    const currentPaths = new Set((listResult.files ?? []).filter(isSyncableWorkspacePath).filter((path) => !path.startsWith("shared/")));
+    const priorHashes = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
+    const paths = [...new Set([...Object.keys(priorHashes).filter((path) => !path.startsWith("shared/")), ...currentPaths])].sort();
+    const changes: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
+    for (const path of paths) {
+      let contentBase64: string | null = null;
+      let newHash: string | null = null;
+      if (currentPaths.has(path)) {
+        const response = await port.fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: [path], encoding: "base64" }) }));
+        if (!response.ok) throw new Error(`Workspace read failed (${response.status}): ${path}`);
+        contentBase64 = (await response.json<{ files_base64: Record<string, string> }>()).files_base64[path] ?? null;
+        if (contentBase64 === null) throw new Error(`Incomplete container snapshot; refusing publication: ${path}`);
+        const bytes = Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0));
+        if (bytes.byteLength > 768 * 1024) throw new Error(`workspace_file_limit_exceeded:${path}`);
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        newHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      }
+      const expectedHash = priorHashes[path] ?? null;
+      if (newHash !== expectedHash) changes.push({ path, expectedHash, contentBase64 });
+    }
+    if (!changes.length) return { changed: 0 };
+    const runtimeSession = await this.ctx.storage.get<{ id: string; fence: number; allocationGeneration: number; scope: WorkspaceScope; branch: string; parentBranch: string }>("workspace_session");
+    if (!runtimeSession || JSON.stringify(runtimeSession.scope) !== JSON.stringify(identity.scope) || runtimeSession.parentBranch !== identity.branch) throw new Error("workspace_session_missing");
+    const changeSetHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(changes))))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const executionId = invocation?.executionId ?? holderId;
+    const executionHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(executionId)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const idempotencyKey = `workspace-${executionHash.slice(0, 24)}-${changeSetHash.slice(0, 32)}`;
+    const checkpoint = { sessionId: runtimeSession.id, allocationGeneration: runtimeSession.allocationGeneration, fence: runtimeSession.fence,
+      baseRevision: (await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(runtimeSession.branch)}`)) as { head: WorkspaceHead }).head.revision,
+      idempotencyKey, stageId: idempotencyKey, changes, workspaceScope: identity.scope };
+    await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", checkpoint);
+    await this.stageAndCheckpointUnified(identity.scope, checkpoint);
+    const nextHashes = { ...priorHashes };
+    for (const change of changes) {
+      if (change.contentBase64 === null) delete nextHashes[change.path];
+      else {
+        const bytes = Uint8Array.from(atob(change.contentBase64), (character) => character.charCodeAt(0));
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        nextHashes[change.path] = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      }
+    }
+    await this.ctx.storage.put("workspace_hashes", nextHashes);
+    await this.ctx.storage.delete("workspace_pending_coordinator_checkpoint");
+    return { changed: changes.length };
+  }
+
+  private async stageAndCheckpointUnified(identity: WorkspaceScope, checkpoint: Record<string, unknown>): Promise<{ publication: { status?: string }; error_code?: string }> {
+    let stagedCheckpoint = checkpoint;
+    if (Array.isArray(checkpoint.changes)) {
+      const stageId = typeof checkpoint.stageId === "string" ? checkpoint.stageId : String(checkpoint.idempotencyKey ?? "");
+      const staged = await this.workspaceCoordinatorCall(identity, "/v1/stage", {
+        sessionId: checkpoint.sessionId, allocationGeneration: checkpoint.allocationGeneration, fence: checkpoint.fence,
+        stageId, changes: checkpoint.changes,
+      });
+      await this.requireWorkspaceResponse(staged);
+      const { changes: _changes, ...checkpointRef } = checkpoint;
+      stagedCheckpoint = { ...checkpointRef, stageId };
+      await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", stagedCheckpoint);
+    }
+    const response = await this.workspaceCoordinatorCall(identity, "/v1/checkpoint", stagedCheckpoint);
+    const result = await response.json<{ publication?: { status?: string }; error_code?: string }>().catch(() => ({} as { publication?: { status?: string }; error_code?: string }));
+    if (!response.ok || !result.publication || !["published", "noop"].includes(result.publication.status ?? "")) {
+      throw new Error(`workspace_${result.error_code ?? result.publication?.status ?? `http_${response.status}`}`);
+    }
+    return result as { publication: { status?: string }; error_code?: string };
   }
 
   private async replayWorkspacePublication(holderId: string): Promise<void> {
@@ -827,6 +1043,31 @@ export class ToolSandboxDO extends DurableObject {
       const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
       if (storedScope && (storedScope.spaceId !== workspaceScope.spaceId || storedScope.projectId !== workspaceScope.projectId
         || storedScope.branch !== workspaceScope.branch)) return Response.json({ ok: false, error: "sandbox_workspace_scope_mismatch" }, { status: 409 });
+      if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true" && (body.status === "blocked" || body.status === "completed")) {
+        const session = await this.ctx.storage.get<{ id: string; fence: number; allocationGeneration: number; branch: string; parentBranch: string; runId: string }>("workspace_session");
+        if (session) {
+          try {
+            const container = this.container;
+            if (container?.running) await this.publishUnifiedWorkspaceChanges(container, workspaceScope, crypto.randomUUID());
+            if (body.status === "completed") {
+              const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? session.allocationGeneration;
+              const targetBranch = session.parentBranch;
+              if (!targetBranch) throw new Error("workspace_merge_target_missing");
+              const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(session.runId)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+              const merged = await this.workspaceCoordinatorCall(await this.unifiedWorkspaceIdentity(workspaceScope, scope.tenantId).then((value) => value.scope), "/v1/merge", {
+                sessionId: session.id, targetBranch, allocationGeneration: generation, fence: session.fence,
+                idempotencyKey: `run-merge-${runHash.slice(0, 40)}`,
+              });
+              const mergeResult = await merged.json<{ publication?: { status?: string; conflicts?: unknown[] }; error_code?: string }>().catch(() => ({} as { publication?: { status?: string; conflicts?: unknown[] }; error_code?: string }));
+              if (!merged.ok || !mergeResult.publication || !["published", "noop"].includes(mergeResult.publication.status ?? "")) {
+                return Response.json({ ok: false, error: `workspace_${mergeResult.error_code ?? mergeResult.publication?.status ?? `http_${merged.status}`}`, conflicts: mergeResult.publication?.conflicts ?? [], working_branch: session.branch }, { status: 409 });
+              }
+            }
+          } catch (error) {
+            return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error), working_branch: session.branch }, { status: 409 });
+          }
+        }
+      }
       if (body.status === "active") await this.ctx.storage.put("task_active", true);
       else if (body.status === "blocked" || body.status === "completed") await this.ctx.storage.delete("task_active");
       else return Response.json({ error: "status must be active, blocked, or completed" }, { status: 400 });
@@ -1000,6 +1241,8 @@ export class ToolSandboxDO extends DurableObject {
       // image from the execution body or model-generated command.
       await this.ctx.storage.put("container_egress_profile", egressProfile);
       await this.startContainer(container, startScope);
+      const allocationGeneration = (await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0) + 1;
+      await this.ctx.storage.put("workspace_runtime_generation", allocationGeneration);
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);
       const readyDeadline = Math.min(Date.now() + 20000, Number(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}").deadline) || Date.now() + 20000);

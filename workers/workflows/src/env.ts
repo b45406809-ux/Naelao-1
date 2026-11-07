@@ -43,6 +43,9 @@ export interface Env {
   // Service bindings
   SPACES_WORKER: Fetcher;
   KNOWLEDGE_WORKER: Fetcher;
+  /** Internal, authenticated access to workspace project enumeration and coordinator cleanup. */
+  AGENTS_WORKER: Fetcher;
+  DATA_JURISDICTION?: "eu";
 
   // Workflow bindings (used by queue consumer to start workflows)
   SPACE_PROVISIONING: WorkflowBinding;

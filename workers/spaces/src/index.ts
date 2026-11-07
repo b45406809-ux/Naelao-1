@@ -133,6 +133,37 @@ function validateEnv(env: Env): void {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use("/internal/spaces/:spaceId/workspace-projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/workspace-projects", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(spaceId)) return c.json({ error_code: "invalid_workspace_scope" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const after = c.req.query("after") ?? "";
+  if (after && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(after)) return c.json({ error_code: "invalid_workspace_cursor" }, 400);
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? "100") || 100));
+  const path = `/projects?space_id=${encodeURIComponent(spaceId)}&space_manager=1&include_archived=1`;
+  const response = await forwardToSpaceDO(stub, path, "GET");
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  const result = await response.json<{ data?: Array<{ id?: string }> }>().catch(() => ({} as { data?: Array<{ id?: string }> }));
+  const projectIds = (result.data ?? []).map(project => project.id).filter((id): id is string => typeof id === "string");
+  const installations = await forwardToSpaceDO(stub, `/extension-installations?extension_id=__all__&tenant_id=${encodeURIComponent(tenantId)}&space_id=${encodeURIComponent(spaceId)}`, "GET");
+  if (!installations.ok) return new Response(installations.body, { status: installations.status, headers: { "content-type": "application/json" } });
+  const installed = await installations.json<{ installations?: Array<{ instance_id?: string; project_id?: string | null }> }>().catch(() => ({} as { installations?: Array<{ instance_id?: string; project_id?: string | null }> }));
+  const spaceInstallationIds = (installed.installations ?? []).filter(item => item.project_id == null).map(item => item.instance_id).filter((id): id is string => typeof id === "string");
+  const allIds = new Set(projectIds);
+  allIds.add(`space-assistant-${spaceId}`);
+  for (const installationId of spaceInstallationIds) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(installationId));
+    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    allIds.add(`extension-${hash.slice(0, 48)}`);
+  }
+  const sorted = [...allIds].sort();
+  const remaining = sorted.filter(id => id > after);
+  const page = remaining.slice(0, limit);
+  return c.json({ projectIds: page, nextCursor: page.at(-1) ?? (after || null), hasMore: remaining.length > page.length });
+});
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));

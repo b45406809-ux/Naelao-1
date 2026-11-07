@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
+import { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO.js";
+import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
 
 describe("sandbox workspace ownership", () => {
   it("keeps the Space Assistant, each Space-wide extension, and projects in distinct durable prefixes", () => {
@@ -17,7 +19,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -31,6 +33,37 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const reservationGate = new Promise<Response>(resolve => { releaseReservation = () => resolve(Response.json({ ok: true })); });
     const executionStarted = new Promise<void>(resolve => { announceExecution = resolve; });
     const billingCalls: string[] = [];
+    const containerFiles: Record<string, string> = {};
+    const r2Objects = new Map<string, Uint8Array>();
+    const r2 = {
+      list: async ({ prefix }: { prefix: string }) => ({ objects: [...r2Objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key, size: r2Objects.get(key)!.byteLength })), truncated: false }),
+      head: async (key: string) => { const bytes = r2Objects.get(key); return bytes ? { size: bytes.byteLength, etag: `etag-${key}`, customMetadata: { sha256: "" } } : null; },
+      get: async (key: string) => {
+        const bytes = r2Objects.get(key);
+        return bytes ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null;
+      },
+      put: async (key: string, value: Uint8Array | string, options?: { onlyIf?: { etagDoesNotMatch?: string } }) => {
+        if (options?.onlyIf?.etagDoesNotMatch === "*" && r2Objects.has(key)) return null;
+        const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+        r2Objects.set(key, bytes.slice());
+        return { key, size: bytes.byteLength };
+      },
+    };
+    const coordinatorStorage = new Map<string, unknown>();
+    const coordinator = new WorkspaceCoordinatorDO({ storage: {
+      get: async (key: string) => coordinatorStorage.get(key),
+      put: async (key: string, value: unknown) => coordinatorStorage.set(key, structuredClone(value)),
+      delete: async (key: string) => coordinatorStorage.delete(key),
+      transaction: async (callback: (txn: unknown) => Promise<unknown>) => callback({
+        get: async (key: string) => coordinatorStorage.get(key),
+        put: async (key: string, value: unknown) => coordinatorStorage.set(key, structuredClone(value)),
+        delete: async (key: string) => coordinatorStorage.delete(key),
+      }),
+    } } as never, { PLATFORM_SECRET: "test-secret", SCRIPTS_R2: r2 } as never);
+    const workspaceNamespace = {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    };
 
     const mockContainer = {
       get running() {
@@ -51,7 +84,25 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
           }
           if (url.pathname === "/exec" && options.taintedExecution)
             return Response.json({ ok: false, error: "guest_process_cleanup_unverified" }, { status: 500, headers: { "x-naelao-container-tainted": "1" } });
-          if (url.pathname === "/workspace/list") return Response.json({ files: [] });
+          if (url.pathname === "/workspace/list") return Response.json({ files: options.unifiedWorkspace ? Object.keys(containerFiles) : [] });
+          if (url.pathname === "/workspace/write") {
+            const body = await req.clone().json<{ files?: Record<string, string>; files_base64?: Record<string, string> }>().catch(() => ({}));
+            if (options.unifiedWorkspace) {
+              for (const [path, content] of Object.entries(body.files ?? {})) containerFiles[path] = content;
+              for (const [path, content] of Object.entries(body.files_base64 ?? {})) containerFiles[path] = new TextDecoder().decode(Uint8Array.from(atob(content), character => character.charCodeAt(0)));
+            }
+            return Response.json({ ok: true });
+          }
+          if (url.pathname === "/workspace/read") {
+            const body = await req.clone().json<{ paths?: string[] }>().catch(() => ({}));
+            const selected = body.paths ?? Object.keys(containerFiles);
+            return Response.json({ files_base64: Object.fromEntries(selected.filter(path => path in containerFiles).map(path => [path, btoa(containerFiles[path]!)])) });
+          }
+          if (url.pathname === "/workspace/delete") {
+            const body = await req.clone().json<{ paths?: string[] }>().catch(() => ({}));
+            for (const path of body.paths ?? []) delete containerFiles[path];
+            return Response.json({ ok: true });
+          }
           if (url.pathname.endsWith("/display/capture")) {
             return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
           }
@@ -88,7 +139,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
 
     const realSandbox = new ToolSandboxDO(mockCtx, {
       PLATFORM_SECRET: "test-secret",
-      SCRIPTS_R2: { list: async () => ({ objects: [], truncated: false }), get: async () => null },
+      SCRIPTS_R2: options.unifiedWorkspace ? r2 : { list: async () => ({ objects: [], truncated: false }), get: async () => null },
+      ...(options.unifiedWorkspace ? { WORKSPACE_COORDINATOR: workspaceNamespace, UNIFIED_WORKSPACE_ENABLED: "true" } : { UNIFIED_WORKSPACE_ENABLED: "false" }),
       CONCURRENCY_DO: {},
       BILLING_WORKER: { fetch: async (request: Request) => {
         const path = new URL(request.url).pathname;
@@ -116,13 +168,13 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
-      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
+      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", ...(options.workspaceProject ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
         ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
         executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; } };
+    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, coordinator, r2Objects };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -471,5 +523,52 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
     expect(storage.get("container_status")).toBe("hibernated");
     vi.useRealTimers();
+  });
+
+  it("routes an internal project sandbox checkpoint through the atomic workspace coordinator when enabled", async () => {
+    const { sandbox, coordinator, r2Objects } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
+    const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "notes/result.txt": "committed from container" }, expected_hashes: { "notes/result.txt": null } }),
+    }));
+    expect(written.status).toBe(200);
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, "/v1/read?branch=main", {});
+    const workspace = await read.json() as { head?: { revision: number }; entries?: Array<{ path: string; sha256: string; objectKey: string }> };
+    expect(workspace.head?.revision).toBe(1);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("workspace-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const branchRead = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(`runs/${runHash.slice(0, 32)}`)}`, {});
+    const runBranch = await branchRead.json() as { head?: { revision: number }; entries?: Array<{ path: string; sha256: string; objectKey: string }> };
+    expect(runBranch.head?.revision).toBe(2);
+    expect(runBranch.entries).toMatchObject([{ path: "notes/result.txt" }]);
+    expect(r2Objects.has(runBranch.entries![0]!.objectKey)).toBe(true);
+  });
+
+  it("merges a completed run branch into its requested branch only after checked publication", async () => {
+    const { sandbox, coordinator } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "completion-run" });
+    const write = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "src/result.txt": "finished" }, expected_hashes: { "src/result.txt": null } }),
+    }));
+    expect(write.status).toBe(200);
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = async () => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, "/v1/read?branch=main", {}).then(response => response.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    expect((await read()).head.revision).toBe(1);
+    const completed = await sandbox.fetch(new Request("https://sandbox/lifecycle", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "completed", tenantId: "tenant", spaceId: "space", projectId: "project" }),
+    }));
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ ok: true, status: "completed" });
+    expect(await read()).toMatchObject({ head: { revision: 2 }, entries: [{ path: "src/result.txt" }] });
   });
 });
