@@ -12,6 +12,7 @@ function fixture(privateRun = false) {
   const get = vi.fn(async () => ({
     size: text.length,
     httpMetadata: { contentType: "text/plain" },
+    customMetadata: { workspaceBranch: "task-a", workspaceRevision: "8" },
     arrayBuffer: async () => new TextEncoder().encode(text).buffer,
   }));
   const summarize = vi.fn(async () => ({
@@ -41,6 +42,8 @@ describe("document workspace input boundary", () => {
     expect(summarize).toHaveBeenCalledWith(
       expect.objectContaining({
         text: "Vendor: Acme",
+        workspaceBranch: "task-a",
+        workspaceRevision: 8,
         sourceId: expect.stringMatching(
           /^workspace:report\.txt#sha256:[a-f0-9]{64}$/
         ),
@@ -73,6 +76,8 @@ describe("document workspace input boundary", () => {
     )) as {
       sourceId: string;
       sourceHash: string;
+      workspaceBranch: string;
+      workspaceRevision: number;
       chunks: Array<{
         text: string;
         start: number;
@@ -84,6 +89,7 @@ describe("document workspace input boundary", () => {
       /^workspace:report\.txt#sha256:[a-f0-9]{64}$/
     );
     expect(result.sourceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result).toMatchObject({ workspaceBranch: "task-a", workspaceRevision: 8 });
     expect(result.chunks).toEqual([
       {
         index: 0,

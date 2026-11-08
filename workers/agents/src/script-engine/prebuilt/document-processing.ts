@@ -21,6 +21,14 @@ function gateway(ctx: PrebuiltOpContext): DocumentProcessingGateway {
   return ctx.env.documentProcessor;
 }
 
+function workspaceRevisionIdentity(object: R2ObjectBody): { workspaceBranch?: string; workspaceRevision?: number } {
+  const branch = object.customMetadata?.workspaceBranch;
+  const revision = Number(object.customMetadata?.workspaceRevision);
+  return branch && Number.isSafeInteger(revision) && revision >= 0
+    ? { workspaceBranch: branch, workspaceRevision: revision }
+    : {};
+}
+
 async function source(
   args: Record<string, unknown>,
   ctx: PrebuiltOpContext
@@ -49,7 +57,7 @@ async function source(
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-  return { ...args, text, sourceId: `workspace:${path}#sha256:${hash}` };
+  return { ...args, text, sourceId: `workspace:${path}#sha256:${hash}`, ...workspaceRevisionIdentity(object) };
 }
 
 async function execute<K extends keyof DocumentProcessingGateway>(
@@ -98,6 +106,7 @@ async function partition(
   return {
     sourceId,
     sourceHash,
+    ...workspaceRevisionIdentity(object),
     mimeType: extracted.mimeType,
     sourceBytes: extracted.sourceBytes,
     extractedTextBytes: new TextEncoder().encode(extracted.text).byteLength,
