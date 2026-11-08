@@ -11,6 +11,7 @@ import { composeSystemPrompt } from "./reasoner.js";
 class MemoryBucket {
   objects = new Map<string, string>();
   etags = new Map<string, string>();
+  metadata = new Map<string, Record<string, string>>();
   async head(key: string) {
     return this.objects.has(key) ? {} : null;
   }
@@ -22,6 +23,7 @@ class MemoryBucket {
           etag: this.etags.get(key) ?? "e0",
           json: async () => JSON.parse(value),
           size: new TextEncoder().encode(value).byteLength,
+          customMetadata: this.metadata.get(key) ?? {},
           text: async () => value,
           arrayBuffer: async () => new TextEncoder().encode(value).buffer,
         };
@@ -115,6 +117,7 @@ describe("skill distillation", () => {
   it("reads a scoped bounded video and stages an unverified private skill, never a runnable Space script", async () => {
     const bucket = new MemoryBucket();
     await bucket.put("spaces/s1/projects/p1/workspace/demo.mp4", "video bytes");
+    bucket.metadata.set("spaces/s1/projects/p1/workspace/demo.mp4", { workspaceBranch: "main", workspaceRevision: "12" });
     const result = await distillSkillFromVideo(
       {
         scriptsBucket: bucket as unknown as R2Bucket,
@@ -139,6 +142,8 @@ describe("skill distillation", () => {
       verified: false,
       status: "draft",
       actions: 3,
+      workspace_branch: "main",
+      workspace_revision: 12,
     });
     expect(bucket.objects.has("spaces/s1/scripts/video-demo/code.ts")).toBe(
       false

@@ -93,6 +93,8 @@ export async function distillSkillFromVideo(
     synthesized.steps,
     "video"
   );
+  const workspaceBranch = object.customMetadata?.workspaceBranch;
+  const workspaceRevision = Number(object.customMetadata?.workspaceRevision);
   return {
     ok: true,
     name: skill.name,
@@ -103,5 +105,8 @@ export async function distillSkillFromVideo(
     requires_review: true,
     requires_test: true,
     requires_explicit_enable: true,
+    ...(workspaceBranch && Number.isSafeInteger(workspaceRevision) && workspaceRevision >= 0
+      ? { workspace_branch: workspaceBranch, workspace_revision: workspaceRevision }
+      : {}),
   };
 }
