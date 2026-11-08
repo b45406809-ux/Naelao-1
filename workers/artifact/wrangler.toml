@@ -24,6 +24,14 @@ bucket_name = "naelao-agent-scripts"
 name = "REPOSITORY_DO"
 class_name = "RepositoryDO"
 
+# The Git projection publishes canonical file deltas only through the coordinator's
+# checked session/stage/checkpoint API. This is an external namespace; RepositoryDO
+# never writes the coordinator's content or manifest objects itself.
+[[durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
+script_name = "naelao-agents"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RepositoryDO"]
@@ -57,6 +65,11 @@ bucket_name = "naelao-agent-scripts"
 name = "REPOSITORY_DO"
 class_name = "RepositoryDO"
 
+[[env.staging.durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
+script_name = "naelao-agents-staging"
+
 
 [[env.production.r2_buckets]]
 binding = "ARTIFACT_BUCKET"
@@ -76,3 +89,8 @@ bucket_name = "naelao-agent-scripts"
 [[env.production.durable_objects.bindings]]
 name = "REPOSITORY_DO"
 class_name = "RepositoryDO"
+
+[[env.production.durable_objects.bindings]]
+name = "WORKSPACE_COORDINATOR"
+class_name = "WorkspaceCoordinatorDO"
+script_name = "naelao-agents-production"

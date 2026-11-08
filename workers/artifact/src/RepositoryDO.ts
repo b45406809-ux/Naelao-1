@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
-import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { getDOName } from "@naelao/crypto";
+import { applyDurableObjectJurisdiction } from "@naelao/security";
 import {
   type CommitRecord,
   type RepositoryScope,
@@ -26,6 +28,8 @@ interface RepoState {
 type Entries = Record<string, TreeEntry>;
 
 const RECONCILE_MAX_FILES = 1_000;
+const COORDINATOR_MAX_FILE_BYTES = 768 * 1024;
+const COORDINATOR_MAX_PUBLICATION_BYTES = 5 * 1024 * 1024;
 // Changes are base64 encoded in the internal commit request, so keep raw workspace
 // content below half of the direct request-body ceiling to leave room for paths/metadata.
 const RECONCILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -34,6 +38,9 @@ interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
   /** Canonical mutable workspace files; Git refs/objects are a materialized projection. */
   WORKSPACE_R2?: R2Bucket;
+  WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+  PLATFORM_SECRET?: string;
+  DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
 }
 const EMPTY: RepoState = {
@@ -53,6 +60,7 @@ function jsonError(message: string, status = 400): Response {
 export class RepositoryDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, ["WORKSPACE_COORDINATOR"]);
   }
 
   private async state(): Promise<RepoState> {
@@ -240,6 +248,107 @@ export class RepositoryDO extends DurableObject<Env> {
     await this.env.REPOSITORY_OBJECTS.put(key, JSON.stringify({ scope, state, branch, changes }));
     await this.ctx.storage.put("workspace_publication", { key, scope });
     await this.recoverWorkspacePublication(scope);
+  }
+
+  private async coordinatorRequest(scope: RepositoryScope, path: string, body?: unknown): Promise<Response> {
+    if (!this.env.WORKSPACE_COORDINATOR || !this.env.PLATFORM_SECRET) throw new Error("workspace_publication_requires_coordinator_binding");
+    const resource = `${scope.spaceId}:${scope.projectId}`;
+    const name = await getDOName("workspace", resource, scope.tenantId, this.env.PLATFORM_SECRET);
+    const stub = this.env.WORKSPACE_COORDINATOR.get(this.env.WORKSPACE_COORDINATOR.idFromName(name));
+    const headers = new Headers({
+      "x-naelao-tenant-id": scope.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId),
+    });
+    if (body !== undefined) headers.set("content-type", "application/json");
+    return stub.fetch(new Request(`https://workspace-coordinator${path}`, {
+      method: body === undefined ? "GET" : "POST", headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }));
+  }
+
+  /** Publish one Git commit's complete file delta as one fenced coordinator revision. */
+  private async publishGitChanges(
+    scope: RepositoryScope,
+    branch: string,
+    expectedHead: string | null,
+    changes: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }>,
+  ): Promise<number> {
+    if (!this.env.WORKSPACE_COORDINATOR || !this.env.PLATFORM_SECRET) throw new Error("workspace_publication_requires_coordinator_binding");
+    if (changes.length > 100) throw new Error("workspace_publication_limit_exceeded:too_many_files");
+    let totalBytes = 0;
+    for (const change of changes) {
+      if (change.contentBase64 === null) continue;
+      const padding = change.contentBase64.endsWith("==") ? 2 : change.contentBase64.endsWith("=") ? 1 : 0;
+      const size = Math.max(0, Math.floor(change.contentBase64.length * 3 / 4) - padding);
+      if (size > COORDINATOR_MAX_FILE_BYTES) throw new Error("workspace_publication_limit_exceeded:file_too_large");
+      totalBytes += size;
+      if (totalBytes > COORDINATOR_MAX_PUBLICATION_BYTES) throw new Error("workspace_publication_limit_exceeded:batch_too_large");
+    }
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ scope, branch, expectedHead, changes })));
+    const idempotencyKey = `repo-${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
+    const branchQuery = encodeURIComponent(branch);
+    const receipt = await this.coordinatorRequest(scope, `/v1/receipt?branch=${branchQuery}&idempotencyKey=${encodeURIComponent(idempotencyKey)}`);
+    if (receipt.ok) {
+      const saved = await receipt.json() as { publication?: { revision?: number; status?: string } };
+      if (!Number.isSafeInteger(saved.publication?.revision) || saved.publication?.status === "conflicted") throw new Error("workspace_publication_receipt_invalid");
+      return Number(saved.publication!.revision);
+    }
+    if (receipt.status !== 404) throw new Error(`workspace_publication_receipt_unavailable:${receipt.status}`);
+    const headResponse = await this.coordinatorRequest(scope, `/v1/head?branch=${branchQuery}`);
+    if (!headResponse.ok) throw new Error(`workspace_publication_head_unavailable:${headResponse.status}`);
+    const head = await headResponse.json() as { head?: { revision?: number } };
+    const revision = head.head?.revision;
+    if (!Number.isSafeInteger(revision)) throw new Error("workspace_publication_head_invalid");
+    const runtimeId = `repository:${scope.projectId}`;
+    const openedResponse = await this.coordinatorRequest(scope, "/v1/open", {
+      scope: { ...scope, jurisdiction: this.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, branch,
+      actorId: `repository:${scope.projectId}`, runtimeId, allocationGeneration: 1, mode: "checked_handoff",
+    });
+    if (!openedResponse.ok) throw new Error(`workspace_publication_open_failed:${openedResponse.status}`);
+    const opened = await openedResponse.json() as { session?: { id?: string; fence?: number; allocationGeneration?: number }; head?: { revision?: number } };
+    const session = opened.session;
+    if (typeof session?.id !== "string" || !Number.isSafeInteger(session.fence) || opened.head?.revision !== revision) {
+      if (session?.id) await this.coordinatorRequest(scope, "/v1/close", { sessionId: session.id, runtimeId }).catch(() => undefined);
+      throw new Error("workspace_publication_head_changed");
+    }
+    try {
+      const stageId = idempotencyKey;
+      const staged = await this.coordinatorRequest(scope, "/v1/stage", {
+        sessionId: session.id, stageId, allocationGeneration: session.allocationGeneration ?? 1, fence: session.fence,
+        changes: changes.map(change => ({ path: change.path, expectedHash: change.expectedHash, contentBase64: change.contentBase64 })),
+      });
+      if (!staged.ok) throw new Error(`workspace_publication_stage_failed:${staged.status}`);
+      const checkpoint = await this.coordinatorRequest(scope, "/v1/checkpoint", {
+        sessionId: session.id, stageId, runtimeId, baseRevision: revision,
+        allocationGeneration: session.allocationGeneration ?? 1, fence: session.fence, idempotencyKey,
+      });
+      const result = await checkpoint.json() as { publication?: { revision?: number; status?: string }; error_code?: string };
+      if (!checkpoint.ok || result.publication?.status === "conflicted" || !Number.isSafeInteger(result.publication?.revision)) {
+        const code = result.error_code ?? `http_${checkpoint.status}`;
+        throw new Error(`workspace_publication_conflict:${code}`);
+      }
+      return Number(result.publication!.revision);
+    } finally {
+      await this.coordinatorRequest(scope, "/v1/close", { sessionId: session.id, runtimeId }).catch(() => undefined);
+    }
+  }
+
+  private async gitDelta(scope: RepositoryScope, before: Entries, after: Entries): Promise<Array<{ path: string; expectedHash: string | null; contentBase64: string | null }>> {
+    const changes: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
+    for (const path of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
+      const prior = before[path], next = after[path];
+      if (prior?.hash === next?.hash) continue;
+      if (!next) {
+        changes.push({ path, expectedHash: prior?.hash ?? null, contentBase64: null });
+        continue;
+      }
+      const object = await this.readVerifiedObject(scope, next.oid);
+      if (object.type !== "blob" || object.body.byteLength !== next.size || await sha256(object.body) !== next.hash) throw new Error("workspace_publication_blob_corrupt");
+      let binary = "";
+      for (let offset = 0; offset < object.body.length; offset += 0x8000) binary += String.fromCharCode(...object.body.subarray(offset, Math.min(offset + 0x8000, object.body.length)));
+      changes.push({ path, expectedHash: prior?.hash ?? null, contentBase64: btoa(binary) });
+    }
+    return changes;
   }
 
   private async recoverWorkspacePublication(scope: RepositoryScope): Promise<void> {
@@ -441,7 +550,7 @@ export class RepositoryDO extends DurableObject<Env> {
       : this.handle(request);
   }
 
-  private async handle(request: Request): Promise<Response> {
+  private async handle(request: Request, projectionOnly = false): Promise<Response> {
     try {
       const scope = this.scope(request);
       await this.recoverWorkspacePublication(scope);
@@ -507,35 +616,54 @@ export class RepositoryDO extends DurableObject<Env> {
       if (!(branch in state.refs)) return jsonError("Branch not found", 404);
 
       if (op === "reconcile" && request.method === "POST") {
-        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") return jsonError("Canonical workspace reconciliation is not implemented for this repository adapter", 409);
-        if (!this.env.WORKSPACE_R2) return jsonError("Workspace reconciliation storage is not bound", 503);
+        const unified = this.env.UNIFIED_WORKSPACE_ENABLED === "true";
+        if (unified && (!this.env.WORKSPACE_COORDINATOR || !this.env.PLATFORM_SECRET)) return jsonError("workspace_publication_requires_coordinator_binding", 503);
+        if (!unified && !this.env.WORKSPACE_R2) return jsonError("Workspace reconciliation storage is not bound", 503);
         const workspaceRoot = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
         const prefix = branch === "main" ? workspaceRoot : `${workspaceRoot}branches/${branch.replaceAll("\\", "/")}/`;
         const live = new Map<string, { bytes: Uint8Array; hash: string; etag: string }>();
+        let snapshotRevision: number | undefined;
         let cursor: string | undefined;
         let scannedFiles = 0;
         let scannedBytes = 0;
-        do {
-          const page = await this.env.WORKSPACE_R2.list(cursor ? { prefix, cursor } : { prefix });
+        if (unified) {
+          if (!this.env.WORKSPACE_R2) return jsonError("Workspace content storage is not bound", 503);
+          const response = await this.coordinatorRequest(scope, `/v1/read?branch=${encodeURIComponent(branch)}`);
+          if (!response.ok) return jsonError(`Workspace manifest read failed (${response.status})`, response.status);
+          const snapshot = await response.json() as { head?: { revision?: number }; entries?: Array<{ path: string; sha256: string; size: number; objectKey: string }> };
+          if (!Number.isSafeInteger(snapshot.head?.revision) || !Array.isArray(snapshot.entries)) return jsonError("Workspace manifest snapshot is invalid", 503);
+          snapshotRevision = snapshot.head!.revision;
+          const contentPrefix = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${this.env.DATA_JURISDICTION === "eu" ? "eu" : "global"}/content/`;
+          for (const entry of snapshot.entries) {
+            const maximumBytes = Math.min(RECONCILE_MAX_BYTES, COORDINATOR_MAX_PUBLICATION_BYTES);
+            if (scannedFiles >= RECONCILE_MAX_FILES || entry.size > maximumBytes - scannedBytes) {
+              return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${maximumBytes}-byte scan limit`, 413);
+            }
+            if (!entry.objectKey.startsWith(contentPrefix)) return jsonError("Workspace manifest object scope mismatch", 403);
+            scannedFiles++;
+            const object = await this.env.WORKSPACE_R2.get(entry.objectKey);
+            if (!object || object.size !== entry.size) return jsonError("Workspace manifest content unavailable", 503);
+            const bytes = new Uint8Array(await object.arrayBuffer());
+            if (bytes.byteLength !== entry.size || bytes.byteLength > maximumBytes - scannedBytes || await sha256(bytes) !== entry.sha256)
+              return jsonError("Workspace manifest content integrity check failed", 503);
+            scannedBytes += bytes.byteLength;
+            live.set(normalizePath(entry.path), { bytes, hash: entry.sha256, etag: `revision:${snapshotRevision}` });
+          }
+        } else do {
+          const page = await this.env.WORKSPACE_R2!.list(cursor ? { prefix, cursor } : { prefix });
           for (const item of page.objects) {
             if (item.key.slice(prefix.length).startsWith("branches/")) continue;
             if (item.customMetadata?.deleted === "true" || item.key.endsWith("/.keep")) continue;
-            if (scannedFiles >= RECONCILE_MAX_FILES || item.size > RECONCILE_MAX_BYTES - scannedBytes) {
-              return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
-            }
+            if (scannedFiles >= RECONCILE_MAX_FILES || item.size > RECONCILE_MAX_BYTES - scannedBytes) return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
             scannedFiles++;
             scannedBytes += item.size;
             const path = normalizePath(item.key.slice(prefix.length));
-            const object = await this.env.WORKSPACE_R2.get(item.key);
+            const object = await this.env.WORKSPACE_R2!.get(item.key);
             if (!object) continue;
             const bytes = new Uint8Array(await object.arrayBuffer());
-            if (bytes.byteLength > RECONCILE_MAX_BYTES - (scannedBytes - item.size)) {
-              return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
-            }
-            // R2 metadata may be stale after a concurrent write. Count the actual bytes read
-            // before retaining them so an inconsistent size cannot bypass the memory ceiling.
+            if (bytes.byteLength > RECONCILE_MAX_BYTES - (scannedBytes - item.size)) return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
             scannedBytes += bytes.byteLength - item.size;
-            const head = await this.env.WORKSPACE_R2.head(item.key);
+            const head = await this.env.WORKSPACE_R2!.head(item.key);
             if (!head) continue;
             live.set(path, { bytes, hash: await sha256(bytes), etag: head.etag });
           }
@@ -553,12 +681,20 @@ export class RepositoryDO extends DurableObject<Env> {
             binary += String.fromCharCode(...current.bytes.subarray(offset, Math.min(offset + 0x8000, current.bytes.length)));
           changes.push({ path, content_base64: btoa(binary), expected_hash: prior?.hash ?? null });
         }
-        if (!changes.length) return Response.json({ reconciled: true, changed: 0, commit_id: state.refs[branch] ?? null });
+        if (!changes.length) return Response.json({ reconciled: true, changed: 0, commit_id: state.refs[branch] ?? null,
+          ...(snapshotRevision === undefined ? {} : { workspace_branch: branch, workspace_revision: snapshotRevision }) });
         // Refuse a snapshot that changed while it was being read. The caller can retry and the
         // next pass will replay the latest canonical R2 state into the Git projection.
-        for (const [path, current] of live) {
-          const head = await this.env.WORKSPACE_R2.head(`${prefix}${path}`);
-          if (head?.etag !== current.etag) return jsonError("Workspace changed during reconciliation; retry", 409);
+        if (unified) {
+          const currentResponse = await this.coordinatorRequest(scope, `/v1/head?branch=${encodeURIComponent(branch)}`);
+          if (!currentResponse.ok) return jsonError(`Workspace head check failed (${currentResponse.status})`, currentResponse.status);
+          const current = await currentResponse.json() as { head?: { revision?: number } };
+          if (current.head?.revision !== snapshotRevision) return jsonError("Workspace changed during reconciliation; retry", 409);
+        } else {
+          for (const [path, current] of live) {
+            const head = await this.env.WORKSPACE_R2!.head(`${prefix}${path}`);
+            if (head?.etag !== current.etag) return jsonError("Workspace changed during reconciliation; retry", 409);
+          }
         }
         const commitRequest = new Request("http://repository/commit", {
           method: "POST",
@@ -571,10 +707,11 @@ export class RepositoryDO extends DurableObject<Env> {
             metadata: body.metadata,
           }),
         });
-        const committed = await this.handle(commitRequest);
+        const committed = await this.handle(commitRequest, unified);
         if (!committed.ok) return committed;
         const result = await committed.json<{ commit_id: string }>();
-        return Response.json({ reconciled: true, changed: changes.length, commit_id: result.commit_id }, { status: 200 });
+        return Response.json({ reconciled: true, changed: changes.length, commit_id: result.commit_id,
+          ...(snapshotRevision === undefined ? {} : { workspace_branch: branch, workspace_revision: snapshotRevision }) }, { status: 200 });
       }
 
       if (op === "tree" && request.method === "GET") {
@@ -675,7 +812,6 @@ export class RepositoryDO extends DurableObject<Env> {
             ? Response.json(record)
             : jsonError("Commit not found", 404);
         }
-        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") return jsonError("workspace_publication_requires_coordinator", 409);
         if (!Object.prototype.hasOwnProperty.call(body, "expected_head") || (body.expected_head !== null && typeof body.expected_head !== "string"))
           return jsonError("expected_head is required (commit ID or null)");
         const expected = body.expected_head;
@@ -685,6 +821,7 @@ export class RepositoryDO extends DurableObject<Env> {
         const changes = Array.isArray(body.changes)
           ? (body.changes as Array<Record<string, unknown>>)
           : [];
+        const coordinatorChanges: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
         // Validate the whole change set before publishing any file mutation. The DO input gate
         // serializes this head/hash precondition with the eventual ref save.
         for (const change of changes) {
@@ -701,6 +838,7 @@ export class RepositoryDO extends DurableObject<Env> {
             return jsonError("node_modules cannot be synchronized");
           if (change.deleted === true) {
             delete state.worktrees[branch]![path];
+            coordinatorChanges.push({ path, expectedHash: change.expected_hash as string | null, contentBase64: null });
             continue;
           }
           if (typeof change.content_base64 !== "string")
@@ -727,6 +865,7 @@ export class RepositoryDO extends DurableObject<Env> {
             size: bytes.byteLength,
             hash: contentSha256,
           };
+          coordinatorChanges.push({ path, expectedHash: change.expected_hash as string | null, contentBase64: change.content_base64 });
         }
         // Defense in depth for worktrees created before namespace validation was introduced.
         // Agent machinery can never be serialized into a user-visible Git tree.
@@ -763,9 +902,19 @@ export class RepositoryDO extends DurableObject<Env> {
           entries: structuredClone(state.worktrees[branch]!),
         };
         state.refs[branch] = encoded.oid;
+        let workspaceRevision: number | undefined;
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true" && !projectionOnly && coordinatorChanges.length) {
+          try {
+            workspaceRevision = await this.publishGitChanges(scope, branch, expected, coordinatorChanges);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "workspace_publication_failed";
+            if (message.startsWith("workspace_publication_conflict:")) return jsonError(message, 409);
+            throw error;
+          }
+        }
         await this.save(state);
         return Response.json(
-          { commit_id: encoded.oid, tree_id: tree.oid, parent, metadata },
+          { commit_id: encoded.oid, tree_id: tree.oid, parent, metadata, ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision, workspace_branch: branch }) },
           { status: 201 }
         );
       }
@@ -899,8 +1048,13 @@ export class RepositoryDO extends DurableObject<Env> {
         await this.putObject(scope, encoded.oid, encoded.bytes);
         state.commits[encoded.oid] = { oid: encoded.oid, tree: hierarchy.root.oid, parent: upstream, parents: [upstream], message: `Rebase ${targetName} onto ${upstreamName}`, metadata, createdAt, entries: structuredClone(rebased) };
         state.refs[targetName] = encoded.oid; state.worktrees[targetName] = rebased;
-        await this.publishWorkspaceState(scope, state, targetName, targetEntries);
-        return Response.json({ status: "AUTO_REBASED", commitsBehind, baseCommit: common, upstreamHead: upstream, commit_id: encoded.oid, overlappingFiles: [] });
+        let workspaceRevision: number | undefined;
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+          const delta = await this.gitDelta(scope, targetEntries, rebased);
+          if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target, delta);
+        } else await this.publishWorkspaceState(scope, state, targetName, targetEntries);
+        await this.save(state);
+        return Response.json({ status: "AUTO_REBASED", commitsBehind, baseCommit: common, upstreamHead: upstream, commit_id: encoded.oid, overlappingFiles: [], ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision }) });
       }
       if (op === "merge-pull-request" && request.method === "POST") {
         const rank = String(body.reviewerRank ?? body.reviewer_rank ?? "");
@@ -980,15 +1134,24 @@ export class RepositoryDO extends DurableObject<Env> {
         if (body.expected_head !== undefined && body.expected_head !== target)
           return jsonError("Head changed", 409);
         if (!target || this.ancestors(state, source).has(target)) {
+          const previousEntries = target ? state.commits[target]!.entries : {};
+          const nextEntries = state.commits[source]!.entries;
+          let workspaceRevision: number | undefined;
+          if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+            const delta = await this.gitDelta(scope, previousEntries, nextEntries);
+            if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target ?? null, delta);
+          }
           state.refs[targetName] = source;
           state.worktrees[targetName] = structuredClone(
-            state.commits[source]!.entries
+            nextEntries
           );
-          await this.publishWorkspaceState(scope, state, targetName, target ? state.commits[target]!.entries : {});
+          if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true") await this.publishWorkspaceState(scope, state, targetName, previousEntries);
+          else await this.save(state);
           return Response.json({
             commit_id: source,
             fast_forward: true,
             branch: targetName,
+            ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision }),
             event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           });
         }
@@ -1057,14 +1220,21 @@ export class RepositoryDO extends DurableObject<Env> {
           createdAt,
           entries: structuredClone(merged),
         };
+        let workspaceRevision: number | undefined;
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+          const delta = await this.gitDelta(scope, ours, merged);
+          if (delta.length) workspaceRevision = await this.publishGitChanges(scope, targetName, target, delta);
+        }
         state.refs[targetName] = encoded.oid;
-        await this.publishWorkspaceState(scope, state, targetName, ours);
+        if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true") await this.publishWorkspaceState(scope, state, targetName, ours);
+        else await this.save(state);
         return Response.json(
           {
             commit_id: encoded.oid,
             fast_forward: false,
             merged: true,
             branch: targetName,
+            ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision }),
             parents: [target, source],
             event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           },
@@ -1195,9 +1365,13 @@ export class RepositoryDO extends DurableObject<Env> {
       return jsonError("Route not found", 404);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid request";
+      const coordinatorStatus = /^workspace_publication_(?:stage|open|head|receipt)_\w+:(\d{3})$/.exec(message)?.[1];
       const status = message.startsWith("workspace_publication_conflict:") ? 409
+        : message === "workspace_publication_head_changed" ? 409
         : message.startsWith("workspace_publication_interrupted:") ? 503
-        : message.startsWith("workspace_publication_requires_coordinator") ? 409
+        : message.startsWith("workspace_publication_limit_exceeded:") ? 413
+        : coordinatorStatus ? Number(coordinatorStatus)
+        : message.startsWith("workspace_publication_requires_coordinator") || message.startsWith("workspace_publication_head_unavailable:") || message.startsWith("workspace_publication_receipt_unavailable:") ? 503
         : /workspace_publication_|integrity check failed|object missing|malformed tree|reachable commit metadata missing/i.test(message) ? 500 : 400;
       return jsonError(message, status);
     }

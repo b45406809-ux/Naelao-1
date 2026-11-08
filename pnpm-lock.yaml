@@ -882,6 +882,9 @@ importers:
 
   workers/artifact:
     dependencies:
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http

@@ -371,7 +371,7 @@ describe("Git object and metadata encoding", () => {
 });
 
 describe("unified workspace transition guards", () => {
-  it("blocks repository reconcile and direct workspace publication while unified mode is active", async () => {
+  it("fails closed when the coordinator binding is missing in unified mode", async () => {
     const storage = new Map<string, unknown>();
     const repositoryObjects = new Map<string, Uint8Array>();
     const workspacePut = vi.fn(async () => ({ etag: "workspace-etag" }));
@@ -392,14 +392,98 @@ describe("unified workspace transition guards", () => {
     const headers = { "content-type": "application/json", "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) };
     expect((await repo.fetch(new Request("http://repo/init", { method: "POST", headers }))).status).toBe(200);
     const reconcile = await repo.fetch(new Request("http://repo/reconcile", { method: "POST", headers, body: JSON.stringify({ branch: "main" }) }));
-    expect(reconcile.status).toBe(409);
+    expect(reconcile.status).toBe(503);
     const commit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
       branch: "main", expected_head: null, metadata, message: "disabled legacy publication",
       changes: [{ path: "README.md", content_base64: btoa("hello"), expected_hash: null }],
     }) }));
-    expect(commit.status).toBe(409);
-    expect(await commit.json()).toMatchObject({ error: "workspace_publication_requires_coordinator" });
+    expect(commit.status).toBe(503);
+    expect(await commit.json()).toMatchObject({ error: "workspace_publication_requires_coordinator_binding" });
     expect(workspacePut).not.toHaveBeenCalled();
+  });
+
+  it("publishes a Git commit as one checked coordinator revision", async () => {
+    const storage = new Map<string, unknown>();
+    const repositoryObjects = new Map<string, Uint8Array>();
+    const published: unknown[] = [];
+    const repo = new RepositoryDO({ storage: {
+      get: async (key: string) => storage.get(key),
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+    } } as never, {
+      UNIFIED_WORKSPACE_ENABLED: "true", PLATFORM_SECRET: "platform-secret",
+      WORKSPACE_COORDINATOR: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async (request: Request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/v1/receipt") return Response.json({ error_code: "publication_not_found" }, { status: 404 });
+          if (path === "/v1/head") return Response.json({ head: { revision: 1 } });
+          if (path === "/v1/open") return Response.json({ session: { id: "ws_123e4567-e89b-12d3-a456-426614174000", fence: 4, allocationGeneration: 1 }, head: { revision: 1 } });
+          if (path === "/v1/stage") { published.push(await request.clone().json()); return Response.json({ stageId: "staged" }); }
+          if (path === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 2 } });
+          if (path === "/v1/close") return Response.json({ closed: true });
+          return Response.json({ error_code: "not_found" }, { status: 404 });
+        } }),
+      },
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => repositoryObjects.has(key),
+        put: async (key: string, value: Uint8Array | string) => { repositoryObjects.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value); },
+        get: async (key: string) => { const bytes = repositoryObjects.get(key); return bytes ? { arrayBuffer: async () => bytes.slice().buffer } : null; },
+        list: async () => ({ objects: [], truncated: false }), delete: async () => {},
+      } as unknown as R2Bucket,
+      WORKSPACE_R2: {} as R2Bucket,
+    } as never);
+    const headers = { "content-type": "application/json", "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) };
+    await repo.fetch(new Request("http://repo/init", { method: "POST", headers }));
+    const commit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
+      branch: "main", expected_head: null, metadata, message: "checked Git publication",
+      changes: [{ path: "README.md", content_base64: btoa("hello"), expected_hash: null }],
+    }) }));
+    expect(commit.status).toBe(201);
+    expect(await commit.json()).toMatchObject({ workspace_branch: "main", workspace_revision: 2 });
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({ changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa("hello") }] });
+  });
+
+  it("reconciles Git from one verified coordinator snapshot without republishing canonical files", async () => {
+    const storage = new Map<string, unknown>();
+    const repositoryObjects = new Map<string, Uint8Array>();
+    const file = new TextEncoder().encode("from manifest");
+    const hash = await sha256Text("from manifest");
+    const calls: string[] = [];
+    const workspaceList = vi.fn(async () => ({ objects: [], truncated: false }));
+    const repo = new RepositoryDO({ storage: {
+      get: async (key: string) => storage.get(key),
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+    } } as never, {
+      UNIFIED_WORKSPACE_ENABLED: "true", PLATFORM_SECRET: "platform-secret",
+      WORKSPACE_R2: {
+        get: async (key: string) => key.endsWith(`/content/${hash}`) ? { size: file.byteLength, arrayBuffer: async () => file.slice().buffer } : null,
+        list: workspaceList,
+      } as unknown as R2Bucket,
+      WORKSPACE_COORDINATOR: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async (request: Request) => {
+          const path = new URL(request.url).pathname;
+          calls.push(path);
+          if (path === "/v1/read") return Response.json({ head: { revision: 7 }, entries: [{ path: "notes/status.md", sha256: hash, size: file.byteLength, objectKey: `workspace-v1/tenant/space/project/global/content/${hash}` }] });
+          if (path === "/v1/head") return Response.json({ head: { revision: 7 } });
+          return Response.json({ error_code: "unexpected_coordinator_write" }, { status: 500 });
+        } }),
+      },
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => repositoryObjects.has(key),
+        put: async (key: string, value: Uint8Array | string) => { repositoryObjects.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value); },
+        get: async (key: string) => { const bytes = repositoryObjects.get(key); return bytes ? { arrayBuffer: async () => bytes.slice().buffer } : null; },
+        list: async () => ({ objects: [], truncated: false }), delete: async () => {},
+      } as unknown as R2Bucket,
+    } as never);
+    const headers = { "content-type": "application/json", "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) };
+    await repo.fetch(new Request("http://repo/init", { method: "POST", headers }));
+    const reconciled = await repo.fetch(new Request("http://repo/reconcile", { method: "POST", headers, body: JSON.stringify({ branch: "main", metadata }) }));
+    expect(reconciled.status).toBe(200);
+    expect(await reconciled.json()).toMatchObject({ reconciled: true, changed: 1, workspace_branch: "main", workspace_revision: 7 });
+    expect(calls).toEqual(["/v1/read", "/v1/head"]);
+    expect(workspaceList).not.toHaveBeenCalled();
   });
 });
 
