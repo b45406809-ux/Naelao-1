@@ -960,19 +960,32 @@ export class RepositoryDO extends DurableObject<Env> {
         )
           return jsonError("Invalid branch name");
         if (name in state.refs) return jsonError("Branch exists", 409);
-        const from =
-          this.resolve(state, String(body.from ?? state.refs[branch] ?? "")) ??
-          "";
+        const fromValue = String(body.from ?? state.refs[branch] ?? "");
+        const from = this.resolve(state, fromValue) ?? "";
         if (from && !state.commits[from])
           return jsonError("Commit not found", 404);
+        let workspaceRevision: number | undefined;
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+          const sourceBranch = fromValue in state.refs ? fromValue : Object.keys(state.refs).find(ref => state.refs[ref] === from && from !== "") ?? (!body.from ? state.head : undefined);
+          if (!sourceBranch) return jsonError("workspace_branch_source_required", 409);
+          const created = await this.coordinatorRequest(scope, "/v1/branch", {
+            scope: { ...scope, jurisdiction: this.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
+            sourceBranch, branch: name,
+          });
+          if (!created.ok) return jsonError(`workspace_branch_seed_failed:${created.status}`, created.status);
+          const payload = await created.json() as { branch?: { revision?: number }; created?: boolean };
+          if (!Number.isSafeInteger(payload.branch?.revision)) return jsonError("workspace_branch_seed_unconfirmed", 503);
+          workspaceRevision = payload.branch!.revision;
+        }
         state.refs[name] = from || null;
         state.worktrees[name] = from
           ? structuredClone(state.commits[from]!.entries)
           : {};
         if (body.temporary === true) state.temporary.push(name);
-        await this.publishWorkspaceState(scope, state, name, {});
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") await this.save(state);
+        else await this.publishWorkspaceState(scope, state, name, {});
         return Response.json(
-          { branch: name, commit_id: state.refs[name], copy_on_write: true },
+          { branch: name, commit_id: state.refs[name], copy_on_write: true, ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision, workspace_branch: name }) },
           { status: 201 }
         );
       }
@@ -1151,7 +1164,7 @@ export class RepositoryDO extends DurableObject<Env> {
             commit_id: source,
             fast_forward: true,
             branch: targetName,
-            ...(workspaceRevision === undefined ? {} : { workspace_revision: workspaceRevision }),
+            ...(workspaceRevision === undefined ? {} : { workspace_branch: targetName, workspace_revision: workspaceRevision }),
             event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           });
         }

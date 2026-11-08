@@ -516,7 +516,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const branch = url.searchParams.get("branch");
     if (!validateWorkspaceBranch(branch)) return fail("invalid_branch");
     const value = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
-    return value ? json({ head: value }) : fail("workspace_not_found", 404);
+    if (!value) return fail("workspace_not_found", 404);
+    const branchBase = await this.ctx.storage.get<{ parentBranch: string; revision: number; manifestHash: string }>(branchBaseKey(branch));
+    return json({ head: value, ...(branchBase ? { branchBase } : {}) });
   }
 
   private async read(url: URL): Promise<Response> {

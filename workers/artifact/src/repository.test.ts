@@ -417,6 +417,7 @@ describe("unified workspace transition guards", () => {
           const path = new URL(request.url).pathname;
           if (path === "/v1/receipt") return Response.json({ error_code: "publication_not_found" }, { status: 404 });
           if (path === "/v1/head") return Response.json({ head: { revision: 1 } });
+          if (path === "/v1/branch") return Response.json({ branch: { branch: "workers/child", revision: 1 }, created: true });
           if (path === "/v1/open") return Response.json({ session: { id: "ws_123e4567-e89b-12d3-a456-426614174000", fence: 4, allocationGeneration: 1 }, head: { revision: 1 } });
           if (path === "/v1/stage") { published.push(await request.clone().json()); return Response.json({ stageId: "staged" }); }
           if (path === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 2 } });
@@ -439,9 +440,25 @@ describe("unified workspace transition guards", () => {
       changes: [{ path: "README.md", content_base64: btoa("hello"), expected_hash: null }],
     }) }));
     expect(commit.status).toBe(201);
-    expect(await commit.json()).toMatchObject({ workspace_branch: "main", workspace_revision: 2 });
+    const canonicalCommit = await commit.json() as { commit_id: string; workspace_branch: string; workspace_revision: number };
+    expect(canonicalCommit).toMatchObject({ workspace_branch: "main", workspace_revision: 2 });
     expect(published).toHaveLength(1);
     expect(published[0]).toMatchObject({ changes: [{ path: "README.md", expectedHash: null, contentBase64: btoa("hello") }] });
+    const branch = await repo.fetch(new Request("http://repo/branch", { method: "POST", headers, body: JSON.stringify({ name: "workers/child", from: "main", temporary: true }) }));
+    expect(branch.status).toBe(201);
+    const seeded = await branch.json() as { branch: string; commit_id: string; workspace_revision: number };
+    expect(seeded).toMatchObject({ branch: "workers/child", workspace_branch: "workers/child", workspace_revision: 1 });
+    const workerCommit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
+      branch: "workers/child", expected_head: seeded.commit_id, metadata, message: "worker result",
+      changes: [{ path: "worker.txt", content_base64: btoa("subagent result"), expected_hash: null }],
+    }) }));
+    expect(workerCommit.status).toBe(201);
+    const merged = await repo.fetch(new Request("http://repo/merge", { method: "POST", headers, body: JSON.stringify({
+      target: "main", source: "workers/child", expected_head: canonicalCommit.commit_id, metadata,
+    }) }));
+    expect(merged.status).toBe(200);
+    expect(await merged.json()).toMatchObject({ fast_forward: true, workspace_branch: "main", workspace_revision: 2 });
+    expect(published.at(-1)).toMatchObject({ changes: [{ path: "worker.txt", expectedHash: null }] });
   });
 
   it("reconciles Git from one verified coordinator snapshot without republishing canonical files", async () => {

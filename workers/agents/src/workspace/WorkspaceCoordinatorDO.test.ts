@@ -468,6 +468,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
     const created = await call(instance, "/v1/branch", { scope, sourceBranch: "main", branch: "runs/agent-a" });
     expect(await created.json()).toMatchObject({ branch: { branch: "runs/agent-a", revision: 1 }, created: true });
+    expect(await (await call(instance, "/v1/head?branch=runs%2Fagent-a")).json()).toMatchObject({ branchBase: { parentBranch: "main", revision: 1 } });
     const session = await call(instance, "/v1/open", { scope, branch: "runs/agent-a", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
     const opened = await session.json() as { session: { id: string } };
     const published = await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "branch-checkpoint", changes: [{ path: "agent.txt", expectedHash: null, contentBase64: btoa("branch only") }] });

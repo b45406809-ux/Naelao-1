@@ -1172,7 +1172,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // approvals, sandboxes, risk guards, and concurrency locks cannot escape an
     // EU namespace from inside a running agent.
     applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-      "HITL_APPROVAL_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "NAELAO_AGENT_DO", "CONCURRENCY_DO", "WORKFLOW_RUN_DO",
+      "HITL_APPROVAL_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "NAELAO_AGENT_DO", "CONCURRENCY_DO", "WORKFLOW_RUN_DO", "WORKSPACE_COORDINATOR",
     ]);
   }
   /** Layer 1: wake-local working context. Never shared across structural thread keys. */
@@ -3463,6 +3463,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     runtimeEnv?: ScriptEngineEnv
   ): import("../script-engine/types.js").OrchestrationHooks {
     const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
+    const workspaceBindings = this.env as unknown as {
+      UNIFIED_WORKSPACE_ENABLED?: string;
+      WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+      DATA_JURISDICTION?: "eu";
+      PLATFORM_SECRET: string;
+    };
+    const unifiedProjectWorkspace = Boolean(projectId && workspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true");
+    const coordinatorScope: WorkspaceScope | undefined = unifiedProjectWorkspace ? {
+      tenantId, spaceId, projectId: projectId!, jurisdiction: workspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
+    } : undefined;
+    const readCoordinatorBranch = async (branch: string) => {
+      if (!coordinatorScope) throw new Error("workspace_coordinator_branch_unavailable");
+      const response = await workspaceCoordinatorRequest(workspaceBindings, coordinatorScope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
+      if (!response.ok) throw new Error(`workspace_coordinator_branch_read_failed:${response.status}`);
+      return response.json() as Promise<{ head: { branch: string; revision: number; manifestHash: string }; entries: Array<{ path: string; sha256: string; size: number; objectKey: string }> }>;
+    };
+    const assertCoordinatorBranchParent = async (branch: string, parentBranch: string): Promise<void> => {
+      if (!coordinatorScope) throw new Error("workspace_coordinator_branch_unavailable");
+      const response = await workspaceCoordinatorRequest(workspaceBindings, coordinatorScope, `/v1/head?branch=${encodeURIComponent(branch)}`, {});
+      if (!response.ok) throw new Error(`workspace_coordinator_branch_head_failed:${response.status}`);
+      const payload = await response.json() as { branchBase?: { parentBranch?: string } };
+      if (payload.branchBase?.parentBranch !== parentBranch) throw new Error("workspace_coordinator_branch_parent_mismatch");
+    };
 
     if (this.env.SPACES_WORKER) {
       hooks.persistGoalTasks = async (tasks) => {
@@ -3481,6 +3504,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!runtimeEnv) return;
       const seedKey = `task-workspace-seed:${branch}`;
       if (await this.ctx.storage.get(seedKey) === "complete") return;
+      if (unifiedProjectWorkspace) {
+        await readCoordinatorBranch(branch);
+        await this.ctx.storage.put(seedKey, "complete");
+        return;
+      }
       const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
       const targetPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
       const target = await bucket.list({ prefix: targetPrefix, limit: 1 });
@@ -3551,6 +3579,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (response.status === 409) {
           const head = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers }));
           if (!head.ok) throw new Error("task_branch_replay_unavailable");
+          if (unifiedProjectWorkspace) await assertCoordinatorBranchParent(branch, "main");
         }
         await seedTaskWorkspace(branch);
         await this.ctx.storage.put(key, branch);
@@ -3569,49 +3598,70 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const branch = `workers/${subId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 96)}`;
       const baselineKey = `worker-branch-base:${subId}`;
       if (await this.ctx.storage.get(baselineKey)) return branch;
-      const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
-      const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
-      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
       const baseline: Record<string, string> = {};
-      // A retry after a partial fork must not leave stale keys that were absent from the source
-      // snapshot; remove the incomplete destination before rebuilding its baseline.
-      let staleCursor: string | undefined;
-      do {
-        const stalePage = await bucket.list({ prefix: workerPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
-        for (const object of stalePage.objects) await bucket.delete(object.key);
-        staleCursor = stalePage.truncated ? stalePage.cursor : undefined;
-      } while (staleCursor);
-      let cursor: string | undefined;
-      let fileCount = 0, totalBytes = 0;
-      do {
-        const page = await bucket.list({ prefix: basePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-        for (const object of page.objects) {
-          const path = object.key.slice(basePrefix.length);
-          if (!path || path.includes("../")) continue;
-          if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
-          const source = await bucket.get(object.key);
-          if (!source) continue;
-          const bytes = await source.arrayBuffer();
-          const hash = source.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
-          baseline[path] = hash;
-          await bucket.put(`${workerPrefix}${path}`, bytes, {
-            ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
-            ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
-          });
-        }
-        cursor = page.truncated ? page.cursor : undefined;
-      } while (cursor);
+      const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? "")}/repository`;
+      const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
       if (projectId && this.env.ARTIFACT_WORKER) {
-        const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository`;
-        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+        const sourceBranch = baseBranch ?? "main";
+        if (unifiedProjectWorkspace) {
+          const sourceReconcile = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/reconcile`, {
+            method: "POST", headers, body: JSON.stringify({ branch: sourceBranch, metadata: {
+              agent_role: agentId, user_goal: "Seed delegated worker branch", task_id: subId,
+              rationale: "Pin the source projection before creating an isolated worker branch", thread_id: parentThreadId ?? parentRunId,
+              tool_turn_id: `${subId}:branch-base`,
+            } }),
+          }));
+          if (!sourceReconcile.ok) throw new Error(`worker_branch_source_reconcile_failed:${sourceReconcile.status}`);
+        }
         const response = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/branch`, {
-          method: "POST", headers, body: JSON.stringify({ name: branch, from: baseBranch ?? "main" }),
+          method: "POST", headers, body: JSON.stringify({ name: branch, from: sourceBranch, temporary: true }),
         }));
         if (!response.ok && response.status !== 409) throw new Error(`worker_branch_reservation_failed:${response.status}`);
         if (response.status === 409) {
           const head = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers }));
           if (!head.ok) throw new Error("worker_branch_replay_unavailable");
+          if (unifiedProjectWorkspace) await assertCoordinatorBranchParent(branch, sourceBranch);
         }
+      }
+      if (unifiedProjectWorkspace) {
+        const snapshot = await readCoordinatorBranch(branch);
+        let totalBytes = 0;
+        for (const entry of snapshot.entries) {
+          if (Object.keys(baseline).length >= 10_000 || (totalBytes += entry.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
+          baseline[entry.path] = entry.sha256;
+        }
+      } else {
+        const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
+        const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
+        const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+        // A retry after a partial fork must not leave stale keys that were absent from the source
+        // snapshot; remove the incomplete destination before rebuilding its baseline.
+        let staleCursor: string | undefined;
+        do {
+          const stalePage = await bucket.list({ prefix: workerPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
+          for (const object of stalePage.objects) await bucket.delete(object.key);
+          staleCursor = stalePage.truncated ? stalePage.cursor : undefined;
+        } while (staleCursor);
+        let cursor: string | undefined;
+        let fileCount = 0, totalBytes = 0;
+        do {
+          const page = await bucket.list({ prefix: basePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+          for (const object of page.objects) {
+            const path = object.key.slice(basePrefix.length);
+            if (!path || path.includes("../")) continue;
+            if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
+            const source = await bucket.get(object.key);
+            if (!source) continue;
+            const bytes = await source.arrayBuffer();
+            const hash = source.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+            baseline[path] = hash;
+            await bucket.put(`${workerPrefix}${path}`, bytes, {
+              ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
+              ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
+            });
+          }
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor);
       }
       await this.ctx.storage.put(baselineKey, baseline);
       await this.ctx.storage.put(`worker-branch-root:${subId}`, baseBranch ?? "");
@@ -3624,6 +3674,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // the planner and the canonical workspace is never overwritten by a losing worker.
     const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<string[]> => {
       if (!runtimeEnv) return [];
+      if (unifiedProjectWorkspace) {
+        if (!this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
+        const targetBranch = baseBranch ?? runtimeEnv.workspaceBranch ?? "main";
+        const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId!)}/repository`;
+        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+        const metadata = { agent_role: agentId, user_goal: "Merge isolated subagent branch", task_id: subId,
+          rationale: `Checked three-way merge of ${workerBranch} into ${targetBranch}`, thread_id: parentThreadId ?? parentRunId,
+          tool_turn_id: `${subId}:checked-merge` };
+        const reconciled = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/reconcile`, {
+          method: "POST", headers, body: JSON.stringify({ branch: workerBranch, metadata }),
+        }));
+        if (!reconciled.ok) throw new Error(`worker_branch_reconcile_failed:${reconciled.status}`);
+        const targetHeadResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(targetBranch)}`, { headers }));
+        if (!targetHeadResponse.ok) throw new Error(`worker_branch_target_head_unavailable:${targetHeadResponse.status}`);
+        const targetHead = await readBoundedResponseJson<{ commit_id?: string | null }>(targetHeadResponse, 64 * 1024);
+        const merged = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/merge`, {
+          method: "POST", headers, body: JSON.stringify({ target: targetBranch, source: workerBranch,
+            expected_head: targetHead.commit_id ?? null, metadata }),
+        }));
+        if (merged.status === 409) {
+          const conflict = await readBoundedResponseJson<{ conflicts?: string[] }>(merged, 64 * 1024).catch((): { conflicts?: string[] } => ({}));
+          return conflict.conflicts?.length ? conflict.conflicts : ["<branch-head-changed>"];
+        }
+        if (!merged.ok) throw new Error(`worker_branch_checked_merge_failed:${merged.status}`);
+        return [];
+      }
       const baseline = await this.ctx.storage.get<Record<string, string>>(`worker-branch-base:${subId}`) ?? {};
       const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
       const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: workerBranch });
