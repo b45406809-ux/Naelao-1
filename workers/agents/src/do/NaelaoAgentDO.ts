@@ -3556,7 +3556,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (active) return active;
       const reservation = (async () => {
         const previous = await this.ctx.storage.get<string>(key);
-        if (previous) { await seedTaskWorkspace(previous); return previous; }
+        if (previous) {
+          if (unifiedProjectWorkspace) {
+            const head = await this.env.ARTIFACT_WORKER!.fetch(new Request(`http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository/head?branch=${encodeURIComponent(previous)}`, { headers: await this.internalHeaders(tenantId) }));
+            if (!head.ok) throw new Error("task_branch_replay_unavailable");
+            await assertCoordinatorBranchParent(previous, "main");
+          }
+          await seedTaskWorkspace(previous);
+          return previous;
+        }
         const branch = `task/${digest.slice(0, 48)}`;
         const repository = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
         const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
@@ -3597,12 +3605,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (projectId && !this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
       const branch = `workers/${subId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 96)}`;
       const baselineKey = `worker-branch-base:${subId}`;
-      if (await this.ctx.storage.get(baselineKey)) return branch;
+      const sourceBranch = baseBranch ?? "main";
+      if (await this.ctx.storage.get(baselineKey)) {
+        if (unifiedProjectWorkspace) {
+          const recordedParent = await this.ctx.storage.get<string>(`worker-branch-root:${subId}`);
+          if ((recordedParent ?? "") !== (baseBranch ?? "")) throw new Error("worker_branch_parent_changed");
+          const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? "")}/repository`;
+          const head = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers: await this.internalHeaders(tenantId) }));
+          if (!head.ok) throw new Error("worker_branch_replay_unavailable");
+          await assertCoordinatorBranchParent(branch, sourceBranch);
+        }
+        return branch;
+      }
       const baseline: Record<string, string> = {};
+      let baselineRevision: number | undefined;
+      let baselineManifestHash: string | undefined;
       const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? "")}/repository`;
       const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
       if (projectId && this.env.ARTIFACT_WORKER) {
-        const sourceBranch = baseBranch ?? "main";
         if (unifiedProjectWorkspace) {
           const sourceReconcile = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/reconcile`, {
             method: "POST", headers, body: JSON.stringify({ branch: sourceBranch, metadata: {
@@ -3625,6 +3645,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (unifiedProjectWorkspace) {
         const snapshot = await readCoordinatorBranch(branch);
+        baselineRevision = snapshot.head.revision;
+        baselineManifestHash = snapshot.head.manifestHash;
         let totalBytes = 0;
         for (const entry of snapshot.entries) {
           if (Object.keys(baseline).length >= 10_000 || (totalBytes += entry.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
@@ -3664,6 +3686,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } while (cursor);
       }
       await this.ctx.storage.put(baselineKey, baseline);
+      if (baselineRevision !== undefined && baselineManifestHash) {
+        await this.ctx.storage.put(`worker-branch-manifest:${subId}`, { branch, revision: baselineRevision, manifestHash: baselineManifestHash });
+      }
       await this.ctx.storage.put(`worker-branch-root:${subId}`, baseBranch ?? "");
       await this.ctx.storage.put(`worker-branch-parent:${subId}`, runtimeEnv.workspaceBranch ?? "");
       return branch;
