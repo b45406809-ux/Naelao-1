@@ -19,7 +19,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; failCheckpointOnce?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -67,7 +67,13 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     } } as never, { PLATFORM_SECRET: "test-secret", SCRIPTS_R2: r2 } as never);
     const workspaceNamespace = {
       idFromName: (name: string) => name,
-      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+      get: () => ({ fetch: async (request: Request) => {
+        if (options.failCheckpointOnce && new URL(request.url).pathname === "/v1/checkpoint") {
+          options.failCheckpointOnce = false;
+          return Response.json({ error_code: "workspace_test_checkpoint_interrupted" }, { status: 503 });
+        }
+        return coordinator.fetch(request);
+      } }),
     };
 
     const mockContainer = {
@@ -142,7 +148,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       },
     };
 
-    const realSandbox = new ToolSandboxDO(mockCtx, {
+    const sandboxEnv = {
       PLATFORM_SECRET: "test-secret",
       SCRIPTS_R2: options.unifiedWorkspace ? r2 : { list: async () => ({ objects: [], truncated: false }), get: async () => null },
       ...(options.unifiedWorkspace ? { WORKSPACE_COORDINATOR: workspaceNamespace, UNIFIED_WORKSPACE_ENABLED: "true" } : { UNIFIED_WORKSPACE_ENABLED: "false" }),
@@ -169,7 +175,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
           }),
         }),
       } } : {}),
-    } as never);
+    } as never;
+    let realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
       const testExecutionId = headers.get("x-test-execution-id");
@@ -181,7 +188,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, coordinator, r2Objects };
+    return { sandbox, recreate: () => { realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, coordinator, r2Objects };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -578,6 +585,43 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(runBranch.entries).toMatchObject([{ path: "notes/result.txt" }]);
     expect(r2Objects.has(runBranch.entries![0]!.objectKey)).toBe(true);
     expect(storage.get("container_runtime_metrics")).toMatchObject({ workspaceBytesCaptured: 24, workspaceBytesStaged: 24, workspaceCheckpoints: 1 });
+  });
+
+  it("replays a staged checkpoint after Durable Object reconstruction without publishing partial state", async () => {
+    const { sandbox, recreate, coordinator, coordinatorStorage, storage } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "restart-recovery", failCheckpointOnce: true });
+    const attempted = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "recovery/state.txt": "survives restart" }, expected_hashes: { "recovery/state.txt": null } }),
+    }));
+    expect(attempted.status).toBe(409);
+    const pending = storage.get("workspace_pending_coordinator_checkpoint") as { stageId?: string; changes?: unknown[] };
+    expect(pending.stageId).toBeTruthy();
+    expect(pending.changes).toBeUndefined();
+    const originalSession = storage.get("workspace_session") as { id: string };
+    expect(coordinatorStorage.get(`session:${originalSession.id}`)).toMatchObject({ status: "active", allocationGeneration: originalSession.allocationGeneration, fence: originalSession.fence });
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const mainBeforeRecovery = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, "/v1/read?branch=main", {}).then(response => response.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    expect(mainBeforeRecovery).toMatchObject({ head: { revision: 1 }, entries: [] });
+
+    recreate();
+    const resumed = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: JSON.stringify({ code: "return true" }) }));
+    expect(resumed.status, await resumed.clone().text()).toBe(200);
+    expect(storage.get("workspace_pending_coordinator_checkpoint")).toBeUndefined();
+    const completed = await sandbox.fetch(new Request("https://sandbox/lifecycle", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "completed", tenantId: "tenant", spaceId: "space", projectId: "project" }),
+    }));
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ ok: true, status: "completed" });
+    expect(storage.get("workspace_pending_coordinator_checkpoint")).toBeUndefined();
+    const mainAfterRecovery = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, "/v1/read?branch=main", {}).then(response => response.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string; objectKey: string }> }>);
+    expect(mainAfterRecovery).toMatchObject({ head: { revision: 2 }, entries: [{ path: "recovery/state.txt" }] });
   });
 
   it("merges a completed run branch into its requested branch only after checked publication", async () => {

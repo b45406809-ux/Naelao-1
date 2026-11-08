@@ -611,6 +611,9 @@ export class ToolSandboxDO extends DurableObject {
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
     if (!tenantId) throw new Error("workspace_tenant_scope_required");
     const identity = await this.unifiedWorkspaceIdentity(scope, tenantId);
+    // A checkpoint written by the previous allocation must be replayed against that live
+    // session before cold-start replacement closes it and advances allocation generation.
+    await this.replayPendingUnifiedCheckpoint(identity.scope);
     let headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
     if (headResponse.status === 404) {
       const entries: WorkspaceEntry[] = [];
@@ -760,18 +763,7 @@ export class ToolSandboxDO extends DurableObject {
     if (!tenantId) throw new Error("workspace_tenant_scope_required");
     if (!await this.tenantSpaceIsActive(tenantId, scope.spaceId)) throw new Error("tenant_suspended");
     const identity = await this.unifiedWorkspaceIdentity(scope, tenantId);
-    const pendingCheckpoint = await this.ctx.storage.get<Record<string, unknown>>("workspace_pending_coordinator_checkpoint");
-    if (pendingCheckpoint) {
-      if (JSON.stringify(pendingCheckpoint.workspaceScope) !== JSON.stringify(identity.scope)) throw new Error("workspace_pending_scope_mismatch");
-      await this.stageAndCheckpointUnified(identity.scope, pendingCheckpoint);
-      const runtimeSession = await this.ctx.storage.get<{ branch: string }>("workspace_session");
-      if (!runtimeSession) throw new Error("workspace_session_missing");
-      const replayed = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/read?branch=${encodeURIComponent(runtimeSession.branch)}`)) as { entries?: WorkspaceEntry[] };
-      if (!Array.isArray(replayed.entries)) throw new Error("workspace_recovery_manifest_missing");
-      const recovered = Object.fromEntries(replayed.entries.filter(entry => !entry.path.startsWith("shared/")).map(entry => [entry.path, entry.sha256]));
-      await this.ctx.storage.put("workspace_hashes", recovered);
-      await this.ctx.storage.delete("workspace_pending_coordinator_checkpoint");
-    }
+    await this.replayPendingUnifiedCheckpoint(identity.scope);
     const port = container.getTcpPort(HARNESS_PORT);
     const listed = await port.fetch(new Request("http://sandbox/workspace/list", { method: "POST" }));
     if (!listed.ok) throw new Error(`Workspace listing failed (${listed.status})`);
@@ -851,6 +843,20 @@ export class ToolSandboxDO extends DurableObject {
     }
     await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
     return result as { publication: { status?: string }; error_code?: string };
+  }
+
+  private async replayPendingUnifiedCheckpoint(identity: WorkspaceScope): Promise<void> {
+    const checkpoint = await this.ctx.storage.get<Record<string, unknown>>("workspace_pending_coordinator_checkpoint");
+    if (!checkpoint) return;
+    if (JSON.stringify(checkpoint.workspaceScope) !== JSON.stringify(identity)) throw new Error("workspace_pending_scope_mismatch");
+    await this.stageAndCheckpointUnified(identity, checkpoint);
+    const runtimeSession = await this.ctx.storage.get<{ branch: string }>("workspace_session");
+    if (!runtimeSession) throw new Error("workspace_session_missing");
+    const replayed = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity, `/v1/read?branch=${encodeURIComponent(runtimeSession.branch)}`)) as { entries?: WorkspaceEntry[] };
+    if (!Array.isArray(replayed.entries)) throw new Error("workspace_recovery_manifest_missing");
+    const recovered = Object.fromEntries(replayed.entries.filter(entry => !entry.path.startsWith("shared/")).map(entry => [entry.path, entry.sha256]));
+    await this.ctx.storage.put("workspace_hashes", recovered);
+    await this.ctx.storage.delete("workspace_pending_coordinator_checkpoint");
   }
 
   private async replayWorkspacePublication(holderId: string): Promise<void> {
