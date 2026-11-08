@@ -47,7 +47,14 @@ describe("project MCP Streamable HTTP endpoint", () => {
     const objectKey = `workspace-v1/tenant/s/p/global/content/${sha256}`;
     bucket.data.set(objectKey, "canonical text");
     const entry = { path: "readme.md", sha256, size: 14, executable: false, objectKey };
-    const agentsWorker = { fetch: async () => Response.json({ canonical: true, head: { branch: "main", revision: 1, updatedAt: "2026-11-08T00:00:00Z" }, entries: [entry] }) } as unknown as Fetcher;
+    let checkedBody: Record<string, unknown> | null = null;
+    const agentsWorker = { fetch: async (request: Request) => {
+      if (new URL(request.url).pathname.endsWith("/checked-publish")) {
+        checkedBody = await request.json() as Record<string, unknown>;
+        return Response.json({ publication: { status: "published", revision: 2 } });
+      }
+      return Response.json({ canonical: true, head: { branch: "main", revision: 1, updatedAt: "2026-11-08T00:00:00Z" }, entries: [entry] });
+    } } as unknown as Fetcher;
     const env = { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret", UNIFIED_WORKSPACE_ENABLED: "true" };
     const rpc = (name: string, args: Record<string, unknown>) => app.request("/spaces/s/projects/p/mcp", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
@@ -58,8 +65,11 @@ describe("project MCP Streamable HTTP endpoint", () => {
     expect(read.result.content[0].text).not.toContain("stale legacy text");
     const list = await (await rpc("listDirectory", {})).json() as any;
     expect(list.result.content[0].text).toContain("readme.md");
-    const patch = await (await rpc("runAstPatch", { path: "readme.md", oldText: "canonical", newText: "changed" })).json() as any;
-    expect(patch.result.isError).toBe(true);
+    const patched = await (await rpc("runAstPatch", { path: "readme.md", oldText: "canonical", newText: "changed" })).json() as any;
+    expect(patched.result.content[0].text).toContain('"revision":2');
+    expect(checkedBody).toMatchObject({ branch: "main", path: "readme.md", expectedHash: sha256, idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const encoded = (checkedBody as Record<string, unknown>).contentBase64 as string;
+    expect(new TextDecoder().decode(Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0)))).toBe("changed text");
     expect(bucket.data.get("spaces/s/projects/p/workspace/readme.md")).toBe("stale legacy text");
   });
 });

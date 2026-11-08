@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
-import { putBytesCas, readBytesWithHash } from "../../../agents/src/script-engine/r2-cas.js";
+import { putBytesCas, readBytesWithHash, sha256Bytes } from "../../../agents/src/script-engine/r2-cas.js";
 import { readWorkspaceCompat } from "../workspace-compat.js";
+import { mintInternalToken } from "@naelao/http";
 
 type RpcId = string | number | null;
 type RpcRequest = { jsonrpc?: string; id?: RpcId; method?: string; params?: Record<string, unknown> };
@@ -91,19 +92,42 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
           value = { files: listing.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
         }
       } else if (tool === "runAstPatch") {
-        if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") throw new Error("workspace patch requires checked coordinator publication");
-        const key = prefix + safePath(args["path"]);
+        const path = safePath(args["path"]);
+        const key = prefix + path;
+        const entry = compatibility.kind === "canonical" ? compatibility.entries.find((candidate) => candidate.path === path) : undefined;
         const oldText = String(args["oldText"] ?? "");
         if (!oldText) throw new Error("oldText is required");
-        const object = await readBytesWithHash(c.env.SCRIPTS_R2, key);
+        const object = await readBytesWithHash(c.env.SCRIPTS_R2, entry?.objectKey ?? key);
         if (!object) throw new Error("file not found");
-        const source = new TextDecoder().decode(object.bytes);
+        if (entry && (object.hash !== entry.sha256 || object.bytes.byteLength !== entry.size)) throw new Error("canonical workspace content integrity check failed");
+        const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(object.bytes);
         const first = source.indexOf(oldText);
         if (first < 0) throw new Error("patch target not found");
         if (source.indexOf(oldText, first + oldText.length) >= 0) throw new Error("patch target is ambiguous");
         const updated = source.slice(0, first) + String(args["newText"] ?? "") + source.slice(first + oldText.length);
-        await putBytesCas(c.env.SCRIPTS_R2, key, new TextEncoder().encode(updated), object.hash, {}, { contentType: "text/plain; charset=utf-8" });
-        value = { patched: true, path: args["path"] };
+        const updatedBytes = new TextEncoder().encode(updated);
+        if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+          if (compatibility.kind !== "canonical" || !tenantId || !c.env.AGENTS_WORKER || !c.env.PLATFORM_SECRET) throw new Error("checked coordinator publication unavailable");
+          if (updatedBytes.byteLength > 768 * 1024) throw new Error("workspace file limit exceeded");
+          const idempotencyKey = await sha256Bytes(new TextEncoder().encode(`${tenantId}\0${spaceId}\0${projectId}\0main\0${path}\0${object.hash}\0${await sha256Bytes(updatedBytes)}`));
+          let binary = "";
+          for (let offset = 0; offset < updatedBytes.length; offset += 0x8000) binary += String.fromCharCode(...updatedBytes.subarray(offset, offset + 0x8000));
+          const contentBase64 = btoa(binary);
+          const published = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/checked-publish", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
+              branch: "main", actorId: c.req.header("x-naelao-user-id") || "spaces-project-mcp", path,
+              expectedHash: object.hash, contentBase64, idempotencyKey }),
+          }));
+          if (!published.ok) throw new Error(`checked coordinator publication failed:${published.status}`);
+          const publication = await published.json<{ publication?: { revision?: number; status?: string } }>();
+          if (!Number.isSafeInteger(publication.publication?.revision) || publication.publication?.status === "conflicted") throw new Error("checked coordinator publication unconfirmed");
+          value = { patched: true, path, branch: "main", revision: publication.publication!.revision };
+        } else {
+          await putBytesCas(c.env.SCRIPTS_R2, key, updatedBytes, object.hash, {}, { contentType: "text/plain; charset=utf-8" });
+          value = { patched: true, path };
+        }
       } else if (tool === "getProjectJournal") {
         const object = await readBytesWithHash(c.env.SCRIPTS_R2, `spaces/${spaceId}/projects/${projectId}/PROJECT.md`);
         value = { markdown: object ? new TextDecoder().decode(object.bytes) : "" };
