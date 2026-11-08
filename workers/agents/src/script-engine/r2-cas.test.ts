@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { publishWorkspaceBytesCas, putTextCas, readBytesWithHash, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
+import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, putTextCas, readBytesWithHash, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
 
 type Entry = { text: string; etag: string; customMetadata?: Record<string, string> };
 
@@ -66,5 +66,22 @@ describe("shared R2 compare-and-swap", () => {
     }, bucket, "workspace.json", new TextEncoder().encode('{"invalid":true}'), null)).rejects.toThrow("human_intervention_required");
     expect(leaseRequested).toBe(false);
     expect(await bucket.head("workspace.json")).toBeNull();
+  });
+
+  it("routes isolated branch writes and deletes through the checked publisher", async () => {
+    const bucket = fakeBucket();
+    const publishWorkspaceChecked = vi.fn(async ({ bytes }: { bytes: Uint8Array | null }) => ({
+      hash: bytes ? await sha256Text(new TextDecoder().decode(bytes)) : null,
+      revision: 4,
+      deleted: bytes === null,
+    }));
+    const env = { spaceId: "s", projectId: "p", workspaceManifestRead: async () => ({}), publishWorkspaceChecked };
+    const key = "spaces/s/projects/p/workspace/branches/workers/agent-1/report.txt";
+    const written = await publishWorkspaceBytesCas(env, bucket, key, new TextEncoder().encode("checked"), null);
+    expect(written).toEqual({ hash: await sha256Text("checked"), etag: "revision:4" });
+    expect(publishWorkspaceChecked).toHaveBeenLastCalledWith({ key, bytes: new TextEncoder().encode("checked"), expectedHash: null });
+    await expect(deleteWorkspaceBytesCas(env, bucket, key, written.hash)).resolves.toEqual({ deleted: true, etag: "revision:4" });
+    expect(publishWorkspaceChecked).toHaveBeenLastCalledWith({ key, bytes: null, expectedHash: written.hash });
+    expect(bucket.entries.size).toBe(0);
   });
 });

@@ -102,6 +102,7 @@ import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "..
 import { parseJournal, renderJournal, emptyJournal, journalKey, appendActivity } from "../script-engine/project-journal.js";
 import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "../script-engine/r2-cas.js";
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
+import { handleWorkspaceCheckedPublish } from "../workspace/workspace-checked-publish-route.js";
 import type { WorkspaceScope } from "../workspace/workspace-contract.js";
 import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
@@ -2303,6 +2304,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       PLATFORM_SECRET: string;
     };
     if (projectId && unifiedWorkspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true") {
+      env.immutableArtifactBucket = env.scriptsBucket;
       const scope: WorkspaceScope = {
         tenantId, spaceId, projectId,
         jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
@@ -2313,6 +2315,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (response.status === 404) return null;
         if (!response.ok) throw new Error(`workspace_read_failed:${response.status}`);
         return response.json() as Promise<{ head: { branch: string; revision: number; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> }>;
+      };
+      // Script tools can checkpoint edits only on an already isolated coordinator branch.
+      // Unbranched runs do not receive this adapter, so failed/blocked runs cannot publish
+      // speculative changes directly to main through the generic R2 CAS helpers.
+      if (workspaceBranch && workspaceBranch !== "main") env.publishWorkspaceChecked = async input => {
+        const prefix = workspacePrefix(env);
+        if (!input.key.startsWith(prefix)) throw new Error("workspace_checked_publication_scope_mismatch");
+        if (input.bytes && input.bytes.byteLength > 768 * 1024) throw new Error("workspace_file_limit_exceeded");
+        const path = input.key.slice(prefix.length);
+        const contentHash = input.bytes ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", input.bytes))].map(value => value.toString(16).padStart(2, "0")).join("") : null;
+        const keyMaterial = JSON.stringify({ run: commitContext?.taskId ?? agentId, branch: workspaceBranch, path, expectedHash: input.expectedHash, contentHash });
+        const idempotencyKey = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial)))].map(value => value.toString(16).padStart(2, "0")).join("");
+        const tenantToken = await mintInternalToken(this.env.PLATFORM_SECRET, tenantId);
+        const publishRequest = new Request("http://agents-worker/internal/workspaces/checked-publish", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": tenantToken },
+          body: JSON.stringify({ scope, branch: workspaceBranch, actorId: userId ?? agentId, path, expectedHash: input.expectedHash,
+            contentBase64: input.bytes ? bytesToBase64(input.bytes) : null, idempotencyKey }),
+        });
+        const response = await handleWorkspaceCheckedPublish(publishRequest, unifiedWorkspaceBindings);
+        const result = await readBoundedResponseJson<{ error_code?: string; publication?: { status?: string; revision?: number } }>(response, 16 * 1024);
+        if (!response.ok || !Number.isSafeInteger(result.publication?.revision)) throw new Error(result.error_code ?? `workspace_checked_publication_failed:${response.status}`);
+        return { hash: contentHash, revision: result.publication!.revision!, deleted: input.bytes === null && result.publication?.status === "published" };
       };
       const compatibilityBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
       env.scriptsBucket = compatibilityBucket;

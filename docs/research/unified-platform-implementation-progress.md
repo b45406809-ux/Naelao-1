@@ -7,7 +7,7 @@ Trace matrix: [requirements-to-code matrix](../requirements-trace-matrix.md)
 
 ## Status
 
-Implementation has started through Phase 3. None of these phases is complete or ready for rollout. Both `UNIFIED_WORKSPACE_ENABLED` and live-workspace admission remain disabled by default. Agent37 remains unavailable and auto-scheduling remains off.
+Implementation has started through Phase 4. Phases 1–3 remain incomplete and are not ready for rollout. Phase 4 is partial and is not accepted: the Spaces workflow-plan writer and branch-scoped script CAS/artifact restore paths now use checked publication, bounded dual-read instrumentation exists for the project UI, and many audited clients remain unmigrated. `UNIFIED_WORKSPACE_ENABLED`, `WORKSPACE_DUAL_READ_ENABLED`, and live-workspace admission remain disabled by default. Agent37 remains unavailable and auto-scheduling remains off.
 
 ## Phase 1 — Workspace contract and checked publication core
 
@@ -113,6 +113,52 @@ The Phase 1 implementation and local evidence are recorded, but Phase 1 is **not
 - Add real lifecycle, generation, wake/sleep, file-path, file-size, timeout-after-dispatch, truncated output, cancellation, uncertain-result reconciliation, resource cap, region, and billing-receipt journeys.
 - Do not mark Agent37 available or auto-schedule it until the full acceptance gate passes. Investigate the provider's unguarded recursive delete behavior before using it for staged workspace cleanup.
 
+## Phase 4 — Client migration and dual-read verification
+
+### Implemented in this continuation
+
+- Added a tenant-authenticated `checked-publish` adapter in Agents. It pins `main` at an observed revision, opens a checked session, stages a bounded single-file update with its observed expected hash, checkpoints with an idempotency key, and closes the session. It never writes the legacy R2 tree. A head race or expected-hash conflict fails closed.
+- Migrated the Spaces workflow-plan writer to this adapter when `UNIFIED_WORKSPACE_ENABLED=true`. Owner/admin and project authorization remain in front of publication; an initialized coordinator revision is required. Feature-off behavior remains the existing legacy-only path. No dual-write path was added.
+- Added `WORKSPACE_DUAL_READ_ENABLED` for bounded project UI verification. When explicitly enabled, the UI compares at most 50 manifest entries plus a bounded legacy-only page and 16 MiB of legacy bytes per request, hashing both sides. It records only tenant/space/project IDs, branch/revision, path hashes, content hashes, mismatch class, and bounded counters; it never records filenames, content, or credentials. Drift classes are `legacy_missing`, `manifest_missing`, `hash_mismatch`, and `size_mismatch`.
+- Drift is surfaced in the `workspace_dual_read` structured log event for operator review. No automatic repair is attempted. Before switching the UI read source, an operator must pause migration for affected projects, compare scoped hashes, resolve concurrent writers, import intended legacy content through a checked revision with expected hashes, verify a clean bounded dual-read pass, and retain rollback aliases until project verification completes. The flag is false in dev/staging/production configuration.
+- Project UI manifest reads already return branch/revision on directory listings; single-file canonical responses now include `x-workspace-branch` and `x-workspace-revision` headers.
+- Connected the script engine's shared R2 CAS write/delete helpers to the checked publisher only when a project run already has an isolated non-`main` workspace branch. The adapter pins that branch head, submits the observed expected hash, stages, checkpoints idempotently, and returns the committed revision. Unbranched runs receive no coordinator write adapter and stay fail-closed under unified mode, preserving parent-branch lifecycle semantics.
+- Moved new immutable environment handoff blobs to a tenant/space/project-scoped `workspace-artifacts/` namespace outside the canonical file tree. Legacy workspace-prefixed blobs remain readable through a host-retained raw-bucket fallback. Restoring an artifact into an isolated project branch now uses the same checked CAS callback; the existing 768 KiB coordinator file limit applies to these restores.
+
+### Remaining clients / direct paths
+
+The source audit remains broader than the completed migration. The following are still unowned or not fully migrated to revision-aware checked adapters; rollout flags must remain disabled:
+
+| Client class | Current path | Phase 4 status |
+|---|---|---|
+| Virtual filesystem tools and file manager | `script-engine/r2-workspace.ts`, prebuilt file manager/workspace operations, `r2-cas.ts` | Reads can use the manifest shim; shared CAS write/delete operations publish through the coordinator on already isolated non-`main` branches. Direct R2 writers and unbranched run writes remain unmigrated/fail-closed. |
+| Project UI / Spaces routes | Workspace file routes in `workers/spaces/src/index.ts` | Manifest compatibility reads and revision identity exist. Bounded dual-read is implemented but disabled. Workflow-plan writer is migrated; attachment/session uploads and other scoped mutations are guarded, not migrated. |
+| Artifact history and restore | Artifact Worker plus `environment-artifacts.ts` | New immutable handoff blobs use a project-scoped non-workspace R2 namespace; old blobs retain raw-bucket read compatibility. Restore uses checked coordinator publication only on isolated branches; main/history/repository projection paths remain unmigrated. |
+| Git/repository operations | `workers/artifact/src/RepositoryDO.ts` | Repository projection remains separate; reconcile, replay, and commits are not coordinator-backed publications. |
+| Subagents and project branches | `workers/agents/src/do/NaelaoAgentDO.ts` | Task/worker setup still copies R2 trees and worker merges still perform per-file publication. Must use isolated checked branches and checked merges. |
+| Provider import/export and external runtimes | `workspace-bridge.ts`, Agent37 helpers, environment artifact tools | Agent37 checked handoff has an adapter but remains mock-only; provider import/export and bridge migration are incomplete. |
+| Project creation/seeding and migration | `workers/spaces/src/do/SpaceDO.ts` | Starter files still seed legacy R2 before visibility. Mutation barrier, hash-verified initial revision, rollback aliases, and retryable import are not implemented. Tenant-shared provider connections are not changed by this continuation. |
+| Project deletion | Spaces deletion paths and erasure workflow | Coordinator erasure exists, but project deletion does not yet revoke all workspace sessions/subscriptions and retryably clean staging plus alias records while preserving sibling-project tenant connections. |
+| Other ingress / specialized writers | Attachments, workflow plans, MCP patch, project journal, distillation, and audited R2/CAS call sites in the plan inventory | Some paths are guarded while unified mode is active; guards are not migration evidence. Re-audit all direct writers before acceptance. |
+
+### Verification and limits
+
+- Spaces focused tests: `workspace-dual-read.test.ts` and `workspace-compat.test.ts`, **7 passed**. These cover mismatch classification, legacy-only drift, entry/byte bounds, redacted logging, and canonical compatibility parsing.
+- Agents focused tests: checked-publish route, CAS, virtual filesystem, environment artifact, compatibility route, and coordinator suites, **60 passed**. They use mocks; no live Cloudflare bindings were exercised.
+- Spaces `tsc --noEmit` passed after building local `@naelao/sdk` declarations. Agents `tsc --noEmit` passed after building local `@agentport/sdk` declarations.
+- The normal `pnpm --filter` command attempted a dependency reinstall and failed on the repository's existing lockfile/overrides mismatch. Dependencies were restored using `pnpm install --lockfile=false --ignore-scripts`; the lockfile was not changed.
+- No migration dual-read was enabled, no project content imported, no mutation barrier or rollback alias was exercised, and no deployment/provider/runtime validation was performed.
+
+### Phase 4 exit criteria (still open)
+
+1. Complete the caller inventory and assign owners for every direct canonical reader/writer; no unowned direct R2 writer remains.
+2. Migrate virtual filesystem tools, artifacts/history/restore, RepositoryDO/Git, subagents/branch merge, provider import/export, project creation/seeding, and remaining Spaces/MCP/attachment ingress one client class at a time. Every read returns branch/revision identity; every write uses observed revision/expected hashes and coordinator publication.
+3. Run bounded dual-read verification for each client class, resolve and recheck all drift before switching that class's read source, and document repair receipts. Do not dual-write.
+4. Preserve authorization, tenant/project/branch isolation, fencing, idempotency, expected-hash conflict handling, billing admission, and execution lifecycle semantics. Test that failed, blocked, cancelled, suspended, and indeterminate runs never publish to the parent branch.
+5. Complete project migration with a mutation barrier, verified imported hashes, initial revision, rollback aliases retained until verification, and tenant-level provider connections preserved for sibling projects.
+6. Complete retryable project deletion cleanup that revokes sessions/subscriptions and removes project staging/aliases without deleting shared tenant provider connections.
+7. Keep rollout flags disabled until Phase 1–3 acceptance is independently recorded. Deployed Cloudflare GC/erasure validation, real ToolSandbox runtime validation, and Agent37 live acceptance remain separate gates and are not satisfied by these local mocks.
+
 ## Current next actions
 
 1. Add delayed/ambiguous R2 PUT versus content-GC marking and pointer publication tests, then test the transaction interleavings in Miniflare or a deployed disposable namespace.
@@ -121,4 +167,4 @@ The Phase 1 implementation and local evidence are recorded, but Phase 1 is **not
 4. Complete the legacy reader/writer call-path audit before enabling the coordinator; legacy paths still exist.
 5. Validate allocation generation advancement on real container replacement, duplicate changed-payload staging keys, and failed manifest upload.
 6. Connect Agent37 to an atomic checked workspace adapter; run real provider lifecycle, billing, generation, file API, and indeterminate-execution acceptance with an authorized disposable account.
-7. Keep both rollout flags disabled until all runtime gates pass; do not begin Phase 4 client migration before Phase 1–3 gates are closed or explicitly accepted as deployment-only blockers.
+7. Keep both rollout flags disabled until all runtime gates pass. Phase 4 code migration may proceed with independent Phase 1–3 acceptance gates still explicitly open.

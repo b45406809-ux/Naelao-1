@@ -54,7 +54,7 @@ describe("environment tool host integration", () => {
     const result = await environments.operations["environment.artifact_import"]!({ machine_id: "gpu", path: "/home/owner/data.bin" }, ctx);
     expect(result).toMatchObject({ bytes: bytes.length, immutable: true, machine_id: "gpu" });
     expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "read_file", params: { path: "/home/owner/data.bin", encoding: "base64", offset: 0, length: 0 } }));
-    expect(objects.has(workspacePrefix(ctx.env) + ".environment-artifacts/" + (result as { digest: string }).digest)).toBe(true);
+    expect(objects.has(`workspace-artifacts/${ctx.env.tenantId}/${ctx.env.spaceId}/${ctx.env.projectId}/environment/${(result as { digest: string }).digest}`)).toBe(true);
   });
   it("exports only a verified bounded artifact and asks the bridge to create a new local file", async () => {
     const { ctx } = fixture(), bytes = new Uint8Array([0, 255, 8, 13]);

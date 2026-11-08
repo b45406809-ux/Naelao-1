@@ -6,6 +6,7 @@ interface WorkspaceCasEnv {
   spaceId?: string;
   projectId?: string;
   workspaceManifestRead?: () => Promise<unknown>;
+  publishWorkspaceChecked?: (input: { key: string; bytes: Uint8Array | null; expectedHash: string | null }) => Promise<{ hash: string | null; revision: number; deleted: boolean }>;
   validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
   lockGateway?: {
     acquire(input: { key: string; holderId: string; limit: number; ttlMs?: number }): Promise<{ granted: boolean; fencingToken?: number; heldBy?: string }>;
@@ -49,8 +50,13 @@ export async function publishWorkspaceBytesCas(
   metadata: Record<string, string> = {},
   httpMetadata?: R2HTTPMetadata,
 ): Promise<CasWriteResult> {
-  rejectLegacyUnifiedWorkspaceWrite(env, key);
   if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
+  if (env.publishWorkspaceChecked) {
+    const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash });
+    if (!result.hash || !Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_publication_unconfirmed");
+    return { hash: result.hash, etag: `revision:${result.revision}` };
+  }
+  rejectLegacyUnifiedWorkspaceWrite(env, key);
   const gateway = env.lockGateway;
   if (!gateway?.publishWorkspace || !env.runId) return putBytesCas(bucket, key, bytes, expectedHash, metadata, httpMetadata);
   const lockKey = `workspace-file:${key}`;
@@ -83,6 +89,11 @@ export async function deleteWorkspaceBytesCas(
   key: string,
   expectedHash: string | null,
 ): Promise<{ deleted: boolean; etag?: string }> {
+  if (env.publishWorkspaceChecked) {
+    const result = await env.publishWorkspaceChecked({ key, bytes: null, expectedHash });
+    if (!Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_deletion_unconfirmed");
+    return { deleted: result.deleted, etag: `revision:${result.revision}` };
+  }
   rejectLegacyUnifiedWorkspaceWrite(env, key);
   const gateway = env.lockGateway;
   if (!gateway?.publishWorkspace || !env.runId) return deleteBytesCas(bucket, key, expectedHash);

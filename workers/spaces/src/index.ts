@@ -4,6 +4,7 @@ import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { readWorkspaceCompat } from "./workspace-compat.js";
+import { verifyWorkspaceDualRead } from "./workspace-dual-read.js";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
@@ -74,6 +75,8 @@ export interface Env {
   NAELAO_DASHBOARD_TENANT_ID?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
+  /** Opt-in bounded hash-only verification; does not change the read source. */
+  WORKSPACE_DUAL_READ_ENABLED?: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
@@ -3011,10 +3014,22 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
-  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true", agentsWorker: c.env.AGENTS_WORKER,
+  const dualRead = c.env.WORKSPACE_DUAL_READ_ENABLED === "true";
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, agentsWorker: c.env.AGENTS_WORKER,
     platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
   if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   if (compat.kind === "canonical") {
+    if (dualRead && !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_dual_read_unavailable" }, 503);
+    if (dualRead && c.env.SCRIPTS_R2) await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
+      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries });
+    if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true" && c.env.SCRIPTS_R2) {
+      // Verification mode observes the manifest but leaves the legacy UI view authoritative.
+      const prefix = workspaceKeyPrefix(spaceId, projectId);
+      const files: Array<{ path: string; size: number; uploaded: string }> = [];
+      const listing = await c.env.SCRIPTS_R2.list({ prefix, limit: WORKSPACE_MAX_FILES });
+      for (const obj of listing.objects) if (!obj.key.endsWith("/.keep") && obj.customMetadata?.deleted !== "true") files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
+      return c.json({ data: files, count: files.length, truncated: listing.truncated || files.length >= WORKSPACE_MAX_FILES, verification: { branch: compat.head.branch, revision: compat.head.revision } });
+    }
     const files = compat.entries.map((entry) => ({ path: entry.path, size: entry.size, uploaded: compat.head.updatedAt }));
     return c.json({ data: files, count: files.length, truncated: false, branch: compat.head.branch, revision: compat.head.revision }, 200, { "cache-control": "no-store" });
   }
@@ -3049,15 +3064,29 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   // Collapse any .. traversal server-side; the key must stay inside the project's own prefix.
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
-  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true", agentsWorker: c.env.AGENTS_WORKER,
+  const dualRead = c.env.WORKSPACE_DUAL_READ_ENABLED === "true";
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, agentsWorker: c.env.AGENTS_WORKER,
     platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, path: relative, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
   if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   if (compat.kind === "canonical") {
+    if (dualRead && !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_dual_read_unavailable" }, 503);
+    if (dualRead && c.env.SCRIPTS_R2) await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
+      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries, path: relative });
+    if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true" && c.env.SCRIPTS_R2) {
+      const prefix = workspaceKeyPrefix(spaceId, projectId);
+      const legacy = await c.env.SCRIPTS_R2.get(prefix + relative);
+      if (!legacy || legacy.customMetadata?.deleted === "true") return c.json({ error_code: "not_found", message: "File not found" }, 404);
+      return readWorkspaceObject(legacy, relative);
+    }
     const entry = compat.entries.find((candidate) => candidate.path === relative);
     if (!entry) return c.json({ error_code: "not_found", message: "File not found" }, 404, { "cache-control": "no-store" });
     const object = await c.env.SCRIPTS_R2?.get(entry.objectKey);
     if (!object) return c.json({ error_code: "workspace_content_unavailable" }, 503, { "cache-control": "no-store" });
-    return readWorkspaceObject(object, relative, { sha256: entry.sha256, size: entry.size });
+    const response = await readWorkspaceObject(object, relative, { sha256: entry.sha256, size: entry.size });
+    const headers = new Headers(response.headers);
+    headers.set("x-workspace-branch", compat.head.branch);
+    headers.set("x-workspace-revision", String(compat.head.revision));
+    return new Response(response.body, { status: response.status, headers });
   }
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
   const prefix = workspaceKeyPrefix(spaceId, projectId);
@@ -3096,8 +3125,7 @@ app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
   const project = await forwardToSpaceDO(spaceStub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!project.ok) return c.json({ error_code: project.status === 404 ? "project_not_found" : "project_forbidden" }, project.status === 404 ? 404 : 403);
   const key = workspaceKeyPrefix(spaceId, projectId) + relative;
-  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
-  if (await c.env.SCRIPTS_R2.head(key)) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
+  if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true" && await c.env.SCRIPTS_R2.head(key)) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
   const compilation = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ source }),
@@ -3107,6 +3135,24 @@ app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
     return c.json({ error_code: detail.error_code ?? "workflow_plan_compile_failed", message: detail.message }, 400);
   }
   const compiled = await compilation.json<{ digest?: string; bytes?: number }>();
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+    const sourceBytes = new TextEncoder().encode(source);
+    let binary = "";
+    for (let offset = 0; offset < sourceBytes.length; offset += 0x8000) binary += String.fromCharCode(...sourceBytes.subarray(offset, offset + 0x8000));
+    const suppliedKey = c.req.header("idempotency-key") ?? "";
+    const idempotencyKey = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(suppliedKey) ? suppliedKey : crypto.randomUUID();
+    const published = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/checked-publish", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+      body: JSON.stringify({ scope: { tenantId: identity.tenantId, spaceId, projectId,
+        jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, actorId: identity.userId, path: relative,
+        expectedHash: null, contentBase64: btoa(binary), idempotencyKey }),
+    }));
+    if (!published.ok) return new Response(published.body, { status: published.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    const publication = await published.json<{ publication?: { revision?: number; status?: string } }>();
+    return c.json({ saved: true, path: relative, digest: compiled.digest, bytes: compiled.bytes,
+      branch: "main", revision: publication.publication?.revision, publicationStatus: publication.publication?.status }, 200, { "cache-control": "no-store" });
+  }
   const saved = await c.env.SCRIPTS_R2.put(key, source, { onlyIf: { etagDoesNotMatch: "*" }, httpMetadata: { contentType: "text/typescript; charset=utf-8" }, customMetadata: { authorId: identity.userId, kind: "compiled_workflow_plan" } });
   if (!saved) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
   return c.json({ saved: true, path: relative, digest: compiled.digest, bytes: compiled.bytes });

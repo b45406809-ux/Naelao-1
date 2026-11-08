@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnvironmentArtifact, restoreEnvironmentArtifact } from "./environment-artifacts.js";
+import { sha256Bytes } from "./r2-cas.js";
 import { workspacePrefix, type ScriptEngineEnv } from "./types.js";
 function fixture() {
   const entries = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
@@ -30,7 +31,7 @@ describe("immutable environment handoffs", () => {
   it("rejects tampered artifacts and cross-project references", async () => {
     const f = fixture(), artifact = await publishEnvironmentArtifact(f.env, "source.txt");
     await expect(restoreEnvironmentArtifact({ ...f.env, projectId: "other" }, artifact.digest, "result.txt", null)).rejects.toThrow("integrity");
-    const key = f.prefix + ".environment-artifacts/" + artifact.digest;
+    const key = `workspace-artifacts/tenant/space/project/environment/${artifact.digest}`;
     f.entries.get(key)!.bytes = new TextEncoder().encode("tampered");
     await expect(restoreEnvironmentArtifact(f.env, artifact.digest, "result.txt", null)).rejects.toThrow("integrity");
   });
@@ -51,5 +52,29 @@ describe("immutable environment handoffs", () => {
     expect((await readEnvironmentArtifact(f.env, largeArtifact.digest)).bytes.byteLength).toBe(large.byteLength);
     await expect(publishEnvironmentArtifactBytes(f.env, new Uint8Array(16 * 1024 * 1024 + 1), "oversized")).rejects.toThrow("too_large");
     await expect(readEnvironmentArtifact({ ...f.env, projectId: "other" }, artifact.digest)).rejects.toThrow("integrity");
+  });
+
+  it("reads a legacy workspace-prefixed immutable artifact through the raw bucket fallback", async () => {
+    const f = fixture();
+    const bytes = new TextEncoder().encode("legacy artifact");
+    const digest = await sha256Bytes(bytes);
+    f.entries.set(f.prefix + ".environment-artifacts/" + digest, { bytes, etag: "legacy", customMetadata: { sha256: digest } });
+    f.env.immutableArtifactBucket = f.env.scriptsBucket;
+    await expect(readEnvironmentArtifact(f.env, digest)).resolves.toMatchObject({ hash: digest, bytes });
+  });
+
+  it("restores immutable handoffs through checked publication when a branch adapter is present", async () => {
+    const f = fixture();
+    const artifact = await publishEnvironmentArtifactBytes(f.env, new Uint8Array([0, 1, 255]), "machine:local:file");
+    let publication: unknown;
+    f.env.publishWorkspaceChecked = async input => {
+      publication = input;
+      return { hash: artifact.digest, revision: 12, deleted: false };
+    };
+    await expect(restoreEnvironmentArtifact(f.env, artifact.digest, "restored.bin", null)).resolves.toMatchObject({
+      restored: true, path: "restored.bin", digest: artifact.digest, bytes: 3,
+    });
+    expect(publication).toMatchObject({ key: f.prefix + "restored.bin", expectedHash: null, bytes: new Uint8Array([0, 1, 255]) });
+    expect(f.entries.has(f.prefix + "restored.bin")).toBe(false);
   });
 });
