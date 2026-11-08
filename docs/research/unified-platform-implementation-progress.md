@@ -7,7 +7,7 @@ Trace matrix: [requirements-to-code matrix](../requirements-trace-matrix.md)
 
 ## Status
 
-Implementation has started through Phase 4. Phases 1–3 remain incomplete and are not ready for rollout. Phase 4 is partial and is not accepted: the Spaces workflow-plan writer and branch-scoped script CAS/artifact restore paths now use checked publication, bounded dual-read instrumentation exists for the project UI, and many audited clients remain unmigrated. `UNIFIED_WORKSPACE_ENABLED`, `WORKSPACE_DUAL_READ_ENABLED`, and live-workspace admission remain disabled by default. Agent37 remains unavailable and auto-scheduling remains off.
+Implementation has started through Phase 4. Phases 1–3 remain incomplete and are not ready for rollout. Phase 4 is partial and is not accepted: the Spaces workflow-plan writer, canonical blueprint seeding, and branch-scoped script CAS/artifact restore paths now use checked coordinator paths; bounded dual-read instrumentation exists for the project UI; many audited clients remain unmigrated. `UNIFIED_WORKSPACE_ENABLED`, `WORKSPACE_DUAL_READ_ENABLED`, and live-workspace admission remain disabled by default. Agent37 remains unavailable and auto-scheduling remains off.
 
 ## Phase 1 — Workspace contract and checked publication core
 
@@ -124,6 +124,7 @@ The Phase 1 implementation and local evidence are recorded, but Phase 1 is **not
 - Project UI manifest reads already return branch/revision on directory listings; single-file canonical responses now include `x-workspace-branch` and `x-workspace-revision` headers.
 - Connected the script engine's shared R2 CAS write/delete helpers to the checked publisher only when a project run already has an isolated non-`main` workspace branch. The adapter pins that branch head, submits the observed expected hash, stages, checkpoints idempotently, and returns the committed revision. Unbranched runs receive no coordinator write adapter and stay fail-closed under unified mode, preserving parent-branch lifecycle semantics.
 - Moved new immutable environment handoff blobs to a tenant/space/project-scoped `workspace-artifacts/` namespace outside the canonical file tree. Legacy workspace-prefixed blobs remain readable through a host-retained raw-bucket fallback. Restoring an artifact into an isolated project branch now uses the same checked CAS callback; the existing 768 KiB coordinator file limit applies to these restores.
+- Migrated SpaceDO blueprint/template starter seeding when unified mode is enabled: content-addressed objects are uploaded and hash verified by the coordinator's `/v1/initialize`, producing revision 1 before project rows become visible. New project IDs mean there is no pre-existing legacy tree to alias; project migration/rollback aliases remain a separate unfinished path. If initialization fails, the seed attempts coordinator erasure before exposing project rows, logs a scoped `workspace_seed_rollback_pending` event if cleanup fails, and removes objects that were never submitted for initialization.
 
 ### Remaining clients / direct paths
 
@@ -137,15 +138,16 @@ The source audit remains broader than the completed migration. The following are
 | Git/repository operations | `workers/artifact/src/RepositoryDO.ts` | Repository projection remains separate; reconcile, replay, and commits are not coordinator-backed publications. |
 | Subagents and project branches | `workers/agents/src/do/NaelaoAgentDO.ts` | Task/worker setup still copies R2 trees and worker merges still perform per-file publication. Must use isolated checked branches and checked merges. |
 | Provider import/export and external runtimes | `workspace-bridge.ts`, Agent37 helpers, environment artifact tools | Agent37 checked handoff has an adapter but remains mock-only; provider import/export and bridge migration are incomplete. |
-| Project creation/seeding and migration | `workers/spaces/src/do/SpaceDO.ts` | Starter files still seed legacy R2 before visibility. Mutation barrier, hash-verified initial revision, rollback aliases, and retryable import are not implemented. Tenant-shared provider connections are not changed by this continuation. |
+| Project creation/seeding and migration | `workers/spaces/src/do/SpaceDO.ts` | Blueprint/template starter files create a verified initial coordinator revision before project rows become visible. Existing-project migration, durable retry of ambiguous rollback cleanup, and rollback aliases remain unimplemented. Tenant-shared provider connections are not changed by seeding. |
 | Project deletion | Spaces deletion paths and erasure workflow | Coordinator erasure exists, but project deletion does not yet revoke all workspace sessions/subscriptions and retryably clean staging plus alias records while preserving sibling-project tenant connections. |
 | Other ingress / specialized writers | Attachments, workflow plans, MCP patch, project journal, distillation, and audited R2/CAS call sites in the plan inventory | Some paths are guarded while unified mode is active; guards are not migration evidence. Re-audit all direct writers before acceptance. |
 
 ### Verification and limits
 
-- Spaces focused tests: `workspace-dual-read.test.ts` and `workspace-compat.test.ts`, **7 passed**. These cover mismatch classification, legacy-only drift, entry/byte bounds, redacted logging, and canonical compatibility parsing.
-- Agents focused tests: checked-publish route, CAS, virtual filesystem, environment artifact, compatibility route, and coordinator suites, **60 passed**. They use mocks; no live Cloudflare bindings were exercised.
+- Spaces focused tests: `workspace-dual-read.test.ts`, `workspace-compat.test.ts`, and `blueprint-workspace-seed.test.ts`, **9 passed**. These cover mismatch classification, legacy-only drift, entry/byte bounds, redacted logging, canonical compatibility parsing, content hash verification, seed visibility barrier, and failed-import rollback.
+- Agents focused tests: checked-publish and initialize routes, CAS, virtual filesystem, environment artifact, compatibility route, and coordinator suites, **62 passed**. They use mocks; no live Cloudflare bindings were exercised.
 - Spaces `tsc --noEmit` passed after building local `@naelao/sdk` declarations. Agents `tsc --noEmit` passed after building local `@agentport/sdk` declarations.
+- Blueprint seed plus activation regression run: **17 passed**; it verifies that tenant-authenticated activation reaches the SpaceDO import path. The seed test uses mocked R2/Agents services, not deployed coordinator bindings.
 - The normal `pnpm --filter` command attempted a dependency reinstall and failed on the repository's existing lockfile/overrides mismatch. Dependencies were restored using `pnpm install --lockfile=false --ignore-scripts`; the lockfile was not changed.
 - No migration dual-read was enabled, no project content imported, no mutation barrier or rollback alias was exercised, and no deployment/provider/runtime validation was performed.
 

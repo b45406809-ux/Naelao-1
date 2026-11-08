@@ -1,7 +1,7 @@
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 import { describe, expect, it } from "vitest";
 import worker, { blueprintRuntimeInstallability } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { certifyStateDeltaArtifact } from "@naelao/security";
 
@@ -81,7 +81,12 @@ describe("Space Template activation preview", () => {
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/extension-installations") return Response.json({ installations });
-      if (url.pathname === "/blueprints/instantiate") { instantiateCalls++; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
+      if (url.pathname === "/blueprints/instantiate") {
+        instantiateCalls++;
+        expect(request.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
+        expect(await verifyInternalToken(request.headers.get("x-naelao-internal-token"), "tenant-a", secret)).toBe(true);
+        return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 });
+      }
       return new Response("not found", { status: 404 });
     } };
     const db = { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-a" }) }) }) };

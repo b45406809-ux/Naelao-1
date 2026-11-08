@@ -2345,6 +2345,8 @@ export async function provenanceHmac(secret: string, fields: readonly string[]):
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  UNIFIED_WORKSPACE_ENABLED?: string;
+  DATA_JURISDICTION?: "eu";
   PLATFORM_DB?: D1Database;
   /** Optional stable, separately managed key for archive encryption. Keep stable across deploys. */
   SPACE_ARCHIVE_KEY?: string;
@@ -3239,14 +3241,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (body.activation_key) {
           if (body.activation_key !== body.blueprint.id) return Response.json({ error_code: "blueprint_activation_key_mismatch" }, { status: 400 });
           try {
-            const result = await this.instantiateBlueprintOnce(body.blueprint, body.target_space_id);
+            const result = await this.instantiateBlueprintOnce(body.blueprint, body.target_space_id, request.headers.get("x-naelao-tenant-id") ?? "");
             return Response.json(result, { status: result.alreadyInstalled ? 200 : 201 });
           } catch (error) {
             const code = error instanceof Error ? error.message : "blueprint_install_failed";
             return Response.json({ error_code: code }, { status: code === "blueprint_activation_artifact_changed" ? 409 : code === "blueprint_install_in_progress" ? 409 : 503 });
           }
         }
-        return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
+        return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id, request.headers.get("x-naelao-tenant-id") ?? ""), { status: 201 });
       }
       if (method === "POST" && url.pathname === "/artifact-validation/check") return this.checkArtifactValidation(request);
       if (method === "POST" && url.pathname === "/artifact-validation/approval") return this.attachArtifactApproval(request);
@@ -3255,7 +3257,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/project-templates/stamp") {
         const body = await request.json<{ space_id?: string; template_id?: string; overrides?: { name?: string } }>();
         if (!body.space_id || !body.template_id) return Response.json({ error: "space_id and template_id are required" }, { status: 400 });
-        return Response.json(await this.stampProjectTemplate(body.space_id, body.template_id, body.overrides), { status: 201 });
+        return Response.json(await this.stampProjectTemplate(body.space_id, body.template_id, body.overrides, request.headers.get("x-naelao-tenant-id") ?? ""), { status: 201 });
       }
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
@@ -4325,7 +4327,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Serialize host activation retries per target Space and exact blueprint artifact. */
-  private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
+  private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = ""): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
     const artifactHash = await sha256Hex(JSON.stringify(blueprint));
     const existing = queryOne<{ artifact_sha256: string; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
       "SELECT artifact_sha256,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
@@ -4358,7 +4360,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     // The insert winner owns the activation. Competing requests return above without writing.
     try {
-      const result = await this.instantiateBlueprint(blueprint, targetSpaceId);
+      const result = await this.instantiateBlueprint(blueprint, targetSpaceId, tenantId);
       this.ctx.storage.transactionSync(() => execute(this.ctx.storage.sql as never,
         "UPDATE space_blueprint_installations SET status='installed',result_json=?,error_code=NULL,updated_at=? WHERE space_id=? AND blueprint_id=? AND status='installing' AND artifact_sha256=?",
         JSON.stringify(result), new Date().toISOString(), targetSpaceId, blueprint.id, artifactHash));
@@ -4373,7 +4375,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Install a validated blueprint locally; hashing and writes complete before returning. */
-  async instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string): Promise<{ projectIds: string[]; taskCount: number; fileCount: number }> {
+  async instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = ""): Promise<{ projectIds: string[]; taskCount: number; fileCount: number }> {
     this.ensureInit();
     const compiled = compileBlueprint(blueprint, targetSpaceId);
     const ids = new Map<string, string>();
@@ -4393,7 +4395,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!path || path.split("/").some((segment) => !segment || segment === "." || segment === "..")) throw new Error("invalid_starter_artifact_path");
         const sizeBytes = new TextEncoder().encode(file.content).byteLength;
         totalSeedBytes += sizeBytes;
-        if (sizeBytes > 2 * 1024 * 1024 || totalSeedBytes > 10 * 1024 * 1024) throw new Error("starter_artifact_size_limit");
+        const maxFileBytes = this.env.UNIFIED_WORKSPACE_ENABLED === "true" ? 768 * 1024 : 2 * 1024 * 1024;
+        if (sizeBytes > maxFileBytes || totalSeedBytes > 10 * 1024 * 1024) throw new Error("starter_artifact_size_limit");
         preparedFiles.push({ projectId, path, content: file.content, contentHash: await sha256Hex(file.content), sizeBytes });
       }
     }
@@ -4401,8 +4404,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Upload new-project artifacts before making the projects visible in SQLite. If any object
     // write fails, clean up the staged keys so retries do not leave orphaned sample files.
     const stagedKeys: string[] = [];
+    const canonicalUploadedKeys: string[] = [];
+    const initializationAttemptedScopes: Array<{ tenantId: string; spaceId: string; projectId: string; jurisdiction: "global" | "eu" }> = [];
+    let projectRowsCommitted = false;
     try {
-      for (const file of preparedFiles) {
+      if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+        if (!tenantId || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2) throw new Error("canonical_workspace_seed_unavailable");
+        const jurisdiction: "global" | "eu" = this.env.DATA_JURISDICTION === "eu" ? "eu" : "global";
+        // Projects remain absent from the SpaceDO roster until every content object is verified
+        // and the coordinator has committed its initial main revision: this is the seed barrier.
+        for (const project of compiled.projects) {
+          const projectId = ids.get(project.id ?? project.name)!;
+          const scope = { tenantId, spaceId: targetSpaceId, projectId, jurisdiction };
+          const entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> = [];
+          for (const file of preparedFiles.filter((item) => item.projectId === projectId)) {
+            const objectKey = `workspace-v1/${tenantId}/${targetSpaceId}/${projectId}/${jurisdiction}/content/${file.contentHash}`;
+            const bytes = new TextEncoder().encode(file.content);
+            const stored = await this.env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.contentHash, size: String(file.sizeBytes) } });
+            if (stored) canonicalUploadedKeys.push(objectKey);
+            else {
+              const existing = await this.env.SCRIPTS_R2.get(objectKey);
+              if (!existing || existing.size !== file.sizeBytes || await sha256Hex(new TextDecoder().decode(await existing.arrayBuffer())) !== file.contentHash) throw new Error("workspace_seed_content_integrity_failed");
+            }
+            entries.push({ path: file.path, sha256: file.contentHash, size: file.sizeBytes, executable: false, objectKey });
+          }
+          initializationAttemptedScopes.push(scope);
+          const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/initialize", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ scope, entries }),
+          }));
+          if (!response.ok) throw new Error(`workspace_seed_initialize_failed:${response.status}`);
+        }
+      } else for (const file of preparedFiles) {
         const key = `spaces/${targetSpaceId}/projects/${file.projectId}/workspace/${file.path}`;
         if (this.env.SCRIPTS_R2) {
           const extension = file.path.split(".").pop()?.toLowerCase();
@@ -4456,13 +4490,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
         }
       });
+      projectRowsCommitted = true;
       if (compiled.assistantChannels !== undefined) await this.ctx.storage.put("channels:template",compiled.assistantChannels);
       for (const project of compiled.projects) if(project.configuration?.assistantChannels !== undefined) await this.ctx.storage.put(`channels:template-project:${ids.get(project.id ?? project.name)!}`,validateAssistantChannelPatch(project.configuration.assistantChannels));
       for (const project of compiled.projects) if(project.configuration?.assistantEmailProvisioning!==undefined)await this.ctx.storage.put(`channels:template-email-project:${ids.get(project.id??project.name)!}`,validateAssistantEmailProvisioning(project.configuration.assistantEmailProvisioning));
       return { projectIds: [...ids.values()], taskCount, fileCount: preparedFiles.length };
     } catch (error) {
-      if (this.env.SCRIPTS_R2 && stagedKeys.length) {
-        await Promise.allSettled(stagedKeys.map((key) => this.env.SCRIPTS_R2!.delete(key)));
+      // Once project metadata commits, preserve its canonical revision for recovery; before
+      // visibility, roll back coordinator scopes and staged legacy/canonical bytes retryably.
+      if (!projectRowsCommitted) {
+        if (this.env.SCRIPTS_R2 && stagedKeys.length) await Promise.allSettled(stagedKeys.map((key) => this.env.SCRIPTS_R2!.delete(key)));
+        if (initializationAttemptedScopes.length && this.env.AGENTS_WORKER) {
+          const rollbackPrefixes = initializationAttemptedScopes.map((scope) => `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/`);
+          const rollbackResults = await Promise.allSettled(initializationAttemptedScopes.map(async (scope) => this.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/workspaces/erase", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId) },
+            body: JSON.stringify({ scope }),
+          }))));
+          if (rollbackResults.some((result) => result.status === "rejected" || !result.value.ok)) console.error("workspace_seed_rollback_pending", {
+            tenantId, spaceId: targetSpaceId, projectIds: initializationAttemptedScopes.map((scope) => scope.projectId),
+          });
+          const notAttemptedKeys = canonicalUploadedKeys.filter((key) => !rollbackPrefixes.some((prefix) => key.startsWith(prefix)));
+          if (notAttemptedKeys.length && this.env.SCRIPTS_R2) await Promise.allSettled(notAttemptedKeys.map((key) => this.env.SCRIPTS_R2!.delete(key)));
+        } else if (canonicalUploadedKeys.length && this.env.SCRIPTS_R2) await Promise.allSettled(canonicalUploadedKeys.map((key) => this.env.SCRIPTS_R2!.delete(key)));
       }
       throw error;
     }
@@ -4472,7 +4522,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   async stampProjectTemplate(
     spaceId: string,
     templateId: string,
-    overrides: { name?: string } = {}
+    overrides: { name?: string } = {},
+    tenantId = "",
   ): Promise<{ projectId: string; templateId: string; kind: string; viewport: Record<string, unknown>; taskCount: number; fileCount: number }> {
     this.ensureInit();
     const definition = getProjectTemplate(templateId);
@@ -4488,7 +4539,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       requiredExtensions: [],
       requiredCredentials: [],
     };
-    const stamped = await this.instantiateBlueprint(blueprint, spaceId);
+    const stamped = await this.instantiateBlueprint(blueprint, spaceId, tenantId);
     const projectId = stamped.projectIds[0]!;
     const agent = queryOne<{ default_agent_id: string | null }>(this.ctx.storage.sql as never,
       "SELECT default_agent_id FROM projects WHERE id = ? AND space_id = ?", projectId, spaceId);

@@ -805,7 +805,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     newlyInstalledDependencies.push({ extensionId, instanceId: installed.installationId });
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }),
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }),
   }));
   if (!response.ok) {
     const rollbackFailures = await rollbackNewDependencies();
@@ -2883,8 +2884,10 @@ app.post("/spaces/:spaceId/project-templates/:templateId/stamp", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const body = await c.req.json<{ overrides?: { name?: string } }>().catch((): { overrides?: { name?: string } } => ({}));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/project-templates/stamp", "POST", JSON.stringify({
-    space_id: spaceId, template_id: templateId, overrides: body.overrides ?? {},
+  const res = await stub.fetch(new Request("http://space-do/project-templates/stamp", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ space_id: spaceId, template_id: templateId, overrides: body.overrides ?? {} }),
   }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });

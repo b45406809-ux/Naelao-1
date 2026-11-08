@@ -13,6 +13,7 @@ import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "
 import { validateWorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
 import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-publish-route.js";
+import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
 //
@@ -528,6 +529,7 @@ app.post("/internal/workspaces/erase", async (c) => {
 // head exists, this route returns manifest entries only; it never reads the legacy per-file tree.
 app.post("/internal/workspaces/compat-read", (c) => handleWorkspaceCompatRead(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { UNIFIED_WORKSPACE_ENABLED?: string }));
 app.post("/internal/workspaces/checked-publish", (c) => handleWorkspaceCheckedPublish(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string }));
+app.post("/internal/workspaces/initialize", (c) => handleWorkspaceInitialize(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string }));
 app.post("/internal/workspaces/gc", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
