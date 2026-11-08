@@ -23,6 +23,27 @@ interface Change { path: string; expectedHash: string | null; contentBase64: str
 interface StagedChange { path: string; expectedHash: string | null; sha256: string | null; size: number; executable?: boolean; objectKey?: string; }
 interface StageRecord { sessionId: string; stageId: string; changeSetHash: string; changes: StagedChange[]; createdAt: string; status?: "active" | "consumed"; consumedAt?: string; }
 interface RevisionEvent { branch: string; revision: number; publicationId: string | null; changedPaths: string[]; updatedAt: string; }
+interface ExpiryRecord { expiresAt: number; kind: "receipt" | "subscription"; targetKey: string; branch?: string; subscriberId?: string; }
+interface RetainedRevision { branch: string; revision: number; manifestHash: string; createdAt: string; }
+interface ContentGcState {
+  epoch: string;
+  phase: "backfill" | "roots" | "mark" | "sweep-manifests" | "sweep-content" | "cleanup";
+  claimId: string;
+  claimUntil: number;
+  lockUntil: number;
+  backfillCursor?: string;
+  pendingLegacyManifestHash?: string;
+  legacyBackfillDone?: boolean;
+  storageCursor?: string;
+  manifestCursor?: string;
+  manifestListDone?: boolean;
+  activeManifestKey?: string;
+  activeManifestOffset?: number;
+  sweepManifestCursor?: string;
+  contentCursor?: string;
+  marksCursor?: string;
+  cleanupDone?: boolean;
+}
 interface Session {
   id: string;
   actorId: string;
@@ -43,6 +64,12 @@ const MAX_ENTRIES = 10_000;
 const MAX_FILE_BYTES = 768 * 1024;
 const MAX_WORKSPACE_BYTES = 64 * 1024 * 1024;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const CONTENT_GC_LOCK_MS = 10 * 60 * 1000;
+const CONTENT_GC_CLAIM_MS = 2 * 60 * 1000;
+const CONTENT_GC_ENTRY_BATCH = 100;
+const REVISION_EVENT_RETENTION = 500;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -85,7 +112,11 @@ function branchBaseKey(branch: string): string { return `branch-base:${branch}`;
 function mergeReceiptKey(branch: string, idempotencyKey: string): string { return `merge-receipt:${branch}:${idempotencyKey}`; }
 function stageKey(sessionId: string, stageId: string): string { return `stage:${sessionId}:${stageId}`; }
 function revisionEventKey(branch: string, revision: number): string { return `revision:${branch}:${revision}`; }
+function retainedRevisionKey(branch: string, revision: number): string { return `retained-revision:${branch}:${String(revision).padStart(16, "0")}`; }
 function subscriptionKey(branch: string, subscriberId: string): string { return `subscription:${branch}:${subscriberId}`; }
+function expiryKey(expiresAt: number, nonce: string): string { return `expiry:${String(expiresAt).padStart(13, "0")}:${nonce}`; }
+function gcMarksRoot(scope: WorkspaceScope): string { return `workspace-v1/${keyScope(scope)}/gc/marks/`; }
+function gcMarksPrefix(scope: WorkspaceScope, epoch: string): string { return `${gcMarksRoot(scope)}${epoch}/`; }
 function entrySignature(entry: WorkspaceEntry | undefined): string | null {
   return entry ? JSON.stringify([entry.sha256, entry.size, entry.executable]) : null;
 }
@@ -100,6 +131,13 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ready = this.ctx.storage.get<WorkspaceScope>("scope").then(() => undefined);
+  }
+
+  async alarm(): Promise<void> {
+    const gc = await this.ctx.storage.get<ContentGcState>("content_gc");
+    if (gc && gc.lockUntil > Date.now()) await this.collectContent(true);
+    await this.collectMetadata();
+    await this.scheduleMetadataExpiry();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -125,6 +163,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/v1/checkpoint") return this.checkpoint(body!);
     if (request.method === "POST" && url.pathname === "/v1/stage") return this.stage(body!);
     if (request.method === "POST" && url.pathname === "/v1/gc/staging") return this.collectStaging(body!);
+    if (request.method === "POST" && url.pathname === "/v1/gc/metadata") return this.collectMetadata();
+    if (request.method === "POST" && url.pathname === "/v1/gc/content") return this.collectContent(false);
     if (request.method === "POST" && url.pathname === "/v1/handoff") return this.handoff(body!);
     if (request.method === "POST" && url.pathname === "/v1/close") return this.close(body!);
     return fail("not_found", 404);
@@ -143,6 +183,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   private async initialize(body: Record<string, unknown>, tenantId: string): Promise<Response> {
     const validated = await this.validateScope(body.scope, body.branch, tenantId);
     if (validated instanceof Response) return validated;
+    if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
     const { scope, branch } = validated;
     if (!Array.isArray(body.entries) || body.entries.length > MAX_ENTRIES || !body.entries.every(validateWorkspaceEntry)) return fail("invalid_manifest");
     if (new Set(body.entries.map((entry) => (entry as WorkspaceEntry).path)).size !== body.entries.length) return fail("duplicate_workspace_path");
@@ -161,6 +202,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     }
     const head: WorkspaceHead = { version: 1, scope, branch, revision: 1, manifestHash, parentRevision: null, publicationId: null, updatedAt: new Date().toISOString() };
     const result = await this.ctx.storage.transaction(async (tx) => {
+      const gc = await tx.get<ContentGcState>("content_gc");
+      if (gc && gc.lockUntil > Date.now()) return "gc_busy";
       const known = await tx.get<WorkspaceScope>("scope");
       if (await tx.get<boolean>("erased")) return "erased";
       if (known && JSON.stringify(known) !== JSON.stringify(scope)) return "scope_conflict";
@@ -168,13 +211,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (current) return current.manifestHash === manifestHash ? "exists" : "head_exists";
       await tx.put("scope", scope);
       await tx.put(headKey(branch), head);
+      await tx.put(retainedRevisionKey(branch, head.revision), { branch, revision: head.revision, manifestHash: head.manifestHash, createdAt: head.updatedAt } satisfies RetainedRevision);
       await tx.put(revisionEventKey(branch, 1), { branch, revision: 1, publicationId: null, changedPaths: [], updatedAt: head.updatedAt } satisfies RevisionEvent);
       return "created";
     });
     if (result === "scope_conflict") return fail("workspace_scope_mismatch", 403);
-    if (result === "erased" || result === "head_exists") {
+    if (result === "erased" || result === "head_exists" || result === "gc_busy") {
       if (createdManifestKey) await this.env.SCRIPTS_R2!.delete(createdManifestKey);
-      return result === "erased" ? fail("workspace_erased", 410) : fail("workspace_head_exists", 409);
+      return result === "erased" ? fail("workspace_erased", 410) : result === "gc_busy" ? fail("workspace_gc_in_progress", 423) : fail("workspace_head_exists", 409);
     }
     return json({ head: result === "created" ? head : await this.ctx.storage.get<WorkspaceHead>(headKey(branch)), created: result === "created" });
   }
@@ -261,6 +305,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (!latest || latest.revision !== source.revision || latest.manifestHash !== source.manifestHash) return "source_changed";
       await tx.put(headKey(branch), created);
       await tx.put(branchBaseKey(branch), { parentBranch: validated.branch, revision: source.revision, manifestHash: source.manifestHash });
+      await tx.put(retainedRevisionKey(branch, created.revision), { branch, revision: created.revision, manifestHash: created.manifestHash, createdAt: created.updatedAt } satisfies RetainedRevision);
       await tx.put(revisionEventKey(branch, created.revision), { branch, revision: created.revision, publicationId: created.publicationId, changedPaths: [], updatedAt: created.updatedAt } satisfies RevisionEvent);
       return "created";
     });
@@ -278,6 +323,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return fail("invalid_merge");
     const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
     if (!session) return fail("workspace_session_not_found", 404);
+    if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
     if (session.mode !== "checked_handoff" || session.parentBranch !== targetBranch) return fail("branch_parent_mismatch", 409);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== body.fence) return fail("stale_fence", 409);
@@ -315,6 +361,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     });
     const id = `merge_${crypto.randomUUID()}`;
     let status: WorkspacePublicationReceipt["status"] = conflicts.length ? "conflicted" : "published";
+    let newlyStoredManifestKey: string | null = null;
     const nextEntries = new Map(parent);
     if (!conflicts.length) {
       for (const path of changedPaths) {
@@ -334,6 +381,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (verified) return verified;
       if (nextHash !== targetHead.manifestHash) {
         const put = await this.env.SCRIPTS_R2!.put(manifestKey(targetHead.scope, nextHash), encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: nextHash } });
+        if (put) newlyStoredManifestKey = manifestKey(targetHead.scope, nextHash);
         if (!put) {
           const found = await this.env.SCRIPTS_R2!.get(manifestKey(targetHead.scope, nextHash));
           if (!found || await sha256Hex(new Uint8Array(await found.arrayBuffer())) !== nextHash) return fail("manifest_persist_failed", 503);
@@ -348,15 +396,21 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const replay = await tx.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
       if (replay) return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
       const activeSession = await tx.get<Session>(sessionKey(sessionId));
+      const gc = await tx.get<ContentGcState>("content_gc");
+      if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" };
       if (await tx.get<boolean>("erased")) return { error: "workspace_erased" };
       const parent = await tx.get<WorkspaceHead>(headKey(targetBranch));
       const branch = await tx.get<WorkspaceHead>(headKey(session.branch));
       if (!activeSession || activeSession.status !== "active" || activeSession.allocationGeneration !== body.allocationGeneration || activeSession.fence !== body.fence) return { error: "stale_fence" };
       if (!parent || parent.revision !== targetHead.revision || parent.manifestHash !== targetHead.manifestHash || !branch || branch.revision !== workingHead.revision || branch.manifestHash !== workingHead.manifestHash) return { error: "workspace_head_raced" };
       await tx.put(mergeReceiptKey(targetBranch, idempotencyKey), receipt);
+      const expiry = expiryKey(Date.now() + RECEIPT_RETENTION_MS, crypto.randomUUID());
+      await tx.put(expiry, { expiresAt: Date.now() + RECEIPT_RETENTION_MS, kind: "receipt", targetKey: mergeReceiptKey(targetBranch, idempotencyKey) } satisfies ExpiryRecord);
       if (status === "published") {
         await tx.put(headKey(targetBranch), nextHead);
+        await tx.put(retainedRevisionKey(targetBranch, revision), { branch: targetBranch, revision, manifestHash: nextHash, createdAt: nextHead.updatedAt } satisfies RetainedRevision);
         await tx.put(revisionEventKey(targetBranch, revision), { branch: targetBranch, revision, publicationId: id, changedPaths, updatedAt: nextHead.updatedAt } satisfies RevisionEvent);
+        if (revision > REVISION_EVENT_RETENTION) await tx.delete(revisionEventKey(targetBranch, revision - REVISION_EVENT_RETENTION));
       }
       if (status === "published" || status === "noop") {
         activeSession.status = "closed";
@@ -364,7 +418,13 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       }
       return { receipt };
     });
-    if ("error" in committed) return fail(committed.error, 409);
+    if ("error" in committed) {
+      if (committed.error === "workspace_gc_in_progress" || committed.error === "workspace_erased") {
+        if (newlyStoredManifestKey) await this.env.SCRIPTS_R2!.delete(newlyStoredManifestKey);
+      }
+      return fail(committed.error, committed.error === "workspace_gc_in_progress" ? 423 : committed.error === "workspace_erased" ? 410 : 409);
+    }
+    await this.scheduleMetadataExpiry();
     return json({ publication: committed.receipt }, status === "conflicted" ? 409 : 200);
   }
 
@@ -414,12 +474,18 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const revision = Number(body.revision);
     if (revision > head.revision) return fail("change_cursor_ahead", 409);
     const next = await this.ctx.storage.transaction(async (tx) => {
-      const current = await tx.get<{ revision: number; updatedAt: string }>(subscriptionKey(branch, String(body.subscriberId)));
+      const current = await tx.get<{ revision: number; updatedAt: string; expiryKey?: string }>(subscriptionKey(branch, String(body.subscriberId)));
       if (current && current.revision > revision) return current;
-      const value = { revision: Math.max(current?.revision ?? 0, revision), updatedAt: new Date().toISOString() };
+      const updatedAt = new Date().toISOString();
+      const expiresAt = Date.now() + SUBSCRIPTION_RETENTION_MS;
+      const nextExpiryKey = expiryKey(expiresAt, crypto.randomUUID());
+      const value = { revision: Math.max(current?.revision ?? 0, revision), updatedAt, expiryKey: nextExpiryKey };
+      if (current?.expiryKey) await tx.delete(current.expiryKey);
       await tx.put(subscriptionKey(branch, String(body.subscriberId)), value);
+      await tx.put(nextExpiryKey, { expiresAt, kind: "subscription", targetKey: subscriptionKey(branch, String(body.subscriberId)), branch, subscriberId: String(body.subscriberId) } satisfies ExpiryRecord);
       return value;
     });
+    await this.scheduleMetadataExpiry();
     return json({ branch, subscriberId: body.subscriberId, ...next });
   }
 
@@ -433,6 +499,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         (body.changes === undefined && body.stageId === undefined) || (body.changes !== undefined && body.stageId !== undefined)) return fail("invalid_checkpoint");
     const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
     if (!session) return fail("workspace_session_not_found", 404);
+    if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
     if (session.status !== "active") return fail("stale_fence", 409);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== body.fence) return fail("stale_fence", 409);
@@ -533,6 +600,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const replay = await tx.get<WorkspacePublicationReceipt>(receiptKey(session.branch, idempotencyKey));
       if (replay) return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
       const head = await tx.get<WorkspaceHead>(headKey(session.branch));
+      const gc = await tx.get<ContentGcState>("content_gc");
+      if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" };
       if (await tx.get<boolean>("erased")) return { error: "workspace_erased" };
       if (!head || head.revision !== current.revision || head.manifestHash !== current.manifestHash) return { error: "head_raced" };
       const activeSession = await tx.get<Session>(sessionKey(sessionId));
@@ -542,9 +611,13 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         if (!lease || lease.sessionId !== sessionId || lease.fence !== activeSession.fence || lease.expiresAt <= Date.now()) return { error: "writer_lease_expired" };
       }
       await tx.put(receiptKey(session.branch, idempotencyKey), receipt);
+      const expiresAt = Date.now() + RECEIPT_RETENTION_MS;
+      await tx.put(expiryKey(expiresAt, crypto.randomUUID()), { expiresAt, kind: "receipt", targetKey: receiptKey(session.branch, idempotencyKey) } satisfies ExpiryRecord);
       if (status === "published") {
         await tx.put(headKey(session.branch), newHead);
+        await tx.put(retainedRevisionKey(session.branch, revision), { branch: session.branch, revision, manifestHash: nextHash, createdAt: newHead.updatedAt } satisfies RetainedRevision);
         await tx.put(revisionEventKey(session.branch, revision), { branch: session.branch, revision, publicationId, changedPaths: appliedPaths, updatedAt: newHead.updatedAt } satisfies RevisionEvent);
+        if (revision > REVISION_EVENT_RETENTION) await tx.delete(revisionEventKey(session.branch, revision - REVISION_EVENT_RETENTION));
       }
       if (body.stageId !== undefined && (status === "published" || status === "noop")) {
         const stageId = String(body.stageId);
@@ -554,13 +627,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return { receipt };
     });
     if ("error" in committed) {
-      if (committed.error === "workspace_erased") {
+      if (committed.error === "workspace_erased" || committed.error === "workspace_gc_in_progress") {
         if (newlyStoredManifestKey) await this.env.SCRIPTS_R2!.delete(newlyStoredManifestKey);
         if (newlyStoredContentKeys.length) await this.env.SCRIPTS_R2!.delete(newlyStoredContentKeys);
-        return fail("workspace_erased", 410);
+        return committed.error === "workspace_erased" ? fail("workspace_erased", 410) : fail("workspace_gc_in_progress", 423);
       }
       return fail(committed.error, 409);
     }
+    await this.scheduleMetadataExpiry();
     return json({ publication: committed.receipt }, status === "conflicted" ? 409 : 200);
   }
 
@@ -644,7 +718,21 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       seen.add(next);
       cursor = next;
     } while (cursor);
-    await this.ctx.storage.deleteAll();
+    // Keep the tombstone present while metadata is removed. `deleteAll()` followed by a
+    // tombstone write creates an await gap in which an already-running request could commit new
+    // metadata after the erasure sweep.
+    let after: string | undefined;
+    for (;;) {
+      const page = await this.ctx.storage.list({ ...(after ? { startAfter: after } : {}), limit: 1000 });
+      const keys = [...page.keys()];
+      if (!keys.length) break;
+      const next = keys[keys.length - 1]!;
+      if (after && next <= after) return fail("erasure_metadata_cursor_invalid", 503);
+      const remove = keys.filter((key) => key !== "erased");
+      if (remove.length) await this.ctx.storage.delete(remove);
+      after = next;
+      if (keys.length < 1000) break;
+    }
     await this.ctx.storage.put("erased", true);
     return json({ erased: true, scope: requestedScope, objectsDeleted: deleted });
   }
@@ -696,6 +784,261 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       }
     }
     return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: page.truncated ? page.cursor ?? null : null, hasMore: page.truncated });
+  }
+
+  /** Expiry indexes are ordered by deadline so each invocation performs a bounded sweep. */
+  private async collectMetadata(): Promise<Response> {
+    const page = await this.ctx.storage.list<ExpiryRecord>({ prefix: "expiry:", limit: 100 });
+    let deleted = 0;
+    for (const [key, expiry] of page) {
+      if (!Number.isSafeInteger(expiry.expiresAt)) {
+        await this.ctx.storage.delete(key);
+        deleted++;
+        continue;
+      }
+      if (expiry.expiresAt > Date.now()) break;
+      if (expiry.kind === "receipt" && (expiry.targetKey.startsWith("receipt:") || expiry.targetKey.startsWith("merge-receipt:"))) {
+        await this.ctx.storage.transaction(async (tx) => {
+          await tx.delete(expiry.targetKey);
+          await tx.delete(key);
+        });
+        deleted++;
+      } else if (expiry.kind === "subscription" && expiry.targetKey.startsWith("subscription:") && expiry.branch && expiry.subscriberId) {
+        await this.ctx.storage.transaction(async (tx) => {
+          const current = await tx.get<{ expiryKey?: string }>(expiry.targetKey);
+          if (current?.expiryKey === key) await tx.delete(expiry.targetKey);
+          await tx.delete(key);
+        });
+        deleted++;
+      } else {
+        // Malformed indexes were generated only by internal metadata paths; drop them rather
+        // than allowing a corrupt key to block every later expiry record.
+        await this.ctx.storage.delete(key);
+      }
+    }
+    const result = { scanned: page.size, deleted, hasMore: page.size === 100 };
+    await this.scheduleMetadataExpiry();
+    return json(result);
+  }
+
+  private async scheduleMetadataExpiry(): Promise<void> {
+    const page = await this.ctx.storage.list<ExpiryRecord>({ prefix: "expiry:", limit: 100 });
+    for (const [, expiry] of page) {
+      if (Number.isSafeInteger(expiry.expiresAt)) {
+        await this.scheduleAlarmAt(expiry.expiresAt);
+        return;
+      }
+    }
+  }
+
+  private async scheduleAlarmAt(scheduledTime: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > scheduledTime) await this.ctx.storage.setAlarm(scheduledTime);
+  }
+
+  /**
+   * Mark/sweep manifests and content from retained revision roots. A one-time manifest backfill
+   * preserves history created before revision metadata existed. A durable maintenance lease
+   * prevents new canonical manifests from appearing during collection; each call advances one
+   * bounded, restartable batch.
+   */
+  private async collectContent(resumeOnly: boolean): Promise<Response> {
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope) return fail("workspace_scope_missing", 503);
+    const claimed = await this.ctx.storage.transaction(async (tx) => {
+      if (await tx.get<boolean>("erased")) return { error: "workspace_erased" as const };
+      const now = Date.now();
+      const current = await tx.get<ContentGcState>("content_gc");
+      if (!current && resumeOnly) return { error: "workspace_gc_not_running" as const };
+      if (current && current.lockUntil > now && current.claimUntil > now) return { error: "workspace_gc_step_in_progress" as const };
+      const state: ContentGcState = current && current.lockUntil > now
+        ? { ...current, claimId: crypto.randomUUID(), claimUntil: now + CONTENT_GC_CLAIM_MS, lockUntil: now + CONTENT_GC_LOCK_MS }
+        : { epoch: crypto.randomUUID(), phase: await tx.get<boolean>("content_gc_backfill_complete") ? "roots" : "backfill", claimId: crypto.randomUUID(), claimUntil: now + CONTENT_GC_CLAIM_MS, lockUntil: now + CONTENT_GC_LOCK_MS };
+      await tx.put("content_gc", state);
+      return { state };
+    });
+    if ("error" in claimed) return fail(claimed.error, claimed.error === "workspace_erased" ? 410 : 409);
+    const state = claimed.state;
+    let processed = 0;
+    const createdMarks: string[] = [];
+    try {
+      if (state.phase === "backfill") {
+        const page = await this.env.SCRIPTS_R2!.list({ prefix: `workspace-v1/${keyScope(scope)}/manifests/`, ...(state.backfillCursor ? { cursor: state.backfillCursor } : {}), limit: 1 });
+        const item = page.objects[0];
+        if (!item) {
+          state.phase = "roots";
+          state.legacyBackfillDone = true;
+          delete state.backfillCursor;
+        } else {
+          const match = item.key.match(/\/manifests\/([a-f0-9]{64})\.json$/);
+          const manifestHash = match?.[1];
+          if (!manifestHash) throw new Error("workspace_gc_invalid_manifest_key");
+          state.pendingLegacyManifestHash = manifestHash;
+          if (page.truncated && page.cursor) state.backfillCursor = page.cursor;
+          else {
+            delete state.backfillCursor;
+            state.legacyBackfillDone = true;
+            state.phase = "roots";
+          }
+        }
+        processed = page.objects.length;
+      } else if (state.phase === "roots") {
+        const page = await this.ctx.storage.list({ ...(state.storageCursor ? { startAfter: state.storageCursor } : {}), limit: 100 });
+        for (const [key, value] of page) {
+          let manifestHash: unknown;
+          if (key.startsWith("head:")) manifestHash = (value as WorkspaceHead).manifestHash;
+          else if (key.startsWith("retained-revision:")) manifestHash = (value as RetainedRevision).manifestHash;
+          else if (key.startsWith("branch-base:")) manifestHash = (value as { manifestHash?: unknown }).manifestHash;
+          else if (key.startsWith("session:")) {
+            const session = value as Session;
+            if (session.status === "active") manifestHash = session.baseManifestHash;
+          } else if (key.startsWith("legacy-manifest:")) manifestHash = key.slice("legacy-manifest:".length);
+          if (typeof manifestHash === "string" && HASH.test(manifestHash)) {
+            const marker = `${gcMarksPrefix(scope, state.epoch)}manifests/${manifestHash}`;
+            if (!await this.env.SCRIPTS_R2!.head(marker)) {
+              await this.env.SCRIPTS_R2!.put(marker, "1");
+              createdMarks.push(marker);
+            }
+          }
+        }
+        const lastKey = [...page.keys()].at(-1);
+        if (lastKey) state.storageCursor = lastKey;
+        if (page.size < 100) { delete state.storageCursor; state.phase = "mark"; }
+        processed = page.size;
+      } else if (state.phase === "mark") {
+        if (state.activeManifestKey) {
+          const match = state.activeManifestKey.match(/\/manifests\/([a-f0-9]{64})\.json$/);
+          if (!match) throw new Error("workspace_gc_invalid_manifest_key");
+          if (!await this.env.SCRIPTS_R2!.head(`${gcMarksPrefix(scope, state.epoch)}manifests/${match[1]}`)) {
+            delete state.activeManifestKey;
+            delete state.activeManifestOffset;
+            if (state.manifestListDone) state.phase = "sweep-manifests";
+            processed = 1;
+          } else {
+          const object = await this.env.SCRIPTS_R2!.get(state.activeManifestKey);
+          if (!object) throw new Error("workspace_gc_manifest_missing");
+          const bytes = new Uint8Array(await object.arrayBuffer());
+          if (await sha256Hex(bytes) !== match[1]) throw new Error("workspace_gc_manifest_corrupt");
+          const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+          if (!Array.isArray(parsed) || !parsed.every(validateWorkspaceEntry)) throw new Error("workspace_gc_manifest_invalid");
+          const entries = parsed as WorkspaceEntry[];
+          const offset = state.activeManifestOffset ?? 0;
+          const batch = entries.slice(offset, offset + CONTENT_GC_ENTRY_BATCH);
+          for (const entry of batch) {
+            const expectedKey = `${contentPrefix(scope)}${entry.sha256}`;
+            if (entry.objectKey !== expectedKey) throw new Error("workspace_gc_content_scope_mismatch");
+            const marker = `${gcMarksPrefix(scope, state.epoch)}content/${entry.sha256}`;
+            if (!await this.env.SCRIPTS_R2!.head(marker)) {
+              await this.env.SCRIPTS_R2!.put(marker, "1");
+              createdMarks.push(marker);
+            }
+          }
+          processed = batch.length;
+          const nextOffset = offset + batch.length;
+          if (nextOffset < entries.length) state.activeManifestOffset = nextOffset;
+          else {
+            delete state.activeManifestKey;
+            delete state.activeManifestOffset;
+            if (state.manifestListDone) state.phase = "sweep-manifests";
+          }
+          }
+        } else {
+          const page = await this.env.SCRIPTS_R2!.list({ prefix: `workspace-v1/${keyScope(scope)}/manifests/`, ...(state.manifestCursor ? { cursor: state.manifestCursor } : {}), limit: 1 });
+          const item = page.objects[0];
+          if (!item) state.phase = "sweep-manifests";
+          else {
+            state.activeManifestKey = item.key;
+            state.activeManifestOffset = 0;
+            if (page.truncated && page.cursor) state.manifestCursor = page.cursor;
+            else delete state.manifestCursor;
+            state.manifestListDone = !page.truncated;
+          }
+          processed = page.objects.length;
+        }
+      } else if (state.phase === "sweep-manifests") {
+        const prefix = `workspace-v1/${keyScope(scope)}/manifests/`;
+        const page = await this.env.SCRIPTS_R2!.list({ prefix, ...(state.sweepManifestCursor ? { cursor: state.sweepManifestCursor } : {}), limit: 100 });
+        const deletions: string[] = [];
+        const markerPrefix = `${gcMarksPrefix(scope, state.epoch)}manifests/`;
+        for (const item of page.objects) {
+          const match = item.key.match(/\/manifests\/([a-f0-9]{64})\.json$/);
+          if (!match) throw new Error("workspace_gc_invalid_manifest_key");
+          if (!await this.env.SCRIPTS_R2!.head(`${markerPrefix}${match[1]}`)) deletions.push(item.key);
+        }
+        if (deletions.length) await this.env.SCRIPTS_R2!.delete(deletions);
+        processed = page.objects.length;
+        if (page.truncated) state.sweepManifestCursor = page.cursor;
+        else { delete state.sweepManifestCursor; state.phase = "sweep-content"; }
+      } else if (state.phase === "sweep-content") {
+        const prefix = contentPrefix(scope);
+        const page = await this.env.SCRIPTS_R2!.list({ prefix, ...(state.contentCursor ? { cursor: state.contentCursor } : {}), limit: 100 });
+        const deletions: string[] = [];
+        const markerPrefix = `${gcMarksPrefix(scope, state.epoch)}content/`;
+        for (const item of page.objects) {
+          const hash = item.key.slice(prefix.length);
+          if (!HASH.test(hash)) throw new Error("workspace_gc_invalid_content_key");
+          if (!await this.env.SCRIPTS_R2!.head(`${markerPrefix}${hash}`)) deletions.push(item.key);
+        }
+        if (deletions.length) await this.env.SCRIPTS_R2!.delete(deletions);
+        processed = page.objects.length;
+        if (page.truncated) state.contentCursor = page.cursor;
+        else { delete state.contentCursor; state.phase = "cleanup"; }
+      } else {
+        const page = await this.env.SCRIPTS_R2!.list({ prefix: gcMarksRoot(scope), ...(state.marksCursor ? { cursor: state.marksCursor } : {}), limit: 1000 });
+        if (page.objects.length) await this.env.SCRIPTS_R2!.delete(page.objects.map((item) => item.key));
+        processed = page.objects.length;
+        if (page.truncated) state.marksCursor = page.cursor;
+        else { delete state.marksCursor; state.cleanupDone = true; }
+      }
+    } catch (error) {
+      if (createdMarks.length) await this.env.SCRIPTS_R2!.delete(createdMarks);
+      await this.ctx.storage.transaction(async (tx) => {
+        const current = await tx.get<ContentGcState>("content_gc");
+        if (current?.claimId === state.claimId) await tx.delete("content_gc");
+      });
+      const message = error instanceof Error ? error.message : "workspace_gc_failed";
+      return fail(message.startsWith("workspace_gc_") ? message : "workspace_gc_failed", 503);
+    }
+    const saved = await this.ctx.storage.transaction(async (tx) => {
+      const current = await tx.get<ContentGcState>("content_gc");
+      if (await tx.get<boolean>("erased")) return "workspace_erased";
+      if (!current || current.claimId !== state.claimId) return "workspace_gc_claim_lost";
+      if (state.pendingLegacyManifestHash) {
+        await tx.put(`legacy-manifest:${state.pendingLegacyManifestHash}`, { manifestHash: state.pendingLegacyManifestHash });
+        delete state.pendingLegacyManifestHash;
+      }
+      if (state.legacyBackfillDone) await tx.put("content_gc_backfill_complete", true);
+      if (state.phase === "cleanup" && state.cleanupDone) {
+        await tx.delete("content_gc");
+        return "complete";
+      }
+      state.claimUntil = 0;
+      state.lockUntil = Date.now() + CONTENT_GC_LOCK_MS;
+      await tx.put("content_gc", state);
+      return "running";
+    });
+    if (saved === "workspace_erased") {
+      if (createdMarks.length) await this.env.SCRIPTS_R2!.delete(createdMarks);
+      return fail("workspace_erased", 410);
+    }
+    if (saved === "workspace_gc_claim_lost") return fail(saved, 409);
+    if (saved === "running") await this.scheduleAlarmAt(Date.now() + 1_000);
+    return json({ phase: saved === "complete" ? "complete" : state.phase, processed, hasMore: saved !== "complete" });
+  }
+
+  private async contentGcLocked(): Promise<boolean> {
+    const state = await this.ctx.storage.get<ContentGcState>("content_gc");
+    if (!state) return false;
+    if (state.lockUntil > Date.now()) return true;
+    return this.ctx.storage.transaction(async (tx) => {
+      const current = await tx.get<ContentGcState>("content_gc");
+      if (!current) return false;
+      if (current.epoch === state.epoch && current.lockUntil <= Date.now()) {
+        await tx.delete("content_gc");
+        return false;
+      }
+      return current.lockUntil > Date.now();
+    });
   }
 
   private async handoff(body: Record<string, unknown>): Promise<Response> {

@@ -54,6 +54,11 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       get: async (key: string) => coordinatorStorage.get(key),
       put: async (key: string, value: unknown) => coordinatorStorage.set(key, structuredClone(value)),
       delete: async (key: string) => coordinatorStorage.delete(key),
+      getAlarm: async () => null,
+      setAlarm: async (_scheduledTime: number) => undefined,
+      list: async ({ prefix = "", startAfter, limit = 1000 }: { prefix?: string; startAfter?: string; limit?: number } = {}) => new Map(
+        [...coordinatorStorage.entries()].filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter)).sort(([a], [b]) => a.localeCompare(b)).slice(0, limit),
+      ),
       transaction: async (callback: (txn: unknown) => Promise<unknown>) => callback({
         get: async (key: string) => coordinatorStorage.get(key),
         put: async (key: string, value: unknown) => coordinatorStorage.set(key, structuredClone(value)),
@@ -531,7 +536,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "notes/result.txt": "committed from container" }, expected_hashes: { "notes/result.txt": null } }),
     }));
-    expect(written.status).toBe(200);
+    expect(written.status, await written.clone().text()).toBe(200);
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
     const read = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
       idFromName: (name: string) => name,
@@ -556,7 +561,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "src/result.txt": "finished" }, expected_hashes: { "src/result.txt": null } }),
     }));
-    expect(write.status).toBe(200);
+    expect(write.status, await write.clone().text()).toBe(200);
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
     const read = async () => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
       idFromName: (name: string) => name,

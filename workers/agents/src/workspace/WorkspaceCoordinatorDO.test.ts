@@ -4,14 +4,20 @@ import { WorkspaceCoordinatorDO } from "./WorkspaceCoordinatorDO.js";
 
 class Storage {
   values = new Map<string, unknown>();
+  alarmAt: number | null = null;
   private transactionQueue = Promise.resolve();
   async get<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined; }
-  async list<T>({ prefix = "", limit = 1000 }: { prefix?: string; limit?: number } = {}): Promise<Map<string, T>> {
-    return new Map([...this.values.entries()].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => a.localeCompare(b)).slice(0, limit) as Array<[string, T]>);
+  async list<T>({ prefix = "", startAfter, limit = 1000 }: { prefix?: string; startAfter?: string; limit?: number } = {}): Promise<Map<string, T>> {
+    return new Map([...this.values.entries()].filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter)).sort(([a], [b]) => a.localeCompare(b)).slice(0, limit) as Array<[string, T]>);
   }
   async put(key: string, value: unknown): Promise<void> { this.values.set(key, structuredClone(value)); }
-  async delete(key: string): Promise<boolean> { return this.values.delete(key); }
+  async delete(key: string | string[]): Promise<boolean> {
+    if (Array.isArray(key)) { let deleted = false; for (const item of key) deleted = this.values.delete(item) || deleted; return deleted; }
+    return this.values.delete(key);
+  }
   async deleteAll(): Promise<void> { this.values.clear(); }
+  async getAlarm(): Promise<number | null> { return this.alarmAt; }
+  async setAlarm(scheduledTime: number | Date): Promise<void> { this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime; }
   async transaction<T>(callback: (txn: this) => Promise<T>): Promise<T> {
     const next = this.transactionQueue.then(() => callback(this));
     this.transactionQueue = next.then(() => undefined, () => undefined);
@@ -33,7 +39,12 @@ function setup(options: { liveEnabled?: boolean } = {}) {
       objects.set(key, bytes.slice());
       return { key, size: bytes.byteLength };
     },
-    async list({ prefix }: { prefix: string }) { return { objects: [...objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated: false }; },
+    async head(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength } : null; },
+    async list({ prefix, cursor, limit = 1000 }: { prefix: string; cursor?: string; limit?: number }) {
+      const matching = [...objects.keys()].filter(key => key.startsWith(prefix) && (!cursor || key > cursor)).sort();
+      const selected = matching.slice(0, limit);
+      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated: matching.length > selected.length, cursor: selected.at(-1) };
+    },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   } as unknown as R2Bucket;
   const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false" };
@@ -131,6 +142,101 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       expect([...objects.keys()].some(key => key.includes("/staging/"))).toBe(false);
       expect([...objects.keys()].some(key => key.includes("/content/"))).toBe(true);
     } finally { vi.restoreAllMocks(); }
+  });
+
+  it("expires publication receipts and inactive subscriber cursors by bounded metadata indexes", async () => {
+    const { instance, storage } = setup();
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+      const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string } };
+      await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "expires-receipt", changes: [{ path: "expires.txt", expectedHash: null, contentBase64: btoa("x") }] });
+      await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "offline-reader", revision: 2 });
+      expect(await storage.get("receipt:main:expires-receipt")).toBeDefined();
+      expect(await storage.get("subscription:main:offline-reader")).toBeDefined();
+      vi.spyOn(Date, "now").mockReturnValue(now + 31 * 24 * 60 * 60 * 1000);
+      const collected = await call(instance, "/v1/gc/metadata", {});
+      expect(await collected.json()).toMatchObject({ deleted: 2, hasMore: false });
+      expect(await storage.get("receipt:main:expires-receipt")).toBeUndefined();
+      expect(await storage.get("subscription:main:offline-reader")).toBeUndefined();
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("bounds revision polling events and asks readers with expired cursors to reset", async () => {
+    const { instance, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string } };
+    let expectedHash: string | null = null;
+    for (let index = 1; index <= 500; index++) {
+      const bytes = new TextEncoder().encode(`revision-${index}`);
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const nextHash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+      const response = await call(instance, "/v1/checkpoint", {
+        sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: index,
+        idempotencyKey: `event-retention-${index}`,
+        changes: [{ path: "revision.txt", expectedHash, contentBase64: btoa(`revision-${index}`) }],
+      });
+      expect(response.status, `revision ${index}`).toBe(200);
+      expectedHash = nextHash;
+    }
+    expect((await storage.list({ prefix: "revision:main:" })).size).toBe(500);
+    expect(await (await call(instance, "/v1/changes?branch=main&afterRevision=0")).json()).toMatchObject({ head: { revision: 501 }, resetRequired: true, cursor: 0 });
+  });
+
+  it("marks all retained manifests before sweeping orphan content and blocks writes during collection", async () => {
+    const { instance, objects, storage } = setup();
+    const liveBytes = new TextEncoder().encode("live");
+    const liveHash = "247610f4dedd4ab7247d07dbda19c81ca9817f85820742cad49d407ffae9e4ed";
+    const liveKey = `workspace-v1/tenant/space/project/global/content/${liveHash}`;
+    objects.set(liveKey, liveBytes);
+    const orphanBytes = new TextEncoder().encode("orphan");
+    const orphanHash = "88f6811ab5d8fc6d3177f9b7609ae0fcebfda187e5046b62d38bb539e88b74d7";
+    const orphanKey = `workspace-v1/tenant/space/project/global/content/${orphanHash}`;
+    objects.set(orphanKey, orphanBytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [{ path: "live.txt", sha256: liveHash, size: liveBytes.length, executable: false, objectKey: liveKey }] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
+    const { session } = await opened.json() as { session: { id: string } };
+    await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "gc-history-checkpoint", changes: [{ path: "live.txt", expectedHash: liveHash, contentBase64: btoa("current") }] });
+    const currentKey = "workspace-v1/tenant/space/project/global/content/97b0560280ed60a5a1eaa1bc45492543c8a986ad5a25b468c427eb83c3e88191";
+
+    const started = await call(instance, "/v1/gc/content", {});
+    expect(started.status).toBe(200);
+    expect(await started.json()).toMatchObject({ phase: "backfill", hasMore: true });
+    expect(storage.alarmAt).not.toBeNull();
+    const blocked = await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 2, idempotencyKey: "blocked-during-gc", changes: [{ path: "write.txt", expectedHash: null, contentBase64: btoa("x") }] });
+    expect(blocked.status).toBe(423);
+    expect(await blocked.json()).toMatchObject({ error_code: "workspace_gc_in_progress" });
+    for (let attempts = 0; attempts < 15 && storage.values.has("content_gc"); attempts++) await instance.alarm();
+    expect(storage.values.has("content_gc")).toBe(false);
+    expect(objects.has(liveKey)).toBe(true);
+    expect(objects.has(currentKey)).toBe(true);
+    expect(objects.has(orphanKey)).toBe(false);
+    expect([...objects.keys()].some(key => key.includes("/gc/marks/"))).toBe(false);
+  });
+
+  it("deletes manifests and content not reachable from revision roots after the legacy backfill", async () => {
+    const { instance, objects, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await storage.put("content_gc_backfill_complete", true);
+    const orphanBytes = new TextEncoder().encode("unreachable");
+    const orphanHash = "5e6017027437e595ec72adee0718d78f092cddaa8d31048c9d5ba2ed647ded5e";
+    const orphanContentKey = `workspace-v1/tenant/space/project/global/content/${orphanHash}`;
+    const orphanEntry = { path: "unreachable.txt", sha256: orphanHash, size: orphanBytes.length, executable: false, objectKey: orphanContentKey };
+    const orphanManifest = JSON.stringify([orphanEntry]);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(orphanManifest));
+    const manifestHash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+    const orphanManifestKey = `workspace-v1/tenant/space/project/global/manifests/${manifestHash}.json`;
+    objects.set(orphanContentKey, orphanBytes);
+    objects.set(orphanManifestKey, new TextEncoder().encode(orphanManifest));
+
+    const started = await call(instance, "/v1/gc/content", {});
+    expect(started.status).toBe(200);
+    for (let attempts = 0; attempts < 15 && storage.values.has("content_gc"); attempts++) await instance.alarm();
+    expect(storage.values.has("content_gc")).toBe(false);
+    expect(objects.has(orphanManifestKey)).toBe(false);
+    expect(objects.has(orphanContentKey)).toBe(false);
+    expect([...objects.keys()].some(key => key.includes("/manifests/"))).toBe(true);
   });
 
   it("erases one workspace scope and leaves a tombstone that rejects later reads and writes", async () => {

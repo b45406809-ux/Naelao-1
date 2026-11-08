@@ -521,6 +521,21 @@ app.post("/internal/workspaces/erase", async (c) => {
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/erase", { body: { scope: body.scope, confirm: true } });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+app.post("/internal/workspaces/gc", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; operation?: unknown; before?: unknown; cursor?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_gc_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
+  const path = body.operation === "content" ? "/v1/gc/content"
+    : body.operation === "metadata" ? "/v1/gc/metadata"
+      : body.operation === "staging" ? "/v1/gc/staging" : null;
+  if (!path) return c.json({ error_code: "invalid_workspace_gc_operation" }, 400);
+  const requestBody = body.operation === "staging" ? { before: body.before, cursor: body.cursor } : {};
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, path, { body: requestBody });
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 app.all("/internal/sandbox-workspaces/*", (c) => handleSandboxWorkspaceBridge(c.req.raw, c.env));
 const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
   const tenantId = await requireVerifiedTenant(c);

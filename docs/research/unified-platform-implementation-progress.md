@@ -17,10 +17,12 @@ Implementation has started through Phase 3. None of these phases is complete or 
 - Added `WorkspaceCoordinatorDO` with tenant-bound internal authentication, project scope checks, immutable R2 content/manifests, one transactional branch-head/receipt advance, idempotency, expected-hash batch validation, generation checks, checked sessions, branch creation, three-way checked branch merge, live lease/fence checks, renewal, and checked handoff.
 - Added R2-backed stage records: bytes are uploaded under a separate staging prefix and can be checkpointed by stage ID. Checkpoint receipts consume stages atomically with head advancement; pending ToolSandbox intents shrink to a stage reference after durable staging.
 - Added bounded revision polling (`/v1/changes`) and monotonic subscriber acknowledgements. Notifications are not pushed; callers reconnect by polling the authoritative revision cursor.
+- Added explicit metadata retention: revision polling keeps the newest 500 events per branch and returns `resetRequired` when a client cursor predates retained events; publication receipts and subscriber acknowledgements expire after 30 days. A Durable Object alarm processes bounded expiry-index pages.
+- Added immutable retained-revision pointers and a resumable manifest/content mark-and-sweep. The first sweep backfills all existing manifests as legacy history roots, then marks branch heads, retained revisions, branch bases, and active session bases. It deletes only manifests and content unreachable from those roots. A 10-minute maintenance lease fences new canonical publications while each bounded sweep page runs; a Durable Object alarm drains the operation after it is kicked through the authenticated Agents maintenance route.
 - Added a seven-day stage collector for consumed stages, expired closed-session stages, and aged orphan uploads. It never collects canonical content or active-session stages.
 - The staging collector also removes aged metadata for delete-only/empty stages, which have no R2 object from which to discover their records.
 - Added a server-side client using Naelao's HMAC-derived Durable Object names.
-- Added authorized coordinator erasure: the coordinator tombstones the scope before deleting its R2 objects and metadata, and later requests cannot recreate an erased scope. The existing data-erasure workflow now enumerates project, assistant, and space-extension scopes in bounded pages and calls the coordinator erasure endpoint before the broad legacy prefix sweep.
+- Added authorized coordinator erasure: the coordinator keeps an erased tombstone present while deleting R2 objects and paginating through DO metadata, and later requests cannot recreate an erased scope. The existing data-erasure workflow now enumerates project, assistant, and space-extension scopes in bounded pages and calls the coordinator erasure endpoint before the broad legacy prefix sweep.
 - R2 writes that lose the erasure race are removed when their coordinator transaction observes the erased tombstone; rejected initialization manifests and staged uploads receive the same cleanup.
 - Added revision polling and subscriber acknowledgements as bounded APIs; subscriber acknowledgements are monotonic. Erasure project enumeration has a 100-scope page limit and workflow retries use stable per-page step names.
 - Bound and migrated the coordinator in development, staging, and production Worker configuration; jurisdiction applies through the existing Durable Object jurisdiction gate.
@@ -28,7 +30,7 @@ Implementation has started through Phase 3. None of these phases is complete or 
 
 ### Verification
 
-- Focused `WorkspaceCoordinatorDO.test.ts` and `ToolSandboxDO.test.ts` pass, **36 tests**, covering idempotent publication/merge and changed-payload rejection, disjoint three-way merge, same-path conflict preservation, concurrent checkpoint races, stage persistence across coordinator reconstruction, stage idempotency, stage GC including empty-stage metadata, revision polling/acknowledgement, lease expiry/fence advancement, capability rejection, run-branch isolation, completion-time ToolSandbox merge, and erased-scope tombstone behavior.
+- Focused `WorkspaceCoordinatorDO.test.ts` and `ToolSandboxDO.test.ts` pass, **40 tests**, covering idempotent publication/merge and changed-payload rejection, disjoint three-way merge, same-path conflict preservation, concurrent checkpoint races, stage persistence across coordinator reconstruction, stage idempotency and GC, metadata expiry, 500-event retention/reset, rooted-history preservation, unreachable manifest/content collection, GC write fencing and alarm continuation, revision polling/acknowledgement, lease expiry/fence advancement, capability rejection, run-branch isolation, completion-time ToolSandbox merge, and erased-scope tombstone behavior.
 - `workers/workflows` `erasure-cleanup.test.ts` passes, **16 tests**, including cursor forwarding and the bounded coordinator-erasure page contract. `workers/sandboxes` `providers/agent37.test.ts` passes, **5 tests**.
 - Typechecks pass for Agents, Spaces, Sandboxes, and Workflows after building their workspace SDK dependencies.
 - Wrangler dry-run passes for Workflows and Sandboxes. Agents dry-run reached Docker image construction but failed because the execution environment ran out of disk space. Spaces has no package `build` script; its typecheck passes.
@@ -36,11 +38,11 @@ Implementation has started through Phase 3. None of these phases is complete or 
 
 ### Remaining Phase 1 work
 
-- Content-addressed orphan collection remains open. Historical immutable manifests are currently retained without a bounded history policy; deleting their content without a mark/sweep over every retained manifest would break historical reads.
-- Add bounded event/receipt retention and subscription expiry. Polling cursors and acknowledgement monotonicity exist, but event pruning/reset behavior and operational notification fan-out need a retention contract.
+- The first content sweep requires an authenticated maintenance kick per workspace; once started, DO alarms continue the bounded operation. Schedule these kicks and monitor completion/errors at the platform level.
+- Revision manifests and retained revision pointers are intentionally kept without an age/count limit so historical reads remain possible. Define the product's artifact-history retention policy before adding history pruning; current GC safely preserves every retained revision.
 - Validate the new paginated coordinator-erasure flow against the deployed Spaces, Agents, Durable Object, and R2 services, including archived projects, space assistants, and space-wide extension scopes. A mocked workflow test cannot establish deployed binding or jurisdiction behavior.
 - Ensure every canonical write path and read client is inventoried; the legacy workspace paths remain active until the later migration phase.
-- Add tests for allocation generation advancement on real container replacement, duplicate changed-payload staging keys, failed manifest upload, and Cloudflare DO transaction semantics in Miniflare/deployed smoke tests.
+- Validate allocation generation advancement on real container replacement, duplicate changed-payload staging keys, failed manifest upload, and Cloudflare DO transaction/alarms plus R2 cursor semantics in Miniflare or deployed smoke tests.
 
 ## Phase 2 — Internal ToolSandbox vertical slice
 
@@ -85,9 +87,9 @@ Implementation has started through Phase 3. None of these phases is complete or 
 
 ## Current next actions
 
-1. Add a mark/sweep protocol for immutable content/manifests with retained-history roots, bounded batches, and crash-safe cursors.
-2. Define and implement bounded subscription, event, and publication-receipt retention. Polling and monotonic acknowledgements exist, but pruning and expired-subscriber reset behavior do not.
-3. Validate coordinator metadata erasure and bounded page traversal against deployed DO/R2/services, including retries and partial deletion.
+1. Schedule authenticated content/staging GC kicks for each workspace, and validate coordinator GC/erasure against deployed DO/R2 cursor and transaction behavior.
+2. Keep artifact history unpruned until a product retention policy is approved; retain historical revisions and content safely meanwhile.
+3. Ensure every canonical read/write path is inventoried before enabling the coordinator; legacy readers still exist.
 4. Connect Agent37 to an atomic checked workspace adapter; run real provider lifecycle, billing, generation, file API, and indeterminate-execution acceptance with an authorized disposable account.
 5. Re-run the Agents Wrangler dry-run after freeing build space, then run deployed runtime, billing, isolation, teardown, binary-file, and crash tests. Keep both rollout flags disabled until the runtime gates pass.
 6. Do not begin Phase 4 client migration until the above Phase 1–3 gates are closed or explicitly accepted as deployment-only blockers.
