@@ -54,6 +54,23 @@ describe("r2-workspace SHA-256 CAS", () => {
     expect(created.hash).toHaveLength(64);
   });
 
+  it("returns the manifest revision for file diffs and the checked publication revision for append", async () => {
+    const { ctx, files } = makeContext();
+    const digest = async (content: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const aKey = "spaces/s1/projects/p1/workspace/a.txt";
+    const bKey = "spaces/s1/projects/p1/workspace/b.txt";
+    files.set(aKey, { content: "alpha", hash: await digest("alpha"), etag: "a1", customMetadata: { workspaceBranch: "workers/sub-1", workspaceRevision: "6" } });
+    files.set(bKey, { content: "beta", hash: await digest("beta"), etag: "b1", customMetadata: { workspaceBranch: "workers/sub-1", workspaceRevision: "6" } });
+    const diff = await fileManager.operations["file.diff"]!({ path_a: "a.txt", path_b: "b.txt" }, ctx as never);
+    expect(diff).toMatchObject({ revision: { branch: "workers/sub-1", revision: 6 } });
+
+    const withCheckedPublisher = { ...ctx, env: { ...ctx.env, workspaceBranch: "workers/sub-1",
+      publishWorkspaceChecked: async ({ bytes }: { bytes: Uint8Array }) => ({ hash: await digest(new TextDecoder().decode(bytes)), revision: 9, deleted: false }) } };
+    const appended = await fileManager.operations["file.append"]!({ path: "a.txt", content: "!", expectedHash: await digest("alpha") }, withCheckedPublisher as never);
+    expect(appended).toMatchObject({ revision: { branch: "workers/sub-1", revision: 9 } });
+  });
+
   it("uses the guarded R2 writer for container sync-back", async () => {
     const { ctx } = makeContext();
     const withContainer = {

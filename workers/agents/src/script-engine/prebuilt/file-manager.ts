@@ -43,11 +43,19 @@ function requiredExpectedHash(args: Record<string, unknown>): string | null {
   return value;
 }
 
-async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null): Promise<string> {
+function revisionFromObject(object: R2ObjectBody | null): { branch: string; revision: number } | undefined {
+  const branch = object?.customMetadata?.workspaceBranch;
+  const revision = Number(object?.customMetadata?.workspaceRevision);
+  return branch && Number.isSafeInteger(revision) && revision >= 1 ? { branch, revision } : undefined;
+}
+
+async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null): Promise<{ hash: string; revision?: { branch: string; revision: number } }> {
   const bytes = new TextEncoder().encode(content);
   if (bytes.byteLength > MAX_FILE_OPERATION_BYTES)
     throw new Error(`file operation is limited to ${MAX_FILE_OPERATION_BYTES} bytes; use workspace.write_file with ranged edits for larger files`);
-  return (await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, bytes, expectedHash)).hash;
+  const result = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, bytes, expectedHash);
+  const revision = /^revision:(\d+)$/.exec(result.etag)?.[1];
+  return { hash: result.hash, ...(revision && ctx.env.workspaceBranch ? { revision: { branch: ctx.env.workspaceBranch, revision: Number(revision) } } : {}) };
 }
 
 /** Naive line-level diff (added/removed line sets) — adequate for change tracking. */
@@ -72,9 +80,9 @@ export const fileManager: PrebuiltScript = {
       const existing = await bucket(ctx).get(k);
       const prior = await readWorkspaceFile(existing);
       const content = prior + reqStr(args, "content");
-      const hash = await casWrite(ctx, k, content, requiredExpectedHash(args));
+      const write = await casWrite(ctx, k, content, requiredExpectedHash(args));
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
-      return { ok: true, size: content.length, hash };
+      return { ok: true, size: content.length, ...write };
     },
 
     async "file.diff"(args, ctx) {
@@ -84,7 +92,11 @@ export const fileManager: PrebuiltScript = {
       ]);
       const aText = await readWorkspaceFile(a);
       const bText = await readWorkspaceFile(b);
-      return lineDiff(aText, bText);
+      const aRevision = revisionFromObject(a);
+      const bRevision = revisionFromObject(b);
+      if (aRevision && bRevision && (aRevision.branch !== bRevision.branch || aRevision.revision !== bRevision.revision))
+        throw new Error("workspace_manifest_changed_during_diff; retry file.diff");
+      return { ...lineDiff(aText, bText), ...(aRevision ? { revision: aRevision } : bRevision ? { revision: bRevision } : {}) };
     },
 
     async "file.patch"(args, ctx) {
@@ -96,9 +108,9 @@ export const fileManager: PrebuiltScript = {
       const find = reqStr(args, "find");
       const replace = reqStr(args, "replace");
       const after = before.split(find).join(replace);
-      const hash = await casWrite(ctx, k, after, requiredExpectedHash(args));
+      const write = await casWrite(ctx, k, after, requiredExpectedHash(args));
       await ctx.env.onWorkspaceChange?.({ path: reqStr(args, "path"), operation: "write" });
-      return { ok: true, changed: before !== after, hash };
+      return { ok: true, changed: before !== after, ...write };
     },
 
     async "file.history"(_args, _ctx) {
