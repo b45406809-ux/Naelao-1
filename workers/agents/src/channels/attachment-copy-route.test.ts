@@ -5,13 +5,24 @@ import { app } from "../index.js";
 const secret = "attachment-copy-secret";
 const attachment = { object_key: "spaces/space-a/email-inbound/private.pdf", filename: "private.pdf", mime_type: "application/pdf", size_bytes: 4 };
 
-function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destinationExists?: boolean; sourceSize?: number } = {}) {
+function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destinationExists?: boolean; sourceSize?: number; unified?: boolean } = {}) {
   const queries: Array<{ sql: string; values: unknown[] }> = [];
   let sourceRead = 0;
   let sourceBytesRead = 0;
   const destinationWrites: Array<{ key: string; bytes: ArrayBuffer }> = [];
+  const coordinatorCalls: Array<{ path: string; body?: Record<string, unknown> }> = [];
+  const sessionId = `ws_${"a".repeat(8)}-${"b".repeat(4)}-${"c".repeat(4)}-${"d".repeat(4)}-${"e".repeat(12)}`;
   const env = {
     PLATFORM_SECRET: secret,
+    ...(options.unified ? { UNIFIED_WORKSPACE_ENABLED: "true", WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ async fetch(request: Request) {
+      const url = new URL(request.url);
+      const body = request.method === "POST" ? await request.json() as Record<string, unknown> : undefined;
+      coordinatorCalls.push({ path: url.pathname, body });
+      if (url.pathname === "/v1/head") return Response.json({ head: { revision: 5 } });
+      if (url.pathname === "/v1/open") return Response.json({ session: { id: sessionId, fence: 0 }, head: { revision: 5 } });
+      if (url.pathname === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 6 } });
+      return Response.json({ ok: true });
+    } }) } } : {}),
     PLATFORM_DB: {
       prepare(sql: string) {
         return { bind(...values: unknown[]) {
@@ -33,7 +44,7 @@ function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destination
       async put(key: string, bytes: Uint8Array) { destinationWrites.push({ key, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }); return { etag: "created" }; },
     },
   };
-  return { env: env as never, queries, sourceRead: () => sourceRead, sourceBytesRead: () => sourceBytesRead, destinationWrites };
+  return { env: env as never, queries, sourceRead: () => sourceRead, sourceBytesRead: () => sourceBytesRead, destinationWrites, coordinatorCalls };
 }
 
 async function copy(env: never, body: Record<string, unknown>) {
@@ -85,5 +96,17 @@ describe("storage-only attachment copy", () => {
     expect(await response.json()).toMatchObject({ error_code: "attachment_copy_size_mismatch" });
     expect(state.sourceBytesRead()).toBe(0);
     expect(state.destinationWrites).toHaveLength(0);
+  });
+
+  it("publishes project attachment copies through a checked coordinator checkpoint", async () => {
+    const state = makeEnv({ unified: true });
+    const response = await copy(state.env, { projectId: "project-a", workspaceBranch: "workers/task-a",
+      destinationKey: "spaces/space-a/projects/project-a/workspace/branches/workers/task-a/inbox/private.pdf" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ copied: true, path: "inbox/private.pdf", mime_type: "application/pdf" });
+    expect(state.destinationWrites).toHaveLength(0);
+    expect(state.coordinatorCalls.map(call => call.path)).toEqual(["/v1/head", "/v1/open", "/v1/stage", "/v1/checkpoint", "/v1/close"]);
+    expect(state.coordinatorCalls.find(call => call.path === "/v1/stage")?.body).toMatchObject({ changes: [{ path: "inbox/private.pdf", expectedHash: null }] });
+    expect(state.coordinatorCalls.find(call => call.path === "/v1/checkpoint")?.body).toMatchObject({ baseRevision: 5, idempotencyKey: expect.stringMatching(/^attachment-/) });
   });
 });

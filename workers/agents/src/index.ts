@@ -6783,7 +6783,7 @@ app.post("/internal/attachments/copy", async (c) => {
       ...(body.extensionId ? { spaceWorkspaceExtensionId: body.extensionId } : {}),
       ...(body.workspaceBranch ? { workspaceBranch: body.workspaceBranch } : {}) });
   } catch { return c.json({ error_code: "attachment_workspace_scope_invalid" }, 400); }
-  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && body.projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
+  const unifiedProjectWorkspace = c.env.UNIFIED_WORKSPACE_ENABLED === "true" && !!body.projectId;
   const destinationKey = `${prefix}${clean}`;
   if (body.destinationKey !== destinationKey) return c.json({ error_code: "attachment_destination_scope_mismatch" }, 403);
   const now = new Date().toISOString();
@@ -6794,6 +6794,7 @@ app.post("/internal/attachments/copy", async (c) => {
   if (!attachment) return c.json({ error_code: "attachment_not_found" }, 404);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "attachment_storage_unavailable" }, 503);
   if (attachment.size_bytes > MAX_EMAIL_ATTACHMENT_BYTES) return c.json({ error_code: "attachment_copy_too_large", max_bytes: MAX_EMAIL_ATTACHMENT_BYTES }, 413);
+  if (unifiedProjectWorkspace && attachment.size_bytes > MAX_COORDINATOR_UPLOAD_BYTES) return c.json({ error_code: "attachment_copy_too_large_for_checked_workspace", max_bytes: MAX_COORDINATOR_UPLOAD_BYTES }, 413);
   const space = await c.env.PLATFORM_DB.prepare("SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id=? AND s.tenant_id=?").bind(body.spaceId, tenantId).first<{ status: string }>();
   if (!space || space.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
   const claimId = crypto.randomUUID();
@@ -6804,15 +6805,30 @@ app.post("/internal/attachments/copy", async (c) => {
   ).bind(destinationKey, claimId, tenantId, body.spaceId, body.taskId, body.id, now, expiresAt).run();
   if (claim.meta?.changes !== 1) return c.json({ error_code: "attachment_destination_exists" }, 409);
   try {
-    if (await c.env.SCRIPTS_R2.head(destinationKey)) throw new R2CasConflictError(destinationKey);
+    if (!unifiedProjectWorkspace && await c.env.SCRIPTS_R2.head(destinationKey)) throw new R2CasConflictError(destinationKey);
     const object = await c.env.SCRIPTS_R2.get(attachment.object_key);
     if (!object) throw new Error("attachment_not_found");
     if (object.size !== attachment.size_bytes) throw new Error("attachment_copy_size_mismatch");
     if (object.size > MAX_EMAIL_ATTACHMENT_BYTES) throw new Error("attachment_copy_size_mismatch");
     const bytes = await object.arrayBuffer();
     if (bytes.byteLength !== attachment.size_bytes || bytes.byteLength > MAX_EMAIL_ATTACHMENT_BYTES) throw new Error("attachment_copy_size_mismatch");
-    await putBytesCas(c.env.SCRIPTS_R2, destinationKey, new Uint8Array(bytes), null,
-      { naelaoAttachmentId: body.id }, { contentType: attachment.mime_type });
+    const content = new Uint8Array(bytes);
+    if (unifiedProjectWorkspace && body.projectId) {
+      const scope = { tenantId, spaceId: body.spaceId, projectId: body.projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+      const checked = await handleWorkspaceCheckedPublish(new Request("http://agents-worker/internal/workspaces/checked-publish", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": c.req.header("x-naelao-internal-token") ?? "" },
+        body: JSON.stringify({ scope, branch: body.workspaceBranch ?? "main", actorId: "attachment-copy", path: clean,
+          expectedHash: null, contentBase64: bytesToBase64(content), idempotencyKey: `attachment-${claimId}` }),
+      }), c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string });
+      if (!checked.ok) {
+        if (checked.status === 409) throw new R2CasConflictError(destinationKey);
+        throw new Error(`attachment_workspace_publish_failed:${checked.status}`);
+      }
+    } else {
+      await putBytesCas(c.env.SCRIPTS_R2, destinationKey, content, null,
+        { naelaoAttachmentId: body.id }, { contentType: attachment.mime_type });
+    }
     return c.json({ copied: true, path: clean, filename: attachment.filename, mime_type: attachment.mime_type, size_bytes: bytes.byteLength });
   } catch (error) {
     await c.env.PLATFORM_DB.prepare("DELETE FROM attachment_copy_claims WHERE destination_key=? AND claim_id=?").bind(destinationKey, claimId).run();
