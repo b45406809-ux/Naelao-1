@@ -178,14 +178,18 @@ async function readWindowed(
   too_large?: boolean;
   size?: number;
   message?: string;
+  revision?: { branch: string; revision: number };
 }> {
-  const head = await bucket(ctx).head(key(ctx, path));
+  const storageKey = key(ctx, path);
+  const head = await bucket(ctx).head(storageKey);
   if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
+  const revision = readRevision(head);
   if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
     return {
       exists: true,
       too_large: true,
       size: head.size,
+      ...(revision ? { revision } : {}),
       message: `This file is ${head.size} bytes, over the ${MAX_SEARCHABLE_FILE_BYTES}-byte limit for a windowed read. Use search_file/Grep to jump to the part you need, or read_file(path, offset, length) for a true byte-chunked read.`,
     };
   }
@@ -206,6 +210,7 @@ async function readWindowed(
     offset: start,
     limit: count,
     ...(hasMore ? { has_more: true } : { has_more: false }),
+    ...(revision ? { revision } : {}),
   };
 }
 
@@ -280,6 +285,7 @@ async function grepWorkspace(
   matches: Array<{ file: string; line_number: number; text: string }>;
   files_scanned: number;
   truncated: boolean;
+  revision?: { branch: string; revision: number };
 }> {
   let regex: RegExp;
   try {
@@ -316,7 +322,9 @@ async function grepWorkspace(
     cursor = listing.truncated && !truncated ? listing.cursor : undefined;
   } while (cursor);
 
-  return { pattern, total_matches: matches.length, matches, files_scanned: filesScanned, truncated };
+  const manifest = await ctx.env.workspaceManifestRead?.();
+  return { pattern, total_matches: matches.length, matches, files_scanned: filesScanned, truncated,
+    ...(manifest ? { revision: { branch: manifest.head.branch, revision: manifest.head.revision } } : {}) };
 }
 
 /**
@@ -366,7 +374,7 @@ async function globWorkspace(
   ctx: PrebuiltOpContext,
   pattern: string | undefined,
   pathPrefix = ""
-): Promise<{ path: string; files: string[]; count: number; truncated: boolean }> {
+): Promise<{ path: string; files: string[]; count: number; truncated: boolean; revision?: { branch: string; revision: number } }> {
   const prefix = directoryKey(ctx, pathPrefix);
   const wsPrefix = workspacePrefix(ctx.env);
   const allFiles: string[] = [];
@@ -384,12 +392,10 @@ async function globWorkspace(
     cursor = listing.truncated && !truncated ? listing.cursor : undefined;
   } while (cursor);
 
-  if (!pattern || pattern === "*" || pattern === "**") {
-    return { path: pathPrefix, files: allFiles, count: allFiles.length, truncated };
-  }
-  const re = globToRegex(pattern);
-  const filtered = allFiles.filter((f) => re.test(f));
-  return { path: pathPrefix, files: filtered, count: filtered.length, truncated };
+  const files = !pattern || pattern === "*" || pattern === "**" ? allFiles : allFiles.filter((f) => globToRegex(pattern).test(f));
+  const manifest = await ctx.env.workspaceManifestRead?.();
+  return { path: pathPrefix, files, count: files.length, truncated,
+    ...(manifest ? { revision: { branch: manifest.head.branch, revision: manifest.head.revision } } : {}) };
 }
 
 export const r2Workspace: PrebuiltScript = {
@@ -558,11 +564,13 @@ export const r2Workspace: PrebuiltScript = {
       const k = key(ctx, path);
       const head = await bucket(ctx).head(k);
       if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
+      const revision = readRevision(head);
       if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
         return {
           exists: true,
           too_large: true,
           size: head.size,
+          ...(revision ? { revision } : {}),
           message: `This file is ${head.size} bytes, over the ${MAX_SEARCHABLE_FILE_BYTES}-byte search limit. Read it in chunks with read_file(path, offset, length) and scan each chunk yourself.`,
         };
       }
@@ -590,7 +598,7 @@ export const r2Workspace: PrebuiltScript = {
           matches.push(entry);
         }
       }
-      return { exists: true, query, total_matches: matches.length, matches };
+      return { exists: true, query, total_matches: matches.length, matches, ...(revision ? { revision } : {}) };
     },
     // A cheap, content-free size/existence check — call this BEFORE read_file on anything that
     // might be large (a customer upload, an export another agent produced) instead of finding out
