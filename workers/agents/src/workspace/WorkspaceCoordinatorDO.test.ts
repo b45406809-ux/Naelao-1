@@ -130,6 +130,22 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect((await call(instance, "/v1/changes?branch=main&afterRevision=3")).status).toBe(409);
   });
 
+  it("supports validated prefix-filtered manifest reads for bounded scoped clients", async () => {
+    const { instance, objects } = setup();
+    const files = ["uploads/session-a/brief.txt", "uploads/session-b/other.txt", "docs/readme.md"];
+    const entries = await Promise.all(files.map(async (path) => {
+      const bytes = new TextEncoder().encode(path);
+      const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
+      const objectKey = `workspace-v1/tenant/space/project/global/content/${sha256}`;
+      objects.set(objectKey, bytes);
+      return { path, sha256, size: bytes.byteLength, executable: false, objectKey };
+    }));
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries });
+    const selected = await call(instance, "/v1/read?branch=main&prefix=uploads%2Fsession-a");
+    expect(await selected.json()).toMatchObject({ entries: [{ path: "uploads/session-a/brief.txt" }] });
+    expect((await call(instance, "/v1/read?branch=main&prefix=../outside")).status).toBe(400);
+  });
+
   it("serves a generation-fenced immutable session snapshot and verified file bytes", async () => {
     const { instance, objects } = setup();
     const bytes = new TextEncoder().encode("snapshot bytes");

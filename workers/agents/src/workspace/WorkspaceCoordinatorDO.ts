@@ -522,6 +522,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   private async read(url: URL): Promise<Response> {
     const branch = url.searchParams.get("branch");
     if (!validateWorkspaceBranch(branch)) return fail("invalid_branch");
+    const prefix = url.searchParams.get("prefix");
+    if (prefix !== null && !validateWorkspacePath(prefix)) return fail("invalid_workspace_prefix");
     const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
     if (!head) return fail("workspace_not_found", 404);
     const object = await this.env.SCRIPTS_R2!.get(manifestKey(head.scope, head.manifestHash));
@@ -530,7 +532,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await sha256Hex(bytes) !== head.manifestHash) return fail("workspace_manifest_corrupt", 503);
     const entries = JSON.parse(new TextDecoder().decode(bytes)) as WorkspaceEntry[];
     const paths = url.searchParams.getAll("path");
-    return json({ head, entries: paths.length ? entries.filter((entry) => paths.includes(entry.path)) : entries });
+    if (paths.length && prefix !== null) return fail("invalid_read_filter");
+    const selected = paths.length ? entries.filter((entry) => paths.includes(entry.path))
+      : prefix !== null ? entries.filter(entry => entry.path === prefix || entry.path.startsWith(`${prefix}/`)) : entries;
+    return json({ head, entries: selected });
   }
 
   private async sessionSnapshot(url: URL): Promise<Response> {

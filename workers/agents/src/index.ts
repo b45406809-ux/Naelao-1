@@ -10,10 +10,11 @@ export { DynamicSandboxDO };
 import { WorkspaceCoordinatorDO } from "./workspace/WorkspaceCoordinatorDO.js";
 export { WorkspaceCoordinatorDO };
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
-import { validateWorkspaceScope } from "./workspace/workspace-contract.js";
+import { validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
 import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-publish-route.js";
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
+import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
 //
@@ -8042,6 +8043,43 @@ function uploadsPrefix(spaceId: string, sessionId: string, projectId?: string): 
   return `${base}uploads/${sessionId}/`;
 }
 
+type ChatUploadWorkspaceBindings = WorkspaceCoordinatorBindings & { PLATFORM_SECRET: string; DATA_JURISDICTION?: "eu" };
+
+async function readChatUploadManifest(
+  env: AgentsEnv,
+  scope: { tenantId: string; spaceId: string; projectId: string; jurisdiction: "global" | "eu" },
+  path?: string,
+): Promise<ChatUploadManifestSnapshot> {
+  const query = new URLSearchParams({ branch: "main" });
+  if (path) query.set("path", path);
+  const response = await workspaceCoordinatorRequest(env as unknown as ChatUploadWorkspaceBindings, scope, `/v1/read?${query}`, {});
+  if (!response.ok) throw new Error(`chat_upload_workspace_read_failed:${response.status}`);
+  const payload = await readBoundedResponseJson<ChatUploadManifestSnapshot>(response, 2 * 1024 * 1024);
+  if (!payload.head || payload.head.branch !== "main" || !Number.isSafeInteger(payload.head.revision) || !Array.isArray(payload.entries))
+    throw new Error("chat_upload_workspace_read_invalid");
+  return payload;
+}
+
+async function checkedChatUploadPublish(
+  env: AgentsEnv,
+  scope: { tenantId: string; spaceId: string; projectId: string; jurisdiction: "global" | "eu" },
+  actorId: string,
+  change: { path: string; expectedHash: string | null; bytes: Uint8Array | null; idempotencyKey: string },
+): Promise<{ status: "published" | "noop" | "conflicted"; revision: number }> {
+  const token = await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId);
+  const request = new Request("http://agents-worker/internal/workspaces/checked-publish", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": token },
+    body: JSON.stringify({ scope, branch: "main", actorId, path: change.path, expectedHash: change.expectedHash,
+      contentBase64: change.bytes ? bytesToBase64(change.bytes) : null, idempotencyKey: change.idempotencyKey }),
+  });
+  const response = await handleWorkspaceCheckedPublish(request, env as unknown as ChatUploadWorkspaceBindings);
+  const payload = await readBoundedResponseJson<{ error_code?: string; publication?: { status?: "published" | "noop" | "conflicted"; revision?: number } }>(response, 16 * 1024);
+  if (!response.ok || !payload.publication || !Number.isSafeInteger(payload.publication.revision))
+    throw new Error(payload.error_code ?? `chat_upload_publication_failed:${response.status}`);
+  return { status: payload.publication.status ?? "conflicted", revision: payload.publication.revision! };
+}
+
 /** Strips path separators and traversal so an upload can never escape its own session prefix or
  *  overwrite an unrelated key — the same discipline r2-workspace.ts's key() enforces for
  *  agent-authored paths, applied here to a human-supplied filename instead. */
@@ -8061,7 +8099,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
   });
   if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
-  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  if (!c.env.SCRIPTS_R2 && !(c.env.UNIFIED_WORKSPACE_ENABLED === "true" && uploadScope.projectId)) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
 
   const bodyLimit = await checkRequestBodyByteLimit(c.req.raw, MAX_UPLOAD_REQUEST_BYTES);
   if (bodyLimit === "too_large") return c.json({ error_code: "upload_request_too_large" }, 413);
@@ -8077,8 +8115,6 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
-  const projectId = uploadScope.projectId;
-  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   const raw = form.files;
   const incoming = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File);
   if (incoming.length === 0) return c.json({ error_code: "bad_request", message: "No files attached" }, 400);
@@ -8095,18 +8131,38 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   if (incoming.reduce((total, file) => total + file.size, 0) > MAX_UPLOAD_TOTAL_BYTES) {
     return c.json({ error_code: "upload_total_too_large", message: "Attached files must total no more than 60 MiB" }, 413);
   }
+  const projectId = uploadScope.projectId;
+  const unifiedProjectWorkspace = c.env.UNIFIED_WORKSPACE_ENABLED === "true" && !!projectId;
+  if (unifiedProjectWorkspace) {
+    const oversized = incoming.find(file => file.size > MAX_COORDINATOR_UPLOAD_BYTES);
+    if (oversized) return c.json({ error_code: "file_too_large_for_checked_workspace", message: `Project workspace uploads are limited to ${MAX_COORDINATOR_UPLOAD_BYTES} bytes per file while checked staging is active` }, 413);
+    if (!identity.userId) return c.json({ error_code: "upload_actor_required" }, 401);
+  } else if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
 
+  const names = incoming.map(file => safeUploadName(file.name || "file"));
+  if (unifiedProjectWorkspace && (new Set(names).size !== names.length || names.some(name => !validateWorkspacePath(`uploads/${sessionId}/${name}`))))
+    return c.json({ error_code: "invalid_checked_workspace_upload_name" }, 400);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
-  const uploaded: Array<{ name: string; key: string; size: number; content_type: string }> = [];
-  for (const file of incoming) {
-    const name = safeUploadName(file.name || "file");
+  const uploaded: Array<{ name: string; key: string; size: number; content_type: string; branch?: string; revision?: number }> = [];
+  for (const [index, file] of incoming.entries()) {
+    const name = names[index]!;
     const key = `${prefix}${name}`;
-    const bytes = await file.arrayBuffer();
-    const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);
-    await putBytesCas(c.env.SCRIPTS_R2, key, new Uint8Array(bytes), current?.hash ?? null, {}, {
-      contentType: file.type || "application/octet-stream",
-    });
-    uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (unifiedProjectWorkspace) {
+      const scope = { tenantId, spaceId, projectId: projectId!, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+      const result = await publishProjectChatUpload({
+        scope, sessionId, filename: name, actorId: identity.userId!, bytes,
+        readSnapshot: path => readChatUploadManifest(c.env, scope, path),
+        publish: change => checkedChatUploadPublish(c.env, scope, identity.userId!, change),
+      });
+      uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream", branch: "main", revision: result.revision });
+    } else {
+      const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
+      await putBytesCas(c.env.SCRIPTS_R2!, key, bytes, current?.hash ?? null, {}, {
+        contentType: file.type || "application/octet-stream",
+      });
+      uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
+    }
   }
   return c.json({ uploaded, count: uploaded.length }, 201);
 });
@@ -8121,15 +8177,24 @@ app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
   });
   if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
-  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  if (!c.env.SCRIPTS_R2 && !(c.env.UNIFIED_WORKSPACE_ENABLED === "true" && uploadScope.projectId)) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const requestedProjectId = c.req.query("project_id") || undefined;
   if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
   const projectId = uploadScope.projectId;
-  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_reader_unavailable" }, 503);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
-  const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) {
+    const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+    const snapshot = await readChatUploadManifest(c.env, scope);
+    const uploadPrefix = `uploads/${sessionId}/`;
+    const files = snapshot.entries.filter(entry => entry.path.startsWith(uploadPrefix)).map(entry => ({
+      name: entry.path.slice(uploadPrefix.length), key: prefix + entry.path.slice(uploadPrefix.length), size: entry.size,
+      content_type: "application/octet-stream", uploaded: snapshot.head.updatedAt ?? "",
+    }));
+    return c.json({ files, count: files.length, branch: snapshot.head.branch, revision: snapshot.head.revision });
+  }
+  const listed = await c.env.SCRIPTS_R2!.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
   const files = listed.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => ({
     name: o.key.slice(prefix.length),
     key: o.key,
@@ -8150,17 +8215,26 @@ app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) =
     fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
   });
   if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
-  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  if (!c.env.SCRIPTS_R2 && !(c.env.UNIFIED_WORKSPACE_ENABLED === "true" && uploadScope.projectId)) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const requestedProjectId = c.req.query("project_id") || undefined;
   if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
   const projectId = uploadScope.projectId;
-  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const key = `${prefix}${safeUploadName(filename)}`;
-  const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);
-  const result = await deleteBytesCas(c.env.SCRIPTS_R2, key, current?.hash ?? null);
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) {
+    if (!identity.userId) return c.json({ error_code: "upload_actor_required" }, 401);
+    const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+    const result = await publishProjectChatUpload({
+      scope, sessionId, filename: safeUploadName(filename), actorId: identity.userId, bytes: null,
+      readSnapshot: path => readChatUploadManifest(c.env, scope, path),
+      publish: change => checkedChatUploadPublish(c.env, scope, identity.userId!, change),
+    });
+    return c.json({ deleted: result.deleted, branch: "main", revision: result.revision });
+  }
+  const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
+  const result = await deleteBytesCas(c.env.SCRIPTS_R2!, key, current?.hash ?? null);
   return c.json({ deleted: result.deleted });
 });
 

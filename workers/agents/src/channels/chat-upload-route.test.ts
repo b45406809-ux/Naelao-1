@@ -79,6 +79,77 @@ async function postFiles(env: never, filenames: string[]) {
   );
 }
 
+function makeUnifiedEnv(scopeResponses: (request: Request) => Response) {
+  const files = new Map<string, { bytes: Uint8Array; sha256: string }>();
+  const legacyWrites: string[] = [];
+  let revision = 1;
+  let staged: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
+  const coordinator = {
+    async fetch(request: Request) {
+      const url = new URL(request.url);
+      if (url.pathname === "/v1/head") return Response.json({ head: { branch: "main", revision } });
+      if (url.pathname === "/v1/read") {
+        const exact = url.searchParams.get("path");
+        const prefix = url.searchParams.get("prefix");
+        const entries = [...files].filter(([path]) => exact ? path === exact : prefix ? path.startsWith(prefix + "/") : true)
+          .map(([path, file]) => ({ path, sha256: file.sha256, size: file.bytes.byteLength, executable: false, objectKey: `workspace-v1/${file.sha256}` }));
+        return Response.json({ head: { branch: "main", revision, updatedAt: "2026-11-08T00:00:00.000Z" }, entries });
+      }
+      if (url.pathname === "/v1/open") return Response.json({ session: { id: "ws_00000000-0000-4000-8000-000000000001", fence: 0 }, head: { revision } });
+      if (url.pathname === "/v1/stage") {
+        const body = await request.json() as { changes: typeof staged };
+        staged = body.changes;
+        return Response.json({ status: "staged" });
+      }
+      if (url.pathname === "/v1/checkpoint") {
+        const change = staged[0]!;
+        const current = files.get(change.path);
+        if ((current?.sha256 ?? null) !== change.expectedHash) return Response.json({ error_code: "conflicted" }, { status: 409 });
+        if (change.contentBase64 === null) files.delete(change.path);
+        else {
+          const bytes = Uint8Array.from(atob(change.contentBase64), value => value.charCodeAt(0));
+          const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
+          files.set(change.path, { bytes, sha256 });
+        }
+        revision++;
+        return Response.json({ publication: { status: "published", revision } });
+      }
+      if (url.pathname === "/v1/close") return Response.json({ closed: true });
+      return Response.json({ error_code: "not_found" }, { status: 404 });
+    },
+  };
+  const env = {
+    PLATFORM_SECRET: secret,
+    UNIFIED_WORKSPACE_ENABLED: "true",
+    SPACES_WORKER: {
+      async fetch(request: Request) { return scopeResponses(request); },
+    },
+    WORKSPACE_COORDINATOR: {
+      idFromName(name: string) { return name; },
+      get() { return coordinator; },
+    },
+    SCRIPTS_R2: {
+      async put(key: string) { legacyWrites.push(key); return { etag: "legacy" }; },
+      async get() { return null; },
+      async head() { return null; },
+      async list() { return { objects: [], truncated: false }; },
+      async delete() {},
+    },
+  };
+  return { env: env as never, files, legacyWrites, get revision() { return revision; } };
+}
+
+async function requestUploads(env: never, method: "GET" | "DELETE", suffix = "") {
+  return app.request(
+    `/spaces/space-a/sessions/session-a/uploads${suffix}`,
+    { method, headers: {
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-a", "x-naelao-role": "product_end_user",
+      "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+    } },
+    env,
+  );
+}
+
 describe("chat upload route scope enforcement", () => {
   it("rejects an inaccessible session before touching R2", async () => {
     const state = makeEnv(() => new Response(null, { status: 404 }));
@@ -148,5 +219,25 @@ describe("chat upload route scope enforcement", () => {
     expect(response.status).toBe(201);
     expect(state.writes[0]?.key).toBe("spaces/space-a/workspace/uploads/session-a/brief.txt");
     expect(state.writes[0]?.key).not.toContain("..");
+  });
+
+  it("routes project uploads, listing, and deletion through checked coordinator revisions when enabled", async () => {
+    const state = makeUnifiedEnv((request) =>
+      new URL(request.url).pathname.endsWith("compact-scope")
+        ? Response.json({ project_id: "project-canonical", owned_by_caller: true, private_scratchpad: false })
+        : Response.json({ id: "project-canonical" })
+    );
+    const uploaded = await postUpload(state.env, undefined, true);
+    expect(uploaded.status).toBe(201);
+    await expect(uploaded.json()).resolves.toMatchObject({ uploaded: [{ branch: "main", revision: 2 }] });
+    expect(state.files.has("uploads/session-a/brief.txt")).toBe(true);
+    expect(state.legacyWrites).toEqual([]);
+
+    const listed = await requestUploads(state.env, "GET");
+    expect(await listed.json()).toMatchObject({ branch: "main", revision: 2, files: [{ name: "brief.txt" }] });
+    const deleted = await requestUploads(state.env, "DELETE", "/brief.txt");
+    expect(await deleted.json()).toMatchObject({ deleted: true, branch: "main", revision: 3 });
+    expect(state.files.size).toBe(0);
+    expect(state.legacyWrites).toEqual([]);
   });
 });
