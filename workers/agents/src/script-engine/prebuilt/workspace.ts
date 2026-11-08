@@ -26,6 +26,12 @@ function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
 }
 
+function revisionFromMetadata(metadata?: Record<string, string>): { branch: string; revision: number } | undefined {
+  const branch = metadata?.workspaceBranch;
+  const revision = Number(metadata?.workspaceRevision);
+  return branch && Number.isSafeInteger(revision) && revision >= 1 ? { branch, revision } : undefined;
+}
+
 function key(ctx: PrebuiltOpContext, path: string): string {
   const clean = String(path).replace(/^\/+/, "");
   if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
@@ -113,12 +119,13 @@ async function withWorkspaceLock<T>(ctx: PrebuiltOpContext, keyName: string, wor
 async function readAllR2(
   ctx: PrebuiltOpContext,
   pathPrefix: string
-): Promise<{ files: Record<string, string>; skipped_count: number; skipped_reason?: string }> {
+): Promise<{ files: Record<string, string>; skipped_count: number; skipped_reason?: string; revision?: { branch: string; revision: number } }> {
   const prefix = key(ctx, pathPrefix);
   const wsPrefix = workspacePrefix(ctx.env);
   const files: Record<string, string> = {};
   let totalBytes = 0;
   let skippedCount = 0;
+  let revision: { branch: string; revision: number } | undefined;
   let cursor: string | undefined;
   do {
     const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
@@ -131,6 +138,15 @@ async function readAllR2(
       const obj = await bucket(ctx).get(o.key);
       if (!obj) continue;
       if (obj.customMetadata?.["deleted"] === "true") continue;
+      const listedRevision = revisionFromMetadata(o.customMetadata);
+      const objectRevision = revisionFromMetadata(obj.customMetadata);
+      if (listedRevision && (!objectRevision || listedRevision.branch !== objectRevision.branch || listedRevision.revision !== objectRevision.revision))
+        throw new Error("workspace_manifest_changed_during_sync; retry workspace.sync_to_container");
+      if (listedRevision) {
+        if (revision && (revision.branch !== listedRevision.branch || revision.revision !== listedRevision.revision))
+          throw new Error("workspace_manifest_changed_during_sync; retry workspace.sync_to_container");
+        revision = listedRevision;
+      }
       if (obj.size !== o.size || totalBytes + obj.size > SYNC_MAX_TOTAL_BYTES) {
         skippedCount++;
         continue;
@@ -150,6 +166,7 @@ async function readAllR2(
   return {
     files,
     skipped_count: skippedCount,
+    ...(revision ? { revision } : {}),
     ...(skippedCount > 0
       ? { skipped_reason: `over the ${SYNC_MAX_FILES}-file / ${SYNC_MAX_TOTAL_BYTES}-byte sync limit — sync a narrower 'path' prefix, or workspace.copy the specific files you need.` }
       : {}),
@@ -216,14 +233,14 @@ export const workspace: PrebuiltScript = {
       if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
       const pathPrefix = typeof args["path"] === "string" ? (args["path"] as string) : "";
       return withWorkspaceLock(ctx, `r2-to-container:${pathPrefix}`, async () => {
-        const { files, skipped_count, skipped_reason } = await readAllR2(ctx, pathPrefix);
+        const { files, skipped_count, skipped_reason, revision } = await readAllR2(ctx, pathPrefix);
         const count = Object.keys(files).length;
         if (count > 0) {
           const current = await ctx.env.containerWorkspace!.read(Object.keys(files));
           const expected = Object.fromEntries(await Promise.all(Object.keys(files).map(async path => [path, current.files[path] === undefined ? null : await contentHash(current.files[path])] as const)));
           await ctx.env.containerWorkspace!.write(files, expected);
         }
-        return { ok: true, synced_files_count: count, target: "container:/workspace", ...(skipped_count > 0 ? { skipped_count, skipped_reason } : {}) };
+        return { ok: true, synced_files_count: count, target: "container:/workspace", ...(revision ? { revision } : {}), ...(skipped_count > 0 ? { skipped_count, skipped_reason } : {}) };
       });
     },
 
@@ -249,13 +266,24 @@ export const workspace: PrebuiltScript = {
       if (name === "r2") {
         const prefix = key(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
         const out: string[] = [];
+        let revision: { branch: string; revision: number } | undefined;
         let cursor: string | undefined;
         do {
           const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
-          for (const o of listing.objects) if (o.customMetadata?.["deleted"] !== "true") out.push(o.key.slice(workspacePrefix(ctx.env).length));
+          for (const o of listing.objects) if (o.customMetadata?.["deleted"] !== "true") {
+            out.push(o.key.slice(workspacePrefix(ctx.env).length));
+            revision ??= revisionFromMetadata(o.customMetadata);
+            const itemRevision = revisionFromMetadata(o.customMetadata);
+            if (revision && itemRevision && (revision.branch !== itemRevision.branch || revision.revision !== itemRevision.revision))
+              throw new Error("workspace_manifest_changed_during_list; retry workspace.list");
+          }
           cursor = listing.truncated ? listing.cursor : undefined;
         } while (cursor);
-        return { workspace: "r2", files: out };
+        if (!revision) {
+          const manifest = await ctx.env.workspaceManifestRead?.();
+          if (manifest) revision = { branch: manifest.head.branch, revision: manifest.head.revision };
+        }
+        return { workspace: "r2", files: out, ...(revision ? { revision } : {}) };
       }
       if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
       const { files } = await ctx.env.containerWorkspace.list();

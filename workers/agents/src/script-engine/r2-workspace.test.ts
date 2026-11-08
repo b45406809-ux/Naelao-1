@@ -10,6 +10,7 @@ import {
 import { workspacePrefix } from "./types.js";
 import { codeExec } from "./prebuilt/code-exec.js";
 import { r2Workspace } from "./prebuilt/r2-workspace.js";
+import { workspace } from "./prebuilt/workspace.js";
 import { withWorkspaceManifestRead } from "./workspace-r2-compat.js";
 
 function createMockEnv() {
@@ -125,6 +126,47 @@ describe("R2 Virtual POSIX Workspace", () => {
       .rejects.toThrow("Conflict Error");
     expect(new TextDecoder().decode(env.store.get(legacyKey))).toBe("stale legacy value");
     expect(env.store.has(`${workspacePrefix(env)}docs/new.txt`)).toBe(false);
+  });
+
+  it("returns one verified manifest revision for workspace listings and container sync", async () => {
+    const env = createMockEnv();
+    const path = "src/app.ts";
+    const content = "export const ready = true;";
+    const digest = await hash(content);
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(objectKey, new TextEncoder().encode(content));
+    env.workspaceManifestRead = async () => ({ head: { branch: "task/isolated", revision: 4, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(content).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+    const copied: Record<string, string> = {};
+    const containerWorkspace = { read: async (paths?: string[]) => ({ files: Object.fromEntries((paths ?? []).map(name => [name, copied[name] ?? ""])) }),
+      write: async (files: Record<string, string>) => Object.assign(copied, files) };
+    const ctx = { env: { ...env, containerWorkspace }, run: async () => undefined } as never;
+    expect(await workspace.operations["workspace.list"]!({ name: "r2" }, ctx)).toMatchObject({
+      workspace: "r2", files: [path], revision: { branch: "task/isolated", revision: 4 },
+    });
+    expect(await workspace.operations["workspace.sync_to_container"]!({}, ctx)).toMatchObject({
+      synced_files_count: 1, revision: { branch: "task/isolated", revision: 4 },
+    });
+    expect(copied[path]).toBe(content);
+  });
+
+  it("retries container sync when the coordinator revision changes between list and content reads", async () => {
+    const env = createMockEnv();
+    const path = "src/app.ts";
+    const content = "export const ready = true;";
+    const digest = await hash(content);
+    const objectKey = "workspace-v1/" + env.tenantId + "/" + env.spaceId + "/" + env.projectId + "/global/content/" + digest;
+    env.store.set(objectKey, new TextEncoder().encode(content));
+    let revision = 0;
+    env.workspaceManifestRead = async () => ({ head: { branch: "task/isolated", revision: ++revision, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(content).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+    const ctx = { env: { ...env, containerWorkspace: { read: async () => ({ files: {} }), write: async () => {} } }, run: async () => undefined } as never;
+    await expect(workspace.operations["workspace.sync_to_container"]!({}, ctx))
+      .rejects.toThrow("workspace_manifest_changed_during_sync");
   });
 
   it("bounds script dual-read drift and logs hashes without paths or contents", async () => {
