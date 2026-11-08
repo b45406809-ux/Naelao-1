@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   executeVirtualShell,
   virtualFsDelete,
@@ -125,6 +125,39 @@ describe("R2 Virtual POSIX Workspace", () => {
       .rejects.toThrow("Conflict Error");
     expect(new TextDecoder().decode(env.store.get(legacyKey))).toBe("stale legacy value");
     expect(env.store.has(`${workspacePrefix(env)}docs/new.txt`)).toBe(false);
+  });
+
+  it("bounds script dual-read drift and logs hashes without paths or contents", async () => {
+    const env = createMockEnv();
+    const path = "private/customer-notes.txt";
+    const legacyKey = `${workspacePrefix(env)}${path}`;
+    const canonicalText = "canonical secret text";
+    const legacyText = "legacy secret text!!!";
+    const digest = await hash(canonicalText);
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(legacyKey, new TextEncoder().encode(legacyText));
+    env.store.set(objectKey, new TextEncoder().encode(canonicalText));
+    env.workspaceManifestRead = async () => ({ head: { branch: "task/run-1", revision: 7, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(canonicalText).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
+      enabled: true, tenantId: env.tenantId, spaceId: env.spaceId, projectId: env.projectId,
+    });
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const result = await r2Workspace.operations.read_file({ path }, { env, run: async () => undefined } as never) as { content: string };
+      expect(result.content).toBe(canonicalText);
+      for (let index = 0; index < 24; index++) await env.workspaceBucket!.get(legacyKey);
+      expect(log).toHaveBeenCalledWith("workspace_dual_read", expect.objectContaining({
+        tenantId: env.tenantId, spaceId: env.spaceId, projectId: env.projectId,
+        branch: "task/run-1", revision: 7, mismatchClass: "hash_mismatch",
+      }));
+      const event = JSON.stringify(log.mock.calls[0]);
+      expect(event).not.toContain(path);
+      expect(event).not.toContain(canonicalText);
+      expect(event).not.toContain(legacyText);
+      expect(log).toHaveBeenCalledTimes(20);
+    } finally { log.mockRestore(); }
   });
 
   it("does not fall back to a stale legacy value when the canonical reader fails", async () => {

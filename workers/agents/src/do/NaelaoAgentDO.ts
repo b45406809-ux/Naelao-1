@@ -2299,6 +2299,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     const unifiedWorkspaceBindings = this.env as unknown as {
       UNIFIED_WORKSPACE_ENABLED?: string;
+      WORKSPACE_DUAL_READ_ENABLED?: string;
       WORKSPACE_COORDINATOR?: DurableObjectNamespace;
       DATA_JURISDICTION?: "eu";
       PLATFORM_SECRET: string;
@@ -2339,7 +2340,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!response.ok || !Number.isSafeInteger(result.publication?.revision)) throw new Error(result.error_code ?? `workspace_checked_publication_failed:${response.status}`);
         return { hash: contentHash, revision: result.publication!.revision!, deleted: input.bytes === null && result.publication?.status === "published" };
       };
-      const compatibilityBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+      const compatibilityBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
+        enabled: unifiedWorkspaceBindings.WORKSPACE_DUAL_READ_ENABLED === "true",
+        tenantId, spaceId, projectId,
+      });
       env.scriptsBucket = compatibilityBucket;
       env.workspaceBucket = compatibilityBucket;
     }
