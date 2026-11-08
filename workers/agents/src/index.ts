@@ -542,6 +542,55 @@ app.post("/internal/workspaces/gc", async (c) => {
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, path, { method: body.operation === "status" ? "GET" : "POST", ...(body.operation === "status" ? {} : { body: requestBody }) });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+// Internal checked-handoff surface for configured sandbox providers. The sandbox worker is
+// responsible for its user authorization; this route rebinds every operation to the persisted
+// computer owner and exact project scope before reaching WorkspaceCoordinatorDO.
+app.post("/internal/sandbox-agent37-workspaces", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 6 * 1024 * 1024)) as Record<string, unknown>; }
+  catch { return c.json({ error_code: "invalid_sandbox_workspace_request" }, 400); }
+  if (typeof body.computerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.computerId)) return c.json({ error_code: "computer_not_found" }, 404);
+  const computer = await c.env.PLATFORM_DB.prepare("SELECT id,tenant_id,owner_id,space_id,project_id,branch,allocation_generation,provider_preference,filesystem_mode FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL")
+    .bind(body.computerId, tenantId, userId).first<{ id: string; tenant_id: string; owner_id: string; space_id: string | null; project_id: string | null; branch: string | null; allocation_generation: number; provider_preference: string; filesystem_mode: string }>();
+  if (!computer?.space_id || !computer.project_id) return c.json({ error_code: "computer_not_project_scoped" }, 404);
+  if (computer.provider_preference !== "agent37" || computer.filesystem_mode !== "snapshot_diff") return c.json({ error_code: "agent37_workspace_mode_unsupported" }, 409);
+  const isRecoveryRead = body.operation === "receipt" || body.operation === "close";
+  if (!Number.isSafeInteger(body.allocationGeneration) || (!isRecoveryRead && Number(body.allocationGeneration) !== computer.allocation_generation)) return c.json({ error_code: "allocation_generation_mismatch" }, 409);
+  const scope = { tenantId, spaceId: computer.space_id, projectId: computer.project_id, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const operation = body.operation;
+  const branch = computer.branch || "main";
+  if (operation === "open") {
+    const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/open", { body: {
+      scope, branch, actorId: userId, runtimeId: computer.id, allocationGeneration: body.allocationGeneration, mode: "checked_handoff",
+    } });
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  }
+  const sessionId = body.sessionId;
+  const allocationGeneration = body.allocationGeneration;
+  const fence = body.fence;
+  if (typeof sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(sessionId) || !Number.isSafeInteger(allocationGeneration) || !Number.isSafeInteger(fence)) return c.json({ error_code: "invalid_workspace_session" }, 400);
+  let path: string;
+  let method: "GET" | "POST" = "GET";
+  let requestBody: unknown;
+  if (operation === "snapshot") path = `/v1/session-snapshot?sessionId=${encodeURIComponent(sessionId)}&runtimeId=${encodeURIComponent(computer.id)}&allocationGeneration=${allocationGeneration}&fence=${fence}`;
+  else if (operation === "content" && typeof body.filePath === "string") path = `/v1/session-content?sessionId=${encodeURIComponent(sessionId)}&runtimeId=${encodeURIComponent(computer.id)}&path=${encodeURIComponent(body.filePath)}&allocationGeneration=${allocationGeneration}&fence=${fence}`;
+  else if (operation === "stage" && typeof body.stageId === "string") { path = "/v1/stage"; method = "POST"; requestBody = { sessionId, runtimeId: computer.id, stageId: body.stageId, allocationGeneration, fence, changes: body.changes }; }
+  else if (operation === "publish" && typeof body.stageId === "string" && Number.isSafeInteger(body.baseRevision) && typeof body.idempotencyKey === "string") { path = "/v1/checkpoint"; method = "POST"; requestBody = { sessionId, runtimeId: computer.id, stageId: body.stageId, baseRevision: body.baseRevision, allocationGeneration, fence, idempotencyKey: body.idempotencyKey }; }
+  else if (operation === "close") { path = "/v1/close"; method = "POST"; requestBody = { sessionId, runtimeId: computer.id }; }
+  else if (operation === "receipt" && typeof body.idempotencyKey === "string") path = `/v1/receipt?sessionId=${encodeURIComponent(sessionId)}&runtimeId=${encodeURIComponent(computer.id)}&idempotencyKey=${encodeURIComponent(body.idempotencyKey)}`;
+  else return c.json({ error_code: "invalid_sandbox_workspace_operation" }, 400);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, path, { method, ...(requestBody === undefined ? {} : { body: requestBody }) });
+  return new Response(response.body, { status: response.status, headers: {
+    "content-type": response.headers.get("content-type") ?? "application/json",
+    ...(response.headers.get("x-content-sha256") ? { "x-content-sha256": response.headers.get("x-content-sha256")! } : {}),
+    ...(response.headers.get("x-executable") ? { "x-executable": response.headers.get("x-executable")! } : {}),
+    ...(response.headers.get("content-length") ? { "content-length": response.headers.get("content-length")! } : {}),
+    "cache-control": "no-store",
+  } });
+});
 app.all("/internal/sandbox-workspaces/*", (c) => handleSandboxWorkspaceBridge(c.req.raw, c.env));
 const proxyAgentPortSpace = async (c: Context<{ Bindings: AgentsEnv }>) => {
   const tenantId = await requireVerifiedTenant(c);

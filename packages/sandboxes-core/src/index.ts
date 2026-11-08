@@ -102,6 +102,8 @@ export interface ExecutionResult {
   stderr: string;
   truncated: boolean;
   publicationId: string | null;
+  /** Present when a checked handoff needs explicit receipt/recovery reconciliation. */
+  workspaceSessionId?: string;
   workspaceState:
     | "unchanged"
     | "published"

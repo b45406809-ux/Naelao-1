@@ -130,6 +130,26 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect((await call(instance, "/v1/changes?branch=main&afterRevision=3")).status).toBe(409);
   });
 
+  it("serves a generation-fenced immutable session snapshot and verified file bytes", async () => {
+    const { instance, objects } = setup();
+    const bytes = new TextEncoder().encode("snapshot bytes");
+    const hash = "" + [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const objectKey = `workspace-v1/tenant/space/project/global/content/${hash}`;
+    objects.set(objectKey, bytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [{ path: "src/file.txt", sha256: hash, size: bytes.byteLength, executable: false, objectKey }] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 9 });
+    const { session } = await opened.json() as { session: { id: string; fence: number } };
+    const query = `sessionId=${session.id}&runtimeId=runtime&allocationGeneration=9&fence=${session.fence}`;
+    expect(await (await call(instance, `/v1/session-snapshot?${query}`)).json()).toMatchObject({ session: { baseRevision: 1, allocationGeneration: 9 }, entries: [{ path: "src/file.txt", sha256: hash }] });
+    const content = await call(instance, `/v1/session-content?${query}&path=src%2Ffile.txt`);
+    expect(content.status).toBe(200);
+    expect(content.headers.get("x-content-sha256")).toBe(hash);
+    expect(new TextDecoder().decode(await content.arrayBuffer())).toBe("snapshot bytes");
+    expect((await call(instance, `/v1/session-snapshot?sessionId=${session.id}&runtimeId=some-other-computer&allocationGeneration=9&fence=${session.fence}`)).status).toBe(403);
+    expect((await call(instance, `/v1/session-content?sessionId=${session.id}&runtimeId=runtime&allocationGeneration=8&fence=${session.fence}&path=src%2Ffile.txt`)).status).toBe(409);
+    expect((await call(instance, `/v1/session-content?${query}&path=../outside`)).status).toBe(400);
+  });
+
   it("preserves all files and the current head when one expected hash conflicts", async () => {
     const { instance, objects } = setup();
     const bytes = new TextEncoder().encode("base");
@@ -156,6 +176,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(stage.status).toBe(200);
     const stageResult = await stage.json() as { status: string; changeSetHash: string };
     expect(stageResult.status).toBe("staged");
+    expect(await (await call(instance, "/v1/stage", { sessionId: session.id, stageId: "stage-1", allocationGeneration: 3, fence: 0, changes })).json()).toMatchObject({ stageId: "stage-1", status: "staged", changeSetHash: stageResult.changeSetHash });
     expect([...objects.keys()].some(key => key.includes("/staging/") && key.includes(session.id))).toBe(true);
     expect((await call(instance, "/v1/stage", { sessionId: session.id, stageId: "stage-1", allocationGeneration: 3, fence: 0, changes: [{ ...changes[0], contentBase64: btoa("changed bytes") }] })).status).toBe(409);
     const recoveredCoordinator = restart();

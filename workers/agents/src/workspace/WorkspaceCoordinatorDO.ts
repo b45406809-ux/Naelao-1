@@ -64,6 +64,8 @@ const MAX_CHANGES = 100;
 const MAX_ENTRIES = 10_000;
 const MAX_FILE_BYTES = 768 * 1024;
 const MAX_WORKSPACE_BYTES = 64 * 1024 * 1024;
+const MAX_SANDBOX_HANDOFF_FILES = 200;
+const MAX_SANDBOX_HANDOFF_BYTES = 64 * 1024 * 1024;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -217,6 +219,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/v1/subscriptions/ack") return this.acknowledge(body!);
     if (request.method === "POST" && url.pathname === "/v1/checkpoint") return this.checkpoint(body!);
     if (request.method === "POST" && url.pathname === "/v1/stage") return this.stage(body!);
+    if (request.method === "GET" && url.pathname === "/v1/session-snapshot") return this.sessionSnapshot(url);
+    if (request.method === "GET" && url.pathname === "/v1/session-content") return this.sessionContent(url);
+    if (request.method === "GET" && url.pathname === "/v1/receipt") return this.receipt(url);
     if (request.method === "POST" && url.pathname === "/v1/gc/staging") return this.collectStaging(body!);
     if (request.method === "POST" && url.pathname === "/v1/gc/metadata") return this.collectMetadata();
     if (request.method === "POST" && url.pathname === "/v1/gc/content") return this.collectContent(false);
@@ -528,6 +533,71 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     return json({ head, entries: paths.length ? entries.filter((entry) => paths.includes(entry.path)) : entries });
   }
 
+  private async sessionSnapshot(url: URL): Promise<Response> {
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    const runtimeId = url.searchParams.get("runtimeId") ?? "";
+    const generation = Number(url.searchParams.get("allocationGeneration"));
+    const fence = Number(url.searchParams.get("fence"));
+    if (!/^ws_[0-9a-f-]{36}$/.test(sessionId) || !ID.test(runtimeId) || !Number.isSafeInteger(generation) || !Number.isSafeInteger(fence)) return fail("invalid_session");
+    const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
+    if (!session || session.status !== "active") return fail("workspace_session_not_found", 404);
+    if (session.runtimeId !== runtimeId) return fail("workspace_session_scope_mismatch", 403);
+    if (session.allocationGeneration !== generation) return fail("allocation_generation_mismatch", 409);
+    if (session.fence !== fence) return fail("stale_fence", 409);
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope) return fail("workspace_scope_missing", 503);
+    const object = await this.env.SCRIPTS_R2!.get(manifestKey(scope, session.baseManifestHash));
+    if (!object) return fail("workspace_manifest_unavailable", 503);
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (await sha256Hex(bytes) !== session.baseManifestHash) return fail("workspace_manifest_corrupt", 503);
+    const entries = JSON.parse(new TextDecoder().decode(bytes)) as WorkspaceEntry[];
+    if (entries.length > MAX_SANDBOX_HANDOFF_FILES || entries.reduce((total, entry) => total + entry.size, 0) > MAX_SANDBOX_HANDOFF_BYTES) return fail("workspace_handoff_limit_exceeded", 413);
+    return json({ session: { id: session.id, branch: session.branch, baseRevision: session.baseRevision, baseManifestHash: session.baseManifestHash, fence: session.fence, allocationGeneration: session.allocationGeneration }, entries });
+  }
+
+  private async sessionContent(url: URL): Promise<Response> {
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    const runtimeId = url.searchParams.get("runtimeId") ?? "";
+    const path = url.searchParams.get("path");
+    const generation = Number(url.searchParams.get("allocationGeneration"));
+    const fence = Number(url.searchParams.get("fence"));
+    if (!/^ws_[0-9a-f-]{36}$/.test(sessionId) || !ID.test(runtimeId) || !validateWorkspacePath(path) || !Number.isSafeInteger(generation) || !Number.isSafeInteger(fence)) return fail("invalid_session_content");
+    const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
+    if (!session || session.status !== "active") return fail("workspace_session_not_found", 404);
+    if (session.runtimeId !== runtimeId) return fail("workspace_session_scope_mismatch", 403);
+    if (session.allocationGeneration !== generation) return fail("allocation_generation_mismatch", 409);
+    if (session.fence !== fence) return fail("stale_fence", 409);
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope) return fail("workspace_scope_missing", 503);
+    const manifest = await this.env.SCRIPTS_R2!.get(manifestKey(scope, session.baseManifestHash));
+    if (!manifest) return fail("workspace_manifest_unavailable", 503);
+    const manifestBytes = new Uint8Array(await manifest.arrayBuffer());
+    if (await sha256Hex(manifestBytes) !== session.baseManifestHash) return fail("workspace_manifest_corrupt", 503);
+    const entries = JSON.parse(new TextDecoder().decode(manifestBytes)) as WorkspaceEntry[];
+    const entry = entries.find((candidate) => candidate.path === path);
+    if (!entry) return fail("workspace_file_not_found", 404);
+    if (!entry.objectKey.startsWith(contentPrefix(scope))) return fail("workspace_object_scope_mismatch", 403);
+    const content = await this.env.SCRIPTS_R2!.get(entry.objectKey);
+    if (!content || content.size !== entry.size) return fail("workspace_content_unavailable", 503);
+    const bytes = new Uint8Array(await content.arrayBuffer());
+    if (await sha256Hex(bytes) !== entry.sha256) return fail("workspace_content_corrupt", 503);
+    return new Response(bytes, { headers: { "content-type": "application/octet-stream", "content-length": String(bytes.byteLength), "x-content-sha256": entry.sha256, "x-executable": String(entry.executable), "cache-control": "no-store" } });
+  }
+
+  private async receipt(url: URL): Promise<Response> {
+    const idempotencyKey = url.searchParams.get("idempotencyKey");
+    const sessionId = url.searchParams.get("sessionId");
+    const runtimeId = url.searchParams.get("runtimeId");
+    if (!idempotencyKey || !ID.test(idempotencyKey)) return fail("invalid_receipt_query");
+    const branch = sessionId && /^ws_[0-9a-f-]{36}$/.test(sessionId)
+      ? (await this.ctx.storage.get<Session>(sessionKey(sessionId)))?.branch
+      : url.searchParams.get("branch");
+    if (sessionId && runtimeId !== (await this.ctx.storage.get<Session>(sessionKey(sessionId)))?.runtimeId) return fail("workspace_session_scope_mismatch", 403);
+    if (!validateWorkspaceBranch(branch)) return fail("invalid_receipt_query");
+    const receipt = await this.ctx.storage.get<WorkspacePublicationReceipt>(receiptKey(branch, idempotencyKey));
+    return receipt ? json({ publication: receipt }) : fail("publication_not_found", 404);
+  }
+
   private async changes(url: URL): Promise<Response> {
     const branch = url.searchParams.get("branch");
     const afterRevision = Number(url.searchParams.get("afterRevision") ?? "0");
@@ -578,6 +648,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         (body.changes === undefined && body.stageId === undefined) || (body.changes !== undefined && body.stageId !== undefined)) return fail("invalid_checkpoint");
     const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
     if (!session) return fail("workspace_session_not_found", 404);
+    if (typeof body.runtimeId === "string" && session.runtimeId !== body.runtimeId) return fail("workspace_session_scope_mismatch", 403);
     if (await this.contentGcLocked()) return fail("workspace_gc_in_progress", 423);
     if (session.status !== "active") return fail("stale_fence", 409);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
@@ -748,6 +819,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence) || !Array.isArray(body.changes) || body.changes.length > MAX_CHANGES) return fail("invalid_stage");
     const session = await this.ctx.storage.get<Session>(sessionKey(sessionId));
     if (!session || session.status !== "active") return fail("workspace_session_not_found", 404);
+    if (typeof body.runtimeId === "string" && session.runtimeId !== body.runtimeId) return fail("workspace_session_scope_mismatch", 403);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== body.fence) return fail("stale_fence", 409);
     if (session.mode === "live_single_writer") {
@@ -1234,6 +1306,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId)) return fail("invalid_session");
     const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
     if (!session) return fail("workspace_session_not_found", 404);
+    if (typeof body.runtimeId === "string" && session.runtimeId !== body.runtimeId) return fail("workspace_session_scope_mismatch", 403);
     const result = await this.ctx.storage.transaction(async (tx) => {
       const current = await tx.get<Session>(sessionKey(session.id));
       if (!current || current.status === "closed") return "closed";

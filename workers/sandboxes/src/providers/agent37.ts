@@ -26,6 +26,25 @@ export interface Agent37Template {
   diskGiB: number;
 }
 
+/** Checked coordinator boundary. Implementations must call WorkspaceCoordinatorDO, never the
+ * legacy per-file bridge. Provider files are only a temporary execution copy. */
+export interface Agent37WorkspaceHandoff {
+  readCommitted(input: { tenantId: string; spaceId: string; projectId: string; branch: string; allocationGeneration: number }): Promise<{
+    tenantId: string; spaceId: string; projectId: string; branch: string;
+    sessionId: string; revision: number; fence: number; allocationGeneration: number;
+    files: Array<{ path: string; sha256: string; executable: boolean; bytes: Uint8Array }>;
+  }>;
+  stage(input: { sessionId: string; revision: number; fence: number; allocationGeneration: number;
+    stageId: string;
+    changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean }>;
+  }): Promise<{ stageId: string }>;
+  publish(input: { sessionId: string; stageId: string; revision: number; fence: number;
+    allocationGeneration: number; idempotencyKey: string }): Promise<{
+      status: "published" | "conflicted" | "noop"; publicationId: string;
+    }>;
+  close?(input: { sessionId: string; fence: number; allocationGeneration: number }): Promise<void>;
+}
+
 /** Agent37's control plane and instance execution plane require different credentials.
  * This adapter deliberately receives secrets from the caller and never persists/logs them. */
 export class Agent37Provider implements SandboxProvider {
@@ -147,6 +166,7 @@ export class Agent37Provider implements SandboxProvider {
       Math.min(Math.max(1, request.timeoutMs), 300_000)
     );
     let response: Response;
+    let result: Record<string, unknown>;
     try {
       response = await this.fetcher(
         new URL(
@@ -164,8 +184,9 @@ export class Agent37Provider implements SandboxProvider {
           redirect: "error",
         }
       );
+      result = asObject(await readJson(response));
     } catch (error) {
-      if (controller.signal.aborted)
+      if (controller.signal.aborted || (error instanceof Error && error.message === "agent37_response_too_large"))
         return {
           id: request.executionId,
           status: "indeterminate",
@@ -177,11 +198,16 @@ export class Agent37Provider implements SandboxProvider {
           publicationId: null,
           workspaceState: "recovery_required",
         };
-      throw error;
+      // A malformed or interrupted response after dispatch cannot prove the command did not run.
+      return { id: request.executionId, status: "indeterminate", exitCode: null, stdout: "", stderr: "Provider execution response was incomplete; outcome requires reconciliation.", truncated: false, publicationId: null, workspaceState: "recovery_required" };
     } finally {
       clearTimeout(timer);
     }
-    const result = asObject(await readJson(response));
+    if (!response.ok) {
+      const message = typeof result.error === "string" ? result.error : typeof result.message === "string" ? result.message : `HTTP ${response.status}`;
+      return { id: request.executionId, status: "indeterminate", exitCode: null, stdout: "", stderr: bounded(message).text,
+        truncated: false, publicationId: null, workspaceState: "recovery_required" };
+    }
     const stdout = bounded(result.stdout);
     const stderr = bounded(result.stderr);
     const exitCode =
@@ -203,22 +229,111 @@ export class Agent37Provider implements SandboxProvider {
     };
   }
 
+  /** Hydrate and reconcile only through a checked revision handoff. Never use writeWorkspaceFile
+   * as publication: Agent37 does not document atomic conditional file writes/deletes. */
+  async invokeWithWorkspace(request: RuntimeRequest, coordinator: Agent37WorkspaceHandoff): Promise<ExecutionResult> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,140}$/.test(request.executionId)) throw new Error("invalid_execution_id");
+    if (request.allocation.generation !== request.computer.allocationGeneration) throw new Error("allocation_generation_mismatch");
+    const { tenantId, spaceId, projectId, branch } = request.computer.scope;
+    if (!tenantId || !spaceId || !projectId) throw new Error("workspace_scope_required");
+    const base = await coordinator.readCommitted({ tenantId, spaceId, projectId, branch: branch ?? "main", allocationGeneration: request.allocation.generation });
+    let preserveSessionForRecovery = false;
+    let executionResult: ExecutionResult | undefined;
+    const recovery = (result: ExecutionResult): ExecutionResult => ({ ...result, workspaceState: "recovery_required", workspaceSessionId: base.sessionId });
+    try {
+    if (base.tenantId !== tenantId || base.spaceId !== spaceId || base.projectId !== projectId || base.branch !== (branch ?? "main")) throw new Error("workspace_scope_mismatch");
+    if (base.allocationGeneration !== request.allocation.generation) throw new Error("allocation_generation_mismatch");
+    if (!/^ws_[0-9a-f-]{36}$/.test(base.sessionId)) throw new Error("invalid_workspace_session");
+    if (base.files.length > MAX_WORKSPACE_TREE_FILES || base.files.reduce((sum, file) => sum + file.bytes.byteLength, 0) > MAX_WORKSPACE_TREE_BYTES) throw new Error("agent37_workspace_tree_limit_exceeded");
+    const providerRoot = `${WORKSPACE_ROOT}/handoffs/${base.sessionId}`;
+    for (const file of base.files) {
+      if (await sha256Hex(file.bytes) !== file.sha256) throw new Error("workspace_snapshot_hash_mismatch");
+      await this.writeWorkspaceFile(request.allocation, file.path, file.bytes, null, providerRoot);
+    }
+    const executablePaths = base.files.filter((file) => file.executable).map((file) => workspaceAbsolutePath(file.path, providerRoot));
+    if (executablePaths.length) {
+      const mode = await this.invoke({ ...request, executionId: `${request.executionId}.chmod`, command: "chmod", args: ["+x", "--", ...executablePaths], cwd: providerRoot });
+      if (mode.status !== "succeeded" || mode.truncated) {
+        preserveSessionForRecovery = true;
+        return recovery({ ...mode, id: request.executionId });
+      }
+    }
+    executionResult = await this.invoke({ ...request, cwd: workspaceWorkingDirectory(request.cwd, providerRoot) });
+    if (executionResult.status === "indeterminate" || executionResult.status === "running" || executionResult.status === "queued") {
+      preserveSessionForRecovery = true;
+      return recovery(executionResult);
+    }
+    if (executionResult.status === "cancelled" || executionResult.truncated) {
+      preserveSessionForRecovery = true;
+      return recovery(executionResult);
+    }
+    const current = await this.listWorkspace(request.allocation, providerRoot);
+    if (current.length > MAX_WORKSPACE_TREE_FILES) throw new Error("agent37_workspace_tree_limit_exceeded");
+    const original = new Map(base.files.map((file) => [file.path, file]));
+    const changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean }> = [];
+    let total = 0;
+    for (const item of current) {
+      const before = original.get(item.path);
+      const bytes = await this.readWorkspaceFile(request.allocation, item.path, MAX_WORKSPACE_FILE_BYTES, providerRoot);
+      total += bytes.byteLength;
+      if (total > MAX_WORKSPACE_TREE_BYTES) throw new Error("agent37_workspace_tree_limit_exceeded");
+      const hash = await sha256Hex(bytes);
+      if (!before || hash !== before.sha256) changes.push({ path: item.path, expectedHash: before?.sha256 ?? null, bytes });
+      original.delete(item.path);
+    }
+    for (const [path, before] of original) changes.push({ path, expectedHash: before.sha256, bytes: null });
+    if (!changes.length) return { ...executionResult, workspaceState: "unchanged" };
+    let staged: { stageId: string };
+    try {
+      staged = await coordinator.stage({ sessionId: base.sessionId, revision: base.revision, fence: base.fence,
+        allocationGeneration: base.allocationGeneration, stageId: `agent37:${request.executionId}:stage`, changes });
+    } catch {
+      // The stage operation may have committed. The coordinator must reconcile this stable
+      // execution key; neither the command nor stage request is replayed here.
+      preserveSessionForRecovery = true;
+      return recovery(executionResult);
+    }
+    let publication: { status: "published" | "conflicted" | "noop"; publicationId: string };
+    try {
+      publication = await coordinator.publish({ sessionId: base.sessionId, stageId: staged.stageId,
+        revision: base.revision, fence: base.fence, allocationGeneration: base.allocationGeneration,
+        idempotencyKey: `agent37:${request.executionId}` });
+    } catch {
+      // A lost response after dispatch is ambiguous. Recovery queries this receipt; never retry
+      // execution or assume the publication failed.
+      preserveSessionForRecovery = true;
+      return recovery(executionResult);
+    }
+    return { ...executionResult, publicationId: publication.publicationId,
+      workspaceState: publication.status === "published" || publication.status === "noop" ? "published" : "conflicted" };
+    } catch (error) {
+      if (executionResult) {
+        preserveSessionForRecovery = true;
+        return recovery(executionResult);
+      }
+      throw error;
+    } finally {
+      if (!preserveSessionForRecovery) await coordinator.close?.({ sessionId: base.sessionId, fence: base.fence, allocationGeneration: base.allocationGeneration }).catch(() => undefined);
+    }
+  }
+
   /** Agent37 file paths are not jailed by the provider. These methods expose only a Naelao-owned subtree. */
-  async listWorkspace(allocation: ProviderAllocation): Promise<Array<{ path: string; size: number; modified: number }>> {
-    const pending: Array<{ path: string; depth: number }> = [{ path: WORKSPACE_ROOT, depth: 0 }];
+  async listWorkspace(allocation: ProviderAllocation, root = WORKSPACE_ROOT): Promise<Array<{ path: string; size: number; modified: number }>> {
+    validateWorkspaceRoot(root);
+    const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
     const files: Array<{ path: string; size: number; modified: number }> = [];
     let totalBytes = 0;
     while (pending.length) {
       const { path: directory, depth } = pending.shift()!;
       const entries = await this.directoryEntries(allocation, directory);
       if (entries === null) {
-        if (directory === WORKSPACE_ROOT) return [];
+        if (directory === root) return [];
         throw new Error("agent37_workspace_directory_missing");
       }
       for (const raw of entries) {
         const entry = asObject(raw) as unknown as Agent37FileEntry;
-        if (typeof entry.path !== "string" || entry.path !== `${directory}/${entry.name}` || !entry.path.startsWith(`${WORKSPACE_ROOT}/`)) throw new Error("agent37_workspace_path_escape");
-        const relativePath = entry.path.slice(WORKSPACE_ROOT.length + 1);
+        if (typeof entry.path !== "string" || entry.path !== `${directory}/${entry.name}` || !entry.path.startsWith(`${root}/`)) throw new Error("agent37_workspace_path_escape");
+        const relativePath = entry.path.slice(root.length + 1);
         validateWorkspaceRelativePath(relativePath);
         if (entry.type === "directory") {
           if (depth >= 32) throw new Error("agent37_workspace_depth_limit_exceeded");
@@ -238,8 +353,9 @@ export class Agent37Provider implements SandboxProvider {
     return files.sort((a, b) => a.path.localeCompare(b.path));
   }
 
-  async readWorkspaceFile(allocation: ProviderAllocation, relativePath: string, maximumBytes = MAX_WORKSPACE_FILE_BYTES): Promise<Uint8Array> {
-    const path = workspaceAbsolutePath(relativePath);
+  async readWorkspaceFile(allocation: ProviderAllocation, relativePath: string, maximumBytes = MAX_WORKSPACE_FILE_BYTES, root = WORKSPACE_ROOT): Promise<Uint8Array> {
+    validateWorkspaceRoot(root);
+    const path = workspaceAbsolutePath(relativePath, root);
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAX_WORKSPACE_FILE_BYTES) throw new Error("agent37_workspace_file_limit_exceeded");
     if (!await this.workspaceParentExists(allocation, path)) throw new Error("agent37_workspace_file_not_found");
     const url = this.fileUrl(allocation, "/v1/files/content", { path });
@@ -269,11 +385,12 @@ export class Agent37Provider implements SandboxProvider {
     return result;
   }
 
-  async writeWorkspaceFile(allocation: ProviderAllocation, relativePath: string, bytes: Uint8Array, expectedHash: string | null): Promise<void> {
-    const path = workspaceAbsolutePath(relativePath);
+  async writeWorkspaceFile(allocation: ProviderAllocation, relativePath: string, bytes: Uint8Array, expectedHash: string | null, root = WORKSPACE_ROOT): Promise<void> {
+    validateWorkspaceRoot(root);
+    const path = workspaceAbsolutePath(relativePath, root);
     if (bytes.byteLength > MAX_WORKSPACE_FILE_BYTES) throw new Error("agent37_workspace_file_limit_exceeded");
     const headers = new Headers({ "content-type": "application/octet-stream" });
-    const existing = await this.findWorkspaceFile(allocation, path);
+    const existing = await this.findWorkspaceFile(allocation, path, root);
     let url: URL;
     if (expectedHash === null) {
       if (existing) throw new Error("workspace_conflict");
@@ -281,7 +398,7 @@ export class Agent37Provider implements SandboxProvider {
     } else {
       if (!existing || existing.type !== "file") throw new Error("workspace_conflict");
       if (!Number.isFinite(existing.modified)) throw new Error("agent37_invalid_file_metadata");
-      const previous = await this.readWorkspaceFile(allocation, path.slice(WORKSPACE_ROOT.length + 1));
+      const previous = await this.readWorkspaceFile(allocation, path.slice(root.length + 1), MAX_WORKSPACE_FILE_BYTES, root);
       if (await sha256Hex(previous) !== expectedHash) throw new Error("workspace_conflict");
       headers.set("x-expected-mtime", String(existing.modified));
       url = this.fileUrl(allocation, "/v1/files/content", { path, overwrite: "true" });
@@ -304,22 +421,22 @@ export class Agent37Provider implements SandboxProvider {
     if (!response.ok) throw new Error(`agent37_file_http_${response.status}`);
   }
 
-  private async findWorkspaceFile(allocation: ProviderAllocation, absolutePath: string): Promise<Agent37FileEntry | null> {
+  private async findWorkspaceFile(allocation: ProviderAllocation, absolutePath: string, root = WORKSPACE_ROOT): Promise<Agent37FileEntry | null> {
     const slash = absolutePath.lastIndexOf("/");
     const parent = absolutePath.slice(0, slash);
     const target = absolutePath.slice(slash + 1);
-    if (!await this.workspaceParentExists(allocation, absolutePath)) return null;
+    if (!await this.workspaceParentExists(allocation, absolutePath, root)) return null;
     const entries = await this.directoryEntries(allocation, parent);
     const entry = entries?.map((item) => asObject(item)).find((item) => item.name === target);
     if (entry && entry.path !== absolutePath) throw new Error("agent37_workspace_path_escape");
     return entry ? entry as unknown as Agent37FileEntry : null;
   }
 
-  private async workspaceParentExists(allocation: ProviderAllocation, absolutePath: string): Promise<boolean> {
+  private async workspaceParentExists(allocation: ProviderAllocation, absolutePath: string, root = WORKSPACE_ROOT): Promise<boolean> {
     const parent = absolutePath.slice(0, absolutePath.lastIndexOf("/"));
-    const relative = parent === WORKSPACE_ROOT ? "" : parent.slice(WORKSPACE_ROOT.length + 1);
-    let current = WORKSPACE_ROOT;
-    if (!await this.directoryEntries(allocation, WORKSPACE_ROOT)) return false;
+    const relative = parent === root ? "" : parent.slice(root.length + 1);
+    let current = root;
+    if (!await this.directoryEntries(allocation, root)) return false;
     for (const segment of relative ? relative.split("/") : []) {
       const entries = await this.directoryEntries(allocation, current);
       if (!entries) return false;
@@ -358,11 +475,27 @@ export class Agent37Provider implements SandboxProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
     try {
-      return await this.fetcher(url, { method, headers, ...(body ? { body } : {}), signal: controller.signal, redirect: "error" });
+      const response = await this.fetcher(url, { method, headers, ...(body ? { body } : {}), signal: controller.signal, redirect: "error" });
+      if (!response.body) { clearTimeout(timer); return response; }
+      const reader = response.body.getReader();
+      let finished = false;
+      const finish = () => { if (!finished) { finished = true; clearTimeout(timer); } };
+      const boundedBody = new ReadableStream<Uint8Array>({
+        async pull(target) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) { finish(); target.close(); }
+            else target.enqueue(chunk.value);
+          } catch (error) { finish(); target.error(controller.signal.aborted ? new Error("agent37_file_request_timeout") : error); }
+        },
+        async cancel(reason) { finish(); await reader.cancel(reason); },
+      });
+      return new Response(boundedBody, { status: response.status, statusText: response.statusText, headers: response.headers });
     } catch (error) {
+      clearTimeout(timer);
       if (controller.signal.aborted) throw new Error("agent37_file_request_timeout");
       throw error;
-    } finally { clearTimeout(timer); }
+    }
   }
 
   private async fileJson(url: URL, method: string): Promise<unknown> {
@@ -385,8 +518,26 @@ export class Agent37Provider implements SandboxProvider {
   }
 }
 async function readJson(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (text.length > 1024 * 1024) throw new Error("agent37_response_too_large");
+  if (!response.body) return {};
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("agent37_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const text = new TextDecoder().decode(bytes);
   try {
     return text ? JSON.parse(text) : {};
   } catch {
@@ -416,9 +567,24 @@ function validateWorkspaceRelativePath(value: string): void {
     throw new Error("agent37_workspace_path_rejected");
   }
 }
-function workspaceAbsolutePath(relativePath: string): string {
+function workspaceAbsolutePath(relativePath: string, root = WORKSPACE_ROOT): string {
   validateWorkspaceRelativePath(relativePath);
-  return `${WORKSPACE_ROOT}/${relativePath}`;
+  validateWorkspaceRoot(root);
+  return `${root}/${relativePath}`;
+}
+function validateWorkspaceRoot(root: string): void {
+  if ((root !== WORKSPACE_ROOT && !root.startsWith(`${WORKSPACE_ROOT}/`)) || root.includes("..") || root.includes("\\") || root.includes("\0")) throw new Error("agent37_workspace_path_rejected");
+}
+function workspaceWorkingDirectory(requested: string | undefined, root: string): string {
+  if (!requested) return root;
+  if (requested === ".") return root;
+  if (requested === WORKSPACE_ROOT) return root;
+  if (requested.startsWith(`${WORKSPACE_ROOT}/`)) return `${root}/${validateAndReturnRelative(requested.slice(WORKSPACE_ROOT.length + 1))}`;
+  return `${root}/${validateAndReturnRelative(requested)}`;
+}
+function validateAndReturnRelative(value: string): string {
+  validateWorkspaceRelativePath(value);
+  return value;
 }
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
