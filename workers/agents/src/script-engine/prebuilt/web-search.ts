@@ -166,8 +166,9 @@ export const webSearch: PrebuiltScript = {
           : result.content;
       const storageKey = `${workspacePrefix(ctx.env)}${path}`;
       const current = await readBytesWithHash(bucket, storageKey, 12_000_000);
-      await publishWorkspaceBytesCas(ctx.env, bucket, storageKey, payload instanceof Uint8Array ? payload : new TextEncoder().encode(payload), current?.hash ?? null, { sourceUrl: url },
+      const publication = await publishWorkspaceBytesCas(ctx.env, bucket, storageKey, payload instanceof Uint8Array ? payload : new TextEncoder().encode(payload), current?.hash ?? null, { sourceUrl: url },
         result.content_type ? { contentType: result.content_type } : undefined);
+      const revisionMatch = /^revision:(\d+)$/.exec(publication.etag);
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return {
         ok: true, path,
@@ -175,6 +176,7 @@ export const webSearch: PrebuiltScript = {
         content_type: result.content_type ?? null,
         binary: result.encoding === "base64",
         truncated: result.truncated ?? false,
+        ...(revisionMatch && ctx.env.workspaceBranch ? { workspace_branch: ctx.env.workspaceBranch, workspace_revision: Number(revisionMatch[1]) } : {}),
       };
     },
   },

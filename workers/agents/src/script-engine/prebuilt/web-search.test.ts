@@ -52,4 +52,14 @@ describe("bounded web-search tool inputs and download results", () => {
     expect(put).toHaveBeenCalledOnce();
     expect((put.mock.calls[0]?.[1] as Uint8Array).byteLength).toBe(3_750_000);
   });
+
+  it("returns the checked branch revision for project downloads", async () => {
+    const fetch = vi.fn(async () => Response.json({ url: "https://example.com/file.txt", status: 200, encoding: "text", content: "hello", size: 5 }));
+    const ctx = context(fetch, { head: async () => null } as never);
+    ctx.env.workspaceBranch = "runs/task-a";
+    ctx.env.publishWorkspaceChecked = vi.fn(async () => ({ hash: "a".repeat(64), revision: 14 }));
+    const result = await webSearch.operations.download_file!({ url: "https://example.com/file.txt" }, ctx) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true, path: "downloads/file.txt", workspace_branch: "runs/task-a", workspace_revision: 14 });
+    expect(ctx.env.publishWorkspaceChecked).toHaveBeenCalledOnce();
+  });
 });
