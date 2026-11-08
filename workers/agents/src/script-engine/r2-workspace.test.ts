@@ -152,7 +152,7 @@ describe("R2 Virtual POSIX Workspace", () => {
     expect(copied[path]).toBe(content);
   });
 
-  it("retries container sync when the coordinator revision changes between list and content reads", async () => {
+  it("rejects container sync if the coordinator revision changes after its manifest snapshot", async () => {
     const env = createMockEnv();
     const path = "src/app.ts";
     const content = "export const ready = true;";
@@ -164,9 +164,14 @@ describe("R2 Virtual POSIX Workspace", () => {
       { path, sha256: digest, size: new TextEncoder().encode(content).byteLength, executable: false, objectKey },
     ] });
     env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
-    const ctx = { env: { ...env, containerWorkspace: { read: async () => ({ files: {} }), write: async () => {} } }, run: async () => undefined } as never;
+    const copied: Record<string, string> = {};
+    const ctx = { env: { ...env, containerWorkspace: {
+      read: async () => ({ files: {} }), write: async (files: Record<string, string>) => { Object.assign(copied, files); },
+    } }, run: async () => undefined } as never;
     await expect(workspace.operations["workspace.sync_to_container"]!({}, ctx))
       .rejects.toThrow("workspace_manifest_changed_during_sync");
+    expect(revision).toBe(2);
+    expect(copied[path]).toBeUndefined();
   });
 
   it("bounds script dual-read drift and logs hashes without paths or contents", async () => {

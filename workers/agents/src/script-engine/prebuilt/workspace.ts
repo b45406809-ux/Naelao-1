@@ -125,6 +125,28 @@ async function readAllR2(
   const files: Record<string, string> = {};
   let totalBytes = 0;
   let skippedCount = 0;
+  const manifest = await ctx.env.workspaceManifestRead?.();
+  if (manifest) {
+    const relativePrefix = prefix.slice(wsPrefix.length);
+    for (const entry of manifest.entries) {
+      if (!entry.path.startsWith(relativePrefix) || entry.path.endsWith("/.keep")) continue;
+      if (Object.keys(files).length >= SYNC_MAX_FILES || totalBytes + entry.size > SYNC_MAX_TOTAL_BYTES) { skippedCount++; continue; }
+      const object = await bucket(ctx).get(wsPrefix + entry.path);
+      if (!object || object.size !== entry.size) throw new Error("workspace_content_unavailable");
+      const objectRevision = revisionFromMetadata(object.customMetadata);
+      if (!objectRevision || objectRevision.branch !== manifest.head.branch || objectRevision.revision !== manifest.head.revision)
+        throw new Error("workspace_manifest_changed_during_sync; retry workspace.sync_to_container");
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      if (bytes.byteLength !== entry.size || await sha256Bytes(bytes) !== entry.sha256) throw new Error("workspace_content_integrity_failed");
+      files[entry.path] = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+      totalBytes += bytes.byteLength;
+    }
+    const skippedReason = skippedCount > 0
+      ? `over the ${SYNC_MAX_FILES}-file / ${SYNC_MAX_TOTAL_BYTES}-byte sync limit — sync a narrower 'path' prefix, or workspace.copy the specific files you need.`
+      : undefined;
+    return { files, skipped_count: skippedCount, ...(skippedReason ? { skipped_reason: skippedReason } : {}),
+      revision: { branch: manifest.head.branch, revision: manifest.head.revision } };
+  }
   let revision: { branch: string; revision: number } | undefined;
   let cursor: string | undefined;
   do {
@@ -264,7 +286,14 @@ export const workspace: PrebuiltScript = {
     async "workspace.list"(args, ctx) {
       const name = reqWorkspace(args, "name");
       if (name === "r2") {
-        const prefix = key(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
+        const pathPrefix = typeof args["path"] === "string" ? (args["path"] as string) : "";
+        const prefix = key(ctx, pathPrefix);
+        const manifest = await ctx.env.workspaceManifestRead?.();
+        if (manifest) {
+          const relativePrefix = prefix.slice(workspacePrefix(ctx.env).length);
+          return { workspace: "r2", files: manifest.entries.filter(entry => entry.path.startsWith(relativePrefix)).map(entry => entry.path),
+            revision: { branch: manifest.head.branch, revision: manifest.head.revision } };
+        }
         const out: string[] = [];
         let revision: { branch: string; revision: number } | undefined;
         let cursor: string | undefined;
