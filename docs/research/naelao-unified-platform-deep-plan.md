@@ -312,6 +312,8 @@ The previous files are research inputs and topic inventories, not evidence that 
 
 - Define typed request/receipt schemas and an authorization boundary for open/read/stage/checkpoint/subscribe/handoff/close.
 - Implement project-scoped coordinator metadata and immutable manifest/CAS publication. Advance the head and receipt in one workspace DO transaction after immutable R2 upload; D1 is an independently reconciled projection, not part of that transaction.
+- Record each in-flight canonical content/manifest R2 key in a bounded Durable Object upload intent before starting the external PUT. Keep the intent until the pointer transaction commits or the failed operation is resolved; GC marks active intent objects as roots and only removes intents older than a 24-hour stale-operation bound.
+- Self-schedule bounded first-run content backfill and weekly content mark/sweep plus daily staging/metadata maintenance on each initialized coordinator. Persist status and cursors; fail closed on missing or stalled R2 cursors and retry with observable error state.
 - Add branch creation, idempotency, expected hashes, allocation generation, fencing, conflict preservation, and operation receipts.
 - Build an adapter over current R2/CAS and artifact repository. Prove readers cannot observe a partial multi-file publication.
 - **Gate:** race/crash/duplicate/fence tests pass; zero canonical mutation paths bypass the service in a bounded pilot.
@@ -434,6 +436,12 @@ This pass checked the source at `cd01638cb18d3186a2b9c17988f606f3c2bc7064`, ran 
 5. **Erasure and shared chunks:** tenant-scoped deduplication complicates deletion when multiple revisions reference a chunk. Track references and retention holds; do not delete a chunk still referenced by a surviving project or treat a removed reference as physical purge. Include external backups and cached/presigned delivery in the deletion model.
 6. **Provider capability is evidence, not configuration:** prove FUSE device and mount permissions, authenticated port reachability, wake/restart behavior and flush under the selected Agent37 instance type. Public API file/exec support does not establish these properties.
 7. **Performance:** measure current full snapshot versus manifest/file diff and chunk diff on identical real workloads, including hashing, R2 requests, cold/warm startup, post-command sync, idle compute and disk. Establish acceptance thresholds before implementing an optimization; no cost or speed improvement is established by these local unit tests.
+
+## 14. Phase 1 continuation — 2026-11-08
+
+The branch now adds `upload-intent:<id>` metadata before coordinator-owned immutable content and manifest PUTs. The DO transaction removes the intent atomically with pointer/receipt publication; when GC scans roots, it marks valid in-scope content and manifest keys from non-stale intents. GC fails closed on malformed intents and deletes only intents older than 24 hours. A deterministic mock race now stores a content object, holds the PUT response, completes a GC sweep, and then resumes the pointer transaction; the object remains readable after publication. Another test verifies repeated continuation cursors fail closed and enter the alarm retry/status path.
+
+Fresh local evidence on `Mcbt5s-Backup-2` after the scheduler commit: `WorkspaceCoordinatorDO.test.ts` and `ToolSandboxDO.test.ts` passed together (**44 tests**) and the Agents typecheck passed. Test R2 cursors are deliberately opaque to exercise cursor forwarding, but the in-memory R2 and DO transaction mocks do not establish Cloudflare runtime semantics. No Miniflare or deployed test was run; GC/erasure acceptance, jurisdiction, alarm delivery, and real transaction interleaving remain deployment gates.
 
 ## Appendix A. Proposed interface shape
 

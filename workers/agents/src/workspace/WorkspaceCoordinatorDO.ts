@@ -25,6 +25,7 @@ interface StageRecord { sessionId: string; stageId: string; changeSetHash: strin
 interface RevisionEvent { branch: string; revision: number; publicationId: string | null; changedPaths: string[]; updatedAt: string; }
 interface ExpiryRecord { expiresAt: number; kind: "receipt" | "subscription"; targetKey: string; branch?: string; subscriberId?: string; }
 interface RetainedRevision { branch: string; revision: number; manifestHash: string; createdAt: string; }
+interface WorkspaceUploadIntent { createdAt: string; objectKeys: string[]; }
 interface ContentGcState {
   epoch: string;
   phase: "backfill" | "roots" | "mark" | "sweep-manifests" | "sweep-content" | "cleanup";
@@ -69,7 +70,9 @@ const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CONTENT_GC_LOCK_MS = 10 * 60 * 1000;
 const CONTENT_GC_CLAIM_MS = 2 * 60 * 1000;
 const CONTENT_GC_ENTRY_BATCH = 100;
+const UPLOAD_INTENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const WORKSPACE_CONTENT_GC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const WORKSPACE_MAINTENANCE_RETRY_MS = 60 * 1000;
 const REVISION_EVENT_RETENTION = 500;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -101,6 +104,12 @@ function manifestKey(scope: WorkspaceScope, hash: string): string {
 }
 function contentPrefix(scope: WorkspaceScope): string {
   return `workspace-v1/${keyScope(scope)}/content/`;
+}
+function nextR2Cursor(page: { truncated: boolean; cursor?: string }, operation: string, current?: string): string | undefined {
+  if (!page.truncated) return undefined;
+  if (!page.cursor) throw new Error(`workspace_gc_${operation}_cursor_missing`);
+  if (page.cursor === current) throw new Error(`workspace_gc_${operation}_cursor_stalled`);
+  return page.cursor;
 }
 function stagingPrefix(scope: WorkspaceScope): string {
   return `workspace-v1/${keyScope(scope)}/staging/`;
@@ -140,11 +149,11 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const previous = await this.ctx.storage.get<{ failures: number }>("workspace_gc_status") ?? { failures: 0 };
     try {
       const gc = await this.ctx.storage.get<ContentGcState>("content_gc");
+      const lastContentSweep = await this.ctx.storage.get<number>("content_gc_last_completed_at") ?? 0;
       let contentResult: Response | undefined;
-      // Resume an interrupted sweep, or start the one-time legacy backfill/sweep. Further
-      // full sweeps are operator kicked through the authenticated maintenance route.
+      // Resume an interrupted sweep, or start initial backfill / weekly bounded mark-sweep.
       if (gc && gc.lockUntil > Date.now()) contentResult = await this.collectContent(true);
-      else if (!await this.ctx.storage.get<boolean>("content_gc_backfill_complete")) contentResult = await this.collectContent(false);
+      else if (!await this.ctx.storage.get<boolean>("content_gc_backfill_complete") || lastContentSweep + WORKSPACE_CONTENT_GC_INTERVAL_MS <= Date.now()) contentResult = await this.collectContent(false);
       if (contentResult && !contentResult.ok) throw new Error(`content:${contentResult.status}:${(await contentResult.clone().text()).slice(0, 200)}`);
 
       const cursor = await this.ctx.storage.get<string>("staging_gc_cursor");
@@ -237,10 +246,17 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (verified) return verified;
     const encoded = canonicalManifest(entries);
     const manifestHash = await sha256Hex(new TextEncoder().encode(encoded));
-    const put = await this.env.SCRIPTS_R2!.put(manifestKey(scope, manifestHash), encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: manifestHash } });
-    const createdManifestKey = put ? manifestKey(scope, manifestHash) : null;
+    const objectKey = manifestKey(scope, manifestHash);
+    const uploadIntentId = crypto.randomUUID();
+    const uploadIntentKey = `upload-intent:${uploadIntentId}`;
+    const protectedUpload = await this.protectUpload(scope, uploadIntentId, objectKey);
+    if (protectedUpload !== "ready") return protectedUpload === "erased" ? fail("workspace_erased", 410)
+      : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
+        : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
+    const put = await this.env.SCRIPTS_R2!.put(objectKey, encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: manifestHash } });
+    const createdManifestKey = put ? objectKey : null;
     if (!put) {
-      const existing = await this.env.SCRIPTS_R2!.get(manifestKey(scope, manifestHash));
+      const existing = await this.env.SCRIPTS_R2!.get(objectKey);
       if (!existing || await sha256Hex(new Uint8Array(await existing.arrayBuffer())) !== manifestHash) return fail("manifest_persist_failed", 503);
     }
     const head: WorkspaceHead = { version: 1, scope, branch, revision: 1, manifestHash, parentRevision: null, publicationId: null, updatedAt: new Date().toISOString() };
@@ -256,13 +272,16 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await tx.put(headKey(branch), head);
       await tx.put(retainedRevisionKey(branch, head.revision), { branch, revision: head.revision, manifestHash: head.manifestHash, createdAt: head.updatedAt } satisfies RetainedRevision);
       await tx.put(revisionEventKey(branch, 1), { branch, revision: 1, publicationId: null, changedPaths: [], updatedAt: head.updatedAt } satisfies RevisionEvent);
+      await tx.delete(uploadIntentKey);
       return "created";
     });
-    if (result === "scope_conflict") return fail("workspace_scope_mismatch", 403);
+    if (result === "scope_conflict") { await this.ctx.storage.delete(uploadIntentKey); return fail("workspace_scope_mismatch", 403); }
     if (result === "erased" || result === "head_exists" || result === "gc_busy") {
       if (createdManifestKey) await this.env.SCRIPTS_R2!.delete(createdManifestKey);
+      await this.ctx.storage.delete(uploadIntentKey);
       return result === "erased" ? fail("workspace_erased", 410) : result === "gc_busy" ? fail("workspace_gc_in_progress", 423) : fail("workspace_head_exists", 409);
     }
+    if (result !== "created") await this.ctx.storage.delete(uploadIntentKey);
     if (result === "created") await this.ctx.storage.setAlarm(Date.now() + 1_000);
     return json({ head: result === "created" ? head : await this.ctx.storage.get<WorkspaceHead>(headKey(branch)), created: result === "created" });
   }
@@ -404,6 +423,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return entrySignature(parentEntry) !== entrySignature(base.get(path)) && entrySignature(parentEntry) !== entrySignature(working.get(path)) ? [{ path, expectedHash: baseHash, actualHash: parentHash }] : [];
     });
     const id = `merge_${crypto.randomUUID()}`;
+    const uploadIntentId = crypto.randomUUID();
+    const uploadIntentKey = `upload-intent:${uploadIntentId}`;
     let status: WorkspacePublicationReceipt["status"] = conflicts.length ? "conflicted" : "published";
     let newlyStoredManifestKey: string | null = null;
     const nextEntries = new Map(parent);
@@ -424,10 +445,15 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const verified = await this.verifyEntries(targetHead.scope, [...nextEntries.values()]);
       if (verified) return verified;
       if (nextHash !== targetHead.manifestHash) {
-        const put = await this.env.SCRIPTS_R2!.put(manifestKey(targetHead.scope, nextHash), encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: nextHash } });
-        if (put) newlyStoredManifestKey = manifestKey(targetHead.scope, nextHash);
+        const objectKey = manifestKey(targetHead.scope, nextHash);
+        const protectedUpload = await this.protectUpload(targetHead.scope, uploadIntentId, objectKey);
+        if (protectedUpload !== "ready") return protectedUpload === "erased" ? fail("workspace_erased", 410)
+          : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
+            : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
+        const put = await this.env.SCRIPTS_R2!.put(objectKey, encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: nextHash } });
+        if (put) newlyStoredManifestKey = objectKey;
         if (!put) {
-          const found = await this.env.SCRIPTS_R2!.get(manifestKey(targetHead.scope, nextHash));
+          const found = await this.env.SCRIPTS_R2!.get(objectKey);
           if (!found || await sha256Hex(new Uint8Array(await found.arrayBuffer())) !== nextHash) return fail("manifest_persist_failed", 503);
         }
       } else status = "noop";
@@ -438,7 +464,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const nextHead: WorkspaceHead = { ...targetHead, revision, manifestHash: nextHash, parentRevision: targetHead.revision, publicationId: id, updatedAt: new Date().toISOString() };
     const committed = await this.ctx.storage.transaction(async (tx) => {
       const replay = await tx.get<WorkspacePublicationReceipt>(mergeReceiptKey(targetBranch, idempotencyKey));
-      if (replay) return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
+      if (replay) {
+        await tx.delete(uploadIntentKey);
+        return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
+      }
       const activeSession = await tx.get<Session>(sessionKey(sessionId));
       const gc = await tx.get<ContentGcState>("content_gc");
       if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" };
@@ -460,12 +489,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         activeSession.status = "closed";
         await tx.put(sessionKey(sessionId), activeSession);
       }
+      await tx.delete(uploadIntentKey);
       return { receipt };
     });
     if ("error" in committed) {
       if (committed.error === "workspace_gc_in_progress" || committed.error === "workspace_erased") {
         if (newlyStoredManifestKey) await this.env.SCRIPTS_R2!.delete(newlyStoredManifestKey);
       }
+      await this.ctx.storage.delete(uploadIntentKey);
       return fail(committed.error, committed.error === "workspace_gc_in_progress" ? 423 : committed.error === "workspace_erased" ? 410 : 409);
     }
     await this.scheduleMetadataExpiry();
@@ -594,6 +625,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return actualHash === change.expectedHash ? [] : [{ path: change.path, expectedHash: change.expectedHash, actualHash }];
     });
     const publicationId = `pub_${crypto.randomUUID()}`;
+    const uploadIntentId = crypto.randomUUID();
+    const uploadIntentKey = `upload-intent:${uploadIntentId}`;
     let appliedPaths: string[] = [];
     const newlyStoredContentKeys: string[] = [];
     let newlyStoredManifestKey: string | null = null;
@@ -612,6 +645,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
           if (bytes.byteLength > MAX_FILE_BYTES) return fail("workspace_file_limit_exceeded", 413);
           const hash = await sha256Hex(bytes);
           const objectKey = `${contentPrefix(current.scope)}${hash}`;
+          const protectedUpload = await this.protectUpload(current.scope, uploadIntentId, objectKey);
+          if (protectedUpload !== "ready") {
+            if (newlyStoredContentKeys.length) await this.env.SCRIPTS_R2!.delete(newlyStoredContentKeys);
+            await this.ctx.storage.delete(uploadIntentKey);
+            return protectedUpload === "erased" ? fail("workspace_erased", 410)
+              : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
+                : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
+          }
           const uploaded = await this.env.SCRIPTS_R2!.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: hash, size: String(bytes.byteLength) } });
           if (uploaded) newlyStoredContentKeys.push(objectKey);
           if (!uploaded) {
@@ -629,10 +670,19 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const encoded = canonicalManifest([...next.values()]);
       nextHash = await sha256Hex(new TextEncoder().encode(encoded));
       if (nextHash !== current.manifestHash) {
-        const put = await this.env.SCRIPTS_R2!.put(manifestKey(current.scope, nextHash), encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: nextHash } });
-        if (put) newlyStoredManifestKey = manifestKey(current.scope, nextHash);
+        const objectKey = manifestKey(current.scope, nextHash);
+        const protectedUpload = await this.protectUpload(current.scope, uploadIntentId, objectKey);
+        if (protectedUpload !== "ready") {
+          if (newlyStoredContentKeys.length) await this.env.SCRIPTS_R2!.delete(newlyStoredContentKeys);
+          await this.ctx.storage.delete(uploadIntentKey);
+          return protectedUpload === "erased" ? fail("workspace_erased", 410)
+            : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
+              : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
+        }
+        const put = await this.env.SCRIPTS_R2!.put(objectKey, encoded, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: nextHash } });
+        if (put) newlyStoredManifestKey = objectKey;
         if (!put) {
-          const found = await this.env.SCRIPTS_R2!.get(manifestKey(current.scope, nextHash));
+          const found = await this.env.SCRIPTS_R2!.get(objectKey);
           if (!found || await sha256Hex(new Uint8Array(await found.arrayBuffer())) !== nextHash) return fail("manifest_persist_failed", 503);
         }
       } else status = "noop";
@@ -642,7 +692,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const newHead: WorkspaceHead = { ...current, revision, manifestHash: nextHash, parentRevision: current.revision, publicationId, updatedAt: new Date().toISOString() };
     const committed = await this.ctx.storage.transaction(async (tx) => {
       const replay = await tx.get<WorkspacePublicationReceipt>(receiptKey(session.branch, idempotencyKey));
-      if (replay) return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
+      if (replay) {
+        await tx.delete(uploadIntentKey);
+        return replay.changeSetHash === changeSetHash ? { receipt: replay } : { error: "idempotency_conflict" };
+      }
       const head = await tx.get<WorkspaceHead>(headKey(session.branch));
       const gc = await tx.get<ContentGcState>("content_gc");
       if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" };
@@ -663,6 +716,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         await tx.put(revisionEventKey(session.branch, revision), { branch: session.branch, revision, publicationId, changedPaths: appliedPaths, updatedAt: newHead.updatedAt } satisfies RevisionEvent);
         if (revision > REVISION_EVENT_RETENTION) await tx.delete(revisionEventKey(session.branch, revision - REVISION_EVENT_RETENTION));
       }
+      await tx.delete(uploadIntentKey);
       if (body.stageId !== undefined && (status === "published" || status === "noop")) {
         const stageId = String(body.stageId);
         const staged = await tx.get<StageRecord>(stageKey(sessionId, stageId));
@@ -674,8 +728,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (committed.error === "workspace_erased" || committed.error === "workspace_gc_in_progress") {
         if (newlyStoredManifestKey) await this.env.SCRIPTS_R2!.delete(newlyStoredManifestKey);
         if (newlyStoredContentKeys.length) await this.env.SCRIPTS_R2!.delete(newlyStoredContentKeys);
+        await this.ctx.storage.delete(uploadIntentKey);
         return committed.error === "workspace_erased" ? fail("workspace_erased", 410) : fail("workspace_gc_in_progress", 423);
       }
+      await this.ctx.storage.delete(uploadIntentKey);
       return fail(committed.error, 409);
     }
     await this.scheduleMetadataExpiry();
@@ -789,7 +845,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const cursor = typeof body.cursor === "string" && body.cursor.length <= 1024 ? body.cursor : undefined;
     const prefix = stagingPrefix(scope);
     const page = await this.env.SCRIPTS_R2!.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-    if (page.truncated && !page.cursor) return fail("workspace_gc_staging_cursor_missing", 503);
+    let nextStageCursor: string | undefined;
+    try { nextStageCursor = nextR2Cursor(page, "staging", cursor); }
+    catch { return fail("workspace_gc_staging_cursor_invalid", 503); }
     const deleteKeys: string[] = [];
     const deleteRecords = new Set<string>();
     for (const object of page.objects) {
@@ -830,7 +888,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       }
     }
     const nextRecordCursor = stageRecords.size === 1000 ? [...stageRecords.keys()].at(-1) ?? null : null;
-    return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: page.truncated ? page.cursor ?? null : null, recordCursor: nextRecordCursor, hasMore: page.truncated || nextRecordCursor !== null });
+    return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: nextStageCursor ?? null, recordCursor: nextRecordCursor, hasMore: nextStageCursor !== undefined || nextRecordCursor !== null });
   }
 
   /** Expiry indexes are ordered by deadline so each invocation performs a bounded sweep. */
@@ -883,6 +941,23 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (current === null || current > scheduledTime) await this.ctx.storage.setAlarm(scheduledTime);
   }
 
+  private async protectUpload(scope: WorkspaceScope, intentId: string, objectKey: string): Promise<"ready" | "erased" | "gc_busy" | "scope_mismatch" | "intent_limit"> {
+    return this.ctx.storage.transaction(async (tx) => {
+      if (await tx.get<boolean>("erased")) return "erased";
+      const gc = await tx.get<ContentGcState>("content_gc");
+      if (gc && gc.lockUntil > Date.now()) return "gc_busy";
+      const known = await tx.get<WorkspaceScope>("scope");
+      if (known && JSON.stringify(known) !== JSON.stringify(scope)) return "scope_mismatch";
+      const key = `upload-intent:${intentId}`;
+      const current = await tx.get<WorkspaceUploadIntent>(key);
+      const objectKeys = current?.objectKeys ?? [];
+      if (!objectKeys.includes(objectKey)) objectKeys.push(objectKey);
+      if (objectKeys.length > MAX_CHANGES + 1) return "intent_limit";
+      await tx.put(key, { createdAt: new Date().toISOString(), objectKeys } satisfies WorkspaceUploadIntent);
+      return "ready";
+    });
+  }
+
   /**
    * Mark/sweep manifests and content from retained revision roots. A one-time manifest backfill
    * preserves history created before revision metadata existed. A durable maintenance lease
@@ -911,17 +986,21 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     try {
       if (state.phase === "backfill") {
         const page = await this.env.SCRIPTS_R2!.list({ prefix: `workspace-v1/${keyScope(scope)}/manifests/`, ...(state.backfillCursor ? { cursor: state.backfillCursor } : {}), limit: 1 });
+        const nextCursor = nextR2Cursor(page, "backfill", state.backfillCursor);
         const item = page.objects[0];
         if (!item) {
-          state.phase = "roots";
-          state.legacyBackfillDone = true;
-          delete state.backfillCursor;
+          if (nextCursor) state.backfillCursor = nextCursor;
+          else {
+            state.phase = "roots";
+            state.legacyBackfillDone = true;
+            delete state.backfillCursor;
+          }
         } else {
           const match = item.key.match(/\/manifests\/([a-f0-9]{64})\.json$/);
           const manifestHash = match?.[1];
           if (!manifestHash) throw new Error("workspace_gc_invalid_manifest_key");
           state.pendingLegacyManifestHash = manifestHash;
-          if (page.truncated && page.cursor) state.backfillCursor = page.cursor;
+          if (nextCursor) state.backfillCursor = nextCursor;
           else {
             delete state.backfillCursor;
             state.legacyBackfillDone = true;
@@ -945,6 +1024,32 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
             if (!await this.env.SCRIPTS_R2!.head(marker)) {
               await this.env.SCRIPTS_R2!.put(marker, "1");
               createdMarks.push(marker);
+            }
+          }
+          if (key.startsWith("upload-intent:")) {
+            const intent = value as WorkspaceUploadIntent;
+            const createdAt = Date.parse(intent.createdAt);
+            if (!Number.isFinite(createdAt) || !Array.isArray(intent.objectKeys) || intent.objectKeys.length < 1 || intent.objectKeys.length > MAX_CHANGES + 1 || !intent.objectKeys.every((item) => typeof item === "string")) {
+              throw new Error("workspace_gc_upload_intent_invalid");
+            }
+            if (createdAt + UPLOAD_INTENT_MAX_AGE_MS <= Date.now()) {
+              await this.ctx.storage.delete(key);
+            } else {
+              for (const objectKey of intent.objectKeys) {
+                const contentObjectPrefix = contentPrefix(scope);
+                const manifestObjectPrefix = `workspace-v1/${keyScope(scope)}/manifests/`;
+                const contentHash = objectKey.startsWith(contentObjectPrefix) ? objectKey.slice(contentObjectPrefix.length) : "";
+                const manifestName = objectKey.startsWith(manifestObjectPrefix) ? objectKey.slice(manifestObjectPrefix.length) : "";
+                const manifestHash = manifestName.endsWith(".json") ? manifestName.slice(0, -5) : "";
+                if (!HASH.test(contentHash) && !HASH.test(manifestHash)) throw new Error("workspace_gc_upload_intent_key_invalid");
+                const markerKey = HASH.test(contentHash)
+                  ? `${gcMarksPrefix(scope, state.epoch)}content/${contentHash}`
+                  : HASH.test(manifestHash) ? `${gcMarksPrefix(scope, state.epoch)}manifests/${manifestHash}` : null;
+                if (markerKey && !await this.env.SCRIPTS_R2!.head(markerKey)) {
+                  await this.env.SCRIPTS_R2!.put(markerKey, "1");
+                  createdMarks.push(markerKey);
+                }
+              }
             }
           }
         }
@@ -991,12 +1096,17 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
           }
         } else {
           const page = await this.env.SCRIPTS_R2!.list({ prefix: `workspace-v1/${keyScope(scope)}/manifests/`, ...(state.manifestCursor ? { cursor: state.manifestCursor } : {}), limit: 1 });
+          const nextCursor = nextR2Cursor(page, "manifest_mark", state.manifestCursor);
           const item = page.objects[0];
-          if (!item) state.phase = "sweep-manifests";
+          if (!item) {
+            if (nextCursor) state.manifestCursor = nextCursor;
+            else state.phase = "sweep-manifests";
+            state.manifestListDone = !nextCursor;
+          }
           else {
             state.activeManifestKey = item.key;
             state.activeManifestOffset = 0;
-            if (page.truncated && page.cursor) state.manifestCursor = page.cursor;
+            if (nextCursor) state.manifestCursor = nextCursor;
             else delete state.manifestCursor;
             state.manifestListDone = !page.truncated;
           }
@@ -1014,7 +1124,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         if (deletions.length) await this.env.SCRIPTS_R2!.delete(deletions);
         processed = page.objects.length;
-        if (page.truncated) state.sweepManifestCursor = page.cursor;
+        const nextCursor = nextR2Cursor(page, "manifest_sweep", state.sweepManifestCursor);
+        if (nextCursor) state.sweepManifestCursor = nextCursor;
         else { delete state.sweepManifestCursor; state.phase = "sweep-content"; }
       } else if (state.phase === "sweep-content") {
         const prefix = contentPrefix(scope);
@@ -1028,13 +1139,15 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         if (deletions.length) await this.env.SCRIPTS_R2!.delete(deletions);
         processed = page.objects.length;
-        if (page.truncated) state.contentCursor = page.cursor;
+        const nextCursor = nextR2Cursor(page, "content_sweep", state.contentCursor);
+        if (nextCursor) state.contentCursor = nextCursor;
         else { delete state.contentCursor; state.phase = "cleanup"; }
       } else {
         const page = await this.env.SCRIPTS_R2!.list({ prefix: gcMarksRoot(scope), ...(state.marksCursor ? { cursor: state.marksCursor } : {}), limit: 1000 });
         if (page.objects.length) await this.env.SCRIPTS_R2!.delete(page.objects.map((item) => item.key));
         processed = page.objects.length;
-        if (page.truncated) state.marksCursor = page.cursor;
+        const nextCursor = nextR2Cursor(page, "marker_cleanup", state.marksCursor);
+        if (nextCursor) state.marksCursor = nextCursor;
         else { delete state.marksCursor; state.cleanupDone = true; }
       }
     } catch (error) {
@@ -1057,6 +1170,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (state.legacyBackfillDone) await tx.put("content_gc_backfill_complete", true);
       if (state.phase === "cleanup" && state.cleanupDone) {
         await tx.delete("content_gc");
+        await tx.put("content_gc_last_completed_at", Date.now());
         return "complete";
       }
       state.claimUntil = 0;

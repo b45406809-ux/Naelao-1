@@ -41,9 +41,11 @@ function setup(options: { liveEnabled?: boolean } = {}) {
     },
     async head(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength } : null; },
     async list({ prefix, cursor, limit = 1000 }: { prefix: string; cursor?: string; limit?: number }) {
-      const matching = [...objects.keys()].filter(key => key.startsWith(prefix) && (!cursor || key > cursor)).sort();
+      const after = cursor ? atob(cursor.slice("opaque:".length)) : "";
+      const matching = [...objects.keys()].filter(key => key.startsWith(prefix) && (!after || key > after)).sort();
       const selected = matching.slice(0, limit);
-      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated: matching.length > selected.length, cursor: selected.at(-1) };
+      const truncated = matching.length > selected.length;
+      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated, cursor: truncated && selected.length ? `opaque:${btoa(selected.at(-1)!)}` : undefined };
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
@@ -77,6 +79,24 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     for (let attempts = 0; attempts < 15 && (await storage.get<{ status: string }>("workspace_gc_status"))?.status !== "complete"; attempts++) await instance.alarm();
     expect(await storage.get("workspace_gc_status")).toMatchObject({ status: "complete", failures: 0 });
     expect(storage.values.has("content_gc_backfill_complete")).toBe(true);
+  });
+
+  it("fails closed and retries when an R2 continuation cursor stops advancing", async () => {
+    const { instance, storage, r2: bucket } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const r2 = bucket as unknown as R2Bucket;
+    const originalList = r2.list.bind(r2);
+    const stuckCursor = `opaque:${btoa("stalled-manifest-key")}`;
+    vi.spyOn(r2, "list").mockImplementation(async (options) => {
+      const page = await originalList(options);
+      if (options.prefix?.includes("/manifests/")) return { ...page, truncated: true, cursor: stuckCursor };
+      return page;
+    });
+    expect((await call(instance, "/v1/gc/content", {})).status).toBe(200);
+    await instance.alarm();
+    expect(await storage.get("workspace_gc_status")).toMatchObject({ status: "failed", error: expect.stringContaining("cursor_stalled") });
+    expect(storage.alarmAt).toBeGreaterThan(Date.now());
+    expect(storage.values.has("content_gc")).toBe(false);
   });
 
   it("defaults sessions to checked handoff and publishes a complete revision with an idempotent receipt", async () => {
@@ -256,6 +276,46 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(objects.has(orphanManifestKey)).toBe(false);
     expect(objects.has(orphanContentKey)).toBe(false);
     expect([...objects.keys()].some(key => key.includes("/manifests/"))).toBe(true);
+  });
+
+  it("keeps an uploaded object marked until the head transaction commits after GC", async () => {
+    const { instance, objects, storage, r2: bucket } = setup();
+    const r2 = bucket as unknown as R2Bucket;
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await storage.put("content_gc_backfill_complete", true);
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
+    const { session } = await opened.json() as { session: { id: string } };
+    const content = new TextEncoder().encode("content uploaded during GC");
+    const digest = await crypto.subtle.digest("SHA-256", content);
+    const hash = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    const contentKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    let signalUploadStored!: () => void;
+    let releaseUpload!: () => void;
+    const uploadStored = new Promise<void>((resolve) => { signalUploadStored = resolve; });
+    const uploadRelease = new Promise<void>((resolve) => { releaseUpload = resolve; });
+    const originalPut = r2.put.bind(r2);
+    vi.spyOn(r2, "put").mockImplementation(async (...args) => {
+      const result = await originalPut(...args);
+      if (args[0] === contentKey) {
+        signalUploadStored();
+        await uploadRelease;
+      }
+      return result;
+    });
+    const checkpoint = call(instance, "/v1/checkpoint", {
+      sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "gc-upload-race",
+      changes: [{ path: "during-gc.txt", expectedHash: null, contentBase64: btoa("content uploaded during GC") }],
+    });
+    await uploadStored;
+    expect(await (await call(instance, "/v1/gc/content", {})).status).toBe(200);
+    for (let attempts = 0; attempts < 20 && storage.values.has("content_gc"); attempts++) await instance.alarm();
+    expect(storage.values.has("content_gc")).toBe(false);
+    expect(objects.has(contentKey)).toBe(true);
+    releaseUpload();
+    expect((await checkpoint).status).toBe(200);
+    const read = await (await call(instance, "/v1/read?branch=main")).json() as { entries: WorkspaceEntry[] };
+    expect(read.entries).toMatchObject([{ path: "during-gc.txt", sha256: hash, objectKey: contentKey }]);
+    expect((await storage.list({ prefix: "upload-intent:" })).size).toBe(0);
   });
 
   it("erases one workspace scope and leaves a tombstone that rejects later reads and writes", async () => {
