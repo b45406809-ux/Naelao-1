@@ -113,7 +113,10 @@ const WORKSPACE_ROUTES = [
 
 interface WorkspaceRecord { content: string; hash: string }
 interface ContainerMeter { creditsPerHour?: number; tenantId: string; spaceId: string; reservationId: string; startedAt: number; expiresAt: number; allocatedAt?: number; endedAt?: number }
-interface ContainerRuntimeMetrics { sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number }
+interface ContainerRuntimeMetrics {
+  sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number;
+  workspaceBytesHydrated: number; workspaceBytesCaptured: number; workspaceBytesStaged: number; workspaceCheckpoints: number; workspaceCheckpointMs: number;
+}
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
 
@@ -359,8 +362,9 @@ export class ToolSandboxDO extends DurableObject {
     if (metrics && analytics) {
       try {
         analytics.writeDataPoint({
-          blobs: ["container.runtime.lifecycle", metrics.sidecar ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", ""],
-          doubles: [allocatedMs, credits, metrics.coldStarts, metrics.startupMs, metrics.warmHits, metrics.warmIdleMs, metrics.executions, metrics.executionMs],
+          blobs: ["container.runtime.lifecycle", metrics.sidecar ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v1"],
+          doubles: [allocatedMs, credits, metrics.coldStarts, metrics.startupMs, metrics.warmHits, metrics.warmIdleMs, metrics.executions, metrics.executionMs,
+            metrics.workspaceBytesHydrated, metrics.workspaceBytesCaptured, metrics.workspaceBytesStaged, metrics.workspaceCheckpoints, metrics.workspaceCheckpointMs],
         });
       } catch { /* telemetry must never delay or prevent billing settlement */ }
     }
@@ -371,8 +375,9 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async updateRuntimeMetrics(update: Partial<Record<keyof Omit<ContainerRuntimeMetrics, "sidecar">, number>>, sidecar?: boolean): Promise<void> {
-    const current = await this.ctx.storage.get<ContainerRuntimeMetrics>("container_runtime_metrics")
-      ?? { sidecar: sidecar === true, coldStarts: 0, startupMs: 0, warmHits: 0, warmIdleMs: 0, executions: 0, executionMs: 0 };
+    const defaults: ContainerRuntimeMetrics = { sidecar: sidecar === true, coldStarts: 0, startupMs: 0, warmHits: 0, warmIdleMs: 0, executions: 0, executionMs: 0,
+      workspaceBytesHydrated: 0, workspaceBytesCaptured: 0, workspaceBytesStaged: 0, workspaceCheckpoints: 0, workspaceCheckpointMs: 0 };
+    const current = { ...defaults, ...await this.ctx.storage.get<Partial<ContainerRuntimeMetrics>>("container_runtime_metrics") };
     if (sidecar !== undefined) current.sidecar = sidecar;
     for (const [key, value] of Object.entries(update) as Array<[keyof typeof update, number]>) current[key] += value;
     await this.ctx.storage.put("container_runtime_metrics", current);
@@ -528,6 +533,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     const prefix = this.workspacePrefix(scope);
     const expectedHashes: Record<string, string> = {};
+    let hydratedBytes = 0;
     for await (const { path, bytes, hash } of this.listR2Workspace(prefix)) {
       // /workspace/shared is reserved as a virtual mount, never an alias into the private tree.
       if (path.startsWith("shared/")) continue;
@@ -537,6 +543,7 @@ export class ToolSandboxDO extends DurableObject {
       }));
       if (!response.ok) throw new Error(`Workspace hydration failed (${response.status}): ${path}`);
       expectedHashes[path] = hash;
+      hydratedBytes += bytes.byteLength;
     }
     for (const grant of scope.sharedFilesystemGrants ?? []) {
       if (scope.installationScope !== "SPACE_SHARED" || !scope.installationId) throw new Error("sandbox_shared_filesystem_denied");
@@ -551,6 +558,7 @@ export class ToolSandboxDO extends DurableObject {
         }));
         if (!response.ok) throw new Error(`Shared workspace hydration failed (${response.status}): ${virtualPath}`);
         expectedHashes[virtualPath] = hash;
+        hydratedBytes += bytes.byteLength;
       }
     }
     // A second runtime may have deleted a canonical file while this container was warm.
@@ -566,6 +574,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     await this.ctx.storage.put("workspace_scope", scope);
     await this.ctx.storage.put("workspace_hashes", expectedHashes);
+    if (hydratedBytes) await this.updateRuntimeMetrics({ workspaceBytesHydrated: hydratedBytes });
   }
 
   private async unifiedWorkspaceIdentity(scope: SandboxWorkspaceScope, tenantId: string): Promise<{ scope: WorkspaceScope; branch: string }> {
@@ -630,6 +639,7 @@ export class ToolSandboxDO extends DurableObject {
     const read = await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/read?branch=${encodeURIComponent(workingBranch)}`)) as { entries?: WorkspaceEntry[]; head?: WorkspaceHead };
     if (!Array.isArray(read.entries) || !read.head || read.head.manifestHash !== branchHead.head?.manifestHash) throw new Error("workspace_head_changed_retry");
     const expectedHashes: Record<string, string> = {};
+    let hydratedBytes = 0;
     for (const entry of read.entries) {
       if (!isSyncableWorkspacePath(entry.path) || entry.path.startsWith("shared/")) continue;
       if (!entry.objectKey.startsWith(`workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/`)) throw new Error("workspace_object_scope_mismatch");
@@ -641,6 +651,7 @@ export class ToolSandboxDO extends DurableObject {
       }));
       if (!response.ok) throw new Error(`Workspace hydration failed (${response.status}): ${entry.path}`);
       expectedHashes[entry.path] = entry.sha256;
+      hydratedBytes += stored.bytes.byteLength;
     }
     for (const grant of scope.sharedFilesystemGrants ?? []) {
       if (scope.installationScope !== "SPACE_SHARED" || !scope.installationId) throw new Error("sandbox_shared_filesystem_denied");
@@ -654,6 +665,7 @@ export class ToolSandboxDO extends DurableObject {
         }));
         if (!response.ok) throw new Error(`Shared workspace hydration failed (${response.status}): ${virtualPath}`);
         expectedHashes[virtualPath] = hash;
+        hydratedBytes += bytes.byteLength;
       }
     }
     const previous = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
@@ -679,6 +691,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     await this.ctx.storage.put("workspace_scope", scope);
     await this.ctx.storage.put("workspace_hashes", expectedHashes);
+    if (hydratedBytes) await this.updateRuntimeMetrics({ workspaceBytesHydrated: hydratedBytes });
   }
 
   private async publishWorkspaceChanges(container: ContainerRuntime, scope: SandboxWorkspaceScope, holderId: string): Promise<{ changed: number }> {
@@ -700,6 +713,8 @@ export class ToolSandboxDO extends DurableObject {
     const priorHashes = (await this.ctx.storage.get<Record<string, string>>("workspace_hashes")) ?? {};
     const paths = [...new Set([...Object.keys(priorHashes), ...currentPaths])].sort();
     const changes: WorkspacePublication["changes"] = [];
+    let capturedBytes = 0;
+    let stagedBytes = 0;
     for (const path of paths) {
       let currentBase64: string | undefined;
       if (currentPaths.has(path)) {
@@ -710,6 +725,7 @@ export class ToolSandboxDO extends DurableObject {
         if (!response.ok) throw new Error(`Workspace read failed (${response.status}): ${path}`);
         currentBase64 = (await response.json<{ files_base64: Record<string, string> }>()).files_base64[path];
         if (typeof currentBase64 !== "string") throw new Error(`Incomplete container snapshot; refusing publication: ${path}`);
+        capturedBytes += Uint8Array.from(atob(currentBase64), (character) => character.charCodeAt(0)).byteLength;
       }
       const bytes = currentBase64 === undefined ? null : Uint8Array.from(atob(currentBase64), (character) => character.charCodeAt(0));
       const digest = bytes ? await crypto.subtle.digest("SHA-256", bytes) : undefined;
@@ -720,14 +736,20 @@ export class ToolSandboxDO extends DurableObject {
       // only through the explicit path grant below.
       if (path.startsWith("shared/")) sharedObjectKey(scope, path, "write");
       const stagedKey = bytes ? `workspace-staging/${scope.spaceId}/${scope.projectId ?? "_assistant"}/${holderId}/${newHash}` : undefined;
-      if (bytes && stagedKey) await bindings.SCRIPTS_R2.put(stagedKey, bytes, { customMetadata: { sha256: newHash! }, onlyIf: { etagDoesNotMatch: "*" } });
+      if (bytes && stagedKey) {
+        await bindings.SCRIPTS_R2.put(stagedKey, bytes, { customMetadata: { sha256: newHash! }, onlyIf: { etagDoesNotMatch: "*" } });
+        stagedBytes += bytes.byteLength;
+      }
       changes.push({ path, expectedHash, newHash, ...(stagedKey ? { stagedKey } : {}) });
     }
+    if (capturedBytes || stagedBytes) await this.updateRuntimeMetrics({ workspaceBytesCaptured: capturedBytes, workspaceBytesStaged: stagedBytes });
     if (!changes.length) return { changed: 0 };
     // The journal is written before the first remote publication. Recovery completes the same
     // intended revisions, including a publication whose response was lost, before hydration.
     await this.ctx.storage.put("workspace_pending_publication", { scope, changes } satisfies WorkspacePublication);
+    const checkpointStarted = Date.now();
     await this.replayWorkspacePublication(holderId);
+    await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
     return { changed: changes.length };
   }
 
@@ -758,6 +780,7 @@ export class ToolSandboxDO extends DurableObject {
     const priorHashes = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
     const paths = [...new Set([...Object.keys(priorHashes).filter((path) => !path.startsWith("shared/")), ...currentPaths])].sort();
     const changes: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
+    let capturedBytes = 0;
     for (const path of paths) {
       let contentBase64: string | null = null;
       let newHash: string | null = null;
@@ -767,6 +790,7 @@ export class ToolSandboxDO extends DurableObject {
         contentBase64 = (await response.json<{ files_base64: Record<string, string> }>()).files_base64[path] ?? null;
         if (contentBase64 === null) throw new Error(`Incomplete container snapshot; refusing publication: ${path}`);
         const bytes = Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0));
+        capturedBytes += bytes.byteLength;
         if (bytes.byteLength > 768 * 1024) throw new Error(`workspace_file_limit_exceeded:${path}`);
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         newHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -774,6 +798,7 @@ export class ToolSandboxDO extends DurableObject {
       const expectedHash = priorHashes[path] ?? null;
       if (newHash !== expectedHash) changes.push({ path, expectedHash, contentBase64 });
     }
+    if (capturedBytes) await this.updateRuntimeMetrics({ workspaceBytesCaptured: capturedBytes });
     if (!changes.length) return { changed: 0 };
     const runtimeSession = await this.ctx.storage.get<{ id: string; fence: number; allocationGeneration: number; scope: WorkspaceScope; branch: string; parentBranch: string }>("workspace_session");
     if (!runtimeSession || JSON.stringify(runtimeSession.scope) !== JSON.stringify(identity.scope) || runtimeSession.parentBranch !== identity.branch) throw new Error("workspace_session_missing");
@@ -801,6 +826,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async stageAndCheckpointUnified(identity: WorkspaceScope, checkpoint: Record<string, unknown>): Promise<{ publication: { status?: string }; error_code?: string }> {
+    const checkpointStarted = Date.now();
     let stagedCheckpoint = checkpoint;
     if (Array.isArray(checkpoint.changes)) {
       const stageId = typeof checkpoint.stageId === "string" ? checkpoint.stageId : String(checkpoint.idempotencyKey ?? "");
@@ -809,6 +835,11 @@ export class ToolSandboxDO extends DurableObject {
         stageId, changes: checkpoint.changes,
       });
       await this.requireWorkspaceResponse(staged);
+      const stagedBytes = checkpoint.changes.reduce((total, change) => {
+        const contentBase64 = change && typeof change === "object" ? (change as { contentBase64?: unknown }).contentBase64 : undefined;
+        return total + (typeof contentBase64 === "string" ? Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0)).byteLength : 0);
+      }, 0);
+      if (stagedBytes) await this.updateRuntimeMetrics({ workspaceBytesStaged: stagedBytes });
       const { changes: _changes, ...checkpointRef } = checkpoint;
       stagedCheckpoint = { ...checkpointRef, stageId };
       await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", stagedCheckpoint);
@@ -818,6 +849,7 @@ export class ToolSandboxDO extends DurableObject {
     if (!response.ok || !result.publication || !["published", "noop"].includes(result.publication.status ?? "")) {
       throw new Error(`workspace_${result.error_code ?? result.publication?.status ?? `http_${response.status}`}`);
     }
+    await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
     return result as { publication: { status?: string }; error_code?: string };
   }
 

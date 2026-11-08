@@ -36,4 +36,30 @@ describe("project MCP Streamable HTTP endpoint", () => {
     const response = await app.request("/spaces/s/projects/foreign/mcp", { method: "POST" }, { SCRIPTS_R2: new MemoryBucket() as unknown as R2Bucket });
     expect(response.status).toBe(403);
   });
+
+  it("serves project MCP reads from the canonical manifest in unified mode", async () => {
+    const app = new Hono<{ Bindings: { SCRIPTS_R2: R2Bucket; AGENTS_WORKER: Fetcher; PLATFORM_SECRET: string; UNIFIED_WORKSPACE_ENABLED: string } }>();
+    registerProjectMcpRoutes(app, async () => null);
+    const bucket = new MemoryBucket();
+    bucket.data.set("spaces/s/projects/p/workspace/readme.md", "stale legacy text");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("canonical text"));
+    const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const objectKey = `workspace-v1/tenant/s/p/global/content/${sha256}`;
+    bucket.data.set(objectKey, "canonical text");
+    const entry = { path: "readme.md", sha256, size: 14, executable: false, objectKey };
+    const agentsWorker = { fetch: async () => Response.json({ canonical: true, head: { branch: "main", revision: 1, updatedAt: "2026-11-08T00:00:00Z" }, entries: [entry] }) } as unknown as Fetcher;
+    const env = { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret", UNIFIED_WORKSPACE_ENABLED: "true" };
+    const rpc = (name: string, args: Record<string, unknown>) => app.request("/spaces/s/projects/p/mcp", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+    }, env);
+    const read = await (await rpc("readWorkspaceFile", { path: "readme.md" })).json() as any;
+    expect(read.result.content[0].text).toContain("canonical text");
+    expect(read.result.content[0].text).not.toContain("stale legacy text");
+    const list = await (await rpc("listDirectory", {})).json() as any;
+    expect(list.result.content[0].text).toContain("readme.md");
+    const patch = await (await rpc("runAstPatch", { path: "readme.md", oldText: "canonical", newText: "changed" })).json() as any;
+    expect(patch.result.isError).toBe(true);
+    expect(bucket.data.get("spaces/s/projects/p/workspace/readme.md")).toBe("stale legacy text");
+  });
 });

@@ -101,6 +101,9 @@ import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../scr
 import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "../script-engine/project-memory-client.js";
 import { parseJournal, renderJournal, emptyJournal, journalKey, appendActivity } from "../script-engine/project-journal.js";
 import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "../script-engine/r2-cas.js";
+import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
+import type { WorkspaceScope } from "../workspace/workspace-contract.js";
+import { withWorkspaceManifestRead } from "../script-engine/workspace-r2-compat.js";
 import {
   buildConversationContext,
   messagesToSummarize,
@@ -2293,6 +2296,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(projectId ? { projectId } : {}),
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    const unifiedWorkspaceBindings = this.env as unknown as {
+      UNIFIED_WORKSPACE_ENABLED?: string;
+      WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+      DATA_JURISDICTION?: "eu";
+      PLATFORM_SECRET: string;
+    };
+    if (projectId && unifiedWorkspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true") {
+      const scope: WorkspaceScope = {
+        tenantId, spaceId, projectId,
+        jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
+      };
+      env.workspaceManifestRead = async () => {
+        const branch = workspaceBranch ?? "main";
+        const response = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`workspace_read_failed:${response.status}`);
+        return response.json() as Promise<{ head: { branch: string; revision: number; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> }>;
+      };
+      const compatibilityBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+      env.scriptsBucket = compatibilityBucket;
+      env.workspaceBucket = compatibilityBucket;
+    }
     env.assistantChannelAllowed = async channel => {
       const query=new URLSearchParams({...userId?{actor_id:userId}:{},...projectId?{project_id:projectId}:{}});
       const response=await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/assistant-channels?${query}`,{headers:{"x-naelao-tenant-id":tenantId,"x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,tenantId)}}));

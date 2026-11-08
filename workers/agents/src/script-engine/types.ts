@@ -1012,6 +1012,12 @@ export interface ScriptEngineEnv {
   /** R2 bucket for the agent's persistent workspace (spaces/{spaceId}/workspace/...).
    *  Defaults to scriptsBucket when not separately provisioned. */
   workspaceBucket?: R2Bucket;
+  /** Read-only canonical manifest adapter for project workspaces during unified-mode transition.
+   *  Legacy R2 reads are used only until the coordinator creates its first branch head. */
+  workspaceManifestRead?: () => Promise<{
+    head: { branch: string; revision: number; updatedAt: string };
+    entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }>;
+  } | null>;
   /** Host-provided multimodal analyzer. Media bytes never leave through the text reasoner. */
   videoSkillAnalyzer?: {
     analyze(input: { data: ArrayBuffer; contentType: string; description?: string }): Promise<VideoSkillAction[]>;

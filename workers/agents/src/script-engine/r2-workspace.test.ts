@@ -9,15 +9,19 @@ import {
 } from "./r2-workspace.js";
 import { workspacePrefix } from "./types.js";
 import { codeExec } from "./prebuilt/code-exec.js";
+import { r2Workspace } from "./prebuilt/r2-workspace.js";
+import { withWorkspaceManifestRead } from "./workspace-r2-compat.js";
 
 function createMockEnv() {
   const store = new Map();
   const metadata = new Map();
   const etags = new Map();
+  const getCalls: string[] = [];
   const mockBucket = {
     get: async (key) => {
+      getCalls.push(key);
       const data = store.get(key);
-      return data ? { arrayBuffer: async () => data.buffer } : null;
+      return data ? { size: data.byteLength, arrayBuffer: async () => data.buffer } : null;
     },
     head: async (key) => store.has(key) ? { customMetadata: metadata.get(key), etag: etags.get(key) } : null,
     put: async (key, value, options) => {
@@ -42,6 +46,7 @@ function createMockEnv() {
 
   return {
     store,
+    getCalls,
     scriptsBucket: mockBucket,
     workspaceBucket: mockBucket,
     spaceId: "space-1",
@@ -94,6 +99,43 @@ describe("R2 Virtual POSIX Workspace", () => {
     await expect(virtualFsWrite(env, "docs/readme.md", "clobber", null)).rejects.toThrow("Conflict Error");
     await virtualFsDelete(env, "docs/readme.md", await hash("hello world"));
     expect(await virtualFsRead(env, "docs/readme.md")).toBeNull();
+  });
+
+  it("reads the coordinator manifest instead of stale per-file objects in unified mode", async () => {
+    const env = createMockEnv();
+    const legacyKey = `${workspacePrefix(env)}docs/readme.md`;
+    const content = new TextEncoder().encode("canonical revision");
+    const digest = await hash("canonical revision");
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(legacyKey, new TextEncoder().encode("stale legacy value"));
+    env.store.set(objectKey, content);
+    env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 3, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [
+      { path: "docs/readme.md", sha256: digest, size: content.byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+
+    const ctx = { env, run: async () => undefined } as never;
+    const read = await r2Workspace.operations.read_file({ path: "docs/readme.md" }, ctx) as { content: string; hash: string };
+    expect(read).toMatchObject({ content: "canonical revision", hash: digest });
+    expect(env.getCalls).not.toContain(legacyKey);
+    expect(await r2Workspace.operations.list_directory({}, ctx)).toMatchObject({ files: [{ key: legacyKey, size: content.byteLength }] });
+    await expect(r2Workspace.operations.write_file({ path: "docs/readme.md", content: "unsafe stale write", expectedHash: digest }, ctx))
+      .rejects.toThrow("Conflict Error");
+    await expect(r2Workspace.operations.write_file({ path: "docs/new.txt", content: "unsafe legacy create", expectedHash: null }, ctx))
+      .rejects.toThrow("Conflict Error");
+    expect(new TextDecoder().decode(env.store.get(legacyKey))).toBe("stale legacy value");
+    expect(env.store.has(`${workspacePrefix(env)}docs/new.txt`)).toBe(false);
+  });
+
+  it("does not fall back to a stale legacy value when the canonical reader fails", async () => {
+    const env = createMockEnv();
+    const legacyKey = `${workspacePrefix(env)}docs/readme.md`;
+    env.store.set(legacyKey, new TextEncoder().encode("stale legacy value"));
+    env.workspaceManifestRead = async () => { throw new Error("workspace_read_failed:503"); };
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
+    await expect(r2Workspace.operations.read_file({ path: "docs/readme.md" }, { env, run: async () => undefined } as never))
+      .rejects.toThrow("workspace_read_failed:503");
+    expect(env.getCalls).not.toContain(legacyKey);
   });
 
   it("supports virtual in-isolate grepping without container execution", async () => {

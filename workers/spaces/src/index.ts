@@ -3,6 +3,7 @@ import { standingBlackboardPeer } from "./blackboard-sharing.js";
 import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
+import { readWorkspaceCompat } from "./workspace-compat.js";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
@@ -72,6 +73,7 @@ export interface Env {
   ENVIRONMENT: string;
   NAELAO_DASHBOARD_TENANT_ID?: string;
   DATA_JURISDICTION?: "eu";
+  UNIFIED_WORKSPACE_ENABLED?: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
@@ -2977,7 +2979,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 /** Read one workspace object: text inline, a viewable binary as base64, else a binary marker. */
-async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise<Response> {
+async function readWorkspaceObject(obj: R2ObjectBody, relative: string, expected?: { sha256: string; size: number }): Promise<Response> {
   if (obj.size > WORKSPACE_MAX_FILE_BYTES) {
     return Response.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
   }
@@ -2985,6 +2987,13 @@ async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise
   const bytes = await obj.arrayBuffer();
   if (bytes.byteLength !== obj.size || bytes.byteLength > WORKSPACE_MAX_FILE_BYTES) {
     return Response.json({ path: relative, size: obj.size, error_code: "workspace_file_changed_during_read" }, { status: 409 });
+  }
+  if (expected) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const sha256 = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    if (obj.size !== expected.size || sha256 !== expected.sha256) {
+      return Response.json({ path: relative, error_code: "workspace_content_integrity_failed" }, { status: 503 });
+    }
   }
   if (contentType) {
     const b64 = arrayBufferToBase64(bytes);
@@ -3002,6 +3011,13 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true", agentsWorker: c.env.AGENTS_WORKER,
+    platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
+  if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  if (compat.kind === "canonical") {
+    const files = compat.entries.map((entry) => ({ path: entry.path, size: entry.size, uploaded: compat.head.updatedAt }));
+    return c.json({ data: files, count: files.length, truncated: false, branch: compat.head.branch, revision: compat.head.revision }, 200, { "cache-control": "no-store" });
+  }
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
   const files: Array<{ path: string; size: number; uploaded: string }> = [];
@@ -3029,12 +3045,22 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
-  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
-  const prefix = workspaceKeyPrefix(spaceId, projectId);
   const rest = c.req.path.split("/workspace/files/")[1] ?? "";
   // Collapse any .. traversal server-side; the key must stay inside the project's own prefix.
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true", agentsWorker: c.env.AGENTS_WORKER,
+    platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, path: relative, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
+  if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  if (compat.kind === "canonical") {
+    const entry = compat.entries.find((candidate) => candidate.path === relative);
+    if (!entry) return c.json({ error_code: "not_found", message: "File not found" }, 404, { "cache-control": "no-store" });
+    const object = await c.env.SCRIPTS_R2?.get(entry.objectKey);
+    if (!object) return c.json({ error_code: "workspace_content_unavailable" }, 503, { "cache-control": "no-store" });
+    return readWorkspaceObject(object, relative, { sha256: entry.sha256, size: entry.size });
+  }
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
+  const prefix = workspaceKeyPrefix(spaceId, projectId);
   const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
   if (!obj || obj.customMetadata?.deleted === "true") return c.json({ error_code: "not_found", message: "File not found" }, 404);
   return readWorkspaceObject(obj, relative);

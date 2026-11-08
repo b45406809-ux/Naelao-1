@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { putBytesCas, readBytesWithHash } from "../../../agents/src/script-engine/r2-cas.js";
+import { readWorkspaceCompat } from "../workspace-compat.js";
 
 type RpcId = string | number | null;
 type RpcRequest = { jsonrpc?: string; id?: RpcId; method?: string; params?: Record<string, unknown> };
@@ -28,7 +29,7 @@ function rpcError(id: RpcId | undefined, code: number, message: string): Respons
 /** Register the stateless Streamable HTTP MCP endpoint. Authentication is supplied by the
  * spaces worker's normal internal-HMAC gate; authorizeProject additionally enforces the target
  * project's ACL for every request, including calls made by another project. */
-export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket }>(
+export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AGENTS_WORKER?: Fetcher; PLATFORM_SECRET?: string; UNIFIED_WORKSPACE_ENABLED?: string; DATA_JURISDICTION?: "eu" }>(
   app: Hono<{ Bindings: Env }>,
   authorizeProject: (c: any, spaceId: string, projectId: unknown) => Promise<Response | null>,
 ): void {
@@ -49,17 +50,48 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket }>(
     const args = (request.params?.["arguments"] && typeof request.params["arguments"] === "object" ? request.params["arguments"] : {}) as Record<string, unknown>;
     const prefix = `spaces/${spaceId}/projects/${projectId}/workspace/`;
     try {
+      const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+      const workspaceTool = ["readWorkspaceFile", "listDirectory", "runAstPatch"].includes(tool);
+      const compatibility = workspaceTool ? await readWorkspaceCompat({
+        enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true",
+        agentsWorker: c.env.AGENTS_WORKER,
+        platformSecret: c.env.PLATFORM_SECRET ?? "",
+        tenantId,
+        spaceId,
+        projectId,
+        jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global",
+        ...(tool === "readWorkspaceFile" && typeof args["path"] === "string" ? { path: safePath(args["path"]) } : {}),
+      }) : { kind: "legacy" as const };
+      if (compatibility.kind === "error") throw new Error("canonical workspace read unavailable");
       let value: unknown;
       if (tool === "readWorkspaceFile") {
-        const key = prefix + safePath(args["path"]);
-        const object = await readBytesWithHash(c.env.SCRIPTS_R2, key);
+        const path = safePath(args["path"]);
+        const entry = compatibility.kind === "canonical" ? compatibility.entries.find((candidate) => candidate.path === path) : undefined;
+        const object = compatibility.kind === "canonical"
+          ? entry ? await readBytesWithHash(c.env.SCRIPTS_R2, entry.objectKey) : null
+          : await readBytesWithHash(c.env.SCRIPTS_R2, prefix + path);
         if (!object) throw new Error("file not found");
+        if (compatibility.kind === "canonical" && (object.hash !== entry?.sha256 || object.bytes.byteLength !== entry.size)) throw new Error("canonical workspace content integrity check failed");
         value = { content: new TextDecoder().decode(object.bytes), etag: object.etag };
       } else if (tool === "listDirectory") {
         const path = args["path"] ? `${safePath(args["path"]).replace(/\/$/, "")}/` : "";
-        const listing = await c.env.SCRIPTS_R2.list({ prefix: prefix + path, delimiter: "/", limit: 1000 });
-        value = { files: listing.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
+        if (compatibility.kind === "canonical") {
+          const files = new Set<string>();
+          const directories = new Set<string>();
+          for (const entry of compatibility.entries) {
+            if (!entry.path.startsWith(path)) continue;
+            const remainder = entry.path.slice(path.length);
+            const slash = remainder.indexOf("/");
+            if (slash < 0) files.add(remainder);
+            else directories.add(remainder.slice(0, slash + 1));
+          }
+          value = { files: [...files].sort(), directories: [...directories].sort() };
+        } else {
+          const listing = await c.env.SCRIPTS_R2.list({ prefix: prefix + path, delimiter: "/", limit: 1000 });
+          value = { files: listing.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
+        }
       } else if (tool === "runAstPatch") {
+        if (compatibility.kind === "canonical") throw new Error("workspace patch requires checked coordinator publication");
         const key = prefix + safePath(args["path"]);
         const oldText = String(args["oldText"] ?? "");
         if (!oldText) throw new Error("oldText is required");

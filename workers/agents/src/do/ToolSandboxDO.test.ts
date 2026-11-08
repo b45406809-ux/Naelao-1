@@ -172,10 +172,12 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     } as never);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
+      const testExecutionId = headers.get("x-test-execution-id");
+      headers.delete("x-test-execution-id");
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", ...(options.workspaceProject ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
         ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
-        executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
+        executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
@@ -515,6 +517,28 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect([...storage.values()].some(value => value?.status === "indeterminate")).toBe(true);
   });
 
+  it("suspension force-stops the active runtime without publishing past its checked branch", async () => {
+    const { sandbox, coordinator, setTenantActive, executionStarted, mockContainer } = await createTestSandbox({ platformDb: true, unifiedWorkspace: true, workspaceProject: true, hangExecution: true, timeoutMs: 5000, runId: "suspended-run" });
+    await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "drafts/suspend.txt": "already checkpointed" }, expected_hashes: { "drafts/suspend.txt": null } }),
+    }));
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: JSON.stringify({ code: "export async function run() { return true; }" }) }));
+    await executionStarted;
+    setTenantActive(false);
+    await sandbox.alarm();
+    expect((await execution).status).toBe(409);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = (branch: string) => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {}).then(result => result.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("suspended-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(await read("main")).toMatchObject({ head: { revision: 1 }, entries: [] });
+    expect(await read(`runs/${runHash.slice(0, 32)}`)).toMatchObject({ head: { revision: 2 }, entries: [{ path: "drafts/suspend.txt" }] });
+  });
+
   it("stays warm before 60s and snapshots then hibernates at 60s", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
@@ -531,7 +555,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("routes an internal project sandbox checkpoint through the atomic workspace coordinator when enabled", async () => {
-    const { sandbox, coordinator, r2Objects } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
+    const { sandbox, coordinator, r2Objects, storage } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
     const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "notes/result.txt": "committed from container" }, expected_hashes: { "notes/result.txt": null } }),
@@ -553,6 +577,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(runBranch.head?.revision).toBe(2);
     expect(runBranch.entries).toMatchObject([{ path: "notes/result.txt" }]);
     expect(r2Objects.has(runBranch.entries![0]!.objectKey)).toBe(true);
+    expect(storage.get("container_runtime_metrics")).toMatchObject({ workspaceBytesCaptured: 24, workspaceBytesStaged: 24, workspaceCheckpoints: 1 });
   });
 
   it("merges a completed run branch into its requested branch only after checked publication", async () => {
@@ -575,5 +600,67 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(completed.status).toBe(200);
     expect(await completed.json()).toMatchObject({ ok: true, status: "completed" });
     expect(await read()).toMatchObject({ head: { revision: 2 }, entries: [{ path: "src/result.txt" }] });
+  });
+
+  it("flushes a blocked run to its isolated branch without merging it into main", async () => {
+    const { sandbox, coordinator } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "blocked-run" });
+    await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "drafts/blocked.txt": "preserved" }, expected_hashes: { "drafts/blocked.txt": null } }),
+    }));
+    const response = await sandbox.fetch(new Request("https://sandbox/lifecycle", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "blocked", tenantId: "tenant", spaceId: "space", projectId: "project" }),
+    }));
+    expect(response.status).toBe(200);
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = (branch: string) => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {}).then(result => result.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("blocked-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(await read("main")).toMatchObject({ head: { revision: 1 }, entries: [] });
+    expect(await read(`runs/${runHash.slice(0, 32)}`)).toMatchObject({ head: { revision: 2 }, entries: [{ path: "drafts/blocked.txt" }] });
+  });
+
+  it("cancels an active execution while retaining its checked run branch and leaving main unchanged", async () => {
+    const { sandbox, coordinator, executionStarted, mockContainer } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, hangExecution: true, timeoutMs: 5000, runId: "cancel-run" });
+    await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "drafts/cancelled.txt": "staged before cancel" }, expected_hashes: { "drafts/cancelled.txt": null } }),
+    }));
+    const executionId = "exec-cancel-1";
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", headers: { "x-test-execution-id": executionId }, body: JSON.stringify({ code: "export async function run() { return true; }" }) }));
+    await executionStarted;
+    const cancelled = await sandbox.fetch(new Request("https://sandbox/cancel", { method: "POST", headers: { "x-test-execution-id": executionId } }));
+    expect(cancelled.status).toBe(200);
+    expect((await execution).status).toBe(409);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = (branch: string) => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {}).then(result => result.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cancel-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(await read("main")).toMatchObject({ head: { revision: 1 }, entries: [] });
+    expect(await read(`runs/${runHash.slice(0, 32)}`)).toMatchObject({ head: { revision: 2 }, entries: [{ path: "drafts/cancelled.txt" }] });
+  });
+
+  it("reopens a new checked session after a cold runtime replacement", async () => {
+    const { sandbox, storage, mockContainer } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "replacement-run" });
+    await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "src/before-replacement.txt": "persisted" }, expected_hashes: { "src/before-replacement.txt": null } }),
+    }));
+    const prior = storage.get("workspace_session");
+    await mockContainer.destroy();
+    const next = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "src/after-replacement.txt": "new generation" }, expected_hashes: { "src/after-replacement.txt": null } }),
+    }));
+    expect(next.status, await next.clone().text()).toBe(200);
+    expect(storage.get("workspace_runtime_generation")).toBe(2);
+    expect(storage.get("workspace_session").id).not.toBe(prior.id);
+    expect(storage.get("workspace_session").generation).toBe(2);
   });
 });

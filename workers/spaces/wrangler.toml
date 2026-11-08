@@ -33,6 +33,7 @@ dataset = "naelao_agent_events"
 
 [vars]
 ENVIRONMENT = "development"
+UNIFIED_WORKSPACE_ENABLED = "false"
 # Public base URL of apps/shell, used to build a clickable email-verification link
 # ("${base}/p/{slug}/verify-email?token=..."). Was left empty deliberately rather than guessing a
 # production domain — the verification email still carried a raw token either way, and the
@@ -196,7 +197,7 @@ service = "naelao-knowledge"
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
 # entirely, so PRODUCT_SHELL_URL must be repeated here or it's undefined in staging. Override
 # with the real staging shell URL once one is deployed.
-vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "" }
+vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "", UNIFIED_WORKSPACE_ENABLED = "false" }
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
@@ -219,7 +220,7 @@ service = "naelao-knowledge"
 # worker use bare `wrangler deploy` (top-level [vars]), not --env production (item 83's own
 # documented convention for naelao-agents applies here too) — kept in sync anyway so a future
 # --env production deploy doesn't silently regress to an empty PRODUCT_SHELL_URL.
-vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev" }
+vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev", UNIFIED_WORKSPACE_ENABLED = "false" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
