@@ -69,6 +69,8 @@ const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CONTENT_GC_LOCK_MS = 10 * 60 * 1000;
 const CONTENT_GC_CLAIM_MS = 2 * 60 * 1000;
 const CONTENT_GC_ENTRY_BATCH = 100;
+const WORKSPACE_MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const WORKSPACE_MAINTENANCE_RETRY_MS = 60 * 1000;
 const REVISION_EVENT_RETENTION = 500;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -134,10 +136,46 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    const gc = await this.ctx.storage.get<ContentGcState>("content_gc");
-    if (gc && gc.lockUntil > Date.now()) await this.collectContent(true);
-    await this.collectMetadata();
-    await this.scheduleMetadataExpiry();
+    const startedAt = Date.now();
+    const previous = await this.ctx.storage.get<{ failures: number }>("workspace_gc_status") ?? { failures: 0 };
+    try {
+      const gc = await this.ctx.storage.get<ContentGcState>("content_gc");
+      let contentResult: Response | undefined;
+      // Resume an interrupted sweep, or start the one-time legacy backfill/sweep. Further
+      // full sweeps are operator kicked through the authenticated maintenance route.
+      if (gc && gc.lockUntil > Date.now()) contentResult = await this.collectContent(true);
+      else if (!await this.ctx.storage.get<boolean>("content_gc_backfill_complete")) contentResult = await this.collectContent(false);
+      if (contentResult && !contentResult.ok) throw new Error(`content:${contentResult.status}:${(await contentResult.clone().text()).slice(0, 200)}`);
+
+      const cursor = await this.ctx.storage.get<string>("staging_gc_cursor");
+      const recordCursor = await this.ctx.storage.get<string>("staging_gc_record_cursor");
+      const stageResult = await this.collectStaging({ cursor, recordCursor });
+      if (!stageResult.ok) throw new Error(`staging:${stageResult.status}:${(await stageResult.clone().text()).slice(0, 200)}`);
+      const stageBody = await stageResult.json<{ cursor?: string | null; recordCursor?: string | null; hasMore?: boolean }>();
+      if (stageBody.hasMore && typeof stageBody.cursor === "string") await this.ctx.storage.put("staging_gc_cursor", stageBody.cursor);
+      else await this.ctx.storage.delete("staging_gc_cursor");
+      if (stageBody.hasMore && typeof stageBody.recordCursor === "string") await this.ctx.storage.put("staging_gc_record_cursor", stageBody.recordCursor);
+      else await this.ctx.storage.delete("staging_gc_record_cursor");
+
+      const metadataResult = await this.collectMetadata();
+      if (!metadataResult.ok) throw new Error(`metadata:${metadataResult.status}`);
+      const hasMore = stageBody.hasMore || Boolean(await this.ctx.storage.get("content_gc"));
+      await this.ctx.storage.put("workspace_gc_status", {
+        status: hasMore ? "running" : "complete", startedAt: new Date(startedAt).toISOString(),
+        ...(hasMore ? {} : { completedAt: new Date().toISOString() }), failures: 0,
+        ...(stageBody.hasMore ? { stagingHasMore: true } : {}),
+      });
+      await this.ctx.storage.setAlarm(Date.now() + (hasMore ? 1_000 : WORKSPACE_MAINTENANCE_INTERVAL_MS));
+      await this.scheduleMetadataExpiry();
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : "workspace_gc_failed";
+      await this.ctx.storage.put("workspace_gc_status", {
+        status: "failed", failedAt: new Date().toISOString(), startedAt: new Date(startedAt).toISOString(),
+        failures: previous.failures + 1, error: message,
+      });
+      console.error(`[workspace-gc] maintenance failed scope=${(await this.ctx.storage.get<WorkspaceScope>("scope"))?.spaceId ?? "unknown"} retry=${previous.failures + 1}: ${message}`);
+      await this.ctx.storage.setAlarm(Date.now() + WORKSPACE_MAINTENANCE_RETRY_MS);
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -151,6 +189,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method !== "POST" && await this.ctx.storage.get<boolean>("erased")) return fail("workspace_erased", 410);
     if (request.method === "POST" && url.pathname !== "/v1/erase" && await this.ctx.storage.get<boolean>("erased")) return fail("workspace_erased", 410);
     if (request.method === "POST" && url.pathname === "/v1/erase") return this.erase(body!, tenantId);
+    // Every known workspace gets a durable maintenance alarm. This turns the authenticated
+    // coordinator access path into the bounded scheduler roster without a second, stale D1
+    // registry of project identities.
+    if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     if (request.method === "POST" && url.pathname === "/v1/initialize") return this.initialize(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/open") return this.open(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/renew") return this.renew(body!);
@@ -165,6 +207,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/v1/gc/staging") return this.collectStaging(body!);
     if (request.method === "POST" && url.pathname === "/v1/gc/metadata") return this.collectMetadata();
     if (request.method === "POST" && url.pathname === "/v1/gc/content") return this.collectContent(false);
+    if (request.method === "GET" && url.pathname === "/v1/gc/status") return json(await this.ctx.storage.get("workspace_gc_status") ?? { status: "not_scheduled" });
     if (request.method === "POST" && url.pathname === "/v1/handoff") return this.handoff(body!);
     if (request.method === "POST" && url.pathname === "/v1/close") return this.close(body!);
     return fail("not_found", 404);
@@ -220,6 +263,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (createdManifestKey) await this.env.SCRIPTS_R2!.delete(createdManifestKey);
       return result === "erased" ? fail("workspace_erased", 410) : result === "gc_busy" ? fail("workspace_gc_in_progress", 423) : fail("workspace_head_exists", 409);
     }
+    if (result === "created") await this.ctx.storage.setAlarm(Date.now() + 1_000);
     return json({ head: result === "created" ? head : await this.ctx.storage.get<WorkspaceHead>(headKey(branch)), created: result === "created" });
   }
 
@@ -745,6 +789,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const cursor = typeof body.cursor === "string" && body.cursor.length <= 1024 ? body.cursor : undefined;
     const prefix = stagingPrefix(scope);
     const page = await this.env.SCRIPTS_R2!.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+    if (page.truncated && !page.cursor) return fail("workspace_gc_staging_cursor_missing", 503);
     const deleteKeys: string[] = [];
     const deleteRecords = new Set<string>();
     for (const object of page.objects) {
@@ -768,7 +813,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     // Stages containing only deletes (or an empty change set) have metadata but no R2 object to
     // discover above. Sweep their records independently so retries and long-lived workspaces do
     // not accumulate coordinator keys forever.
-    const stageRecords = await this.ctx.storage.list<StageRecord>({ prefix: "stage:", limit: 1000 });
+    const recordCursor = typeof body.recordCursor === "string" && body.recordCursor.length <= 1024 ? body.recordCursor : undefined;
+    const stageRecords = await this.ctx.storage.list<StageRecord>({ prefix: "stage:", ...(recordCursor ? { startAfter: recordCursor } : {}), limit: 1000 });
     let recordsDeleted = 0;
     for (const [key, stage] of stageRecords) {
       const createdAt = Date.parse(stage.createdAt);
@@ -783,7 +829,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         recordsDeleted++;
       }
     }
-    return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: page.truncated ? page.cursor ?? null : null, hasMore: page.truncated });
+    const nextRecordCursor = stageRecords.size === 1000 ? [...stageRecords.keys()].at(-1) ?? null : null;
+    return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: page.truncated ? page.cursor ?? null : null, recordCursor: nextRecordCursor, hasMore: page.truncated || nextRecordCursor !== null });
   }
 
   /** Expiry indexes are ordered by deadline so each invocation performs a bounded sweep. */

@@ -28,7 +28,7 @@ class Storage {
 function setup(options: { liveEnabled?: boolean } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
-  const r2 = {
+  const r2: Record<string, (...args: never[]) => unknown> = {
     async get(key: string) {
       const bytes = objects.get(key);
       return bytes ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null;
@@ -46,10 +46,10 @@ function setup(options: { liveEnabled?: boolean } = {}) {
       return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated: matching.length > selected.length, cursor: selected.at(-1) };
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
-  } as unknown as R2Bucket;
-  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false" };
+  };
+  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
-  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects };
+  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, r2 };
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
@@ -60,6 +60,25 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
+  it("schedules bounded maintenance and records retryable failures", async () => {
+    const { instance, storage, r2 } = setup();
+    const initialized = await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    expect(initialized.status).toBe(200);
+    expect(storage.alarmAt).not.toBeNull();
+
+    const originalList = r2.list;
+    r2.list = async (..._args: never[]) => { throw new Error("simulated R2 list failure"); };
+    await instance.alarm();
+    expect(await storage.get("workspace_gc_status")).toMatchObject({ status: "failed", failures: 1, error: expect.stringContaining("content:") });
+    expect(await (await call(instance, "/v1/gc/status")).json()).toMatchObject({ status: "failed", failures: 1 });
+    expect(storage.alarmAt).toBeGreaterThan(Date.now());
+
+    r2.list = originalList;
+    for (let attempts = 0; attempts < 15 && (await storage.get<{ status: string }>("workspace_gc_status"))?.status !== "complete"; attempts++) await instance.alarm();
+    expect(await storage.get("workspace_gc_status")).toMatchObject({ status: "complete", failures: 0 });
+    expect(storage.values.has("content_gc_backfill_complete")).toBe(true);
+  });
+
   it("defaults sessions to checked handoff and publishes a complete revision with an idempotent receipt", async () => {
     const { instance, objects } = setup();
     const first = new TextEncoder().encode("one");
@@ -251,6 +270,35 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(objects.size).toBe(0);
     expect((await call(instance, "/v1/head?branch=main")).status).toBe(410);
     expect(await (await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).json()).toMatchObject({ error_code: "workspace_erased" });
+  });
+
+  it("removes a content PUT that finishes after the erasure sweep", async () => {
+    const { instance, objects, r2: bucket } = setup();
+    const r2 = bucket as unknown as R2Bucket;
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
+    const { session } = await opened.json() as { session: { id: string } };
+    let signalUploadEntered!: () => void;
+    let releaseUpload!: () => void;
+    const uploadEntered = new Promise<void>((resolve) => { signalUploadEntered = resolve; });
+    const uploadRelease = new Promise<void>((resolve) => { releaseUpload = resolve; });
+    const originalPut = r2.put.bind(r2);
+    vi.spyOn(r2, "put").mockImplementation(async (...args) => {
+      if (args[0].includes("/content/")) {
+        signalUploadEntered();
+        await uploadRelease;
+      }
+      return originalPut(...args);
+    });
+    const checkpoint = call(instance, "/v1/checkpoint", {
+      sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "erase-upload-race",
+      changes: [{ path: "late.txt", expectedHash: null, contentBase64: btoa("late upload") }],
+    });
+    await uploadEntered;
+    expect((await call(instance, "/v1/erase", { scope, confirm: true })).status).toBe(200);
+    releaseUpload();
+    expect((await checkpoint).status).toBe(410);
+    expect([...objects.keys()].some((key) => key.startsWith(`workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/`))).toBe(false);
   });
 
   it("rejects stale allocation generations, unsafe paths, and a second live writer", async () => {

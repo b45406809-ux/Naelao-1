@@ -530,10 +530,11 @@ app.post("/internal/workspaces/gc", async (c) => {
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
   const path = body.operation === "content" ? "/v1/gc/content"
     : body.operation === "metadata" ? "/v1/gc/metadata"
-      : body.operation === "staging" ? "/v1/gc/staging" : null;
+      : body.operation === "staging" ? "/v1/gc/staging"
+        : body.operation === "status" ? "/v1/gc/status" : null;
   if (!path) return c.json({ error_code: "invalid_workspace_gc_operation" }, 400);
   const requestBody = body.operation === "staging" ? { before: body.before, cursor: body.cursor } : {};
-  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, path, { body: requestBody });
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, path, { method: body.operation === "status" ? "GET" : "POST", ...(body.operation === "status" ? {} : { body: requestBody }) });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
 app.all("/internal/sandbox-workspaces/*", (c) => handleSandboxWorkspaceBridge(c.req.raw, c.env));

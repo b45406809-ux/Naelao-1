@@ -36,12 +36,22 @@ Implementation has started through Phase 3. None of these phases is complete or 
 - Wrangler dry-run passes for Workflows and Sandboxes. Agents dry-run reached Docker image construction but failed because the execution environment ran out of disk space. Spaces has no package `build` script; its typecheck passes.
 - `git diff --check` passes. No live deployment or provider acceptance has been run.
 
+### 2026-11-08 Phase 1 continuation
+
+- Added coordinator-alarm maintenance for initialized workspace scopes. The alarm advances one bounded content-GC step, one bounded staging page (with independent R2 and Durable Object-storage cursors), and a bounded metadata expiry page. It resumes content GC from persisted state, records `running`/`complete`/`failed` status, logs scoped failures, and schedules an explicit one-minute retry. `/internal/workspaces/gc` now supports authenticated `operation: "status"` for querying a known scope. New initialization schedules the first alarm; existing scopes schedule maintenance when reached through the authenticated coordinator.
+- Added a focused mock test for automatic alarm setup and recorded retry recovery, plus an R2 content-upload-versus-erasure race test. The test holds the content PUT until the coordinator erasure sweep has completed, then verifies the transaction rejects and removes the late object. Existing serialized checkpoint race, GC write-fence, erased-tombstone, and workflow erasure paging tests were also rerun.
+- Fresh verification: `WorkspaceCoordinatorDO.test.ts` **18 passed**; `ToolSandboxDO.test.ts` **24 passed**; workflow `erasure-cleanup.test.ts` **16 passed**. Agents typecheck passed after building `@agentport/sdk`; Workflows typecheck passed after building `@naelao/http`. The normal pnpm wrapper initially blocked on the existing lockfile/root-overrides mismatch. Dependencies were installed with `--lockfile=false`; the lockfile remains unchanged. These tests use in-memory R2/DO mocks and are not deployed runtime validation. `git diff --check` passes.
+- Authoritative docs checked directly on 2026-11-08: Cloudflare Durable Object alarms are at-least-once and retry thrown handler failures with bounded exponential retries; R2 cursors are opaque and `truncated` determines continuation; DO rules warn that awaited external operations permit request interleaving. The code's in-memory bucket and storage mocks do not validate Cloudflare cursor, transaction, alarm, or deletion behavior. No deployed validation was performed.
+- Added a source-audit inventory to the linked plan for canonical reads/writes and remaining R2/CAS, snapshot bridge, and repository-reconciliation legacy paths. This is not a complete caller migration audit.
+
 ### Remaining Phase 1 work
 
-- The first content sweep requires an authenticated maintenance kick per workspace; once started, DO alarms continue the bounded operation. Schedule these kicks and monitor completion/errors at the platform level.
+- Add deterministic tests for delayed/ambiguous R2 PUT completion versus GC marking and pointer publication. The upload-versus-erasure case now passes, but it does not cover the GC sweep race.
+- Validate transaction interleaving and R2 cursor/deletion behavior against Miniflare or a deployed disposable namespace. Existing transaction and erasure tests use mocks and do not close these races.
+- Exercise the alarm/status path against deployed Agents + Durable Object + R2 bindings, including retry delivery, jurisdiction, maintenance status polling, and slow/failing object pages. Per-workspace self-scheduling is source-implemented only; it is not evidence of deployed scheduling.
 - Revision manifests and retained revision pointers are intentionally kept without an age/count limit so historical reads remain possible. Define the product's artifact-history retention policy before adding history pruning; current GC safely preserves every retained revision.
 - Validate the new paginated coordinator-erasure flow against the deployed Spaces, Agents, Durable Object, and R2 services, including archived projects, space assistants, and space-wide extension scopes. A mocked workflow test cannot establish deployed binding or jurisdiction behavior.
-- Ensure every canonical write path and read client is inventoried; the legacy workspace paths remain active until the later migration phase.
+- Complete a caller-by-caller audit of canonical reads/writes and decide which legacy R2/CAS and per-file snapshot paths must migrate before a pilot. Inventory is documented in the plan, but legacy paths remain active.
 - Validate allocation generation advancement on real container replacement, duplicate changed-payload staging keys, failed manifest upload, and Cloudflare DO transaction/alarms plus R2 cursor semantics in Miniflare or deployed smoke tests.
 
 ## Phase 2 — Internal ToolSandbox vertical slice
@@ -87,9 +97,10 @@ Implementation has started through Phase 3. None of these phases is complete or 
 
 ## Current next actions
 
-1. Schedule authenticated content/staging GC kicks for each workspace, and validate coordinator GC/erasure against deployed DO/R2 cursor and transaction behavior.
-2. Keep artifact history unpruned until a product retention policy is approved; retain historical revisions and content safely meanwhile.
-3. Ensure every canonical read/write path is inventoried before enabling the coordinator; legacy readers still exist.
-4. Connect Agent37 to an atomic checked workspace adapter; run real provider lifecycle, billing, generation, file API, and indeterminate-execution acceptance with an authorized disposable account.
-5. Re-run the Agents Wrangler dry-run after freeing build space, then run deployed runtime, billing, isolation, teardown, binary-file, and crash tests. Keep both rollout flags disabled until the runtime gates pass.
-6. Do not begin Phase 4 client migration until the above Phase 1–3 gates are closed or explicitly accepted as deployment-only blockers.
+1. Add delayed/ambiguous R2 PUT versus content-GC marking and pointer publication tests, then test the transaction interleavings in Miniflare or a deployed disposable namespace.
+2. Validate the per-workspace authenticated alarm scheduler and GC/erasure against deployed DO/R2 cursor, transaction, deletion, retry, and jurisdiction behavior; record status output and runtime versions.
+3. Keep artifact history unpruned until a product retention policy is approved; retain historical revisions and content safely meanwhile.
+4. Complete the legacy reader/writer call-path audit before enabling the coordinator; legacy paths still exist.
+5. Validate allocation generation advancement on real container replacement, duplicate changed-payload staging keys, and failed manifest upload.
+6. Connect Agent37 to an atomic checked workspace adapter; run real provider lifecycle, billing, generation, file API, and indeterminate-execution acceptance with an authorized disposable account.
+7. Keep both rollout flags disabled until all runtime gates pass; do not begin Phase 4 client migration before Phase 1–3 gates are closed or explicitly accepted as deployment-only blockers.
