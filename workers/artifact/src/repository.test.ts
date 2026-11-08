@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RepositoryDO } from "./RepositoryDO.js";
 import {
   commitBody,
@@ -367,6 +367,39 @@ describe("Git object and metadata encoding", () => {
       body: JSON.stringify({ baseBranch: "main", forkBranch: "scratchpad-1", reviewerId: "owner", reviewerRank: "owner" }),
     }));
     expect(await merged.json()).toEqual(expect.objectContaining({ fast_forward: true, event: expect.objectContaining({ type: "workspace.merged" }) }));
+  });
+});
+
+describe("unified workspace transition guards", () => {
+  it("blocks repository reconcile and direct workspace publication while unified mode is active", async () => {
+    const storage = new Map<string, unknown>();
+    const repositoryObjects = new Map<string, Uint8Array>();
+    const workspacePut = vi.fn(async () => ({ etag: "workspace-etag" }));
+    const repo = new RepositoryDO({ storage: {
+      get: async (key: string) => storage.get(key),
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+    } } as never, {
+      UNIFIED_WORKSPACE_ENABLED: "true",
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => repositoryObjects.has(key),
+        put: async (key: string, value: Uint8Array | string) => { repositoryObjects.set(key, typeof value === "string" ? new TextEncoder().encode(value) : value); },
+        get: async (key: string) => { const bytes = repositoryObjects.get(key); return bytes ? { arrayBuffer: async () => bytes.slice().buffer } : null; },
+        list: async () => ({ objects: [], truncated: false }),
+        delete: async () => {},
+      } as unknown as R2Bucket,
+      WORKSPACE_R2: { put: workspacePut, head: async () => null, get: async () => null, list: async () => ({ objects: [], truncated: false }) } as unknown as R2Bucket,
+    } as never);
+    const headers = { "content-type": "application/json", "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) };
+    expect((await repo.fetch(new Request("http://repo/init", { method: "POST", headers }))).status).toBe(200);
+    const reconcile = await repo.fetch(new Request("http://repo/reconcile", { method: "POST", headers, body: JSON.stringify({ branch: "main" }) }));
+    expect(reconcile.status).toBe(409);
+    const commit = await repo.fetch(new Request("http://repo/commit", { method: "POST", headers, body: JSON.stringify({
+      branch: "main", expected_head: null, metadata, message: "disabled legacy publication",
+      changes: [{ path: "README.md", content_base64: btoa("hello"), expected_hash: null }],
+    }) }));
+    expect(commit.status).toBe(409);
+    expect(await commit.json()).toMatchObject({ error: "workspace_publication_requires_coordinator" });
+    expect(workspacePut).not.toHaveBeenCalled();
   });
 });
 

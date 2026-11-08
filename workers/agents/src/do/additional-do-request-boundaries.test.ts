@@ -86,4 +86,20 @@ describe("ConcurrencyDO and RiskGuardDO ingress limits", () => {
     expect((await send(JSON.stringify({ ...valid, contentBase64: "not base64" }))).status).toBe(400);
     expect((await send(JSON.stringify(valid))).status).toBe(503);
   });
+
+  it("blocks direct project workspace CAS publication in unified mode", async () => {
+    const storage = Object.assign(createDOStorage(), {
+      getAlarm: async () => null,
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    });
+    const object = new ConcurrencyDO({ storage } as never, { UNIFIED_WORKSPACE_ENABLED: "true" });
+    const response = await object.fetch(new Request("http://do/workspace/publish", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "lock:s:p:workspace-file:spaces/s/projects/p/workspace/a.txt", holderId: "run", fencingToken: 1,
+        path: "spaces/s/projects/p/workspace/a.txt", operation: "write", expectedHash: null, contentBase64: "" }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "canonical_workspace_publication_required" });
+  });
 });

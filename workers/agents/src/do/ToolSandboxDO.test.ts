@@ -489,11 +489,12 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     await sandbox.alarm();
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
     expect(storage.has("sidecar_warm_expires_at")).toBe(false);
-    expect(analyticsPoints).toHaveLength(1);
-    expect(analyticsPoints[0]?.blobs?.[0]).toBe("container.runtime.lifecycle");
-    expect(analyticsPoints[0]?.blobs?.[1]).toBe("marketplace-sidecar");
-    expect(analyticsPoints[0]?.doubles?.[0]).toBeGreaterThanOrEqual(5_000);
-    expect(analyticsPoints[0]?.doubles?.[4]).toBe(1); // exact warm reuse
+    const lifecycle = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.lifecycle");
+    expect(lifecycle).toHaveLength(1);
+    expect(lifecycle[0]?.blobs?.[1]).toBe("marketplace-sidecar");
+    expect(lifecycle[0]?.doubles?.[0]).toBeGreaterThanOrEqual(5_000);
+    expect(lifecycle[0]?.doubles?.[4]).toBe(1); // exact warm reuse
+    expect(analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution")).toHaveLength(2); // prewarm and user execution
     vi.useRealTimers();
   });
 
@@ -503,13 +504,14 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(result.status).toBe(409);
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
     expect(storage.has("sidecar_warm_expires_at")).toBe(false);
-    expect(analyticsPoints).toHaveLength(1);
-    expect(analyticsPoints[0]?.doubles?.[6]).toBe(2); // prewarm and failed command are both measured
+    const lifecycle = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.lifecycle");
+    expect(lifecycle).toHaveLength(1);
+    expect(lifecycle[0]?.doubles?.[6]).toBe(2); // prewarm and failed command are both measured
     // The enforced deadline is 1,000 ms; runtime sampling can finish slightly before the
     // timer boundary because the execution abort and cleanup race on the isolate event loop;
     // allow up to 1.5 seconds for loaded-runner cleanup without accepting a multi-second miss.
-    expect(analyticsPoints[0]?.doubles?.[7]).toBeGreaterThanOrEqual(900);
-    expect(analyticsPoints[0]?.doubles?.[7]).toBeLessThanOrEqual(1500);
+    expect(lifecycle[0]?.doubles?.[7]).toBeGreaterThanOrEqual(900);
+    expect(lifecycle[0]?.doubles?.[7]).toBeLessThanOrEqual(1500);
     expect(storage.has("container_runtime_metrics")).toBe(false);
   });
 
@@ -562,7 +564,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("routes an internal project sandbox checkpoint through the atomic workspace coordinator when enabled", async () => {
-    const { sandbox, coordinator, r2Objects, storage } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
+    const { sandbox, coordinator, r2Objects, storage, analyticsPoints } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
     const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "notes/result.txt": "committed from container" }, expected_hashes: { "notes/result.txt": null } }),
@@ -585,6 +587,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(runBranch.entries).toMatchObject([{ path: "notes/result.txt" }]);
     expect(r2Objects.has(runBranch.entries![0]!.objectKey)).toBe(true);
     expect(storage.get("container_runtime_metrics")).toMatchObject({ workspaceBytesCaptured: 24, workspaceBytesStaged: 24, workspaceCheckpoints: 1 });
+    const executionMetrics = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution").at(-1);
+    expect(executionMetrics?.blobs?.[8]).toBe("workspace-metrics-v1");
+    expect(executionMetrics?.doubles).toHaveLength(4); // list/read/write/delete counters are emitted per execution
   });
 
   it("replays a staged checkpoint after Durable Object reconstruction without publishing partial state", async () => {

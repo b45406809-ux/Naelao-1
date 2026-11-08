@@ -91,7 +91,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
           value = { files: listing.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
         }
       } else if (tool === "runAstPatch") {
-        if (compatibility.kind === "canonical") throw new Error("workspace patch requires checked coordinator publication");
+        if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") throw new Error("workspace patch requires checked coordinator publication");
         const key = prefix + safePath(args["path"]);
         const oldText = String(args["oldText"] ?? "");
         if (!oldText) throw new Error("oldText is required");

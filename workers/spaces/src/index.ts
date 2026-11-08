@@ -3096,6 +3096,7 @@ app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
   const project = await forwardToSpaceDO(spaceStub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!project.ok) return c.json({ error_code: project.status === 404 ? "project_not_found" : "project_forbidden" }, project.status === 404 ? 404 : 403);
   const key = workspaceKeyPrefix(spaceId, projectId) + relative;
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   if (await c.env.SCRIPTS_R2.head(key)) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
   const compilation = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,

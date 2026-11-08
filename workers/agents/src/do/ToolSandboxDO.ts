@@ -116,6 +116,7 @@ interface ContainerMeter { creditsPerHour?: number; tenantId: string; spaceId: s
 interface ContainerRuntimeMetrics {
   sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number;
   workspaceBytesHydrated: number; workspaceBytesCaptured: number; workspaceBytesStaged: number; workspaceCheckpoints: number; workspaceCheckpointMs: number;
+  workspaceR2Lists: number; workspaceR2Reads: number; workspaceR2Writes: number; workspaceR2Deletes: number;
 }
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
@@ -205,7 +206,7 @@ function isSyncableWorkspacePath(path: string): boolean {
 export class ToolSandboxDO extends DurableObject {
   private lastUsedAt = Date.now();
   private executionQueue: Promise<void> = Promise.resolve();
-  private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController } | undefined;
+  private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController; workspaceMetrics: { lists: number; reads: number; writes: number; deletes: number } } | undefined;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.body) {
@@ -364,7 +365,8 @@ export class ToolSandboxDO extends DurableObject {
         analytics.writeDataPoint({
           blobs: ["container.runtime.lifecycle", metrics.sidecar ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v1"],
           doubles: [allocatedMs, credits, metrics.coldStarts, metrics.startupMs, metrics.warmHits, metrics.warmIdleMs, metrics.executions, metrics.executionMs,
-            metrics.workspaceBytesHydrated, metrics.workspaceBytesCaptured, metrics.workspaceBytesStaged, metrics.workspaceCheckpoints, metrics.workspaceCheckpointMs],
+            metrics.workspaceBytesHydrated, metrics.workspaceBytesCaptured, metrics.workspaceBytesStaged, metrics.workspaceCheckpoints, metrics.workspaceCheckpointMs,
+            metrics.workspaceR2Lists, metrics.workspaceR2Reads, metrics.workspaceR2Writes, metrics.workspaceR2Deletes],
         });
       } catch { /* telemetry must never delay or prevent billing settlement */ }
     }
@@ -376,7 +378,8 @@ export class ToolSandboxDO extends DurableObject {
 
   private async updateRuntimeMetrics(update: Partial<Record<keyof Omit<ContainerRuntimeMetrics, "sidecar">, number>>, sidecar?: boolean): Promise<void> {
     const defaults: ContainerRuntimeMetrics = { sidecar: sidecar === true, coldStarts: 0, startupMs: 0, warmHits: 0, warmIdleMs: 0, executions: 0, executionMs: 0,
-      workspaceBytesHydrated: 0, workspaceBytesCaptured: 0, workspaceBytesStaged: 0, workspaceCheckpoints: 0, workspaceCheckpointMs: 0 };
+      workspaceBytesHydrated: 0, workspaceBytesCaptured: 0, workspaceBytesStaged: 0, workspaceCheckpoints: 0, workspaceCheckpointMs: 0,
+      workspaceR2Lists: 0, workspaceR2Reads: 0, workspaceR2Writes: 0, workspaceR2Deletes: 0 };
     const current = { ...defaults, ...await this.ctx.storage.get<Partial<ContainerRuntimeMetrics>>("container_runtime_metrics") };
     if (sidecar !== undefined) current.sidecar = sidecar;
     for (const [key, value] of Object.entries(update) as Array<[keyof typeof update, number]>) current[key] += value;
@@ -433,7 +436,7 @@ export class ToolSandboxDO extends DurableObject {
     const startedAt = Date.now();
     const sidecarWasWarm = Boolean(scope.installationId && this.container?.running);
     const controller = new AbortController();
-    this.activeExecution = { id: scope.executionId, scope, controller };
+    this.activeExecution = { id: scope.executionId, scope, controller, workspaceMetrics: { lists: 0, reads: 0, writes: 0, deletes: 0 } };
     const abort = () => controller.abort();
     let executionLimitExceeded = false;
     request.signal.addEventListener("abort", abort, { once: true });
@@ -481,6 +484,7 @@ export class ToolSandboxDO extends DurableObject {
       await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
       if (metered) {
         await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
+        await this.flushExecutionWorkspaceMetrics(scope);
         metered = false;
       }
       await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
@@ -489,7 +493,13 @@ export class ToolSandboxDO extends DurableObject {
         : String(error);
       return Response.json({ ok: false, error: message, workspace_may_require_reconciliation: true }, { status: 409 });
     } finally {
-      clearTimeout(timer); request.signal.removeEventListener("abort", abort); this.activeExecution = undefined;
+      clearTimeout(timer); request.signal.removeEventListener("abort", abort);
+      if (metered) {
+        await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
+        await this.flushExecutionWorkspaceMetrics(scope);
+        metered = false;
+      }
+      this.activeExecution = undefined;
       if (scope.installationId) {
         await this.ctx.storage.delete("task_active");
         if (retainSidecarWarm) {
@@ -499,7 +509,6 @@ export class ToolSandboxDO extends DurableObject {
           await this.ctx.storage.setAlarm(Math.min(expiresAt, (await this.ctx.storage.get<ContainerMeter>("container_meter"))?.expiresAt ?? Infinity));
         } else await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
       }
-      if (metered) await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
     }
   }
 
@@ -507,18 +516,39 @@ export class ToolSandboxDO extends DurableObject {
     return sandboxWorkspacePrefix(scope);
   }
 
+  private recordWorkspaceR2(operation: "lists" | "reads" | "writes" | "deletes"): void {
+    const metrics = this.activeExecution?.workspaceMetrics;
+    if (metrics) metrics[operation]++;
+  }
+
+  private async readWorkspaceBytes(bucket: R2Bucket, key: string) {
+    this.recordWorkspaceR2("reads");
+    return readBytesWithHash(bucket, key);
+  }
+
+  private async flushExecutionWorkspaceMetrics(scope: ContainerInvocationScope): Promise<void> {
+    const active = this.activeExecution;
+    if (active?.id !== scope.executionId) return;
+    const metrics = active.workspaceMetrics;
+    await this.updateRuntimeMetrics({ workspaceR2Lists: metrics.lists, workspaceR2Reads: metrics.reads, workspaceR2Writes: metrics.writes, workspaceR2Deletes: metrics.deletes });
+    const analytics = (this.env as unknown as SandboxBindings).ANALYTICS;
+    try { analytics?.writeDataPoint({ blobs: ["container.runtime.execution", scope.installationId ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v1"], doubles: [metrics.lists, metrics.reads, metrics.writes, metrics.deletes] }); } catch { /* telemetry must never delay execution cleanup */ }
+    metrics.lists = 0; metrics.reads = 0; metrics.writes = 0; metrics.deletes = 0;
+  }
+
   private async *listR2Workspace(prefix: string): AsyncGenerator<{ path: string; bytes: Uint8Array; hash: string }> {
     const bucket = (this.env as unknown as SandboxBindings).SCRIPTS_R2;
     if (!bucket) throw new Error("Canonical workspace R2 binding is unavailable");
     let cursor: string | undefined;
     do {
+      this.recordWorkspaceR2("lists");
       const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000, include: ["customMetadata"] } as R2ListOptions & { include: string[] });
       for (const item of page.objects) {
         if (item.customMetadata?.deleted === "true") continue;
         const path = item.key.slice(prefix.length);
         if (prefix.endsWith("/workspace/") && path.startsWith("branches/")) continue;
         if (!isSyncableWorkspacePath(path)) continue;
-        const object = await readBytesWithHash(bucket, item.key);
+        const object = await this.readWorkspaceBytes(bucket, item.key);
         if (!object) throw new Error(`Workspace object disappeared during hydration: ${path}`);
         yield { path, bytes: object.bytes, hash: object.hash };
       }
@@ -620,9 +650,10 @@ export class ToolSandboxDO extends DurableObject {
       for await (const file of this.listR2Workspace(this.workspacePrefix(scope))) {
         if (file.path.startsWith("shared/")) continue;
         const objectKey = `workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/${file.hash}`;
+        this.recordWorkspaceR2("writes");
         const put = await bindings.SCRIPTS_R2.put(objectKey, file.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.hash, size: String(file.bytes.byteLength) } });
         if (!put) {
-          const existing = await readBytesWithHash(bindings.SCRIPTS_R2, objectKey);
+          const existing = await this.readWorkspaceBytes(bindings.SCRIPTS_R2, objectKey);
           if (!existing || existing.hash !== file.hash) throw new Error("workspace_content_integrity_failed");
         }
         entries.push({ path: file.path, sha256: file.hash, size: file.bytes.byteLength, executable: false, objectKey });
@@ -646,7 +677,7 @@ export class ToolSandboxDO extends DurableObject {
     for (const entry of read.entries) {
       if (!isSyncableWorkspacePath(entry.path) || entry.path.startsWith("shared/")) continue;
       if (!entry.objectKey.startsWith(`workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/`)) throw new Error("workspace_object_scope_mismatch");
-      const stored = await readBytesWithHash(bindings.SCRIPTS_R2, entry.objectKey);
+      const stored = await this.readWorkspaceBytes(bindings.SCRIPTS_R2, entry.objectKey);
       if (!stored || stored.hash !== entry.sha256 || stored.bytes.byteLength !== entry.size) throw new Error(`workspace_content_integrity_failed:${entry.path}`);
       const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
         method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" },
@@ -740,6 +771,7 @@ export class ToolSandboxDO extends DurableObject {
       if (path.startsWith("shared/")) sharedObjectKey(scope, path, "write");
       const stagedKey = bytes ? `workspace-staging/${scope.spaceId}/${scope.projectId ?? "_assistant"}/${holderId}/${newHash}` : undefined;
       if (bytes && stagedKey) {
+        this.recordWorkspaceR2("writes");
         await bindings.SCRIPTS_R2.put(stagedKey, bytes, { customMetadata: { sha256: newHash! }, onlyIf: { etagDoesNotMatch: "*" } });
         stagedBytes += bytes.byteLength;
       }
@@ -869,13 +901,13 @@ export class ToolSandboxDO extends DurableObject {
     for (const change of changes) {
       const { path, expectedHash, newHash, stagedKey } = change;
       const key = workspaceObjectKey(scope, path, "write");
-      const current = await readBytesWithHash(bindings.SCRIPTS_R2, key);
+      const current = await this.readWorkspaceBytes(bindings.SCRIPTS_R2, key);
       if ((current?.hash ?? null) === newHash) {
         if (newHash) nextHashes[path] = newHash;
         else delete nextHashes[path];
         continue;
       }
-      const staged = stagedKey ? await readBytesWithHash(bindings.SCRIPTS_R2, stagedKey) : null;
+      const staged = stagedKey ? await this.readWorkspaceBytes(bindings.SCRIPTS_R2, stagedKey) : null;
       if (newHash !== null && staged?.hash !== newHash) throw new Error(`Workspace staging integrity failed: ${path}`);
       const lockKey = `lock:${scope.spaceId}:${scope.projectId ?? "_"}:workspace-file:${key}`;
       const stub = bindings.CONCURRENCY_DO.get(bindings.CONCURRENCY_DO.idFromName(lockKey));
@@ -908,7 +940,7 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("workspace_hashes", nextHashes);
     await this.ctx.storage.delete("workspace_pending_publication");
     const stagedKeys = changes.flatMap((change) => change.stagedKey ? [change.stagedKey] : []);
-    if (stagedKeys.length) await bindings.SCRIPTS_R2.delete(stagedKeys).catch(() => undefined);
+    if (stagedKeys.length) { this.recordWorkspaceR2("deletes"); await bindings.SCRIPTS_R2.delete(stagedKeys).catch(() => undefined); }
   }
 
   override async alarm(): Promise<void> {

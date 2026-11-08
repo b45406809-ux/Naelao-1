@@ -98,6 +98,18 @@ describe("sandbox workspace snapshot bridge", () => {
     expect(noAuth.status).toBe(403);
 
     const token = await mintInternalToken(env.PLATFORM_SECRET, "tenant-1");
+    const unifiedEnv = { ...env, UNIFIED_WORKSPACE_ENABLED: "true" };
+    const unifiedHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token };
+    const blockedSnapshot = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), unifiedEnv);
+    expect(blockedSnapshot.status).toBe(409);
+    expect(await blockedSnapshot.json()).toMatchObject({ error_code: "canonical_workspace_publication_required" });
+    for (const route of ["blobs", "publish"]) {
+      const blocked = await handleSandboxWorkspaceBridge(new Request(`http://agents/internal/sandbox-workspaces/${route}`, {
+        method: "POST", headers: unifiedHeaders, body: JSON.stringify({ filesystemId: "fs-1" }),
+      }), unifiedEnv);
+      expect(blocked.status).toBe(409);
+    }
     const result = await handleSandboxWorkspaceBridge(new Request(path, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token },

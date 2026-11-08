@@ -138,6 +138,16 @@ describe("R2 Virtual POSIX Workspace", () => {
     expect(env.getCalls).not.toContain(legacyKey);
   });
 
+  it("rejects legacy CAS writers for project workspace paths when manifest reads are enabled", async () => {
+    const env = createMockEnv();
+    env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 1, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [] });
+    await expect(virtualFsWrite(env, "docs/new.txt", "must use checked publication", null))
+      .rejects.toThrow("workspace_write_requires_checked_publication");
+    await expect(virtualFsDelete(env, "docs/old.txt", null))
+      .rejects.toThrow("workspace_write_requires_checked_publication");
+    expect(env.store.size).toBe(0);
+  });
+
   it("supports virtual in-isolate grepping without container execution", async () => {
     const env = createMockEnv();
     await virtualFsWrite(

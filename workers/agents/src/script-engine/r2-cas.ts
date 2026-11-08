@@ -3,6 +3,9 @@
 
 interface WorkspaceCasEnv {
   runId?: string;
+  spaceId?: string;
+  projectId?: string;
+  workspaceManifestRead?: () => Promise<unknown>;
   validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
   lockGateway?: {
     acquire(input: { key: string; holderId: string; limit: number; ttlMs?: number }): Promise<{ granted: boolean; fencingToken?: number; heldBy?: string }>;
@@ -16,6 +19,12 @@ interface WorkspaceCasEnv {
 
 const encoder = new TextEncoder();
 const EMPTY_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+function rejectLegacyUnifiedWorkspaceWrite(env: WorkspaceCasEnv, key: string): void {
+  if (!env.workspaceManifestRead || !env.spaceId || !env.projectId) return;
+  const prefix = `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`;
+  if (key.startsWith(prefix)) throw new Error("workspace_write_requires_checked_publication");
+}
 
 export interface CasWriteResult { hash: string; etag: string }
 export interface CasReadResult { bytes: Uint8Array; hash: string; etag: string; metadata: Record<string, string> }
@@ -40,6 +49,7 @@ export async function publishWorkspaceBytesCas(
   metadata: Record<string, string> = {},
   httpMetadata?: R2HTTPMetadata,
 ): Promise<CasWriteResult> {
+  rejectLegacyUnifiedWorkspaceWrite(env, key);
   if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
   const gateway = env.lockGateway;
   if (!gateway?.publishWorkspace || !env.runId) return putBytesCas(bucket, key, bytes, expectedHash, metadata, httpMetadata);
@@ -73,6 +83,7 @@ export async function deleteWorkspaceBytesCas(
   key: string,
   expectedHash: string | null,
 ): Promise<{ deleted: boolean; etag?: string }> {
+  rejectLegacyUnifiedWorkspaceWrite(env, key);
   const gateway = env.lockGateway;
   if (!gateway?.publishWorkspace || !env.runId) return deleteBytesCas(bucket, key, expectedHash);
   const lockKey = `workspace-file:${key}`;

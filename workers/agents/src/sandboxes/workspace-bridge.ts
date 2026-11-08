@@ -15,6 +15,7 @@ const HASH = /^[a-f0-9]{64}$/;
 interface BridgeEnv {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
+  UNIFIED_WORKSPACE_ENABLED?: string;
   SCRIPTS_R2?: R2Bucket;
   CONCURRENCY_DO?: DurableObjectNamespace;
 }
@@ -82,6 +83,7 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
   const input = await parseJson(request, {} as { filesystemId?: unknown; computerId?: unknown });
   const fs = await filesystem(env, input.filesystemId, actor.tenantId, actor.userId);
   if (!fs) return fail("filesystem_not_found", 404);
+  if (env.UNIFIED_WORKSPACE_ENABLED === "true" && fs.project_id) return fail("canonical_workspace_publication_required", 409);
   if (typeof input.computerId !== "string") return fail("computer_id_required", 400);
   const computer = await env.PLATFORM_DB.prepare("SELECT id FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND filesystem_id=? AND deleted_at IS NULL")
     .bind(input.computerId, actor.tenantId, actor.userId, fs.id).first();
@@ -143,9 +145,10 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
 
 async function blob(request: Request, env: BridgeEnv, actor: { tenantId: string; userId: string }, blobId: string): Promise<Response> {
   if (!env.SCRIPTS_R2 || !/^swb_[0-9a-f-]{36}$/.test(blobId)) return fail("blob_not_found", 404);
-  const row = await env.PLATFORM_DB.prepare("SELECT b.object_key,b.sha256,b.size_bytes FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE b.id=? AND b.tenant_id=? AND f.owner_id=? AND f.status='active' AND b.expires_at>? ")
-    .bind(blobId, actor.tenantId, actor.userId, new Date().toISOString()).first<{ object_key: string; sha256: string; size_bytes: number }>();
+  const row = await env.PLATFORM_DB.prepare("SELECT b.object_key,b.sha256,b.size_bytes,f.project_id FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE b.id=? AND b.tenant_id=? AND f.owner_id=? AND f.status='active' AND b.expires_at>? ")
+    .bind(blobId, actor.tenantId, actor.userId, new Date().toISOString()).first<{ object_key: string; sha256: string; size_bytes: number; project_id: string | null }>();
   if (!row) return fail("blob_not_found", 404);
+  if (env.UNIFIED_WORKSPACE_ENABLED === "true" && row.project_id) return fail("canonical_workspace_publication_required", 409);
   if (request.method === "GET") {
     const object = await readBytesWithHash(env.SCRIPTS_R2, row.object_key, MAX_FILE_BYTES);
     if (!object || object.bytes.byteLength !== row.size_bytes || object.hash !== row.sha256) return fail("blob_unavailable", 404);
@@ -159,6 +162,7 @@ async function stage(request: Request, env: BridgeEnv, actor: { tenantId: string
   const input = await parseJson(request, {} as { filesystemId?: unknown; snapshotId?: unknown; sha256?: unknown; contentBase64?: unknown; executable?: unknown }, MAX_STAGE_REQUEST_BYTES);
   const fs = await filesystem(env, input.filesystemId, actor.tenantId, actor.userId);
   if (!fs) return fail("filesystem_not_found", 404);
+  if (env.UNIFIED_WORKSPACE_ENABLED === "true" && fs.project_id) return fail("canonical_workspace_publication_required", 409);
   if (typeof input.snapshotId !== "string" || typeof input.sha256 !== "string" || !HASH.test(input.sha256) || typeof input.contentBase64 !== "string" || (input.executable !== undefined && typeof input.executable !== "boolean")) return fail("invalid_blob", 400);
   const snap = await env.PLATFORM_DB.prepare("SELECT id FROM sandbox_workspace_snapshots WHERE id=? AND filesystem_id=? AND tenant_id=? AND status IN ('active','published') AND expires_at>?")
     .bind(input.snapshotId, fs.id, actor.tenantId, new Date().toISOString()).first();
@@ -189,6 +193,7 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
   const input = await parseJson(request, {} as { filesystemId?: unknown; computerId?: unknown; snapshotId?: unknown; idempotencyKey?: unknown; changes?: unknown });
   const fs = await filesystem(env, input.filesystemId, actor.tenantId, actor.userId);
   if (!fs) return fail("filesystem_not_found", 404);
+  if (env.UNIFIED_WORKSPACE_ENABLED === "true" && fs.project_id) return fail("canonical_workspace_publication_required", 409);
   if (typeof input.computerId !== "string" || typeof input.snapshotId !== "string" || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 200 || !Array.isArray(input.changes) || input.changes.length > MAX_PUBLICATION_CHANGES) return fail("invalid_publication", 400);
   const changes = input.changes as Change[];
   const seen = new Set<string>();

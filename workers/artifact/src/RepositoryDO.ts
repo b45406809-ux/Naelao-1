@@ -34,6 +34,7 @@ interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
   /** Canonical mutable workspace files; Git refs/objects are a materialized projection. */
   WORKSPACE_R2?: R2Bucket;
+  UNIFIED_WORKSPACE_ENABLED?: string;
 }
 const EMPTY: RepoState = {
   initialized: false,
@@ -232,6 +233,8 @@ export class RepositoryDO extends DurableObject<Env> {
     const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])]
       .filter(path => before[path]?.hash !== after[path]?.hash)
       .map(path => ({ path, expected: before[path]?.hash ?? null, next: after[path] ?? null }));
+    if (this.env.UNIFIED_WORKSPACE_ENABLED === "true" && changes.length)
+      throw new Error("workspace_publication_requires_coordinator");
     const root = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/publications/`;
     const key = root + crypto.randomUUID() + ".json";
     await this.env.REPOSITORY_OBJECTS.put(key, JSON.stringify({ scope, state, branch, changes }));
@@ -251,6 +254,7 @@ export class RepositoryDO extends DurableObject<Env> {
   private async replayWorkspacePublication(scope: RepositoryScope): Promise<void> {
     const pending = await this.ctx.storage.get<{ key: string; scope: RepositoryScope }>("workspace_publication");
     if (!pending) return;
+    if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") throw new Error("workspace_publication_requires_coordinator");
     if (JSON.stringify(pending.scope) !== JSON.stringify(scope) || !this.env.WORKSPACE_R2) throw new Error("workspace_publication_scope_conflict");
     const saved = await this.env.REPOSITORY_OBJECTS.get(pending.key);
     if (!saved) throw new Error("workspace_publication_journal_missing");
@@ -503,6 +507,7 @@ export class RepositoryDO extends DurableObject<Env> {
       if (!(branch in state.refs)) return jsonError("Branch not found", 404);
 
       if (op === "reconcile" && request.method === "POST") {
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") return jsonError("Canonical workspace reconciliation is not implemented for this repository adapter", 409);
         if (!this.env.WORKSPACE_R2) return jsonError("Workspace reconciliation storage is not bound", 503);
         const workspaceRoot = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
         const prefix = branch === "main" ? workspaceRoot : `${workspaceRoot}branches/${branch.replaceAll("\\", "/")}/`;
@@ -670,6 +675,7 @@ export class RepositoryDO extends DurableObject<Env> {
             ? Response.json(record)
             : jsonError("Commit not found", 404);
         }
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") return jsonError("workspace_publication_requires_coordinator", 409);
         if (!Object.prototype.hasOwnProperty.call(body, "expected_head") || (body.expected_head !== null && typeof body.expected_head !== "string"))
           return jsonError("expected_head is required (commit ID or null)");
         const expected = body.expected_head;
@@ -1191,6 +1197,7 @@ export class RepositoryDO extends DurableObject<Env> {
       const message = error instanceof Error ? error.message : "Invalid request";
       const status = message.startsWith("workspace_publication_conflict:") ? 409
         : message.startsWith("workspace_publication_interrupted:") ? 503
+        : message.startsWith("workspace_publication_requires_coordinator") ? 409
         : /workspace_publication_|integrity check failed|object missing|malformed tree|reachable commit metadata missing/i.test(message) ? 500 : 400;
       return jsonError(message, status);
     }

@@ -6729,6 +6729,7 @@ app.post("/internal/attachments/copy", async (c) => {
       ...(body.extensionId ? { spaceWorkspaceExtensionId: body.extensionId } : {}),
       ...(body.workspaceBranch ? { workspaceBranch: body.workspaceBranch } : {}) });
   } catch { return c.json({ error_code: "attachment_workspace_scope_invalid" }, 400); }
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && body.projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   const destinationKey = `${prefix}${clean}`;
   if (body.destinationKey !== destinationKey) return c.json({ error_code: "attachment_destination_scope_mismatch" }, 403);
   const now = new Date().toISOString();
@@ -8024,6 +8025,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
   const projectId = uploadScope.projectId;
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   const raw = form.files;
   const incoming = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File);
   if (incoming.length === 0) return c.json({ error_code: "bad_request", message: "No files attached" }, 400);
@@ -8072,6 +8074,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
   const projectId = uploadScope.projectId;
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_reader_unavailable" }, 503);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
   const files = listed.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => ({
@@ -8100,6 +8103,7 @@ app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) =
     return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
   }
   const projectId = uploadScope.projectId;
+  if (c.env.UNIFIED_WORKSPACE_ENABLED === "true" && projectId) return c.json({ error_code: "canonical_workspace_publication_required" }, 409);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const key = `${prefix}${safeUploadName(filename)}`;
   const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);

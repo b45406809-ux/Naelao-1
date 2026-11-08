@@ -43,6 +43,7 @@ export const NODE_LEASE_TTL_MS = 15_000;
 export interface ConcurrencyDOEnv {
   PLATFORM_SECRET?: string;
   SCRIPTS_R2?: R2Bucket;
+  UNIFIED_WORKSPACE_ENABLED?: string;
 }
 
 export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
@@ -382,6 +383,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       || !Object.prototype.hasOwnProperty.call(body, "expectedHash") || !hashValid || !metadataValid
       || (body.contentType !== undefined && (typeof body.contentType !== "string" || body.contentType.length > 255 || /[\r\n\0]/.test(body.contentType))))
       return Response.json({ error_code: "bad_request", message: "invalid workspace CAS request" }, { status: 400 });
+    if (this.env.UNIFIED_WORKSPACE_ENABLED === "true" && /^spaces\/[^/]+\/projects\/[^/]+\/workspace\//.test(path))
+      return Response.json({ error_code: "canonical_workspace_publication_required" }, { status: 409 });
     if (body.operation === "write" && (typeof body.contentBase64 !== "string" || body.contentBase64.length > 1024 * 1024
       || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.contentBase64)))
       return Response.json({ error_code: "bad_request", message: "invalid workspace content" }, { status: 400 });
