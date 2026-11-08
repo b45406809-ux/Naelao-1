@@ -19,7 +19,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; failCheckpointOnce?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -75,6 +75,11 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         return coordinator.fetch(request);
       } }),
     };
+    if (options.unifiedWorkspace && options.workspaceProject && !options.workspaceProjectUnmigrated) {
+      await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: workspaceNamespace, PLATFORM_SECRET: "test-secret" } as never,
+        { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, "/v1/initialize",
+        { body: { scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, branch: "main", entries: [] } });
+    }
 
     const mockContainer = {
       get running() {
@@ -590,6 +595,15 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const executionMetrics = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution").at(-1);
     expect(executionMetrics?.blobs?.[8]).toBe("workspace-metrics-v1");
     expect(executionMetrics?.doubles).toHaveLength(4); // list/read/write/delete counters are emitted per execution
+  });
+
+  it("requires the barrier migration workflow instead of implicitly importing an existing project during hydration", async () => {
+    const { sandbox, coordinatorStorage, r2Objects } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, workspaceProjectUnmigrated: true, runId: "unmigrated-project" });
+    const response = await sandbox.fetch(new Request("https://sandbox/workspace/list", { method: "POST" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: "Error: workspace_project_migration_required" });
+    expect([...coordinatorStorage.keys()].some(key => String(key).includes("workspace-v1/"))).toBe(false);
+    expect([...r2Objects.keys()].some(key => String(key).includes("/content/"))).toBe(false);
   });
 
   it("replays a staged checkpoint after Durable Object reconstruction without publishing partial state", async () => {

@@ -646,6 +646,13 @@ export class ToolSandboxDO extends DurableObject {
     await this.replayPendingUnifiedCheckpoint(identity.scope);
     let headResponse = await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(identity.branch)}`);
     if (headResponse.status === 404) {
+      // Existing project workspaces must be imported by the explicit migration workflow,
+      // which holds the project mutation barrier and retains rollback aliases until the
+      // imported hashes and initial revision have been verified. Runtime hydration has
+      // neither that barrier nor durable rollback state, so it must never elect legacy R2
+      // contents as canonical on first access. Space-level bootstrap retains its legacy
+      // compatibility path until it is migrated separately.
+      if (scope.projectId) throw new Error("workspace_project_migration_required");
       const entries: WorkspaceEntry[] = [];
       for await (const file of this.listR2Workspace(this.workspacePrefix(scope))) {
         if (file.path.startsWith("shared/")) continue;
