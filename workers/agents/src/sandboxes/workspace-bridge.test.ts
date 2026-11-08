@@ -31,7 +31,7 @@ class FakeD1 {
     return { results: [] as T[] };
   }
   async run(sql: string, values: unknown[]) {
-    if (sql.includes("INSERT INTO sandbox_workspace_snapshots")) this.snapshots.set(String(values[0]), { id: values[0], tenant_id: values[1], filesystem_id: values[2], computer_id: values[3], status: "active" });
+    if (sql.includes("INSERT INTO sandbox_workspace_snapshots")) this.snapshots.set(String(values[0]), { id: values[0], tenant_id: values[1], filesystem_id: values[2], computer_id: values[3], status: "active", coordinator_revision: values[7] });
     if (sql.includes("INSERT INTO sandbox_workspace_blobs")) this.blobs.set(String(values[0]), { id: values[0], tenant_id: values[1], filesystem_id: values[2], snapshot_id: values[3], object_key: values[4], sha256: values[5], size_bytes: values[6], executable: values[7] });
     if (sql.includes("INSERT INTO sandbox_workspace_snapshot_entries")) this.entries.push({ snapshot_id: values[0], path: values[1], blob_id: values[2], sha256: values[3], size_bytes: values[4], executable: values[5] });
     if (sql.includes("INSERT INTO sandbox_publications")) {
@@ -102,14 +102,36 @@ describe("sandbox workspace snapshot bridge", () => {
     const unifiedHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token };
     const blockedSnapshot = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
       body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), unifiedEnv);
-    expect(blockedSnapshot.status).toBe(409);
-    expect(await blockedSnapshot.json()).toMatchObject({ error_code: "canonical_workspace_publication_required" });
-    for (const route of ["blobs", "publish"]) {
-      const blocked = await handleSandboxWorkspaceBridge(new Request(`http://agents/internal/sandbox-workspaces/${route}`, {
-        method: "POST", headers: unifiedHeaders, body: JSON.stringify({ filesystemId: "fs-1" }),
-      }), unifiedEnv);
-      expect(blocked.status).toBe(409);
-    }
+    expect(blockedSnapshot.status).toBe(503);
+    const contentHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("ok")))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const coordinatorCalls: string[] = [];
+    const coordinatorEnv = { ...unifiedEnv, WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ async fetch(request: Request) {
+      const url = new URL(request.url); coordinatorCalls.push(url.pathname);
+      if (url.pathname === "/v1/read") return Response.json({ head: { revision: 7 }, entries: [{ path: "src/main.ts", sha256: contentHash, size: 2, executable: false, objectKey: "spaces/space-1/projects/project-1/workspace/branches/main/src/main.ts" }] });
+      if (url.pathname === "/v1/open") return Response.json({ session: { id: `ws_${"a".repeat(8)}-${"b".repeat(4)}-${"c".repeat(4)}-${"d".repeat(4)}-${"e".repeat(12)}`, fence: 0 }, head: { revision: 7 } });
+      if (url.pathname === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 8, appliedPaths: ["src/main.ts"], conflicts: [] } });
+      return Response.json({ ok: true });
+    } }) } };
+    const legacyOnlyKey = "spaces/space-1/projects/project-1/workspace/branches/main/legacy-only.txt";
+    objects.set(legacyOnlyKey, new TextEncoder().encode("drift"));
+    const driftSnapshot = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), coordinatorEnv);
+    expect(driftSnapshot.status).toBe(409);
+    expect(await driftSnapshot.json()).toMatchObject({ error_code: "workspace_dual_read_drift" });
+    objects.delete(legacyOnlyKey);
+    const manifestSnapshotResponse = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), coordinatorEnv);
+    expect(manifestSnapshotResponse.status).toBe(200);
+    const manifestSnapshotBody = await manifestSnapshotResponse.json() as { snapshot: { id: string; revision: number; entries: Array<{ sha256: string }> } };
+    expect(manifestSnapshotBody).toMatchObject({ snapshot: { revision: 7, entries: [{ sha256: contentHash }] } });
+    const unifiedStaged = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/blobs", { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", snapshotId: manifestSnapshotBody.snapshot.id, sha256: contentHash, contentBase64: btoa("ok") }) }), coordinatorEnv);
+    const unifiedStagedBody = await unifiedStaged.json() as { blobId: string };
+    const unifiedPublished = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/publish", { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1", snapshotId: manifestSnapshotBody.snapshot.id, idempotencyKey: "unified-publish-1", changes: [{ path: "src/main.ts", expectedHash: contentHash, blobId: unifiedStagedBody.blobId }] }) }), coordinatorEnv);
+    expect(unifiedPublished.status).toBe(200);
+    expect(await unifiedPublished.json()).toMatchObject({ publication: { revision: 8, status: "published" } });
+    expect(coordinatorCalls).toContain("/v1/checkpoint");
     const result = await handleSandboxWorkspaceBridge(new Request(path, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token },
