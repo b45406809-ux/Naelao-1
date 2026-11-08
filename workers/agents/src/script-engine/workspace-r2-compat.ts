@@ -36,7 +36,8 @@ export function withWorkspaceManifestRead(source: R2Bucket, prefix: string, read
         const copy = selected.slice();
         return {
           key, version: "workspace-v1", size: entry.size, etag: entry.sha256,
-          uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256 },
+          uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+            workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) },
           async arrayBuffer() { return copy.slice().buffer; },
           async text() { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(copy); },
           async json() { return JSON.parse(new TextDecoder().decode(copy)); },
@@ -49,7 +50,8 @@ export function withWorkspaceManifestRead(source: R2Bucket, prefix: string, read
         if (!manifest) return target.head(key);
         const entry = manifest.entries.find((candidate) => prefix + candidate.path === key);
         if (!entry) return null;
-        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256 } } as unknown as R2Object;
+        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+          workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } } as unknown as R2Object;
       };
       if (property === "list") return async (options: R2ListOptions = {}) => {
         const requestedPrefix = options.prefix ?? "";
@@ -64,7 +66,8 @@ export function withWorkspaceManifestRead(source: R2Bucket, prefix: string, read
         const limit = Math.max(1, Math.min(1000, options.limit ?? 1000));
         const page = items.slice(start, start + limit);
         const objects = page.map((entry) => ({ key: prefix + entry.path, version: "workspace-v1", size: entry.size,
-          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256 } }));
+          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+            workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } }));
         const truncated = start + page.length < items.length;
         return { objects, delimitedPrefixes: [], ...(truncated ? { truncated: true as const, cursor: String(start + page.length) } : { truncated: false as const }) } as unknown as R2Objects;
       };

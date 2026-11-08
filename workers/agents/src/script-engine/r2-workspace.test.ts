@@ -115,10 +115,10 @@ describe("R2 Virtual POSIX Workspace", () => {
     env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead);
 
     const ctx = { env, run: async () => undefined } as never;
-    const read = await r2Workspace.operations.read_file({ path: "docs/readme.md" }, ctx) as { content: string; hash: string };
-    expect(read).toMatchObject({ content: "canonical revision", hash: digest });
+    const read = await r2Workspace.operations.read_file({ path: "docs/readme.md" }, ctx) as { content: string; hash: string; revision?: { branch: string; revision: number } };
+    expect(read).toMatchObject({ content: "canonical revision", hash: digest, revision: { branch: "main", revision: 3 } });
     expect(env.getCalls).not.toContain(legacyKey);
-    expect(await r2Workspace.operations.list_directory({}, ctx)).toMatchObject({ files: [{ key: legacyKey, size: content.byteLength }] });
+    expect(await r2Workspace.operations.list_directory({}, ctx)).toMatchObject({ files: [{ key: legacyKey, size: content.byteLength }], revision: { branch: "main", revision: 3 } });
     await expect(r2Workspace.operations.write_file({ path: "docs/readme.md", content: "unsafe stale write", expectedHash: digest }, ctx))
       .rejects.toThrow("Conflict Error");
     await expect(r2Workspace.operations.write_file({ path: "docs/new.txt", content: "unsafe legacy create", expectedHash: null }, ctx))

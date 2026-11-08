@@ -40,6 +40,12 @@ function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return toolOutputReadBucket(ctx.env);
 }
 
+function readRevision(object: { customMetadata?: Record<string, string> } | undefined): { branch: string; revision: number } | undefined {
+  const branch = object?.customMetadata?.workspaceBranch;
+  const revision = Number(object?.customMetadata?.workspaceRevision);
+  return branch && Number.isSafeInteger(revision) && revision >= 1 ? { branch, revision } : undefined;
+}
+
 /** All workspace keys are scoped under the run's workspace prefix (space- or project-scoped). */
 function key(ctx: PrebuiltOpContext, path: string): string {
   if (String(path).replaceAll("\\", "/").startsWith("/.avos/")) {
@@ -497,7 +503,8 @@ export const r2Workspace: PrebuiltScript = {
         if (!obj) return { exists: false, content: null };
         const total = obj.size;
         if (off >= total) {
-          return { exists: true, content: "", offset: off, length: 0, total_size: total, has_more: false };
+          return { exists: true, content: "", offset: off, length: 0, total_size: total, has_more: false,
+            ...(readRevision(obj) ? { revision: readRevision(obj) } : {}) };
         }
         const rangeBytes = await obj.arrayBuffer();
         if (rangeBytes.byteLength > len) throw new Error("workspace read exceeded requested range");
@@ -514,6 +521,7 @@ export const r2Workspace: PrebuiltScript = {
           length: bytesRead,
           total_size: total,
           has_more: hasMore,
+          ...(readRevision(obj) ? { revision: readRevision(obj) } : {}),
           ...(hasMore ? { next_offset: end } : {}),
         };
       }
@@ -530,6 +538,7 @@ export const r2Workspace: PrebuiltScript = {
           content: null,
           size: obj.size,
           too_large: true,
+          ...(readRevision(obj) ? { revision: readRevision(obj) } : {}),
           message: `This file is ${obj.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for a single read. Read it in chunks with read_file(path, offset, length) — start at offset 0, then use the next_offset it returns — or use search_file(path, query) to jump straight to the part you need.`,
         };
       }
@@ -537,7 +546,7 @@ export const r2Workspace: PrebuiltScript = {
       if (fileBytes.byteLength > MAX_READABLE_FILE_BYTES || fileBytes.byteLength !== obj.size)
         throw new Error("workspace file changed size during read; retry the read");
       const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(fileBytes);
-      return { exists: true, content, size: obj.size, hash: obj.customMetadata?.["sha256"] };
+      return { exists: true, content, size: obj.size, hash: obj.customMetadata?.["sha256"], ...(readRevision(obj) ? { revision: readRevision(obj) } : {}) };
     },
     // Step 3: search WITHIN a file and get back only the matching lines (with line numbers, and
     // optional surrounding context) instead of pulling the whole file. Many matches are paged by
@@ -587,7 +596,8 @@ export const r2Workspace: PrebuiltScript = {
     // might be large (a customer upload, an export another agent produced) instead of finding out
     // the hard way.
     async stat_file(args, ctx) {
-      const head = await bucket(ctx).head(key(ctx, reqStr(args, "path")));
+      const storageKey = key(ctx, reqStr(args, "path"));
+      const head = await bucket(ctx).head(storageKey);
       if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
       return {
         exists: true,
@@ -595,6 +605,7 @@ export const r2Workspace: PrebuiltScript = {
         uploaded: head.uploaded.toISOString(),
         readable: head.size <= MAX_READABLE_FILE_BYTES,
         hash: head.customMetadata?.["sha256"],
+        ...(readRevision(head) ? { revision: readRevision(head) } : {}),
       };
     },
 
@@ -606,7 +617,8 @@ export const r2Workspace: PrebuiltScript = {
     },
 
     async list_directory(args, ctx) {
-      const prefix = directoryKey(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
+      const requestedPath = typeof args["path"] === "string" ? (args["path"] as string) : "";
+      const prefix = directoryKey(ctx, requestedPath);
       const out: Array<{ key: string; size: number; uploaded: string }> = [];
       let cursor: string | undefined;
       do {
@@ -618,7 +630,8 @@ export const r2Workspace: PrebuiltScript = {
         }
         cursor = listing.truncated ? listing.cursor : undefined;
       } while (cursor);
-      return { files: out, count: out.length };
+      const revision = await ctx.env.workspaceManifestRead?.();
+      return { files: out, count: out.length, ...(revision ? { revision: { branch: revision.head.branch, revision: revision.head.revision } } : {}) };
     },
 
     async delete_file(args, ctx) {
