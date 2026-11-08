@@ -17,8 +17,26 @@ export async function observeFilesystem(
   env: ScriptEngineEnv,
   path = ""
 ): Promise<ObserveSnapshot> {
-  const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const prefix = `${workspacePrefix(env)}${String(path).replace(/^\/+/, "")}`;
+  if (env.workspaceManifestRead) {
+    const manifest = await env.workspaceManifestRead();
+    if (manifest) {
+      const relativePrefix = String(path).replace(/^\/+/, "");
+      const objects = manifest.entries
+        .filter((entry) => entry.path.startsWith(relativePrefix))
+        .map((entry) => ({ key: `${workspacePrefix(env)}${entry.path}`, size: entry.size, modified: Date.parse(manifest.head.updatedAt) }));
+      const now = Date.now();
+      const structure = objects.map((object) => `${object.key}:${object.size}`).sort();
+      const fingerprint = await computeFingerprint({ structure });
+      return {
+        type: "filesystem", timestamp: now, path, file_count: objects.length,
+        total_size: objects.reduce((sum, object) => sum + object.size, 0),
+        recent_changes: objects.filter((object) => now - object.modified < 300_000).map((object) => object.key),
+        fingerprint, workspace_branch: manifest.head.branch, workspace_revision: manifest.head.revision,
+      };
+    }
+  }
+  const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const objects: Array<{ key: string; size: number; modified: number }> = [];
   let cursor: string | undefined;
   do {
