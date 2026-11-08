@@ -18,6 +18,7 @@ class Storage {
   async deleteAll(): Promise<void> { this.values.clear(); }
   async getAlarm(): Promise<number | null> { return this.alarmAt; }
   async setAlarm(scheduledTime: number | Date): Promise<void> { this.alarmAt = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime; }
+  async deleteAlarm(): Promise<void> { this.alarmAt = null; }
   async transaction<T>(callback: (txn: this) => Promise<T>): Promise<T> {
     const next = this.transactionQueue.then(() => callback(this));
     this.transactionQueue = next.then(() => undefined, () => undefined);
@@ -318,8 +319,47 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect((await storage.list({ prefix: "upload-intent:" })).size).toBe(0);
   });
 
+  it("retains a PUT that committed remotely after the client received a timeout", async () => {
+    const { instance, objects, storage, r2: bucket } = setup();
+    const r2 = bucket as unknown as R2Bucket;
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await storage.put("content_gc_backfill_complete", true);
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 });
+    const { session } = await opened.json() as { session: { id: string } };
+    const content = new TextEncoder().encode("remote commit after timeout");
+    const digest = await crypto.subtle.digest("SHA-256", content);
+    const hash = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    const contentKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${hash}`;
+    let responseWasLost = false;
+    const originalPut = r2.put.bind(r2);
+    vi.spyOn(r2, "put").mockImplementation(async (...args) => {
+      const result = await originalPut(...args);
+      if (args[0] === contentKey && !responseWasLost) {
+        responseWasLost = true;
+        throw new Error("simulated timeout after remote commit");
+      }
+      return result;
+    });
+    const request = {
+      sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "lost-put-response",
+      changes: [{ path: "late-commit.txt", expectedHash: null, contentBase64: btoa("remote commit after timeout") }],
+    };
+    await expect(call(instance, "/v1/checkpoint", request)).rejects.toThrow("simulated timeout after remote commit");
+    expect(objects.has(contentKey)).toBe(true);
+    expect((await storage.list({ prefix: "upload-intent:" })).size).toBe(1);
+
+    expect((await call(instance, "/v1/gc/content", {})).status).toBe(200);
+    for (let attempts = 0; attempts < 20 && storage.values.has("content_gc"); attempts++) await instance.alarm();
+    expect(storage.values.has("content_gc")).toBe(false);
+    expect(objects.has(contentKey)).toBe(true);
+
+    expect((await call(instance, "/v1/checkpoint", request)).status).toBe(200);
+    const read = await (await call(instance, "/v1/read?branch=main")).json() as { entries: WorkspaceEntry[] };
+    expect(read.entries).toMatchObject([{ path: "late-commit.txt", sha256: hash, objectKey: contentKey }]);
+  });
+
   it("erases one workspace scope and leaves a tombstone that rejects later reads and writes", async () => {
-    const { instance, objects } = setup();
+    const { instance, objects, storage } = setup();
     const content = new TextEncoder().encode("private");
     const hash = "715dc8493c36579a5b116995100f635e3572fdf8703e708ef1a08d943b36774e";
     const key = `workspace-v1/tenant/space/project/global/content/${hash}`;
@@ -328,6 +368,8 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const erased = await call(instance, "/v1/erase", { scope, confirm: true });
     expect(await erased.json()).toMatchObject({ erased: true, scope, objectsDeleted: 2 });
     expect(objects.size).toBe(0);
+    await instance.alarm();
+    expect(storage.alarmAt).toBeNull();
     expect((await call(instance, "/v1/head?branch=main")).status).toBe(410);
     expect(await (await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).json()).toMatchObject({ error_code: "workspace_erased" });
   });

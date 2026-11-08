@@ -145,6 +145,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (await this.ctx.storage.get<boolean>("erased")) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
     const startedAt = Date.now();
     const previous = await this.ctx.storage.get<{ failures: number }>("workspace_gc_status") ?? { failures: 0 };
     try {
