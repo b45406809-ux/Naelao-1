@@ -106,7 +106,9 @@ describe("storage-only attachment copy", () => {
     expect(await response.json()).toMatchObject({ copied: true, path: "inbox/private.pdf", mime_type: "application/pdf" });
     expect(state.destinationWrites).toHaveLength(0);
     expect(state.coordinatorCalls.map(call => call.path)).toEqual(["/v1/head", "/v1/open", "/v1/stage", "/v1/checkpoint", "/v1/close"]);
-    expect(state.coordinatorCalls.find(call => call.path === "/v1/stage")?.body).toMatchObject({ changes: [{ path: "inbox/private.pdf", expectedHash: null }] });
+    expect(state.coordinatorCalls.find(call => call.path === "/v1/stage")?.body).toMatchObject({ changes: [{
+      path: "inbox/private.pdf", expectedHash: null, contentType: "application/pdf",
+    }] });
     expect(state.coordinatorCalls.find(call => call.path === "/v1/checkpoint")?.body).toMatchObject({ baseRevision: 5, idempotencyKey: expect.stringMatching(/^attachment-/) });
   });
 });

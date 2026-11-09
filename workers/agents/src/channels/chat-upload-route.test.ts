@@ -49,14 +49,14 @@ function makeEnv(scopeResponses: (request: Request) => Response) {
   return { env: env as never, r2Calls, writes };
 }
 
-async function postUpload(env: never, projectId?: string, addFile = false) {
+async function postUpload(env: never, projectId?: string, addFile = false, mimeType = "text/plain", filename = "brief.txt") {
   const form = new FormData();
   if (projectId) form.append("project_id", projectId);
   if (addFile)
     form.append(
       "files",
-      new Blob(["safe attachment"], { type: "text/plain" }),
-      "brief.txt"
+      new Blob(["safe attachment"], { type: mimeType }),
+      filename
     );
   return app.request(
     "/spaces/space-a/sessions/session-a/uploads",
@@ -96,10 +96,10 @@ async function postFiles(env: never, filenames: string[]) {
 }
 
 function makeUnifiedEnv(scopeResponses: (request: Request) => Response) {
-  const files = new Map<string, { bytes: Uint8Array; sha256: string }>();
+  const files = new Map<string, { bytes: Uint8Array; sha256: string; contentType: string }>();
   const legacyWrites: string[] = [];
   let revision = 1;
-  let staged: Array<{ path: string; expectedHash: string | null; contentBase64: string | null }> = [];
+  let staged: Array<{ path: string; expectedHash: string | null; contentBase64: string | null; contentType?: string }> = [];
   const coordinator = {
     async fetch(request: Request) {
       const url = new URL(request.url);
@@ -108,7 +108,7 @@ function makeUnifiedEnv(scopeResponses: (request: Request) => Response) {
         const exact = url.searchParams.get("path");
         const prefix = url.searchParams.get("prefix");
         const entries = [...files].filter(([path]) => exact ? path === exact : prefix ? path.startsWith(prefix + "/") : true)
-          .map(([path, file]) => ({ path, sha256: file.sha256, size: file.bytes.byteLength, executable: false, objectKey: `workspace-v1/${file.sha256}` }));
+          .map(([path, file]) => ({ path, sha256: file.sha256, size: file.bytes.byteLength, executable: false, contentType: file.contentType, objectKey: `workspace-v1/${file.sha256}` }));
         return Response.json({ head: { branch: "main", revision, updatedAt: "2026-11-08T00:00:00.000Z" }, entries });
       }
       if (url.pathname === "/v1/open") return Response.json({ session: { id: "ws_00000000-0000-4000-8000-000000000001", fence: 0 }, head: { revision } });
@@ -125,7 +125,7 @@ function makeUnifiedEnv(scopeResponses: (request: Request) => Response) {
         else {
           const bytes = Uint8Array.from(atob(change.contentBase64), value => value.charCodeAt(0));
           const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
-          files.set(change.path, { bytes, sha256 });
+          files.set(change.path, { bytes, sha256, contentType: change.contentType ?? "application/octet-stream" });
         }
         revision++;
         return Response.json({ publication: { status: "published", revision } });
@@ -152,7 +152,7 @@ function makeUnifiedEnv(scopeResponses: (request: Request) => Response) {
       async delete() {},
     },
   };
-  return { env: env as never, files, legacyWrites, get revision() { return revision; } };
+  return { env: env as never, files, legacyWrites, get staged() { return staged; }, get revision() { return revision; } };
 }
 
 async function requestUploads(env: never, method: "GET" | "DELETE", suffix = "") {
@@ -243,15 +243,16 @@ describe("chat upload route scope enforcement", () => {
         ? Response.json({ project_id: "project-canonical", owned_by_caller: true, private_scratchpad: false })
         : Response.json({ id: "project-canonical" })
     );
-    const uploaded = await postUpload(state.env, undefined, true);
+    const uploaded = await postUpload(state.env, undefined, true, "application/pdf", "invoice.pdf");
     expect(uploaded.status).toBe(201);
-    await expect(uploaded.json()).resolves.toMatchObject({ uploaded: [{ branch: "main", revision: 2 }] });
-    expect(state.files.has("uploads/session-a/brief.txt")).toBe(true);
+    await expect(uploaded.json()).resolves.toMatchObject({ uploaded: [{ content_type: "application/pdf", branch: "main", revision: 2 }] });
+    expect(state.files.get("uploads/session-a/invoice.pdf")).toMatchObject({ contentType: "application/pdf" });
+    expect(state.staged[0]).toMatchObject({ path: "uploads/session-a/invoice.pdf", contentType: "application/pdf" });
     expect(state.legacyWrites).toEqual([]);
 
     const listed = await requestUploads(state.env, "GET");
-    expect(await listed.json()).toMatchObject({ branch: "main", revision: 2, files: [{ name: "brief.txt" }] });
-    const deleted = await requestUploads(state.env, "DELETE", "/brief.txt");
+    expect(await listed.json()).toMatchObject({ branch: "main", revision: 2, files: [{ name: "invoice.pdf", content_type: "application/pdf" }] });
+    const deleted = await requestUploads(state.env, "DELETE", "/invoice.pdf");
     expect(await deleted.json()).toMatchObject({ deleted: true, branch: "main", revision: 3 });
     expect(state.files.size).toBe(0);
     expect(state.legacyWrites).toEqual([]);

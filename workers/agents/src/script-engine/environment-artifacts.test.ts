@@ -3,15 +3,15 @@ import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnviro
 import { sha256Bytes } from "./r2-cas.js";
 import { workspacePrefix, type ScriptEngineEnv } from "./types.js";
 function fixture() {
-  const entries = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+  const entries = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; httpMetadata?: { contentType?: string } }>();
   let sequence = 0;
   const bucket = {
     head: async (key: string) => { const e = entries.get(key); return e ? { ...e, size: e.bytes.length } : null; },
     get: async (key: string) => { const e = entries.get(key); return e ? { ...e, size: e.bytes.length, arrayBuffer: async () => e.bytes.buffer } : null; },
-    put: async (key: string, bytes: Uint8Array, options: { onlyIf?: { etagDoesNotMatch?: string; etagMatches?: string }; customMetadata?: Record<string, string> }) => {
+    put: async (key: string, bytes: Uint8Array, options: { onlyIf?: { etagDoesNotMatch?: string; etagMatches?: string }; customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }) => {
       const current = entries.get(key);
       if (options.onlyIf?.etagDoesNotMatch === "*" && current || options.onlyIf?.etagMatches && current?.etag !== options.onlyIf.etagMatches) return null;
-      const etag = String(++sequence); entries.set(key, { bytes, etag, customMetadata: options.customMetadata ?? {} }); return { etag };
+      const etag = String(++sequence); entries.set(key, { bytes, etag, customMetadata: options.customMetadata ?? {}, ...(options.httpMetadata ? { httpMetadata: options.httpMetadata } : {}) }); return { etag };
     },
   } as unknown as R2Bucket;
   const env = { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "worker", scriptsBucket: bucket } as ScriptEngineEnv;
@@ -78,5 +78,22 @@ describe("immutable environment handoffs", () => {
     });
     expect(publication).toMatchObject({ key: f.prefix + "restored.bin", expectedHash: null, bytes: new Uint8Array([0, 1, 255]) });
     expect(f.entries.has(f.prefix + "restored.bin")).toBe(false);
+  });
+
+  it("preserves canonical MIME through workspace export, immutable artifact read, and checked restore", async () => {
+    const f = fixture();
+    f.entries.get(f.prefix + "source.txt")!.httpMetadata = { contentType: "application/pdf" };
+    const artifact = await publishEnvironmentArtifact(f.env, "source.txt");
+    const immutableKey = `workspace-artifacts/tenant/space/project/environment/${artifact.digest}`;
+    expect(f.entries.get(immutableKey)?.httpMetadata).toEqual({ contentType: "application/pdf" });
+    await expect(readEnvironmentArtifact(f.env, artifact.digest)).resolves.toMatchObject({ contentType: "application/pdf" });
+
+    let checkedPublication: unknown;
+    f.env.publishWorkspaceChecked = async (input) => {
+      checkedPublication = input;
+      return { hash: artifact.digest, revision: 13, deleted: false };
+    };
+    await restoreEnvironmentArtifact(f.env, artifact.digest, "restored.pdf", null);
+    expect(checkedPublication).toMatchObject({ expectedHash: null, contentType: "application/pdf", bytes: new TextEncoder().encode("input") });
   });
 });
