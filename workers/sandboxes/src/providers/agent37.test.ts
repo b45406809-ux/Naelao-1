@@ -31,14 +31,14 @@ describe("Agent37 adapter", () => {
     vi.spyOn(provider, "listWorkspace").mockResolvedValue([{ path: "doc.txt", size: 3, modified: 1 }]);
     vi.spyOn(provider, "readWorkspaceFile").mockResolvedValue(next);
     const coordinator: Agent37WorkspaceHandoff = {
-      readCommitted: vi.fn(async () => ({ tenantId: "t", spaceId: "s", projectId: "p", branch: "main", sessionId: "ws_12345678-1234-1234-1234-123456789012", revision: 4, fence: 2, allocationGeneration: 1, files: [{ path: "doc.txt", sha256: await hash(bytes), executable: false, bytes }] })),
+      readCommitted: vi.fn(async () => ({ tenantId: "t", spaceId: "s", projectId: "p", branch: "main", sessionId: "ws_12345678-1234-1234-1234-123456789012", revision: 4, fence: 2, allocationGeneration: 1, files: [{ path: "doc.txt", sha256: await hash(bytes), executable: false, contentType: "text/plain; charset=utf-8", bytes }] })),
       stage: vi.fn(async () => ({ stageId: "stage-1" })),
       publish: vi.fn(async () => ({ status: "published" as const, publicationId: "pub-1" })),
     };
     const scopedComputer = { ...computer, scope: { tenantId: "t", ownerId: "u", spaceId: "s", projectId: "p" } };
     const result = await provider.invokeWithWorkspace({ executionId: "exec-checked", computer: scopedComputer, allocation: { provider: "agent37", externalId: "ab12cd34ef", generation: 1 }, command: "true", args: [], timeoutMs: 1000 }, coordinator);
     expect(coordinator.readCommitted).toHaveBeenCalledWith({ tenantId: "t", spaceId: "s", projectId: "p", branch: "main", allocationGeneration: 1 });
-    expect(coordinator.stage).toHaveBeenCalledWith(expect.objectContaining({ revision: 4, fence: 2, allocationGeneration: 1, changes: [{ path: "doc.txt", expectedHash: await hash(bytes), bytes: next }] }));
+    expect(coordinator.stage).toHaveBeenCalledWith(expect.objectContaining({ revision: 4, fence: 2, allocationGeneration: 1, changes: [{ path: "doc.txt", expectedHash: await hash(bytes), bytes: next, contentType: "text/plain; charset=utf-8" }] }));
     expect(coordinator.publish).toHaveBeenCalledWith(expect.objectContaining({ stageId: "stage-1", idempotencyKey: "agent37:exec-checked" }));
     expect(result).toMatchObject({ workspaceState: "published", publicationId: "pub-1" });
   });

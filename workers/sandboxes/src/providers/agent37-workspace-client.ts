@@ -9,9 +9,9 @@ export interface Agent37WorkspaceClientEnv {
 }
 
 const MAX_ENTRIES = 200;
-const MAX_FILE_BYTES = 768 * 1024;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
-const MAX_STAGED_BYTES = 4 * 1024 * 1024;
+const MAX_STAGED_BYTES = 20 * 1024 * 1024;
 
 /** Service-binding client for the Agents checked workspace route. All publication work is
  * delegated to WorkspaceCoordinatorDO; no legacy R2 bridge or per-file CAS is used. */
@@ -41,7 +41,7 @@ export function agent37WorkspaceHandoff(env: Agent37WorkspaceClientEnv, computer
       const sessionId = opened.session.id;
       const fence = opened.session.fence;
       try {
-        const snapshot = await json<{ session: { baseRevision: number; allocationGeneration: number }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean }> }>(await request({ operation: "snapshot", sessionId, allocationGeneration, fence }));
+        const snapshot = await json<{ session: { baseRevision: number; allocationGeneration: number }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; contentType?: string }> }>(await request({ operation: "snapshot", sessionId, allocationGeneration, fence }));
         if (snapshot.entries.length > MAX_ENTRIES) throw new Error("workspace_entry_limit_exceeded");
         let total = 0;
         const files = [];
@@ -50,8 +50,10 @@ export function agent37WorkspaceHandoff(env: Agent37WorkspaceClientEnv, computer
           const response = await request({ operation: "content", sessionId, allocationGeneration, fence, filePath: entry.path });
           if (!response.ok) throw new Error(`workspace_content_http_${response.status}`);
           const bytes = new Uint8Array(await response.arrayBuffer());
-          if (bytes.byteLength !== entry.size || response.headers.get("x-content-sha256") !== entry.sha256 || response.headers.get("x-executable") !== String(entry.executable)) throw new Error("workspace_content_metadata_mismatch");
-          files.push({ path: entry.path, sha256: entry.sha256, executable: entry.executable, bytes });
+          const contentType = entry.contentType ?? "application/octet-stream";
+          if (bytes.byteLength !== entry.size || response.headers.get("x-content-sha256") !== entry.sha256 || response.headers.get("x-executable") !== String(entry.executable) ||
+              (response.headers.get("content-type") ?? "application/octet-stream") !== contentType) throw new Error("workspace_content_metadata_mismatch");
+          files.push({ path: entry.path, sha256: entry.sha256, executable: entry.executable, contentType, bytes });
         }
         return { tenantId, spaceId: computer.scope.spaceId!, projectId: computer.scope.projectId!, branch,
           sessionId, revision: snapshot.session.baseRevision, fence, allocationGeneration: snapshot.session.allocationGeneration, files };
@@ -65,9 +67,9 @@ export function agent37WorkspaceHandoff(env: Agent37WorkspaceClientEnv, computer
       if (changes.length > 100) throw new Error("workspace_change_limit_exceeded");
       let total = 0;
       const wireChanges = changes.map((change) => {
-        if (!change.bytes) return { path: change.path, expectedHash: change.expectedHash, contentBase64: null, executable: change.executable };
+        if (!change.bytes) return { path: change.path, expectedHash: change.expectedHash, contentBase64: null, executable: change.executable, contentType: change.contentType };
         if (change.bytes.byteLength > MAX_FILE_BYTES || (total += change.bytes.byteLength) > MAX_STAGED_BYTES) throw new Error("workspace_stage_limit_exceeded");
-        return { path: change.path, expectedHash: change.expectedHash, contentBase64: base64(change.bytes), executable: change.executable };
+        return { path: change.path, expectedHash: change.expectedHash, contentBase64: base64(change.bytes), executable: change.executable, contentType: change.contentType };
       });
       return await json<{ stageId: string }>(await request({ operation: "stage", sessionId, stageId, allocationGeneration, fence, changes: wireChanges }));
     },

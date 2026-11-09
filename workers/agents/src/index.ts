@@ -759,8 +759,9 @@ app.post("/internal/sandbox-agent37-workspaces", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!tenantId || !userId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true") return c.json({ error_code: "workspace_global_kill_switch_active" }, 423);
   let body: Record<string, unknown>;
-  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 6 * 1024 * 1024)) as Record<string, unknown>; }
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 30 * 1024 * 1024)) as Record<string, unknown>; }
   catch { return c.json({ error_code: "invalid_sandbox_workspace_request" }, 400); }
   if (typeof body.computerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.computerId)) return c.json({ error_code: "computer_not_found" }, 404);
   const computer = await c.env.PLATFORM_DB.prepare("SELECT id,tenant_id,owner_id,space_id,project_id,branch,allocation_generation,provider_preference,filesystem_mode FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL")
@@ -927,7 +928,7 @@ export async function fetchAgentsRequest(request: Request, env: AgentsEnv, ctx: 
   const isJson = /^application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(contentType);
   if (!isJson || request.method === "GET" || request.method === "HEAD") return app.fetch(request, env, ctx);
   const pathname = new URL(request.url).pathname;
-  const bodyLimit = pathname === "/internal/workspaces/checked-publish" || pathname === "/internal/workspaces/legacy-write" || pathname.startsWith("/internal/sandbox-workspaces/")
+  const bodyLimit = pathname === "/internal/workspaces/checked-publish" || pathname === "/internal/workspaces/legacy-write" || pathname === "/internal/sandbox-agent37-workspaces" || pathname.startsWith("/internal/sandbox-workspaces/")
     ? 30 * 1024 * 1024 : MAX_JSON_REQUEST_BYTES;
   let body: string;
   try { body = await readBoundedRequestText(request, bodyLimit); }

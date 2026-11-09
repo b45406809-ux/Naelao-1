@@ -9,7 +9,7 @@ import type {
 const API = "https://api.agent37.com";
 const EXEC_API = "https://sandbox.agent37.app";
 const MAX_OUTPUT = 512 * 1024;
-const MAX_WORKSPACE_FILE_BYTES = 768 * 1024;
+const MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WORKSPACE_TREE_FILES = 200;
 const MAX_WORKSPACE_TREE_BYTES = 64 * 1024 * 1024;
 const WORKSPACE_ROOT = "/home/node/workspace";
@@ -32,11 +32,11 @@ export interface Agent37WorkspaceHandoff {
   readCommitted(input: { tenantId: string; spaceId: string; projectId: string; branch: string; allocationGeneration: number }): Promise<{
     tenantId: string; spaceId: string; projectId: string; branch: string;
     sessionId: string; revision: number; fence: number; allocationGeneration: number;
-    files: Array<{ path: string; sha256: string; executable: boolean; bytes: Uint8Array }>;
+    files: Array<{ path: string; sha256: string; executable: boolean; contentType?: string; bytes: Uint8Array }>;
   }>;
   stage(input: { sessionId: string; revision: number; fence: number; allocationGeneration: number;
     stageId: string;
-    changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean }>;
+    changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean; contentType?: string }>;
   }): Promise<{ stageId: string }>;
   publish(input: { sessionId: string; stageId: string; revision: number; fence: number;
     allocationGeneration: number; idempotencyKey: string }): Promise<{
@@ -270,7 +270,7 @@ export class Agent37Provider implements SandboxProvider {
     const current = await this.listWorkspace(request.allocation, providerRoot);
     if (current.length > MAX_WORKSPACE_TREE_FILES) throw new Error("agent37_workspace_tree_limit_exceeded");
     const original = new Map(base.files.map((file) => [file.path, file]));
-    const changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean }> = [];
+    const changes: Array<{ path: string; expectedHash: string | null; bytes: Uint8Array | null; executable?: boolean; contentType?: string }> = [];
     let total = 0;
     for (const item of current) {
       const before = original.get(item.path);
@@ -278,7 +278,8 @@ export class Agent37Provider implements SandboxProvider {
       total += bytes.byteLength;
       if (total > MAX_WORKSPACE_TREE_BYTES) throw new Error("agent37_workspace_tree_limit_exceeded");
       const hash = await sha256Hex(bytes);
-      if (!before || hash !== before.sha256) changes.push({ path: item.path, expectedHash: before?.sha256 ?? null, bytes });
+      if (!before || hash !== before.sha256) changes.push({ path: item.path, expectedHash: before?.sha256 ?? null, bytes,
+        contentType: before?.contentType ?? "application/octet-stream" });
       original.delete(item.path);
     }
     for (const [path, before] of original) changes.push({ path, expectedHash: before.sha256, bytes: null });
