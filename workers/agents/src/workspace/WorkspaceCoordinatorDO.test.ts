@@ -61,6 +61,10 @@ function setup(options: { liveEnabled?: boolean; unifiedEnabled?: boolean } = {}
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+interface InventorySummaryRecord {
+  inventoryHash: string; pathHash: string; contentHash: string; sizeHash: string; mimeHash: string; executableHash: string;
+  tombstoneHash: string; fileCount: number; tombstoneCount: number; totalBytes: number;
+}
 async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unknown, method = body ? "POST" : "GET") {
   const headers = new Headers({ "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") });
   if (body) headers.set("content-type", "application/json");
@@ -152,19 +156,49 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("includes branch overlay tombstones and retries alias cleanup after a lost delete response", async () => {
-    const { instance, objects, customMetadata, storage, r2 } = setup({ unifiedEnabled: true });
+    const { instance, objects, metadata, customMetadata, storage, r2 } = setup({ unifiedEnabled: true });
     const prefix = "spaces/space/projects/project/workspace/";
     objects.set("tenants/tenant/provider-connections/shared", new TextEncoder().encode("shared connection"));
-    objects.set(`${prefix}docs/main.md`, new TextEncoder().encode("main"));
+    const mainFile = `${prefix}docs/main.md`;
+    objects.set(mainFile, new TextEncoder().encode("main"));
+    metadata.set(mainFile, { contentType: "text/markdown; charset=utf-8" });
     const deleted = `${prefix}branches/workers/worker-a/docs/main.md`;
     objects.set(deleted, new Uint8Array());
     customMetadata.set(deleted, { deleted: "true" });
-    objects.set(`${prefix}branches/workers/worker-a/docs/agent.md`, new TextEncoder().encode("agent"));
+    const branchFile = `${prefix}branches/workers/worker-a/bin/agent.sh`;
+    objects.set(branchFile, new TextEncoder().encode("agent"));
+    metadata.set(branchFile, { contentType: "text/x-shellscript" });
+    customMetadata.set(branchFile, { executable: "true" });
     expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-cutover-branch", branchNames: ["workers/worker-a"] })).status).toBe(201);
     const cutover = await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-cutover-branch", rollbackWindowMs: 60 * 60_000 });
     expect(cutover.status).toBe(200);
-    const body = await cutover.json() as { receipt: { branches: Record<string, { legacy: { tombstoneCount: number; tombstoneHash: string } }> } };
-    expect(body.receipt.branches["workers/worker-a"]?.legacy).toMatchObject({ tombstoneCount: 1, tombstoneHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const body = await cutover.json() as { receipt: {
+      mismatchCount: number; readErrorCount: number; omittedPathCount: number; truncatedPages: number;
+      branches: Record<string, { legacy: InventorySummaryRecord; manifest: InventorySummaryRecord }>;
+    } };
+    expect(body.receipt).toMatchObject({ mismatchCount: 0, readErrorCount: 0, omittedPathCount: 0, truncatedPages: 0 });
+    const verifyDimensions = (summary: InventorySummaryRecord) => {
+      expect(summary).toMatchObject({
+        inventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        pathHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        contentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        sizeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        mimeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        executableHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        tombstoneHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    };
+    const mainReceipt = body.receipt.branches.main!;
+    const branchReceipt = body.receipt.branches["workers/worker-a"]!;
+    for (const summary of [mainReceipt.legacy, mainReceipt.manifest, branchReceipt.legacy, branchReceipt.manifest]) verifyDimensions(summary);
+    for (const key of ["inventoryHash", "pathHash", "contentHash", "sizeHash", "mimeHash", "executableHash", "fileCount", "totalBytes"] as const) {
+      expect(mainReceipt.legacy[key]).toBe(mainReceipt.manifest[key]);
+      expect(branchReceipt.legacy[key]).toBe(branchReceipt.manifest[key]);
+    }
+    expect(mainReceipt.legacy).toMatchObject({ fileCount: 1, totalBytes: 4, tombstoneCount: 0 });
+    expect(branchReceipt.legacy).toMatchObject({ fileCount: 1, totalBytes: 5, tombstoneCount: 1 });
+    expect(branchReceipt.legacy.tombstoneHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(branchReceipt.manifest.tombstoneCount).toBe(0);
     expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(423);
     const expired = new Date(Date.now() - 1000).toISOString();
     await storage.put("workspace_read_policy", { ...await storage.get("workspace_read_policy") as object, rollbackExpiresAt: expired });
