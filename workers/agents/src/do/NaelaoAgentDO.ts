@@ -2317,22 +2317,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!response.ok) throw new Error(`workspace_read_failed:${response.status}`);
         return response.json() as Promise<{ head: { branch: string; revision: number; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> }>;
       };
-      // Script tools can checkpoint edits only on an already isolated coordinator branch.
-      // Unbranched runs do not receive this adapter, so failed/blocked runs cannot publish
-      // speculative changes directly to main through the generic R2 CAS helpers.
-      if (workspaceBranch && workspaceBranch !== "main") env.publishWorkspaceChecked = async input => {
+      // Agent runs can publish only on a pre-created isolated branch; interactive project
+      // file-manager operations have no speculative run lifecycle and publish checked edits
+      // directly to main after their route authorization and billing/admission gates.
+      const checkedBranch = workspaceBranch ?? (!commitContext ? "main" : undefined);
+      if (checkedBranch && (!commitContext || checkedBranch !== "main")) env.publishWorkspaceChecked = async input => {
         const prefix = workspacePrefix(env);
         if (!input.key.startsWith(prefix)) throw new Error("workspace_checked_publication_scope_mismatch");
         if (input.bytes && input.bytes.byteLength > 768 * 1024) throw new Error("workspace_file_limit_exceeded");
         const path = input.key.slice(prefix.length);
         const contentHash = input.bytes ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", input.bytes))].map(value => value.toString(16).padStart(2, "0")).join("") : null;
-        const keyMaterial = JSON.stringify({ run: commitContext?.taskId ?? agentId, branch: workspaceBranch, path, expectedHash: input.expectedHash, contentHash });
+        const keyMaterial = JSON.stringify({ run: env.runId ?? commitContext?.taskId ?? agentId, branch: checkedBranch, path, expectedHash: input.expectedHash, contentHash });
         const idempotencyKey = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial)))].map(value => value.toString(16).padStart(2, "0")).join("");
         const tenantToken = await mintInternalToken(this.env.PLATFORM_SECRET, tenantId);
         const publishRequest = new Request("http://agents-worker/internal/workspaces/checked-publish", {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": tenantToken },
-          body: JSON.stringify({ scope, branch: workspaceBranch, actorId: userId ?? agentId, path, expectedHash: input.expectedHash,
+          body: JSON.stringify({ scope, branch: checkedBranch, actorId: userId ?? agentId, path, expectedHash: input.expectedHash,
             contentBase64: input.bytes ? bytesToBase64(input.bytes) : null, idempotencyKey }),
         });
         const response = await handleWorkspaceCheckedPublish(publishRequest, unifiedWorkspaceBindings);
@@ -3137,9 +3138,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.SPACES_WORKER && projectId) {
       const spacesWorker = this.env.SPACES_WORKER;
       env.onWorkspaceChange = async (change) => {
-        // R2 workspace state is canonical; RepositoryDO is a materialized Git projection. Read
-        // the latest R2 snapshot on every retry and publish it through one expected-head commit.
+        // The coordinator manifest is canonical; RepositoryDO is a materialized Git projection.
         let commitOid: string | undefined;
+        if (this.env.ARTIFACT_WORKER && !commitContext && unifiedWorkspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true") {
+          const base = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository`;
+          const branch = workspaceBranch ?? "main";
+          const branchQuery = `?branch=${encodeURIComponent(branch)}`;
+          const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+          const initialized = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/init`, { method: "POST", headers, body: "{}" }));
+          if (!initialized.ok) throw new Error(`Repository projection initialization failed (${initialized.status})`);
+          let reconciled = false;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const response = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/reconcile${branchQuery}`, {
+              method: "POST", headers,
+              body: JSON.stringify({ branch, metadata: {
+                agent_role: agentId, user_goal: "Publish checked project file change",
+                task_id: env.runId ?? `file-manager:${agentId}`, rationale: `${change.operation} ${change.path}`,
+                thread_id: env.currentSessionId ?? `project:${projectId}`, tool_turn_id: `${env.runId ?? agentId}:${change.path}:${attempt}`,
+              } }),
+            }));
+            if (response.status === 409) continue;
+            if (!response.ok) throw new Error(`Workspace projection reconciliation failed (${response.status})`);
+            const result = await readBoundedResponseJson<{ commit_id?: string | null }>(response, 2 * 1024 * 1024);
+            commitOid = result.commit_id ?? undefined;
+            reconciled = true;
+            break;
+          }
+          if (!reconciled) throw new Error("Workspace projection remained contended during reconciliation");
+          if (commitOid) env.lastWorkspaceCommitOid = commitOid;
+        }
         if (this.env.ARTIFACT_WORKER && commitContext) {
           const base = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
           const branch = env.workspaceBranch;
