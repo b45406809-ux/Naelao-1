@@ -153,7 +153,7 @@ describe("sandbox workspace snapshot bridge", () => {
     expect(coordinatorCheckpoint).toMatchObject({ changes: [{ contentType: "application/pdf" }] });
     expect(coordinatorCalls).toContain("/v1/checkpoint");
 
-    const largeBytes = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const largeBytes = new Uint8Array(20 * 1024 * 1024).fill(65);
     const largeHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", largeBytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     let largeBinary = "";
     for (let offset = 0; offset < largeBytes.length; offset += 0x8000) largeBinary += String.fromCharCode(...largeBytes.subarray(offset, offset + 0x8000));

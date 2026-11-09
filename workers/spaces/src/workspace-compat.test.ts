@@ -19,6 +19,16 @@ describe("unified workspace compatibility reads", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("requests a revision-bearing manifest only for bounded shadow verification while rollout stays off", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      expect(await request.json()).toMatchObject({ verificationOnly: true, scope: { projectId: "project" } });
+      return Response.json({ canonical: true, verificationOnly: true, head: { branch: "main", revision: 3, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [] });
+    });
+    const result = await readWorkspaceCompat({ ...input, enabled: false, verificationOnly: true, enforcePolicy: true, agentsWorker: { fetch } as never });
+    expect(result).toMatchObject({ kind: "canonical", head: { revision: 3 }, entries: [] });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("reads manifest entries from the authorized Agents adapter when enabled", async () => {
     const fetch = vi.fn(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/internal/workspaces/compat-read");

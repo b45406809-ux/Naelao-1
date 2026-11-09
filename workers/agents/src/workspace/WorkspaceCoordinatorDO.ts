@@ -19,6 +19,7 @@ interface Env {
   PLATFORM_SECRET: string;
   SCRIPTS_R2?: R2Bucket;
   LIVE_WORKSPACE_ENABLED?: string;
+  UNIFIED_WORKSPACE_ENABLED?: string;
 }
 interface Change { path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string; }
 interface StagedChange { path: string; expectedHash: string | null; sha256: string | null; size: number; executable?: boolean; contentType?: string; objectKey?: string; }
@@ -27,8 +28,11 @@ interface RevisionEvent { branch: string; revision: number; publicationId: strin
 interface ExpiryRecord { expiresAt: number; kind: "receipt" | "subscription"; targetKey: string; branch?: string; subscriberId?: string; }
 interface RetainedRevision { branch: string; revision: number; manifestHash: string; createdAt: string; }
 interface WorkspaceUploadIntent { createdAt: string; objectKeys: string[]; }
-interface WorkspaceMigration { migrationId: string; status: "barrier" | "importing" | "restoring" | "failed" | "verified"; sourcePrefix: string; startedAt: string; updatedAt: string; branchNames?: string[]; errorCode?: string; revision?: number; manifestHash?: string; }
-interface WorkspaceRollbackAlias { sourcePrefix: string; migrationId: string; retainedAt: string; verificationStatus: "pending" | "verified"; revision: number; manifestHash: string; branchNames?: string[]; branchHeads?: Record<string, { revision: number; manifestHash: string }>; }
+interface InventorySummary { inventoryHash: string; pathHash: string; contentHash: string; sizeHash: string; mimeHash: string; executableHash: string; tombstoneHash: string; fileCount: number; tombstoneCount: number; totalBytes: number; }
+interface WorkspaceCutoverReceipt { migrationId: string; generation: number; verifiedAt: string; branches: Record<string, { revision: number; manifestHash: string; legacy: InventorySummary; manifest: InventorySummary }>; mismatchCount: number; readErrorCount: number; omittedPathCount: number; truncatedPages: number; }
+interface WorkspaceReadPolicy { mode: "legacy" | "shadow" | "coordinator"; generation: number; migrationId: string | null; updatedAt: string; rollbackExpiresAt?: string; receipt?: WorkspaceCutoverReceipt; }
+interface WorkspaceMigration { migrationId: string; status: "barrier" | "importing" | "repairing" | "cutover" | "restoring" | "failed" | "verified"; sourcePrefix: string; startedAt: string; updatedAt: string; branchNames?: string[]; sourceInventory?: Record<string, InventorySummary>; errorCode?: string; revision?: number; manifestHash?: string; }
+interface WorkspaceRollbackAlias { sourcePrefix: string; migrationId: string; retainedAt: string; verificationStatus: "pending" | "verified"; revision: number; manifestHash: string; branchNames?: string[]; branchHeads?: Record<string, { revision: number; manifestHash: string }>; sourceInventory?: Record<string, InventorySummary>; rollbackExpiresAt?: string; cleanupCursor?: string; cleanupStatus?: "pending" | "cleaning" | "complete"; }
 interface WorkspaceRollbackRestore { restoreId: string; status: "restoring" | "verified"; startedAt: string; completedAt?: string; expectedHeads: Record<string, { revision: number; manifestHash: string }>; restoredHeads?: Record<string, { revision: number; manifestHash: string }>; completedBranches: string[]; errorCode?: string; }
 interface ContentGcState {
   epoch: string;
@@ -216,22 +220,35 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration") ?? null;
       const rollbackAlias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias") ?? null;
       const restore = await this.ctx.storage.get<WorkspaceRollbackRestore>("migration_restore") ?? null;
+      const readPolicy = await this.getReadPolicy();
       const branches = ["main", ...(migration?.branchNames ?? rollbackAlias?.branchNames ?? [])];
       const currentHeads: Record<string, { revision: number; manifestHash: string }> = {};
       for (const branch of branches) {
         const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
         if (head) currentHeads[branch] = { revision: head.revision, manifestHash: head.manifestHash };
       }
-      return json({ migration, rollbackAlias, restore, currentHeads });
+      return json({ migration, rollbackAlias, restore, readPolicy, currentHeads, aliasCleanup: await this.ctx.storage.get("legacy_alias_cleanup_receipt") ?? null });
     }
+    if (request.method === "GET" && url.pathname === "/v1/read-policy") return json(await this.getReadPolicy());
     if (request.method === "POST" && url.pathname === "/v1/migration/import") return this.migrateLegacyProject(body!, tenantId);
+    if (request.method === "POST" && url.pathname === "/v1/migration/repair") return this.repairMigratedProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/restore") return this.restoreMigratedProject(body!, tenantId);
+    if (request.method === "POST" && url.pathname === "/v1/migration/cutover") return this.cutoverMigratedProject(body!, tenantId);
+    if (request.method === "POST" && url.pathname === "/v1/migration/retire-alias") return this.retireLegacyAlias(body!, tenantId);
     // Every known workspace gets a durable maintenance alarm. This turns the authenticated
     // coordinator access path into the bounded scheduler roster without a second, stale D1
     // registry of project identities.
     if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     if (migration && migration.status !== "verified" && url.pathname !== "/v1/migration/status" && url.pathname !== "/v1/migration/import") return fail("workspace_migration_barrier_active", 423);
+    if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/subscriptions/ack"].includes(url.pathname)) {
+      const policy = await this.getReadPolicy();
+      const canInitialize = url.pathname === "/v1/initialize" && policy.mode === "legacy" &&
+        !(await this.ctx.storage.get<WorkspaceMigration>("project_migration")) &&
+        !(await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias")) &&
+        !(await this.ctx.storage.get<WorkspaceHead>(headKey("main")));
+      if (policy.mode !== "coordinator" && !canInitialize) return fail("workspace_project_policy_blocks_coordinator_write", 423);
+    }
     if (request.method === "POST" && url.pathname === "/v1/initialize") return this.initialize(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/open") return this.open(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/renew") return this.renew(body!);
@@ -264,6 +281,16 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const known = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (known && JSON.stringify(known) !== JSON.stringify(scope)) return fail("workspace_scope_mismatch", 403);
     return { scope, branch };
+  }
+
+  private async getReadPolicy(): Promise<WorkspaceReadPolicy> {
+    const stored = await this.ctx.storage.get<WorkspaceReadPolicy>("workspace_read_policy");
+    if (stored) return stored;
+    const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+    const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+    const main = await this.ctx.storage.get<WorkspaceHead>(headKey("main"));
+    const mode: WorkspaceReadPolicy["mode"] = migration || alias?.verificationStatus === "verified" ? "shadow" : main ? "coordinator" : "legacy";
+    return { mode, generation: 0, migrationId: migration?.migrationId ?? alias?.migrationId ?? null, updatedAt: new Date(0).toISOString() };
   }
 
   private async initialize(body: Record<string, unknown>, tenantId: string, allowMigration = false): Promise<Response> {
@@ -313,6 +340,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await tx.put(headKey(branch), head);
       await tx.put(retainedRevisionKey(branch, head.revision), { branch, revision: head.revision, manifestHash: head.manifestHash, createdAt: head.updatedAt } satisfies RetainedRevision);
       await tx.put(revisionEventKey(branch, 1), { branch, revision: 1, publicationId: null, changedPaths: [], updatedAt: head.updatedAt } satisfies RevisionEvent);
+      if (!allowMigration) await tx.put("workspace_read_policy", { mode: "coordinator", generation: 1, migrationId: null, updatedAt: head.updatedAt } satisfies WorkspaceReadPolicy);
       await tx.delete(uploadIntentKey);
       return "created";
     });
@@ -382,7 +410,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
             if (!existing || await sha256Hex(new Uint8Array(await existing.arrayBuffer())) !== hash) throw new Error("workspace_migration_content_integrity_failed");
           }
         }
-        entries.push({ path, sha256: hash, size: bytes.byteLength, executable: false, objectKey, ...(contentType ? { contentType } : {}) });
+        const executable = object.customMetadata?.executable === "true";
+        entries.push({ path, sha256: hash, size: bytes.byteLength, executable, objectKey, ...(contentType ? { contentType } : {}) });
       }
       cursor = page.truncated ? page.cursor : undefined;
       if (page.truncated && !cursor) throw new Error("workspace_migration_cursor_missing");
@@ -391,6 +420,25 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     entries.sort((a, b) => a.path.localeCompare(b.path));
     tombstones.sort();
     return { entries, tombstones, totalBytes };
+  }
+
+  private async inventorySummary(entries: WorkspaceEntry[], tombstones: string[]): Promise<InventorySummary> {
+    const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path));
+    const normalized = sorted.map(entry => [entry.path, entry.sha256, entry.size, entry.contentType ?? "application/octet-stream", entry.executable === true]);
+    const hashRows = async (rows: unknown[]) => sha256Hex(new TextEncoder().encode(JSON.stringify(rows)));
+    const normalizedTombstones = [...tombstones].sort();
+    return {
+      inventoryHash: await hashRows(normalized),
+      pathHash: await hashRows(sorted.map(entry => entry.path)),
+      contentHash: await hashRows(sorted.map(entry => [entry.path, entry.sha256])),
+      sizeHash: await hashRows(sorted.map(entry => [entry.path, entry.size])),
+      mimeHash: await hashRows(sorted.map(entry => [entry.path, entry.contentType ?? "application/octet-stream"])),
+      executableHash: await hashRows(sorted.map(entry => [entry.path, entry.executable === true])),
+      tombstoneHash: await hashRows(normalizedTombstones),
+      fileCount: entries.length,
+      tombstoneCount: tombstones.length,
+      totalBytes: entries.reduce((sum, entry) => sum + entry.size, 0),
+    };
   }
 
   private async importLegacyBranch(scope: WorkspaceScope, branch: string, desiredEntries: WorkspaceEntry[], tenantId: string, options: { seedFromMain?: boolean; expectedRevision?: number; stageNamespace?: string } = {}): Promise<WorkspaceHead> {
@@ -496,6 +544,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (current?.migrationId && current.migrationId !== migration.migrationId) throw new Error("workspace_migration_id_conflict");
       await tx.put("scope", scope);
       await tx.put("project_migration", migration);
+      const policy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+      await tx.put("workspace_read_policy", { mode: "shadow", generation: policy?.generation ?? 0, migrationId: migration.migrationId, updatedAt: new Date().toISOString() } satisfies WorkspaceReadPolicy);
       await tx.put("legacy_rollback_alias", { sourcePrefix: prefix, migrationId: migration.migrationId, retainedAt: migration.startedAt, verificationStatus: "pending", revision: 0, manifestHash: "", branchNames: normalizedBranches } satisfies WorkspaceRollbackAlias);
     });
     try {
@@ -514,7 +564,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         return { main, branches, totalBytes };
       };
-      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType }) => [path, sha256, size, contentType ?? "application/octet-stream"]));
+      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? "application/octet-stream", executable === true]));
       const snapshotSignature = (snapshot: Awaited<ReturnType<typeof scan>>) => JSON.stringify({
         main: signature(snapshot.main.entries), mainTombstones: snapshot.main.tombstones,
         branches: snapshot.branches.map(({ name, tree }) => [name, signature(tree.entries), tree.tombstones]),
@@ -522,6 +572,11 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const first = await scan(true);
       const second = await scan(false);
       if (snapshotSignature(first) !== snapshotSignature(second) || first.totalBytes !== second.totalBytes) throw new Error("workspace_migration_source_changed");
+      const sourceInventory: Record<string, InventorySummary> = { main: await this.inventorySummary(first.main.entries, first.main.tombstones) };
+      for (const branch of first.branches) sourceInventory[branch.name] = await this.inventorySummary(branch.tree.entries, branch.tree.tombstones);
+      migration.sourceInventory = sourceInventory;
+      migration.updatedAt = new Date().toISOString();
+      await this.ctx.storage.put("project_migration", migration);
       let currentHead = await this.ctx.storage.get<WorkspaceHead>(headKey("main"));
       if (currentHead) {
         const currentEntries = await this.readManifestEntries(currentHead);
@@ -555,7 +610,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       migration.updatedAt = new Date().toISOString();
       await this.ctx.storage.transaction(async tx => {
         await tx.put("project_migration", migration);
-        await tx.put("legacy_rollback_alias", { sourcePrefix: prefix, migrationId: migration.migrationId, retainedAt: migration.startedAt, verificationStatus: "verified", revision: currentHead.revision, manifestHash: currentHead.manifestHash, branchNames: normalizedBranches, branchHeads } satisfies WorkspaceRollbackAlias);
+        const alias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+        await tx.put("legacy_rollback_alias", { ...alias, sourcePrefix: prefix, migrationId: migration.migrationId, retainedAt: migration.startedAt, verificationStatus: "verified", revision: currentHead.revision, manifestHash: currentHead.manifestHash, branchNames: normalizedBranches, branchHeads, sourceInventory } satisfies WorkspaceRollbackAlias);
       });
       return json({ migration, rollbackAlias: await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias"), fileCount: first.main.entries.length, branchCount: first.branches.length, branchHeads, totalBytes: first.totalBytes }, head ? 200 : 201);
     } catch (error) {
@@ -565,6 +621,263 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await this.ctx.storage.put("project_migration", migration);
       const errorCode = migration.errorCode.startsWith("workspace_migration_branch_") ? migration.errorCode : "workspace_migration_failed";
       return json({ error_code: errorCode, migration }, 503);
+    }
+  }
+
+  private async repairMigratedProject(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !ID.test(body.migrationId)) return fail("invalid_workspace_migration_repair_request");
+    const scope = body.scope;
+    const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+    const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+    const policy = await this.getReadPolicy();
+    if (!migration || migration.migrationId !== body.migrationId || !alias || alias.migrationId !== migration.migrationId || alias.verificationStatus !== "verified" ||
+        policy.mode !== "shadow" || !["verified", "failed"].includes(migration.status)) return fail("workspace_migration_repair_unavailable", 409);
+    const started = await this.ctx.storage.transaction(async tx => {
+      const current = await tx.get<WorkspaceMigration>("project_migration");
+      const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+      if (!current || current.migrationId !== migration.migrationId || !["verified", "failed"].includes(current.status) || currentPolicy?.mode !== "shadow") return false;
+      await tx.put("project_migration", { ...current, status: "repairing", updatedAt: new Date().toISOString() });
+      return true;
+    });
+    if (!started) return fail("workspace_migration_repair_busy", 423);
+    try {
+      const scan = async (storeContentObjects: boolean) => {
+        await this.validateLegacyBranchInventory(alias.sourcePrefix, migration.branchNames ?? []);
+        const main = await this.scanLegacyProject(scope, alias.sourcePrefix, storeContentObjects);
+        const branches: Array<{ name: string; tree: Awaited<ReturnType<WorkspaceCoordinatorDO["scanLegacyProject"]>> }> = [];
+        let totalBytes = main.totalBytes;
+        for (const branch of migration.branchNames ?? []) {
+          const tree = await this.scanLegacyProject(scope, `${alias.sourcePrefix}branches/${branch}/`, storeContentObjects, true);
+          if ((totalBytes += tree.totalBytes) > MAX_MIGRATION_ALL_BRANCH_BYTES) throw new Error("workspace_migration_all_branches_limit_exceeded");
+          branches.push({ name: branch, tree });
+        }
+        return { main, branches, totalBytes };
+      };
+      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? "application/octet-stream", executable === true]));
+      const snapshotSignature = (snapshot: Awaited<ReturnType<typeof scan>>) => JSON.stringify({
+        main: signature(snapshot.main.entries), mainTombstones: snapshot.main.tombstones,
+        branches: snapshot.branches.map(({ name, tree }) => [name, signature(tree.entries), tree.tombstones]),
+      });
+      const first = await scan(true);
+      const second = await scan(false);
+      if (snapshotSignature(first) !== snapshotSignature(second) || first.totalBytes !== second.totalBytes) throw new Error("workspace_migration_source_changed");
+      const sourceInventory: Record<string, InventorySummary> = { main: await this.inventorySummary(first.main.entries, first.main.tombstones) };
+      for (const branch of first.branches) sourceInventory[branch.name] = await this.inventorySummary(branch.tree.entries, branch.tree.tombstones);
+
+      const mainBefore = await this.ctx.storage.get<WorkspaceHead>(headKey("main"));
+      if (!mainBefore) throw new Error("workspace_migration_head_missing");
+      const mainHead = await this.importLegacyBranch(scope, "main", first.main.entries, tenantId, { seedFromMain: false, expectedRevision: mainBefore.revision });
+      const branchHeads: Record<string, { revision: number; manifestHash: string }> = {};
+      for (const { name, tree } of first.branches) {
+        const currentBranch = await this.ctx.storage.get<WorkspaceHead>(headKey(name));
+        if (!currentBranch) throw new Error("workspace_migration_branch_head_missing");
+        const effective = new Map(first.main.entries.map(entry => [entry.path, entry]));
+        for (const path of tree.tombstones) effective.delete(path);
+        for (const entry of tree.entries) effective.set(entry.path, entry);
+        await this.ctx.storage.transaction(async tx => {
+          const branchHead = await tx.get<WorkspaceHead>(headKey(name));
+          const parentHead = await tx.get<WorkspaceHead>(headKey("main"));
+          if (!branchHead || branchHead.revision !== currentBranch.revision || branchHead.manifestHash !== currentBranch.manifestHash || !parentHead || parentHead.revision !== mainHead.revision || parentHead.manifestHash !== mainHead.manifestHash) throw new Error("workspace_migration_branch_head_changed");
+          await tx.put(branchBaseKey(name), { parentBranch: "main", revision: parentHead.revision, manifestHash: parentHead.manifestHash });
+        });
+        const repaired = await this.importLegacyBranch(scope, name, [...effective.values()].sort((a, b) => a.path.localeCompare(b.path)), tenantId, { seedFromMain: false, expectedRevision: currentBranch.revision });
+        branchHeads[name] = { revision: repaired.revision, manifestHash: repaired.manifestHash };
+      }
+      const finalSource = await scan(false);
+      if (snapshotSignature(first) !== snapshotSignature(finalSource) || first.totalBytes !== finalSource.totalBytes) throw new Error("workspace_migration_source_changed");
+      const verifiedMain = await this.readManifestEntries(mainHead);
+      if (signature(first.main.entries) !== signature(verifiedMain)) throw new Error("workspace_migration_repair_verification_failed");
+      for (const { name, tree } of first.branches) {
+        const head = await this.ctx.storage.get<WorkspaceHead>(headKey(name));
+        if (!head) throw new Error("workspace_migration_branch_head_missing");
+        const expected = new Map(first.main.entries.map(entry => [entry.path, entry]));
+        for (const path of tree.tombstones) expected.delete(path);
+        for (const entry of tree.entries) expected.set(entry.path, entry);
+        if (signature([...expected.values()].sort((a, b) => a.path.localeCompare(b.path))) !== signature(await this.readManifestEntries(head))) throw new Error("workspace_migration_repair_verification_failed");
+        branchHeads[name] = { revision: head.revision, manifestHash: head.manifestHash };
+      }
+      const completedAt = new Date().toISOString();
+      const repairedReceipt = { migrationId: migration.migrationId, completedAt, sourceInventory, repairedBranchCount: (migration.branchNames?.length ?? 0) + 1, status: "verified" as const };
+      await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<WorkspaceMigration>("project_migration");
+        const currentAlias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+        const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+        if (!current || current.status !== "repairing" || current.migrationId !== migration.migrationId || !currentAlias || currentAlias.migrationId !== migration.migrationId || currentPolicy?.mode !== "shadow") throw new Error("workspace_migration_repair_state_changed");
+        await tx.put("project_migration", { ...current, status: "verified", revision: mainHead.revision, manifestHash: mainHead.manifestHash, sourceInventory, updatedAt: completedAt });
+        await tx.put("legacy_rollback_alias", { ...currentAlias, revision: mainHead.revision, manifestHash: mainHead.manifestHash, branchHeads, sourceInventory });
+        await tx.put("workspace_migration_repair_receipt", repairedReceipt);
+        await tx.delete("migration_cutover_attempt");
+      });
+      return json({ migration: await this.ctx.storage.get("project_migration"), repair: repairedReceipt, branchHeads });
+    } catch {
+      const current = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+      if (current?.migrationId === migration.migrationId && current.status === "repairing") await this.ctx.storage.put("project_migration", { ...current, status: "failed", errorCode: "workspace_migration_repair_failed", updatedAt: new Date().toISOString() });
+      return fail("workspace_migration_repair_failed", 503);
+    }
+  }
+
+  private async cutoverMigratedProject(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true") return fail("workspace_global_kill_switch_active", 423);
+    if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !ID.test(body.migrationId) ||
+        !Number.isSafeInteger(body.rollbackWindowMs) || Number(body.rollbackWindowMs) < 60 * 60_000 || Number(body.rollbackWindowMs) > 90 * 24 * 60 * 60_000) return fail("invalid_workspace_cutover_request");
+    const scope = body.scope;
+    const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+    const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+    const policy = await this.getReadPolicy();
+    if (!migration || migration.migrationId !== body.migrationId || !alias || alias.migrationId !== migration.migrationId || alias.verificationStatus !== "verified") return fail("workspace_migration_cutover_unavailable", 409);
+    if (policy.mode === "coordinator" && policy.receipt?.migrationId === migration.migrationId) return json({ readPolicy: policy, replay: true });
+    if (policy.mode !== "shadow" || (migration.status !== "verified" && migration.status !== "cutover")) return fail("workspace_migration_cutover_unavailable", 409);
+
+    const start = await this.ctx.storage.transaction(async tx => {
+      const current = await tx.get<WorkspaceMigration>("project_migration");
+      const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+      const currentAlias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+      if (!current || current.migrationId !== migration.migrationId || (current.status !== "verified" && current.status !== "cutover") ||
+          currentAlias?.verificationStatus !== "verified" || currentPolicy?.mode !== "shadow") return false;
+      await tx.put("project_migration", { ...current, status: "cutover", updatedAt: new Date().toISOString() });
+      return true;
+    });
+    if (!start) return fail("workspace_migration_cutover_busy", 423);
+
+    const branches = ["main", ...(migration.branchNames ?? [])];
+    const beforeHeads: Record<string, WorkspaceHead> = {};
+    const receipt: WorkspaceCutoverReceipt = {
+      migrationId: migration.migrationId,
+      generation: policy.generation + 1,
+      verifiedAt: new Date().toISOString(),
+      branches: {}, mismatchCount: 0, readErrorCount: 0, omittedPathCount: 0, truncatedPages: 0,
+    };
+    let mismatchClass: "inventory_mismatch" | "path_omission" | "read_error" | "truncated_inventory" | undefined;
+    try {
+      const prefix = alias.sourcePrefix;
+      if (prefix !== `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`) throw new Error("scope");
+      await this.validateLegacyBranchInventory(prefix, migration.branchNames ?? []);
+      const mainLegacy = await this.scanLegacyProject(scope, prefix, false);
+      const effectiveTrees = new Map<string, { entries: WorkspaceEntry[]; tombstones: string[] }>();
+      effectiveTrees.set("main", { entries: mainLegacy.entries, tombstones: mainLegacy.tombstones });
+      for (const branch of migration.branchNames ?? []) {
+        const overlay = await this.scanLegacyProject(scope, `${prefix}branches/${branch}/`, false, true);
+        const effective = new Map(mainLegacy.entries.map(entry => [entry.path, entry]));
+        for (const path of overlay.tombstones) effective.delete(path);
+        for (const entry of overlay.entries) effective.set(entry.path, entry);
+        effectiveTrees.set(branch, { entries: [...effective.values()].sort((a, b) => a.path.localeCompare(b.path)), tombstones: [...mainLegacy.tombstones, ...overlay.tombstones].sort() });
+      }
+      for (const branch of branches) {
+        const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
+        if (!head || head.branch !== branch || JSON.stringify(head.scope) !== JSON.stringify(scope)) throw new Error("head");
+        beforeHeads[branch] = head;
+        const manifestEntries = await this.readManifestEntries(head);
+        const legacyTree = effectiveTrees.get(branch);
+        if (!legacyTree) throw new Error("inventory");
+        const legacySummary = await this.inventorySummary(legacyTree.entries, legacyTree.tombstones);
+        const manifestSummary = await this.inventorySummary(manifestEntries, []);
+        const sameInventory = legacySummary.inventoryHash === manifestSummary.inventoryHash &&
+          legacySummary.pathHash === manifestSummary.pathHash && legacySummary.contentHash === manifestSummary.contentHash &&
+          legacySummary.sizeHash === manifestSummary.sizeHash && legacySummary.mimeHash === manifestSummary.mimeHash &&
+          legacySummary.executableHash === manifestSummary.executableHash && legacySummary.fileCount === manifestSummary.fileCount &&
+          legacySummary.totalBytes === manifestSummary.totalBytes;
+        if (!sameInventory) {
+          receipt.mismatchCount++;
+          const legacyPaths = new Set(legacyTree.entries.map(entry => entry.path));
+          const manifestPaths = new Set(manifestEntries.map(entry => entry.path));
+          for (const path of legacyPaths) if (!manifestPaths.has(path)) receipt.omittedPathCount++;
+          for (const path of manifestPaths) if (!legacyPaths.has(path)) receipt.omittedPathCount++;
+          mismatchClass = receipt.omittedPathCount ? "path_omission" : "inventory_mismatch";
+        }
+        receipt.branches[branch] = { revision: head.revision, manifestHash: head.manifestHash, legacy: legacySummary, manifest: manifestSummary };
+      }
+    } catch (error) {
+      receipt.readErrorCount = 1;
+      mismatchClass = error instanceof Error && error.message.includes("cursor") ? "truncated_inventory" : "read_error";
+      if (mismatchClass === "truncated_inventory") receipt.truncatedPages = 1;
+    }
+
+    if (receipt.mismatchCount || receipt.readErrorCount || receipt.omittedPathCount || receipt.truncatedPages) {
+      await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<WorkspaceMigration>("project_migration");
+        if (current?.migrationId === migration.migrationId && current.status === "cutover") await tx.put("project_migration", { ...current, status: "verified", updatedAt: new Date().toISOString() });
+        await tx.put("migration_cutover_attempt", { migrationId: migration.migrationId, attemptedAt: receipt.verifiedAt,
+          mismatchClass: mismatchClass ?? "inventory_mismatch", mismatchCount: receipt.mismatchCount,
+          readErrorCount: receipt.readErrorCount, omittedPathCount: receipt.omittedPathCount, truncatedPages: receipt.truncatedPages });
+      });
+      return json({ error_code: "workspace_migration_dual_read_mismatch", attempt: await this.ctx.storage.get("migration_cutover_attempt") }, 409);
+    }
+
+    const rollbackExpiresAt = new Date(Date.now() + Number(body.rollbackWindowMs)).toISOString();
+    const applied = await this.ctx.storage.transaction(async tx => {
+      const current = await tx.get<WorkspaceMigration>("project_migration");
+      const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+      const currentAlias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+      if (!current || current.migrationId !== migration.migrationId || current.status !== "cutover" || currentPolicy?.mode !== "shadow" || currentPolicy.generation !== policy.generation || !currentAlias || currentAlias.migrationId !== migration.migrationId) return false;
+      for (const branch of branches) {
+        const head = await tx.get<WorkspaceHead>(headKey(branch));
+        const before = beforeHeads[branch];
+        if (!head || !before || head.revision !== before.revision || head.manifestHash !== before.manifestHash) return false;
+      }
+      const verifiedAt = new Date().toISOString();
+      receipt.verifiedAt = verifiedAt;
+      await tx.put("workspace_read_policy", { mode: "coordinator", generation: policy.generation + 1, migrationId: migration.migrationId,
+        updatedAt: verifiedAt, rollbackExpiresAt, receipt } satisfies WorkspaceReadPolicy);
+      await tx.put("project_migration", { ...current, status: "verified", updatedAt: verifiedAt });
+      await tx.put("legacy_rollback_alias", { ...currentAlias, rollbackExpiresAt, cleanupStatus: "pending" } satisfies WorkspaceRollbackAlias);
+      await tx.delete("migration_cutover_attempt");
+      return true;
+    });
+    if (!applied) {
+      await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<WorkspaceMigration>("project_migration");
+        if (current?.migrationId === migration.migrationId && current.status === "cutover") await tx.put("project_migration", { ...current, status: "verified", updatedAt: new Date().toISOString() });
+      });
+      return fail("workspace_migration_cutover_raced", 409);
+    }
+    return json({ readPolicy: await this.getReadPolicy(), rollbackAlias: await this.ctx.storage.get("legacy_rollback_alias"), receipt });
+  }
+
+  private async retireLegacyAlias(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !ID.test(body.migrationId)) return fail("invalid_workspace_alias_cleanup_request");
+    const scope = body.scope;
+    const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+    const policy = await this.getReadPolicy();
+    const priorReceipt = await this.ctx.storage.get<{ migrationId: string; completedAt: string }>("legacy_alias_cleanup_receipt");
+    if (!alias && priorReceipt?.migrationId === body.migrationId) return json({ cleanup: priorReceipt, replay: true });
+    if (!alias || alias.migrationId !== body.migrationId || alias.verificationStatus !== "verified" || policy.mode !== "coordinator" ||
+        policy.receipt?.migrationId !== body.migrationId || !policy.rollbackExpiresAt || Date.parse(policy.rollbackExpiresAt) > Date.now()) return fail("workspace_rollback_window_active", 423);
+    if (!this.env.SCRIPTS_R2 || alias.sourcePrefix !== `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`) return fail("workspace_alias_cleanup_scope_mismatch", 403);
+    const expectedBranches = ["main", ...(alias.branchNames ?? [])].sort();
+    const receiptBranches = Object.keys(policy.receipt.branches).sort();
+    if (JSON.stringify(expectedBranches) !== JSON.stringify(receiptBranches)) return fail("workspace_alias_cleanup_inventory_mismatch", 409);
+    for (const branch of expectedBranches) {
+      const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
+      if (!head || head.branch !== branch || JSON.stringify(head.scope) !== JSON.stringify(scope)) return fail("workspace_alias_cleanup_head_unavailable", 409);
+    }
+    let cursor = alias.cleanupCursor;
+    try {
+      const page = await this.env.SCRIPTS_R2.list({ prefix: alias.sourcePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+      const keys = page.objects.map(object => object.key);
+      if (keys.some(key => !key.startsWith(alias.sourcePrefix))) return fail("workspace_alias_cleanup_scope_mismatch", 403);
+      if (keys.length) await this.env.SCRIPTS_R2.delete(keys);
+      cursor = page.truncated ? page.cursor : undefined;
+      if (page.truncated && (!cursor || cursor === alias.cleanupCursor)) throw new Error("cleanup_cursor_missing_or_stalled");
+      if (page.truncated) {
+        await this.ctx.storage.put("legacy_rollback_alias", { ...alias, cleanupCursor: cursor, cleanupStatus: "cleaning" });
+        return json({ cleanup: { migrationId: alias.migrationId, status: "cleaning", hasMore: true } }, 202);
+      }
+      const completedAt = new Date().toISOString();
+      const cleanup = { migrationId: alias.migrationId, completedAt };
+      await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+        const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+        if (!current || current.migrationId !== alias.migrationId || currentPolicy?.mode !== "coordinator" || currentPolicy.receipt?.migrationId !== alias.migrationId) throw new Error("cleanup_state_changed");
+        await tx.put("legacy_alias_cleanup_receipt", cleanup);
+        await tx.delete("legacy_rollback_alias");
+      });
+      return json({ cleanup });
+    } catch {
+      const retryAlias: WorkspaceRollbackAlias = { ...alias, cleanupStatus: "pending" };
+      if (cursor && cursor !== alias.cleanupCursor) retryAlias.cleanupCursor = cursor;
+      else delete retryAlias.cleanupCursor;
+      await this.ctx.storage.put("legacy_rollback_alias", retryAlias);
+      return fail("workspace_alias_cleanup_retry_required", 503);
     }
   }
 
@@ -686,6 +999,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const completed = await this.ctx.storage.transaction(async tx => {
         const migration = await tx.get<WorkspaceMigration>("project_migration");
         const currentRestore = await tx.get<WorkspaceRollbackRestore>("migration_restore");
+        const currentAlias = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
+        const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
         if (!migration || migration.status !== "restoring" || !currentRestore || currentRestore.restoreId !== restore!.restoreId) return false;
         for (const branch of branches) {
           const current = await tx.get<WorkspaceHead>(headKey(branch));
@@ -697,6 +1012,23 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         delete currentRestore.errorCode;
         migration.status = "verified";
         migration.updatedAt = currentRestore.completedAt;
+        if (currentAlias?.migrationId === migration.migrationId) {
+          const restored = currentRestore.restoredHeads ?? {};
+          const main = restored.main;
+          if (!main) return false;
+          await tx.put("legacy_rollback_alias", { ...currentAlias, revision: main.revision, manifestHash: main.manifestHash,
+            branchHeads: Object.fromEntries(Object.entries(restored).filter(([branch]) => branch !== "main")) });
+        }
+        if (currentPolicy?.mode === "coordinator" && currentPolicy.receipt?.migrationId === migration.migrationId) {
+          const branches = { ...currentPolicy.receipt.branches };
+          for (const [branch, head] of Object.entries(currentRestore.restoredHeads ?? {})) {
+            const prior = branches[branch];
+            if (!prior) return false;
+            branches[branch] = { ...prior, revision: head.revision, manifestHash: head.manifestHash };
+          }
+          const receipt = { ...currentPolicy.receipt, branches, verifiedAt: currentRestore.completedAt };
+          await tx.put("workspace_read_policy", { ...currentPolicy, generation: currentPolicy.generation + 1, updatedAt: currentRestore.completedAt, receipt });
+        }
         await tx.put("migration_restore", currentRestore);
         await tx.put("project_migration", migration);
         return true;
@@ -1263,7 +1595,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const gc = await tx.get<ContentGcState>("content_gc");
       const activeSession = await tx.get<Session>(sessionKey(sessionId));
       const migration = await tx.get<WorkspaceMigration>("project_migration");
-      if (migration && migration.status !== "verified" && !(activeSession?.actorId === "workspace-migration" && (migration.status === "importing" || migration.status === "restoring"))) return { error: "workspace_migration_barrier_active" };
+      if (migration && migration.status !== "verified" && !(activeSession?.actorId === "workspace-migration" && (migration.status === "importing" || migration.status === "repairing" || migration.status === "restoring"))) return { error: "workspace_migration_barrier_active" };
       if (gc && gc.lockUntil > Date.now()) return { error: "workspace_gc_in_progress" };
       if (await tx.get<boolean>("erased")) return { error: "workspace_erased" };
       if (!head || head.revision !== current.revision || head.manifestHash !== current.manifestHash) return { error: "head_raced" };
@@ -1355,7 +1687,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (await tx.get<boolean>("erased")) return "workspace_erased";
       if (!current || current.status !== "active" || current.allocationGeneration !== body.allocationGeneration || current.fence !== body.fence) return "stale_fence";
       const migration = await tx.get<WorkspaceMigration>("project_migration");
-      if (migration && migration.status !== "verified" && !(current.actorId === "workspace-migration" && (migration.status === "importing" || migration.status === "restoring"))) return "workspace_migration_barrier_active";
+      if (migration && migration.status !== "verified" && !(current.actorId === "workspace-migration" && (migration.status === "importing" || migration.status === "repairing" || migration.status === "restoring"))) return "workspace_migration_barrier_active";
       const existing = await tx.get<StageRecord>(stageKey(sessionId, stageId));
       if (existing) return existing.changeSetHash === changeSetHash ? "staged" : "idempotency_conflict";
       await tx.put(stageKey(sessionId, stageId), { sessionId, stageId, changeSetHash, changes: stagedChanges, createdAt: new Date().toISOString() } satisfies StageRecord);

@@ -97,7 +97,7 @@ interface WorkspacePublication {
 
 const HARNESS_PORT = 8080;
 const MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024;
-const MAX_WORKSPACE_BATCH_BYTES = 20_000_000;
+const MAX_WORKSPACE_BATCH_BYTES = 20 * 1024 * 1024;
 const MAX_WORKSPACE_REQUEST_BYTES = 30 * 1024 * 1024;
 const BASE_IDLE_WINDOW_MS = 60_000;
 // A task-active hint is not proof that the next scheduled step needs this runtime. Keep the base

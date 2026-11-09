@@ -27,7 +27,7 @@ class Storage {
   }
 }
 
-function setup(options: { liveEnabled?: boolean } = {}) {
+function setup(options: { liveEnabled?: boolean; unifiedEnabled?: boolean } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
   const metadata = new Map<string, { contentType?: string }>();
@@ -55,7 +55,7 @@ function setup(options: { liveEnabled?: boolean } = {}) {
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
-  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false" };
+  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false", UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
   return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2 };
 }
@@ -88,6 +88,103 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(metadata.get(entries.entries[0]!.objectKey)).toEqual({ contentType: "text/markdown; charset=utf-8" });
     expect(objects.has(legacyKey)).toBe(true);
     expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-existing-project" })).status).toBe(200);
+  });
+
+  it("persists a complete shadow receipt and atomically switches the project to coordinator reads", async () => {
+    const { instance, objects, metadata, customMetadata, storage } = setup({ unifiedEnabled: true });
+    const legacyKey = "spaces/space/projects/project/workspace/bin/run.sh";
+    objects.set(legacyKey, new TextEncoder().encode("#!/bin/sh\nexit 0\n"));
+    metadata.set(legacyKey, { contentType: "text/x-shellscript" });
+    customMetadata.set(legacyKey, { executable: "true" });
+    const migrated = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-cutover-clean" });
+    expect(migrated.status).toBe(201);
+    expect(await (await call(instance, "/v1/read-policy")).json()).toMatchObject({ mode: "shadow", generation: 0, migrationId: "migration-cutover-clean" });
+    expect((await call(instance, "/v1/open", { scope, branch: "main", actorId: "worker", runtimeId: "run", allocationGeneration: 1 })).status).toBe(423);
+
+    const response = await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-cutover-clean", rollbackWindowMs: 60 * 60_000 });
+    expect(response.status).toBe(200);
+    const result = await response.json() as { readPolicy: { mode: string; generation: number; receipt: { mismatchCount: number; readErrorCount: number; omittedPathCount: number; truncatedPages: number; branches: Record<string, { legacy: { pathHash: string; contentHash: string; sizeHash: string; mimeHash: string; executableHash: string; tombstoneCount: number }; manifest: { inventoryHash: string } }> } } };
+    expect(result.readPolicy).toMatchObject({ mode: "coordinator", generation: 1, receipt: { mismatchCount: 0, readErrorCount: 0, omittedPathCount: 0, truncatedPages: 0 } });
+    expect(result.readPolicy.receipt.branches.main.legacy).toMatchObject({ pathHash: expect.stringMatching(/^[a-f0-9]{64}$/), contentHash: expect.stringMatching(/^[a-f0-9]{64}$/), sizeHash: expect.stringMatching(/^[a-f0-9]{64}$/), mimeHash: expect.stringMatching(/^[a-f0-9]{64}$/), executableHash: expect.stringMatching(/^[a-f0-9]{64}$/), tombstoneCount: 0 });
+    expect(result.readPolicy.receipt.branches.main.manifest.inventoryHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.readPolicy.receipt.branches.main.manifest.inventoryHash).toBe(result.readPolicy.receipt.branches.main.legacy.inventoryHash);
+    expect(await storage.get("legacy_rollback_alias")).toMatchObject({ verificationStatus: "verified", rollbackExpiresAt: expect.any(String), cleanupStatus: "pending" });
+    expect((await call(instance, "/v1/open", { scope, branch: "main", actorId: "worker", runtimeId: "run", allocationGeneration: 1 })).status).toBe(200);
+  });
+
+  it("keeps the reader in shadow mode when the bounded legacy comparison finds drift", async () => {
+    const { instance, objects, storage } = setup({ unifiedEnabled: true });
+    const legacyKey = "spaces/space/projects/project/workspace/docs/drift.md";
+    objects.set(legacyKey, new TextEncoder().encode("before"));
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-cutover-drift" })).status).toBe(201);
+    objects.set(legacyKey, new TextEncoder().encode("after"));
+    const response = await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-cutover-drift", rollbackWindowMs: 60 * 60_000 });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_migration_dual_read_mismatch", attempt: { mismatchClass: "inventory_mismatch", mismatchCount: 1, readErrorCount: 0, omittedPathCount: 0, truncatedPages: 0 } });
+    expect(await storage.get("workspace_read_policy")).toMatchObject({ mode: "shadow" });
+    expect((await call(instance, "/v1/open", { scope, branch: "main", actorId: "worker", runtimeId: "run", allocationGeneration: 1 })).status).toBe(423);
+  });
+
+  it("keeps cutover behind the existing global workspace gate", async () => {
+    const { instance, objects, storage } = setup();
+    objects.set("spaces/space/projects/project/workspace/docs/readme.md", new TextEncoder().encode("source"));
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-global-gate" })).status).toBe(201);
+    const cutover = await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-global-gate", rollbackWindowMs: 60 * 60_000 });
+    expect(cutover.status).toBe(423);
+    expect(await cutover.json()).toMatchObject({ error_code: "workspace_global_kill_switch_active" });
+    expect(await storage.get("workspace_read_policy")).toMatchObject({ mode: "shadow" });
+  });
+
+  it("repairs shadow drift from the mutation-barrier legacy snapshot and requires a clean pass before cutover", async () => {
+    const { instance, objects, storage } = setup({ unifiedEnabled: true });
+    const legacyKey = "spaces/space/projects/project/workspace/docs/drift.md";
+    objects.set(legacyKey, new TextEncoder().encode("before"));
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-repair-drift" })).status).toBe(201);
+    objects.set(legacyKey, new TextEncoder().encode("after"));
+    expect((await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-repair-drift", rollbackWindowMs: 60 * 60_000 })).status).toBe(409);
+    const repaired = await call(instance, "/v1/migration/repair", { scope, migrationId: "migration-repair-drift" });
+    expect(repaired.status).toBe(200);
+    expect(await repaired.json()).toMatchObject({ repair: { migrationId: "migration-repair-drift", repairedBranchCount: 1, status: "verified" } });
+    expect(await storage.get("workspace_migration_repair_receipt")).toMatchObject({ repairedBranchCount: 1, status: "verified" });
+    expect((await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-repair-drift", rollbackWindowMs: 60 * 60_000 })).status).toBe(200);
+    const read = await call(instance, "/v1/read?branch=main&path=docs%2Fdrift.md");
+    expect(await read.json()).toMatchObject({ entries: [{ sha256: await sha256Hex(new TextEncoder().encode("after")) }] });
+  });
+
+  it("includes branch overlay tombstones and retries alias cleanup after a lost delete response", async () => {
+    const { instance, objects, customMetadata, storage, r2 } = setup({ unifiedEnabled: true });
+    const prefix = "spaces/space/projects/project/workspace/";
+    objects.set("tenants/tenant/provider-connections/shared", new TextEncoder().encode("shared connection"));
+    objects.set(`${prefix}docs/main.md`, new TextEncoder().encode("main"));
+    const deleted = `${prefix}branches/workers/worker-a/docs/main.md`;
+    objects.set(deleted, new Uint8Array());
+    customMetadata.set(deleted, { deleted: "true" });
+    objects.set(`${prefix}branches/workers/worker-a/docs/agent.md`, new TextEncoder().encode("agent"));
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-cutover-branch", branchNames: ["workers/worker-a"] })).status).toBe(201);
+    const cutover = await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-cutover-branch", rollbackWindowMs: 60 * 60_000 });
+    expect(cutover.status).toBe(200);
+    const body = await cutover.json() as { receipt: { branches: Record<string, { legacy: { tombstoneCount: number; tombstoneHash: string } }> } };
+    expect(body.receipt.branches["workers/worker-a"]?.legacy).toMatchObject({ tombstoneCount: 1, tombstoneHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(423);
+    const expired = new Date(Date.now() - 1000).toISOString();
+    await storage.put("workspace_read_policy", { ...await storage.get("workspace_read_policy") as object, rollbackExpiresAt: expired });
+    await storage.put("legacy_rollback_alias", { ...await storage.get("legacy_rollback_alias") as object, rollbackExpiresAt: expired });
+    const originalDelete = r2.delete;
+    let loseFirstResponse = true;
+    r2.delete = async (...args: never[]) => {
+      await originalDelete(...args);
+      if (loseFirstResponse) { loseFirstResponse = false; throw new Error("simulated lost R2 delete response"); }
+      return undefined;
+    };
+    const failed = await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" });
+    expect(failed.status).toBe(503);
+    const retired = await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" });
+    expect(retired.status).toBe(200);
+    expect(await storage.get("legacy_rollback_alias")).toBeUndefined();
+    expect(objects.has(`${prefix}docs/main.md`)).toBe(false);
+    expect(objects.has("tenants/tenant/provider-connections/shared")).toBe(true);
+    expect(await storage.get("workspace_read_policy")).toMatchObject({ mode: "coordinator", rollbackExpiresAt: expired });
+    expect(await (await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).json()).toMatchObject({ replay: true, cleanup: { migrationId: "migration-cutover-branch" } });
   });
 
   it("serves bounded file history and retained manifest revisions for checked restore", async () => {
@@ -165,7 +262,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("restores retained main and branch snapshots through checked publication and resumes after partial restore", async () => {
-    const { instance, objects, customMetadata, r2 } = setup();
+    const { instance, objects, customMetadata, r2 } = setup({ unifiedEnabled: true });
     const mainPath = "spaces/space/projects/project/workspace/docs/main.md";
     const overlayPath = "spaces/space/projects/project/workspace/branches/workers/worker-a/output.md";
     const tombstonePath = "spaces/space/projects/project/workspace/branches/workers/worker-a/docs/main.md";
@@ -177,6 +274,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     customMetadata.set(tombstonePath, { deleted: "true", sha256: "deleted" });
     const migrated = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-rollback-test", branchNames: ["workers/worker-a"] });
     expect(migrated.status).toBe(201);
+    expect((await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-rollback-test", rollbackWindowMs: 60 * 60_000 })).status).toBe(200);
     const migratedBranch = await (await call(instance, "/v1/read?branch=workers%2Fworker-a")).json() as { entries: Array<{ path: string; objectKey: string }> };
     const branchContentKey = migratedBranch.entries.find(entry => entry.path === "output.md")!.objectKey;
 
@@ -593,9 +691,15 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const key = `workspace-v1/tenant/space/project/global/content/${hash}`;
     objects.set(key, content);
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [{ path: "private.txt", sha256: hash, size: content.length, executable: false, objectKey: key }] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "reader", runtimeId: "reader-runtime", allocationGeneration: 1 });
+    const { session } = await opened.json() as { session: { id: string } };
+    expect(storage.values.has(`session:${session.id}`)).toBe(true);
+    await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "reader-subscription", revision: 1 });
+    expect(storage.values.has("subscription:main:reader-subscription")).toBe(true);
     const erased = await call(instance, "/v1/erase", { scope, confirm: true });
     expect(await erased.json()).toMatchObject({ erased: true, scope, objectsDeleted: 2 });
     expect(objects.size).toBe(0);
+    expect([...storage.values.keys()]).toEqual(["erased"]); // sessions, subscriptions, aliases, and staging metadata are revoked
     await instance.alarm();
     expect(storage.alarmAt).toBeNull();
     expect((await call(instance, "/v1/head?branch=main")).status).toBe(410);

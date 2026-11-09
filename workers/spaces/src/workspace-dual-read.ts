@@ -1,6 +1,6 @@
 import type { WorkspaceCompatEntry, WorkspaceCompatHead } from "./workspace-compat.js";
 
-export type WorkspaceDriftClass = "legacy_missing" | "manifest_missing" | "hash_mismatch" | "size_mismatch";
+export type WorkspaceDriftClass = "legacy_missing" | "manifest_missing" | "hash_mismatch" | "size_mismatch" | "content_type_mismatch" | "executable_mismatch";
 export type WorkspaceDualReadSummary = {
   compared: number;
   matching: number;
@@ -25,8 +25,9 @@ async function pathDigest(path: string): Promise<string> {
 
 /**
  * Bounded read-only comparison for the project UI migration. It logs scoped IDs, hashes,
- * mismatch classes and counters only; file names and bytes are never emitted. Repair is an
- * operator initiated checked import after the source/target hashes have been reviewed.
+ * mismatch classes and counters only; file names and bytes are never emitted. A project admin
+ * can repair shadow drift from the legacy snapshot through the checked migration repair route;
+ * cutover independently requires a complete zero-mismatch pass.
  */
 export async function verifyWorkspaceDualRead(input: {
   bucket: R2Bucket;
@@ -58,6 +59,8 @@ export async function verifyWorkspaceDualRead(input: {
       bytesHashed += bytes.byteLength;
       legacyHash = await digest(bytes);
       if (bytes.byteLength !== entry.size || legacy.size !== entry.size) mismatchClass = "size_mismatch";
+      else if (normalizeContentType(legacy.httpMetadata?.contentType) !== normalizeContentType(entry.contentType)) mismatchClass = "content_type_mismatch";
+      else if ((legacy.customMetadata?.executable === "true") !== entry.executable) mismatchClass = "executable_mismatch";
       else if (legacyHash !== entry.sha256) mismatchClass = "hash_mismatch";
     }
     if (!mismatchClass) { summary.matching++; continue; }
@@ -106,4 +109,8 @@ export async function verifyWorkspaceDualRead(input: {
     bytesHashed, truncated: summary.truncated, drifts: summary.drifts,
   });
   return summary;
+}
+
+function normalizeContentType(value?: string): string {
+  return (value ?? "application/octet-stream").trim().toLowerCase().replace(/\s*;\s*/g, ";");
 }

@@ -14,7 +14,7 @@ describe("workspace initialization adapter", () => {
         "x-naelao-internal-token": await mintInternalToken("secret", "tenant") },
       body: JSON.stringify({ scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" },
         entries: [{ path: "index.html", sha256: "a".repeat(64), size: 4, executable: false, objectKey: "workspace-v1/tenant/space/project/global/content/" + "a".repeat(64) }] }),
-    }), { PLATFORM_SECRET: "secret", WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch }) } });
+    }), { PLATFORM_SECRET: "secret", UNIFIED_WORKSPACE_ENABLED: "true", WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch }) } });
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({ head: { revision: 1 } });
     expect(fetch).toHaveBeenCalledOnce();
@@ -26,6 +26,18 @@ describe("workspace initialization adapter", () => {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": "invalid" }, body: "{}",
     }), { PLATFORM_SECRET: "secret", WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch }) } });
     expect(response.status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps initial canonical seeding behind the global workspace kill switch", async () => {
+    const fetch = vi.fn();
+    const response = await handleWorkspaceInitialize(new Request("http://agents/internal/workspaces/initialize", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken("secret", "tenant") },
+      body: JSON.stringify({ scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, entries: [] }),
+    }), { PLATFORM_SECRET: "secret", UNIFIED_WORKSPACE_ENABLED: "false", WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch }) } });
+    expect(response.status).toBe(423);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_global_kill_switch_active" });
     expect(fetch).not.toHaveBeenCalled();
   });
 });

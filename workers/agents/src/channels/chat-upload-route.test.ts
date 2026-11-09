@@ -29,6 +29,22 @@ function makeEnv(scopeResponses: (request: Request) => Response) {
         return null;
       },
     },
+    CONCURRENCY_DO: {
+      idFromName: (name: string) => name,
+      get: () => ({ async fetch(request: Request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/locks/acquire") return Response.json({ acquired: true, fencingToken: 1 });
+        if (path === "/locks/release") return Response.json({ released: true });
+        return Response.json({ error_code: "not_found" }, { status: 404 });
+      } }),
+    },
+    WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ async fetch(request: Request) {
+        if (new URL(request.url).pathname === "/v1/migration/status") return Response.json({ migration: null, readPolicy: { mode: "legacy" } });
+        return Response.json({ error_code: "not_found" }, { status: 404 });
+      } }),
+    },
   };
   return { env: env as never, r2Calls, writes };
 }

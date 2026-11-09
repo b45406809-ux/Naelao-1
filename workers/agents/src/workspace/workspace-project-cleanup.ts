@@ -28,7 +28,14 @@ export async function handleWorkspaceProjectCleanup(request: Request, env: Clean
   }
 
   const scope = body.scope;
-  const erased = await workspaceCoordinatorRequest(env, scope, "/v1/erase", { body: { scope, confirm: true }, ...(signal ? { signal } : {}) });
+  let erased: Response;
+  try {
+    erased = await workspaceCoordinatorRequest(env, scope, "/v1/erase", { body: { scope, confirm: true }, ...(signal ? { signal } : {}) });
+  } catch {
+    // The tombstone may have committed even when the response was lost. Return a retryable
+    // result and replay the idempotent erase on the next cleanup attempt before deleting R2 pages.
+    return Response.json({ error_code: "workspace_cleanup_retryable_failure" }, { status: 503 });
+  }
   if (!erased.ok) return new Response(erased.body, { status: erased.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
   const prefix = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;

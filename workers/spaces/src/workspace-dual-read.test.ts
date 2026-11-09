@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { verifyWorkspaceDualRead } from "./workspace-dual-read.js";
 
-function bucket(files: Record<string, string>): R2Bucket {
+function bucket(files: Record<string, string>, contentTypes: Record<string, string> = {}, executables: Record<string, string> = {}): R2Bucket {
   return {
     get: vi.fn(async (key: string) => {
       const value = files[key];
       if (value === undefined) return null;
       const bytes = new TextEncoder().encode(value);
-      return { size: bytes.byteLength, customMetadata: {}, arrayBuffer: async () => bytes.slice().buffer } as unknown as R2ObjectBody;
+      return { size: bytes.byteLength, customMetadata: { ...(executables[key] ? { executable: executables[key] } : {}) }, httpMetadata: { contentType: contentTypes[key] ?? "application/octet-stream" }, arrayBuffer: async () => bytes.slice().buffer } as unknown as R2ObjectBody;
     }),
     list: vi.fn(async ({ prefix }: { prefix: string }) => ({
       objects: Object.keys(files).filter((key) => key.startsWith(prefix)).map((key) => ({ key, customMetadata: {} })), truncated: false,
@@ -36,6 +36,26 @@ describe("bounded workspace dual-read verification", () => {
     expect(result.compared).toBe(50);
     expect(result.truncated).toBe(true);
     expect(result.drifts).toHaveLength(20);
+  });
+
+  it("reports MIME drift while keeping content types and filenames out of the log", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const result = await verifyWorkspaceDualRead({ bucket: bucket({ "prefix/report.txt": "same bytes" }, { "prefix/report.txt": "application/octet-stream" }), prefix: "prefix/", ...scope,
+      entries: [{ path: "report.txt", sha256: await hash("same bytes"), size: 10, executable: false, contentType: "text/plain; charset=utf-8", objectKey: "obj" }] });
+    expect(result.drifts.map((drift) => drift.mismatchClass)).toEqual(["content_type_mismatch"]);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("report.txt");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("text/plain");
+    log.mockRestore();
+  });
+
+  it("reports executable-bit drift without including file names or contents", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const result = await verifyWorkspaceDualRead({ bucket: bucket({ "prefix/tool.sh": "same bytes" }, {}, { "prefix/tool.sh": "false" }), prefix: "prefix/", ...scope,
+      entries: [{ path: "tool.sh", sha256: await hash("same bytes"), size: 10, executable: true, objectKey: "obj" }] });
+    expect(result.drifts.map(drift => drift.mismatchClass)).toEqual(["executable_mismatch"]);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("tool.sh");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("same bytes");
+    log.mockRestore();
   });
 
   it("does not read legacy object bytes beyond the per-request byte budget", async () => {

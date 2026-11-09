@@ -276,8 +276,9 @@ export class RepositoryDO extends DurableObject<Env> {
     try {
       const status = await this.coordinatorRequest(scope, "/v1/migration/status");
       if (!status.ok) throw new Error("workspace_migration_status_unavailable");
-      const value = await status.json() as { migration?: unknown };
+      const value = await status.json() as { migration?: unknown; readPolicy?: { mode?: string } };
       if (value.migration) throw new Error("workspace_legacy_migration_barrier_active");
+      if (value.readPolicy?.mode === "coordinator") throw new Error("workspace_coordinator_policy_active");
       return await operation();
     } finally {
       await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken }) })).catch(() => undefined);
@@ -298,6 +299,16 @@ export class RepositoryDO extends DurableObject<Env> {
       method: body === undefined ? "GET" : "POST", headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }));
+  }
+
+  private async workspacePolicyError(scope: RepositoryScope): Promise<Response | null> {
+    if (!this.env.WORKSPACE_COORDINATOR || !this.env.PLATFORM_SECRET) return null;
+    const response = await this.coordinatorRequest(scope, "/v1/read-policy");
+    if (!response.ok) return jsonError(`Workspace read policy unavailable (${response.status})`, 503);
+    const policy = await response.json() as { mode?: string };
+    if (!policy.mode || !["legacy", "shadow", "coordinator"].includes(policy.mode)) return jsonError("Workspace read policy is invalid", 503);
+    if (policy.mode === "coordinator" && this.env.UNIFIED_WORKSPACE_ENABLED !== "true") return jsonError("Workspace global kill switch is active", 423);
+    return null;
   }
 
   private async verifyWorkspaceProjection(scope: RepositoryScope, branch: string, projection: Record<string, TreeEntry>): Promise<Record<string, unknown>> {
@@ -615,6 +626,8 @@ export class RepositoryDO extends DurableObject<Env> {
   private async handle(request: Request, projectionOnly = false): Promise<Response> {
     try {
       const scope = this.scope(request);
+      const policyError = await this.workspacePolicyError(scope);
+      if (policyError) return policyError;
       await this.recoverWorkspacePublication(scope);
       const url = new URL(request.url);
       let op = url.pathname.replace(/^\/+/, "");

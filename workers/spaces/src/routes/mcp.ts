@@ -55,6 +55,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
       const workspaceTool = ["readWorkspaceFile", "listDirectory", "runAstPatch"].includes(tool);
       const compatibility = workspaceTool ? await readWorkspaceCompat({
         enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true",
+        enforcePolicy: true,
         agentsWorker: c.env.AGENTS_WORKER,
         platformSecret: c.env.PLATFORM_SECRET ?? "",
         tenantId,

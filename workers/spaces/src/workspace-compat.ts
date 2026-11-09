@@ -5,6 +5,7 @@ export type WorkspaceCompatEntry = {
   sha256: string;
   size: number;
   executable: boolean;
+  contentType?: string;
   objectKey: string;
 };
 
@@ -25,7 +26,9 @@ function validEntry(entry: WorkspaceCompatEntry, scope: { tenantId: string; spac
     entry.path.split("/").every((part) => part && part !== "." && part !== ".." && part !== ".env" && !part.startsWith(".env."));
   const prefix = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/`;
   return safePath && /^[a-f0-9]{64}$/.test(entry.sha256) && Number.isSafeInteger(entry.size) && entry.size >= 0 &&
-    typeof entry.executable === "boolean" && entry.objectKey === `${prefix}${entry.sha256}`;
+    typeof entry.executable === "boolean" &&
+    (entry.contentType === undefined || (typeof entry.contentType === "string" && entry.contentType.length > 0 && entry.contentType.length <= 512 && !/[\r\n]/.test(entry.contentType))) &&
+    entry.objectKey === `${prefix}${entry.sha256}`;
 }
 
 /**
@@ -35,6 +38,8 @@ function validEntry(entry: WorkspaceCompatEntry, scope: { tenantId: string; spac
  */
 export async function readWorkspaceCompat(input: {
   enabled: boolean;
+  verificationOnly?: boolean;
+  enforcePolicy?: boolean;
   agentsWorker: Fetcher | undefined;
   platformSecret: string;
   tenantId: string;
@@ -43,8 +48,8 @@ export async function readWorkspaceCompat(input: {
   jurisdiction: "global" | "eu";
   path?: string;
 }): Promise<WorkspaceCompatRead> {
-  if (!input.enabled) return { kind: "legacy" };
-  if (!input.agentsWorker) return { kind: "error", response: Response.json({ error_code: "workspace_coordinator_unavailable" }, { status: 503 }) };
+  if (!input.enabled && !input.verificationOnly && !input.enforcePolicy) return { kind: "legacy" };
+  if (!input.agentsWorker) return input.enabled || input.verificationOnly || input.enforcePolicy ? { kind: "error", response: Response.json({ error_code: "workspace_coordinator_unavailable" }, { status: 503 }) } : { kind: "legacy" };
   const response = await input.agentsWorker.fetch(new Request("http://agents-worker/internal/workspaces/compat-read", {
     method: "POST",
     headers: {
@@ -56,6 +61,7 @@ export async function readWorkspaceCompat(input: {
       scope: { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId, jurisdiction: input.jurisdiction },
       ...(input.path ? { path: input.path } : {}),
       branch: "main",
+      ...(input.verificationOnly ? { verificationOnly: true } : {}),
     }),
   }));
   if (!response.ok) return { kind: "error", response };

@@ -2,13 +2,14 @@ import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace-client.js";
 import { validateWorkspaceBranch, validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace-contract.js";
 
-type Env = WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string };
+type Env = WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; UNIFIED_WORKSPACE_ENABLED?: string };
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
 /** Checked one-shot adapter for authorized service clients. It never writes legacy R2. */
 export async function handleWorkspaceCheckedPublish(request: Request, env: Env): Promise<Response> {
   const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
   if (!tenantId || !env.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+  if (env.UNIFIED_WORKSPACE_ENABLED !== "true") return Response.json({ error_code: "workspace_global_kill_switch_active" }, { status: 423 });
   let body: { scope?: unknown; branch?: unknown; actorId?: unknown; path?: unknown; expectedHash?: unknown; contentBase64?: unknown; contentType?: unknown; idempotencyKey?: unknown };
   try { body = JSON.parse(await readBoundedRequestText(request, 30 * 1024 * 1024)) as typeof body; }
   catch { return Response.json({ error_code: "invalid_workspace_publish_request" }, { status: 400 }); }

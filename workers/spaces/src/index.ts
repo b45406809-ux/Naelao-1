@@ -3018,23 +3018,25 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
   const dualRead = c.env.WORKSPACE_DUAL_READ_ENABLED === "true";
-  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, agentsWorker: c.env.AGENTS_WORKER,
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, verificationOnly: dualRead && c.env.UNIFIED_WORKSPACE_ENABLED !== "true", enforcePolicy: true, agentsWorker: c.env.AGENTS_WORKER,
     platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
   if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   if (compat.kind === "canonical") {
     if (dualRead && !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_dual_read_unavailable" }, 503);
-    if (dualRead && c.env.SCRIPTS_R2) await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
-      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries });
+    const verification = dualRead && c.env.SCRIPTS_R2 ? await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
+      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries }) : undefined;
     if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true" && c.env.SCRIPTS_R2) {
       // Verification mode observes the manifest but leaves the legacy UI view authoritative.
       const prefix = workspaceKeyPrefix(spaceId, projectId);
       const files: Array<{ path: string; size: number; uploaded: string }> = [];
       const listing = await c.env.SCRIPTS_R2.list({ prefix, limit: WORKSPACE_MAX_FILES });
       for (const obj of listing.objects) if (!obj.key.endsWith("/.keep") && obj.customMetadata?.deleted !== "true") files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
-      return c.json({ data: files, count: files.length, truncated: listing.truncated || files.length >= WORKSPACE_MAX_FILES, verification: { branch: compat.head.branch, revision: compat.head.revision } });
+      return c.json({ data: files, count: files.length, truncated: listing.truncated || files.length >= WORKSPACE_MAX_FILES,
+        verification: { branch: compat.head.branch, revision: compat.head.revision, ...(verification ? { compared: verification.compared, matching: verification.matching, mismatched: verification.mismatched, truncatedPass: verification.truncated, drifts: verification.drifts } : {}) } });
     }
     const files = compat.entries.map((entry) => ({ path: entry.path, size: entry.size, uploaded: compat.head.updatedAt }));
-    return c.json({ data: files, count: files.length, truncated: false, branch: compat.head.branch, revision: compat.head.revision }, 200, { "cache-control": "no-store" });
+    return c.json({ data: files, count: files.length, truncated: false, branch: compat.head.branch, revision: compat.head.revision,
+      ...(verification ? { verification: { compared: verification.compared, matching: verification.matching, mismatched: verification.mismatched, truncated: verification.truncated, drifts: verification.drifts } } : {}) }, 200, { "cache-control": "no-store" });
   }
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
@@ -3068,13 +3070,13 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
   const dualRead = c.env.WORKSPACE_DUAL_READ_ENABLED === "true";
-  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, agentsWorker: c.env.AGENTS_WORKER,
+  const compat = await readWorkspaceCompat({ enabled: c.env.UNIFIED_WORKSPACE_ENABLED === "true" || dualRead, verificationOnly: dualRead && c.env.UNIFIED_WORKSPACE_ENABLED !== "true", enforcePolicy: true, agentsWorker: c.env.AGENTS_WORKER,
     platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, projectId, path: relative, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" });
   if (compat.kind === "error") return new Response(compat.response.body, { status: compat.response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   if (compat.kind === "canonical") {
     if (dualRead && !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_dual_read_unavailable" }, 503);
-    if (dualRead && c.env.SCRIPTS_R2) await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
-      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries, path: relative });
+    const verification = dualRead && c.env.SCRIPTS_R2 ? await verifyWorkspaceDualRead({ bucket: c.env.SCRIPTS_R2, prefix: workspaceKeyPrefix(spaceId, projectId),
+      tenantId, spaceId, projectId, head: compat.head, entries: compat.entries, path: relative }) : undefined;
     if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true" && c.env.SCRIPTS_R2) {
       const prefix = workspaceKeyPrefix(spaceId, projectId);
       const legacy = await c.env.SCRIPTS_R2.get(prefix + relative);
@@ -3089,6 +3091,12 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
     const headers = new Headers(response.headers);
     headers.set("x-workspace-branch", compat.head.branch);
     headers.set("x-workspace-revision", String(compat.head.revision));
+    if (verification) {
+      headers.set("x-workspace-dual-read-compared", String(verification.compared));
+      headers.set("x-workspace-dual-read-matched", String(verification.matching));
+      headers.set("x-workspace-dual-read-drifted", String(verification.mismatched));
+      headers.set("x-workspace-dual-read-truncated", String(verification.truncated));
+    }
     return new Response(response.body, { status: response.status, headers });
   }
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
@@ -3140,6 +3148,72 @@ app.post("/spaces/:spaceId/projects/:projectId/workspace/migrate", async (c) => 
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
     body: JSON.stringify({ scope, migrationId, ...(migrationRequest.branchNames !== undefined ? { branchNames: migrationRequest.branchNames } : {}) }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/workspace/repair", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/repair", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workspace/repair", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_migration_unavailable" }, 503);
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let request: { migrationId?: unknown };
+  try { request = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof request; }
+  catch { return c.json({ error_code: "invalid_workspace_migration_repair_request" }, 400); }
+  if (typeof request.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.migrationId)) return c.json({ error_code: "invalid_workspace_migration_repair_request" }, 400);
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, identity.tenantId), `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migration-repair", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ scope, migrationId: request.migrationId }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/workspace/cutover", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/cutover", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workspace/cutover", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_migration_unavailable" }, 503);
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let request: { migrationId?: unknown; rollbackWindowMs?: unknown };
+  try { request = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof request; }
+  catch { return c.json({ error_code: "invalid_workspace_cutover_request" }, 400); }
+  if (typeof request.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.migrationId) ||
+      !Number.isSafeInteger(request.rollbackWindowMs) || Number(request.rollbackWindowMs) < 60 * 60_000 || Number(request.rollbackWindowMs) > 90 * 24 * 60 * 60_000) return c.json({ error_code: "invalid_workspace_cutover_request" }, 400);
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, identity.tenantId), `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migration-cutover", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ scope, migrationId: request.migrationId, rollbackWindowMs: request.rollbackWindowMs }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/workspace/cleanup-alias", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/cleanup-alias", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workspace/cleanup-alias", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_alias_cleanup_unavailable" }, 503);
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let request: { migrationId?: unknown };
+  try { request = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof request; }
+  catch { return c.json({ error_code: "invalid_workspace_alias_cleanup_request" }, 400); }
+  if (typeof request.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.migrationId)) return c.json({ error_code: "invalid_workspace_alias_cleanup_request" }, 400);
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, identity.tenantId), `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/retire-alias", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ scope, migrationId: request.migrationId }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });

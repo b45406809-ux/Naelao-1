@@ -76,4 +76,37 @@ describe("retryable project workspace cleanup", () => {
     }
     expect([...objects.keys()]).toEqual(["spaces/space-a/provider-connections/shared"]);
   });
+
+  it("retries an erase whose first response was lost and preserves sibling provider connections", async () => {
+    const { env, objects } = fixture();
+    let tombstoned = false;
+    let eraseAttempts = 0;
+    (env as unknown as { WORKSPACE_COORDINATOR: { get: (id: string) => { fetch: (request: Request) => Promise<Response> } } }).WORKSPACE_COORDINATOR.get = () => ({
+      fetch: async (value: Request) => {
+        await value.json();
+        eraseAttempts++;
+        tombstoned = true; // the DO committed its tombstone before the Worker lost the response
+        if (eraseAttempts === 1) throw new Error("simulated lost response after erase commit");
+        return Response.json({ erased: true, scope });
+      },
+    });
+
+    const lost = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(lost.status).toBe(503);
+    expect(await lost.json()).toMatchObject({ error_code: "workspace_cleanup_retryable_failure" });
+    expect(tombstoned).toBe(true);
+    expect([...objects.keys()]).toContain("spaces/space-a/projects/project-a/workspace/src/main.ts");
+
+    let cursor: string | undefined;
+    for (let page = 0; page < 4; page++) {
+      const replay = await handleWorkspaceProjectCleanup(await request(cursor), env);
+      expect(replay.status).toBe(200);
+      const result = await replay.json() as { erased: boolean; hasMore: boolean; nextCursor?: string; providerConnectionsDeleted: boolean };
+      expect(result).toMatchObject({ erased: true, providerConnectionsDeleted: false });
+      if (!result.hasMore) break;
+      cursor = result.nextCursor;
+    }
+    expect(eraseAttempts).toBe(3);
+    expect([...objects.keys()]).toEqual(["spaces/space-a/provider-connections/shared"]);
+  });
 });

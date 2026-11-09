@@ -642,6 +642,48 @@ app.post("/internal/workspaces/migration-restore", async c => {
     }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+app.post("/internal/workspaces/migration-repair", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; migrationId?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_migration_repair_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.migrationId)) return c.json({ error_code: "invalid_workspace_migration_repair_request" }, 400);
+  const scope = body.scope;
+  const response = await withWorkspaceMigrationLease(c.env, scope, `repair:${body.migrationId.slice(-72)}`, signal =>
+    workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/repair", { body: { scope, migrationId: body.migrationId }, signal }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/migration-cutover", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (c.env.UNIFIED_WORKSPACE_ENABLED !== "true") return c.json({ error_code: "workspace_global_kill_switch_active" }, 423);
+  let body: { scope?: unknown; migrationId?: unknown; rollbackWindowMs?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_cutover_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.migrationId) ||
+      !Number.isSafeInteger(body.rollbackWindowMs) || Number(body.rollbackWindowMs) < 60 * 60_000 || Number(body.rollbackWindowMs) > 90 * 24 * 60 * 60_000) return c.json({ error_code: "invalid_workspace_cutover_request" }, 400);
+  const scope = body.scope;
+  const response = await withWorkspaceMigrationLease(c.env, scope, `cutover:${body.migrationId.slice(-72)}`, signal =>
+    workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/cutover", {
+      body: { scope, migrationId: body.migrationId, rollbackWindowMs: body.rollbackWindowMs }, signal,
+    }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/retire-alias", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; migrationId?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_alias_cleanup_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.migrationId)) return c.json({ error_code: "invalid_workspace_alias_cleanup_request" }, 400);
+  const scope = body.scope;
+  const response = await withWorkspaceMigrationLease(c.env, scope, `alias-cleanup:${body.migrationId.slice(-64)}`, signal =>
+    workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/retire-alias", {
+      body: { scope, migrationId: body.migrationId }, signal,
+    }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 async function withLegacyProjectWorkspaceMutation<T>(env: AgentsEnv, scope: import("./workspace/workspace-contract.js").WorkspaceScope, holderId: string, operation: () => Promise<T>): Promise<T> {
   if (!env.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
   const gateKey = `lock:${scope.spaceId}:${scope.projectId}:workspace-migration-barrier`;
@@ -653,8 +695,9 @@ async function withLegacyProjectWorkspaceMutation<T>(env: AgentsEnv, scope: impo
   try {
     const status = await workspaceCoordinatorRequest(env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/status", {});
     if (!status.ok) throw new Error("workspace_migration_status_unavailable");
-    const state = await status.json() as { migration?: unknown };
+    const state = await status.json() as { migration?: unknown; readPolicy?: { mode?: string } };
     if (state.migration) throw new Error("workspace_legacy_migration_barrier_active");
+    if (state.readPolicy?.mode === "coordinator") throw new Error("workspace_coordinator_policy_active");
     return await operation();
   } finally {
     await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId: holder, fencingToken: lease.fencingToken }) })).catch(() => undefined);
@@ -683,15 +726,16 @@ app.post("/internal/workspaces/legacy-write", async (c) => {
     return c.json({ written: true, hash: result.hash });
   } catch (error) {
     const message = error instanceof Error ? error.message : "workspace_write_failed";
-    return c.json({ error_code: message === "workspace_legacy_migration_barrier_active" ? message : "workspace_write_failed" }, message === "workspace_legacy_migration_barrier_active" ? 423 : 409);
+    const blocked = message === "workspace_legacy_migration_barrier_active" || message === "workspace_coordinator_policy_active";
+    return c.json({ error_code: blocked ? message : "workspace_write_failed" }, blocked ? 423 : 409);
   }
 });
 // Read-only compatibility adapter for legacy clients that still expose the project file tree.
 // Callers must authorize the user/project first. Once unified mode is enabled and a canonical
 // head exists, this route returns manifest entries only; it never reads the legacy per-file tree.
 app.post("/internal/workspaces/compat-read", (c) => handleWorkspaceCompatRead(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { UNIFIED_WORKSPACE_ENABLED?: string }));
-app.post("/internal/workspaces/checked-publish", (c) => handleWorkspaceCheckedPublish(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string }));
-app.post("/internal/workspaces/initialize", (c) => handleWorkspaceInitialize(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string }));
+app.post("/internal/workspaces/checked-publish", (c) => handleWorkspaceCheckedPublish(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; UNIFIED_WORKSPACE_ENABLED?: string }));
+app.post("/internal/workspaces/initialize", (c) => handleWorkspaceInitialize(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; UNIFIED_WORKSPACE_ENABLED?: string }));
 app.post("/internal/workspaces/gc", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -8227,7 +8271,7 @@ function uploadsPrefix(spaceId: string, sessionId: string, projectId?: string): 
   return `${base}uploads/${sessionId}/`;
 }
 
-type ChatUploadWorkspaceBindings = WorkspaceCoordinatorBindings & { PLATFORM_SECRET: string; DATA_JURISDICTION?: "eu" };
+type ChatUploadWorkspaceBindings = WorkspaceCoordinatorBindings & { PLATFORM_SECRET: string; UNIFIED_WORKSPACE_ENABLED?: string; DATA_JURISDICTION?: "eu" };
 
 async function readChatUploadManifest(
   env: AgentsEnv,

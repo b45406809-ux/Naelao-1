@@ -599,7 +599,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
 
   it("accepts workspace writes above the legacy 2 MiB cap and checkpoints the full content", async () => {
     const { sandbox, coordinator } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "large-workspace-run" });
-    const content = "x".repeat(5 * 1024 * 1024);
+    const content = "x".repeat(20 * 1024 * 1024);
     const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "uploads/large.txt": content }, expected_hashes: { "uploads/large.txt": null } }),
@@ -611,9 +611,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       idFromName: (name: string) => name,
       get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
     }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(`runs/${runHash.slice(0, 32)}`)}`, {});
-    const workspace = await read.json() as { entries?: Array<{ path: string; size: number }> };
-    expect(workspace.entries).toMatchObject([{ path: "uploads/large.txt", size: 5 * 1024 * 1024 }]);
-  }, 20_000);
+    const workspace = await read.json() as { entries?: Array<{ path: string; size: number; sha256: string }> };
+    const expectedHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(workspace.entries).toMatchObject([{ path: "uploads/large.txt", size: 20 * 1024 * 1024, sha256: expectedHash }]);
+  }, 90_000);
 
   it("requires the barrier migration workflow instead of implicitly importing an existing project during hydration", async () => {
     const { sandbox, coordinatorStorage, r2Objects } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, workspaceProjectUnmigrated: true, runId: "unmigrated-project" });

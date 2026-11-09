@@ -22,7 +22,7 @@ function createMockEnv() {
     get: async (key) => {
       getCalls.push(key);
       const data = store.get(key);
-      return data ? { size: data.byteLength, arrayBuffer: async () => data.buffer } : null;
+      return data ? { size: data.byteLength, customMetadata: metadata.get(key), arrayBuffer: async () => data.buffer } : null;
     },
     head: async (key) => store.has(key) ? { customMetadata: metadata.get(key), etag: etags.get(key) } : null,
     put: async (key, value, options) => {
@@ -47,6 +47,7 @@ function createMockEnv() {
 
   return {
     store,
+    metadata,
     getCalls,
     scriptsBucket: mockBucket,
     workspaceBucket: mockBucket,
@@ -203,7 +204,57 @@ describe("R2 Virtual POSIX Workspace", () => {
       expect(event).not.toContain(path);
       expect(event).not.toContain(canonicalText);
       expect(event).not.toContain(legacyText);
-      expect(log).toHaveBeenCalledTimes(20);
+      expect(log).toHaveBeenCalledTimes(21); // 20 comparisons plus one bounded budget-exhausted event
+    } finally { log.mockRestore(); }
+  });
+
+  it("emits hash-only evidence for clean bounded comparisons", async () => {
+    const env = createMockEnv();
+    const path = "public/readme.txt";
+    const value = "same content";
+    const legacyKey = `${workspacePrefix(env)}${path}`;
+    const digest = await hash(value);
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(legacyKey, new TextEncoder().encode(value));
+    env.store.set(objectKey, new TextEncoder().encode(value));
+    env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 8, updatedAt: "2026-11-09T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(value).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
+      enabled: true, tenantId: env.tenantId, spaceId: env.spaceId, projectId: env.projectId,
+    });
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await r2Workspace.operations.read_file({ path }, { env, run: async () => undefined } as never);
+      expect(log).toHaveBeenCalledWith("workspace_dual_read", expect.objectContaining({
+        tenantId: env.tenantId, branch: "main", revision: 8, mismatchClass: null, compared: 1, mismatched: 0,
+      }));
+      const event = JSON.stringify(log.mock.calls);
+      expect(event).not.toContain(path);
+      expect(event).not.toContain(value);
+    } finally { log.mockRestore(); }
+  });
+
+  it("reports a legacy tombstone as drift when the manifest still contains the file", async () => {
+    const env = createMockEnv();
+    const path = "docs/kept.txt";
+    const value = "canonical content";
+    const legacyKey = `${workspacePrefix(env)}${path}`;
+    const digest = await hash(value);
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(legacyKey, new Uint8Array());
+    env.metadata.set(legacyKey, { deleted: "true" });
+    env.store.set(objectKey, new TextEncoder().encode(value));
+    env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 9, updatedAt: "2026-11-09T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(value).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
+      enabled: true, tenantId: env.tenantId, spaceId: env.spaceId, projectId: env.projectId,
+    });
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await env.workspaceBucket.get(legacyKey);
+      expect(log).toHaveBeenCalledWith("workspace_dual_read", expect.objectContaining({ mismatchClass: "legacy_missing", revision: 9 }));
     } finally { log.mockRestore(); }
   });
 

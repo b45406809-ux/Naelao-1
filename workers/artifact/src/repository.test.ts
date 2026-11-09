@@ -371,6 +371,133 @@ describe("Git object and metadata encoding", () => {
 });
 
 describe("unified workspace transition guards", () => {
+  it("fails closed when a coordinator project is reached after the global reader flag is disabled", async () => {
+    const repo = new RepositoryDO({ storage: { get: async () => undefined, put: async () => undefined } } as never, {
+      PLATFORM_SECRET: "platform-secret",
+      WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ mode: "coordinator" }) }) } as never,
+    } as never);
+    const response = await repo.fetch(new Request("http://repo/head", { headers: { "x-repository-scope": JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project" }) } }));
+    expect(response.status).toBe(423);
+    expect(await response.json()).toMatchObject({ error: "Workspace global kill switch is active" });
+  });
+
+  it("replays a partially applied legacy publication idempotently and preserves already written bytes", async () => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project" };
+    const prefix = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
+    const journalKey = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/publications/replay.json`;
+    const storage = new Map<string, unknown>([["workspace_publication", { key: journalKey, scope }]]);
+    const repoObjects = new Map<string, Uint8Array>();
+    const workspace = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+    const alreadyWritten = new TextEncoder().encode("already written");
+    const alreadyHash = await sha256Text("already written");
+    const replayBytes = new TextEncoder().encode("replayed file");
+    const replayHash = await sha256Text("replayed file");
+    const replayBlob = await encodeGitObject("blob", replayBytes);
+    const replayEntry = { path: "b.txt", oid: replayBlob.oid, size: replayBytes.byteLength, hash: replayHash };
+    const publishedState = {
+      initialized: true, head: "main", refs: { main: "commit-1" },
+      worktrees: { main: {
+        "a.txt": { path: "a.txt", oid: "oid-a", size: alreadyWritten.byteLength, hash: alreadyHash },
+        "b.txt": replayEntry,
+      } },
+      commits: {}, tags: {}, temporary: [],
+    };
+    repoObjects.set(journalKey, new TextEncoder().encode(JSON.stringify({
+      scope, state: publishedState, branch: "main",
+      changes: [
+        { path: "a.txt", expected: null, next: publishedState.worktrees.main["a.txt"] },
+        { path: "b.txt", expected: null, next: replayEntry },
+      ],
+    })));
+    repoObjects.set(objectKey(scope, replayBlob.oid), replayBlob.bytes);
+    workspace.set(prefix + "a.txt", { bytes: alreadyWritten, etag: "etag-a", customMetadata: { sha256: alreadyHash, deleted: "false" } });
+    const putKeys: string[] = [];
+    const workspaceBucket = {
+      head: async (key: string) => { const item = workspace.get(key); return item ? { etag: item.etag, customMetadata: item.customMetadata } : null; },
+      get: async (key: string) => { const item = workspace.get(key); return item ? { arrayBuffer: async () => item.bytes.slice().buffer } : null; },
+      put: async (key: string, bytes: Uint8Array, options: { onlyIf: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata: Record<string, string> }) => {
+        const item = workspace.get(key);
+        if (options.onlyIf.etagMatches !== undefined && item?.etag !== options.onlyIf.etagMatches) return null;
+        if (options.onlyIf.etagDoesNotMatch === "*" && item) return null;
+        putKeys.push(key);
+        workspace.set(key, { bytes: bytes.slice(), etag: `etag-${putKeys.length}`, customMetadata: options.customMetadata });
+        return {};
+      },
+    };
+    const repo = new RepositoryDO({ storage: {
+      get: async (key: string) => storage.get(key), put: async (key: string, value: unknown) => { storage.set(key, value); }, delete: async (key: string) => { storage.delete(key); },
+    } } as never, {
+      PLATFORM_SECRET: "test-secret",
+      CONCURRENCY_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) =>
+        new URL(request.url).pathname.endsWith("/acquire") ? Response.json({ acquired: true, fencingToken: 1 }) : Response.json({ released: true }) }) } as never,
+      WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/v1/read-policy" ? Response.json({ mode: "legacy" }) : Response.json({ migration: null, readPolicy: { mode: "legacy" } }) }) } as never,
+      WORKSPACE_R2: workspaceBucket as unknown as R2Bucket,
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => repoObjects.has(key),
+        get: async (key: string) => { const bytes = repoObjects.get(key); return bytes ? { arrayBuffer: async () => bytes.slice().buffer } : null; },
+        put: async (key: string, bytes: Uint8Array | string) => { repoObjects.set(key, typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes); },
+        delete: async (key: string) => { repoObjects.delete(key); },
+      } as unknown as R2Bucket,
+    } as never);
+    const headers = { "x-repository-scope": JSON.stringify(scope) };
+
+    const head = await repo.fetch(new Request("http://repo/head", { headers }));
+    expect(head.status).toBe(200);
+    expect(await head.json()).toMatchObject({ branch: "main", commit_id: "commit-1" });
+    expect(putKeys).toEqual([prefix + "b.txt"]);
+    expect(workspace.get(prefix + "a.txt")?.bytes).toEqual(alreadyWritten);
+    expect(workspace.get(prefix + "b.txt")?.bytes).toEqual(replayBytes);
+    expect(storage.has("workspace_publication")).toBe(false);
+    expect(repoObjects.has(journalKey)).toBe(false);
+
+    expect((await repo.fetch(new Request("http://repo/head", { headers }))).status).toBe(200);
+    expect(putKeys).toHaveLength(1);
+  });
+
+  it("keeps a publication journal pending when replay finds a concurrent hash conflict", async () => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project" };
+    const prefix = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
+    const journalKey = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/publications/conflict.json`;
+    const desired = new TextEncoder().encode("journal value");
+    const current = new TextEncoder().encode("newer concurrent value");
+    const blob = await encodeGitObject("blob", desired);
+    const desiredHash = await sha256Text("journal value");
+    const currentHash = await sha256Text("newer concurrent value");
+    const storage = new Map<string, unknown>([["workspace_publication", { key: journalKey, scope }]]);
+    const repoObjects = new Map<string, Uint8Array>([
+      [journalKey, new TextEncoder().encode(JSON.stringify({
+        scope, branch: "main", state: { initialized: true, head: "main", refs: { main: "commit-1" }, worktrees: { main: {} }, commits: {}, tags: {}, temporary: [] },
+        changes: [{ path: "conflict.txt", expected: null, next: { path: "conflict.txt", oid: blob.oid, size: desired.byteLength, hash: desiredHash } }],
+      }))],
+      [objectKey(scope, blob.oid), blob.bytes],
+    ]);
+    const workspace = new Map([[prefix + "conflict.txt", { bytes: current, etag: "etag-current", customMetadata: { sha256: currentHash, deleted: "false" } }]]);
+    const repo = new RepositoryDO({ storage: {
+      get: async (key: string) => storage.get(key), put: async (key: string, value: unknown) => { storage.set(key, value); }, delete: async (key: string) => { storage.delete(key); },
+    } } as never, {
+      PLATFORM_SECRET: "test-secret",
+      CONCURRENCY_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) =>
+        new URL(request.url).pathname.endsWith("/acquire") ? Response.json({ acquired: true, fencingToken: 1 }) : Response.json({ released: true }) }) } as never,
+      WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/v1/read-policy" ? Response.json({ mode: "legacy" }) : Response.json({ migration: null, readPolicy: { mode: "legacy" } }) }) } as never,
+      WORKSPACE_R2: {
+        head: async (key: string) => { const item = workspace.get(key); return item ? { etag: item.etag, customMetadata: item.customMetadata } : null; },
+        get: async (key: string) => { const item = workspace.get(key); return item ? { arrayBuffer: async () => item.bytes.slice().buffer } : null; },
+        put: async () => { throw new Error("conflicting replay must not write"); },
+      } as unknown as R2Bucket,
+      REPOSITORY_OBJECTS: {
+        get: async (key: string) => { const bytes = repoObjects.get(key); return bytes ? { arrayBuffer: async () => bytes.slice().buffer } : null; },
+        delete: async (key: string) => { repoObjects.delete(key); },
+      } as unknown as R2Bucket,
+    } as never);
+
+    const response = await repo.fetch(new Request("http://repo/head", { headers: { "x-repository-scope": JSON.stringify(scope) } }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "workspace_publication_conflict:conflict.txt" });
+    expect(storage.has("workspace_publication")).toBe(true);
+    expect(repoObjects.has(journalKey)).toBe(true);
+    expect(workspace.get(prefix + "conflict.txt")?.bytes).toEqual(current);
+  });
+
   it("fails closed when the coordinator binding is missing in unified mode", async () => {
     const storage = new Map<string, unknown>();
     const repositoryObjects = new Map<string, Uint8Array>();
@@ -415,6 +542,7 @@ describe("unified workspace transition guards", () => {
         idFromName: (name: string) => name,
         get: () => ({ fetch: async (request: Request) => {
           const path = new URL(request.url).pathname;
+          if (path === "/v1/read-policy") return Response.json({ mode: "coordinator" });
           if (path === "/v1/receipt") return Response.json({ error_code: "publication_not_found" }, { status: 404 });
           if (path === "/v1/head") return Response.json({ head: { revision: 1 } });
           if (path === "/v1/branch") return Response.json({ branch: { branch: "workers/child", revision: 1 }, created: true });
@@ -491,6 +619,7 @@ describe("unified workspace transition guards", () => {
         get: () => ({ fetch: async (request: Request) => {
           const path = new URL(request.url).pathname;
           calls.push(path);
+          if (path === "/v1/read-policy") return Response.json({ mode: "coordinator" });
           if (path === "/v1/read") return Response.json({ head: { branch: "main", revision: 7 }, entries: [{ path: "notes/status.md", sha256: hash, size: file.byteLength, objectKey: `workspace-v1/tenant/space/project/global/content/${hash}` }] });
           if (path === "/v1/head") return Response.json({ head: { revision: 7 } });
           return Response.json({ error_code: "unexpected_coordinator_write" }, { status: 500 });
@@ -508,7 +637,7 @@ describe("unified workspace transition guards", () => {
     const reconciled = await repo.fetch(new Request("http://repo/reconcile", { method: "POST", headers, body: JSON.stringify({ branch: "main", metadata }) }));
     expect(reconciled.status).toBe(200);
     expect(await reconciled.json()).toMatchObject({ reconciled: true, changed: 1, workspace_branch: "main", workspace_revision: 7 });
-    expect(calls).toEqual(["/v1/read", "/v1/head"]);
+    expect(calls.filter(path => path !== "/v1/read-policy")).toEqual(["/v1/read", "/v1/head"]);
     expect(workspaceList).not.toHaveBeenCalled();
 
     const saved = storage.get("repository") as { worktrees: Record<string, Record<string, { hash: string; size: number; path: string; oid: string }>> };

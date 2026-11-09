@@ -2304,12 +2304,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       DATA_JURISDICTION?: "eu";
       PLATFORM_SECRET: string;
     };
-    if (projectId && unifiedWorkspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true") {
+    const unifiedWorkspaceEnabled = unifiedWorkspaceBindings.UNIFIED_WORKSPACE_ENABLED === "true";
+    const workspaceDualReadEnabled = unifiedWorkspaceBindings.WORKSPACE_DUAL_READ_ENABLED === "true";
+    const projectWorkspaceScope: WorkspaceScope | undefined = projectId ? {
+      tenantId, spaceId, projectId,
+      jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
+    } : undefined;
+    let projectReadPolicyMode = "legacy";
+    if (projectWorkspaceScope && unifiedWorkspaceBindings.WORKSPACE_COORDINATOR) {
+      try {
+        const policyResponse = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, projectWorkspaceScope, "/v1/read-policy", {});
+        if (!policyResponse.ok) throw new Error(`workspace_read_policy_failed:${policyResponse.status}`);
+        const policy = await policyResponse.json() as { mode?: string };
+        if (!policy.mode || !["legacy", "shadow", "coordinator"].includes(policy.mode)) throw new Error("workspace_read_policy_invalid");
+        projectReadPolicyMode = policy.mode;
+      } catch (error) {
+        if (unifiedWorkspaceEnabled || workspaceDualReadEnabled) throw error;
+      }
+    }
+    if (projectReadPolicyMode === "coordinator" && !unifiedWorkspaceEnabled) throw new Error("workspace_global_kill_switch_active");
+    if (projectId && projectWorkspaceScope && (unifiedWorkspaceEnabled || workspaceDualReadEnabled)) {
       env.immutableArtifactBucket = env.scriptsBucket;
-      const scope: WorkspaceScope = {
-        tenantId, spaceId, projectId,
-        jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global",
-      };
+      const scope = projectWorkspaceScope;
       env.workspaceManifestRead = async () => {
         const branch = workspaceBranch ?? "main";
         const response = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
@@ -2367,7 +2383,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return { hash: contentHash, revision: result.publication!.revision!, deleted: input.bytes === null && result.publication?.status === "published" };
       };
       const compatibilityBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
-        enabled: unifiedWorkspaceBindings.WORKSPACE_DUAL_READ_ENABLED === "true",
+        enabled: workspaceDualReadEnabled,
+        returnCanonical: unifiedWorkspaceEnabled && projectReadPolicyMode !== "shadow",
         tenantId, spaceId, projectId,
       });
       env.scriptsBucket = compatibilityBucket;
@@ -3407,8 +3424,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const scope: WorkspaceScope = { tenantId, spaceId, projectId, jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global" };
             const status = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, "/v1/migration/status", {});
             if (!status.ok) throw new Error("workspace_migration_status_unavailable");
-            const payload = await status.json() as { migration?: unknown };
+            const payload = await status.json() as { migration?: unknown; readPolicy?: { mode?: string } };
             if (payload.migration) throw new Error("workspace_legacy_migration_barrier_active");
+            if (payload.readPolicy?.mode === "coordinator") throw new Error("workspace_coordinator_policy_active");
           }
           return await operation();
         } finally {
