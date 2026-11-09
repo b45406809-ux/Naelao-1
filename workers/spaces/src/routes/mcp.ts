@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { putBytesCas, readBytesWithHash, sha256Bytes } from "../../../agents/src/script-engine/r2-cas.js";
+import { readBytesWithHash, sha256Bytes } from "../../../agents/src/script-engine/r2-cas.js";
 import { readWorkspaceCompat } from "../workspace-compat.js";
 import { mintInternalToken } from "@naelao/http";
 
@@ -106,8 +106,9 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
         if (source.indexOf(oldText, first + oldText.length) >= 0) throw new Error("patch target is ambiguous");
         const updated = source.slice(0, first) + String(args["newText"] ?? "") + source.slice(first + oldText.length);
         const updatedBytes = new TextEncoder().encode(updated);
+        if (!tenantId || !c.env.AGENTS_WORKER || !c.env.PLATFORM_SECRET) throw new Error("checked workspace publication unavailable");
         if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") {
-          if (compatibility.kind !== "canonical" || !tenantId || !c.env.AGENTS_WORKER || !c.env.PLATFORM_SECRET) throw new Error("checked coordinator publication unavailable");
+          if (compatibility.kind !== "canonical") throw new Error("checked coordinator publication unavailable");
           if (updatedBytes.byteLength > 768 * 1024) throw new Error("workspace file limit exceeded");
           const idempotencyKey = await sha256Bytes(new TextEncoder().encode(`${tenantId}\0${spaceId}\0${projectId}\0main\0${path}\0${object.hash}\0${await sha256Bytes(updatedBytes)}`));
           let binary = "";
@@ -125,8 +126,18 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
           if (!Number.isSafeInteger(publication.publication?.revision) || publication.publication?.status === "conflicted") throw new Error("checked coordinator publication unconfirmed");
           value = { patched: true, path, branch: "main", revision: publication.publication!.revision };
         } else {
-          await putBytesCas(c.env.SCRIPTS_R2, key, updatedBytes, object.hash, {}, { contentType: "text/plain; charset=utf-8" });
-          value = { patched: true, path };
+          let binary = "";
+          for (let offset = 0; offset < updatedBytes.length; offset += 0x8000) binary += String.fromCharCode(...updatedBytes.subarray(offset, offset + 0x8000));
+          const idempotencyKey = await sha256Bytes(new TextEncoder().encode(`${tenantId}\0${spaceId}\0${projectId}\0${path}\0${object.hash}\0${await sha256Bytes(updatedBytes)}`));
+          const written = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/legacy-write", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
+              actorId: c.req.header("x-naelao-user-id") || "spaces-project-mcp", path, expectedHash: object.hash,
+              contentBase64: btoa(binary), idempotencyKey, contentType: "text/plain; charset=utf-8" }),
+          }));
+          if (!written.ok) throw new Error(`legacy workspace mutation rejected:${written.status}`);
+          value = { patched: true, path, hash: (await written.json<{ hash?: string }>()).hash };
         }
       } else if (tool === "getProjectJournal") {
         const object = await readBytesWithHash(c.env.SCRIPTS_R2, `spaces/${spaceId}/projects/${projectId}/PROJECT.md`);

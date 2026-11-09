@@ -63,6 +63,50 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
+  it("imports an existing project behind a durable barrier and retains a verified rollback alias", async () => {
+    const { instance, objects, storage } = setup();
+    const legacyKey = "spaces/space/projects/project/workspace/docs/legacy.md";
+    objects.set(legacyKey, new TextEncoder().encode("existing project content"));
+    const migration = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-existing-project" });
+    expect(migration.status).toBe(201);
+    expect(await migration.json()).toMatchObject({
+      migration: { migrationId: "migration-existing-project", status: "verified", revision: 1 },
+      rollbackAlias: { sourcePrefix: "spaces/space/projects/project/workspace/", verificationStatus: "verified", revision: 1 },
+      fileCount: 1,
+    });
+    expect(storage.values.get("legacy_rollback_alias")).toMatchObject({ verificationStatus: "verified" });
+    expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({
+      head: { revision: 1 }, entries: [{ path: "docs/legacy.md", size: 24 }],
+    });
+    expect(objects.has(legacyKey)).toBe(true);
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-existing-project" })).status).toBe(200);
+  });
+
+  it("refuses to migrate a scope that conflicts with the coordinator identity", async () => {
+    const { instance, storage } = setup();
+    const initialized = await call(instance, "/v1/initialize", { scope: { ...scope, projectId: "another-project" }, branch: "main", entries: [] });
+    expect(initialized.status).toBe(200);
+    const migrated = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-scope-conflict" });
+    expect(migrated.status).toBe(403);
+    expect(await storage.get("project_migration")).toBeUndefined();
+  });
+
+  it("holds the migration barrier after a source verification failure", async () => {
+    const { instance, objects, storage } = setup();
+    objects.set("spaces/space/projects/project/workspace/../escape", new TextEncoder().encode("bad"));
+    const migrated = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-bad-source" });
+    expect(migrated.status).toBe(503);
+    expect(await migrated.json()).toMatchObject({ migration: { status: "failed" } });
+    expect((await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).status).toBe(423);
+    expect(await (await call(instance, "/v1/migration/status")).json()).toMatchObject({ migration: { status: "failed" }, rollbackAlias: { verificationStatus: "pending" } });
+    objects.delete("spaces/space/projects/project/workspace/../escape");
+    objects.set("spaces/space/projects/project/workspace/docs/repaired.md", new TextEncoder().encode("repaired source"));
+    const retry = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-bad-source" });
+    expect(retry.status).toBe(201);
+    expect(await storage.get("project_migration")).toMatchObject({ status: "verified", revision: 1 });
+    expect(await storage.get("legacy_rollback_alias")).toMatchObject({ verificationStatus: "verified", revision: 1 });
+  });
+
   it("schedules bounded maintenance and records retryable failures", async () => {
     const { instance, storage, r2 } = setup();
     const initialized = await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });

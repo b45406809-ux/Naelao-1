@@ -902,6 +902,37 @@ export class ToolSandboxDO extends DurableObject {
     const publication = await this.ctx.storage.get<WorkspacePublication>("workspace_pending_publication");
     if (!publication) return;
     const bindings = this.env as unknown as SandboxBindings;
+    const invocation = this.activeExecution?.scope ?? await this.ctx.storage.get<ContainerInvocationScope>("container_invocation_scope");
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const tenantId = invocation?.tenantId ?? meter?.tenantId;
+    if (publication.scope.projectId) {
+      if (!tenantId) throw new Error("workspace_tenant_scope_required");
+      if (!bindings.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
+      const gateKey = `lock:${publication.scope.spaceId}:${publication.scope.projectId}:workspace-migration-barrier`;
+      const gate = bindings.CONCURRENCY_DO.get(bindings.CONCURRENCY_DO.idFromName(gateKey));
+      const gateHolder = `sandbox:${holderId}:${crypto.randomUUID()}`.slice(0, 128);
+      const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId: gateHolder, ttlMs: 10 * 60_000 }) }));
+      const lease = await acquired.json<{ acquired?: boolean; fencingToken?: number }>().catch((): { acquired?: boolean; fencingToken?: number } => ({}));
+      if (!acquired.ok || !lease.acquired || !lease.fencingToken) throw new Error("workspace_project_mutation_barrier_busy");
+      try {
+        const identity = await this.unifiedWorkspaceIdentity(publication.scope, tenantId);
+        const status = await this.workspaceCoordinatorCall(identity.scope, "/v1/migration/status");
+        if (!status.ok) throw new Error("workspace_migration_status_unavailable");
+        const state = await status.json<{ migration?: unknown }>();
+        if (state.migration) throw new Error("workspace_legacy_migration_barrier_active");
+        await this.applyWorkspacePublication(holderId);
+      } finally {
+        await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId: gateHolder, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+      }
+      return;
+    }
+    await this.applyWorkspacePublication(holderId);
+  }
+
+  private async applyWorkspacePublication(holderId: string): Promise<void> {
+    const publication = await this.ctx.storage.get<WorkspacePublication>("workspace_pending_publication");
+    if (!publication) return;
+    const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2 || !bindings.CONCURRENCY_DO) throw new Error("Fenced workspace recovery is unavailable");
     const { scope, changes } = publication;
     const nextHashes = (await this.ctx.storage.get<Record<string, string>>("workspace_hashes")) ?? {};

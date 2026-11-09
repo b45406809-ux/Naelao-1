@@ -3371,6 +3371,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         release: (params) => this.releaseFileLock(lockNamespace + params.key, params.holderId, params.fencingToken),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
       };
+      if (projectId) env.withProjectWorkspaceMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
+        if (!env.lockGateway || !this.env.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
+        const holderId = `workspace-mutation:${agentId}:${crypto.randomUUID()}`.slice(0, 128);
+        const gateKey = "workspace-migration-barrier";
+        const lease = await env.lockGateway.acquire({ key: gateKey, holderId, limit: 1, ttlMs: 10 * 60_000 });
+        if (!lease.granted || !Number.isSafeInteger(lease.fencingToken) || !lease.fencingToken) throw new Error("workspace_project_mutation_barrier_busy");
+        try {
+          if (unifiedWorkspaceBindings.WORKSPACE_COORDINATOR && !env.publishWorkspaceChecked) {
+            const scope: WorkspaceScope = { tenantId, spaceId, projectId, jurisdiction: unifiedWorkspaceBindings.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+            const status = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, "/v1/migration/status", {});
+            if (!status.ok) throw new Error("workspace_migration_status_unavailable");
+            const payload = await status.json() as { migration?: unknown };
+            if (payload.migration) throw new Error("workspace_legacy_migration_barrier_active");
+          }
+          return await operation();
+        } finally {
+          await env.lockGateway.release({ key: gateKey, holderId, fencingToken: lease.fencingToken });
+        }
+      };
     }
 
     if (this.env.CONCURRENCY_DO && projectId) {
@@ -3752,52 +3771,55 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!merged.ok) throw new Error(`worker_branch_checked_merge_failed:${merged.status}`);
         return [];
       }
-      const baseline = await this.ctx.storage.get<Record<string, string>>(`worker-branch-base:${subId}`) ?? {};
-      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
-      const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: workerBranch });
-      const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
-      const changed = new Map<string, R2Object>();
-      let cursor: string | undefined;
-      do {
-        const page = await bucket.list({ prefix: workerPrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-        for (const object of page.objects) changed.set(object.key.slice(workerPrefix.length), object);
-        cursor = page.truncated ? page.cursor : undefined;
-      } while (cursor);
-      const conflicts: string[] = [];
-      for (const [path, workerObject] of changed) {
-        if (!path || path.includes("../")) continue;
-        const workerFile = await bucket.get(workerObject.key);
-        if (!workerFile) continue;
-        const workerBytes = await workerFile.arrayBuffer();
-        const workerHash = workerFile.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", workerBytes))].map(b => b.toString(16).padStart(2, "0")).join("");
-        const baseObject = await bucket.get(`${basePrefix}${path}`);
-        const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
-        const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
-          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
-        const originalHash = baseline[path];
-        if (workerHash === originalHash) continue;
-        if (baseHash !== originalHash && baseHash !== workerHash) { conflicts.push(path); continue; }
-        const merged = await bucket.put(`${basePrefix}${path}`, workerBytes, {
-          onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
-          ...(workerFile.httpMetadata ? { httpMetadata: workerFile.httpMetadata } : {}),
-          ...(workerFile.customMetadata ? { customMetadata: workerFile.customMetadata } : {}),
-        });
-        if (!merged) conflicts.push(path);
-      }
-      for (const path of Object.keys(baseline)) {
-        if (changed.has(path)) continue;
-        const baseObject = await bucket.get(`${basePrefix}${path}`);
-        const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
-        const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
-          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
-        if (baseHash !== baseline[path]) { conflicts.push(path); continue; }
-        const deleted = await bucket.put(`${basePrefix}${path}`, "", {
-          onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
-          customMetadata: { deleted: "true", sha256: "deleted" },
-        });
-        if (!deleted) conflicts.push(path);
-      }
-      return conflicts;
+      const legacyMerge = async (): Promise<string[]> => {
+        const baseline = await this.ctx.storage.get<Record<string, string>>(`worker-branch-base:${subId}`) ?? {};
+        const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+        const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: workerBranch });
+        const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
+        const changed = new Map<string, R2Object>();
+        let cursor: string | undefined;
+        do {
+          const page = await bucket.list({ prefix: workerPrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+          for (const object of page.objects) changed.set(object.key.slice(workerPrefix.length), object);
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor);
+        const conflicts: string[] = [];
+        for (const [path, workerObject] of changed) {
+          if (!path || path.includes("../")) continue;
+          const workerFile = await bucket.get(workerObject.key);
+          if (!workerFile) continue;
+          const workerBytes = await workerFile.arrayBuffer();
+          const workerHash = workerFile.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", workerBytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+          const baseObject = await bucket.get(`${basePrefix}${path}`);
+          const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
+          const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
+            ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
+          const originalHash = baseline[path];
+          if (workerHash === originalHash) continue;
+          if (baseHash !== originalHash && baseHash !== workerHash) { conflicts.push(path); continue; }
+          const merged = await bucket.put(`${basePrefix}${path}`, workerBytes, {
+            onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
+            ...(workerFile.httpMetadata ? { httpMetadata: workerFile.httpMetadata } : {}),
+            ...(workerFile.customMetadata ? { customMetadata: workerFile.customMetadata } : {}),
+          });
+          if (!merged) conflicts.push(path);
+        }
+        for (const path of Object.keys(baseline)) {
+          if (changed.has(path)) continue;
+          const baseObject = await bucket.get(`${basePrefix}${path}`);
+          const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
+          const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
+            ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
+          if (baseHash !== baseline[path]) { conflicts.push(path); continue; }
+          const deleted = await bucket.put(`${basePrefix}${path}`, "", {
+            onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
+            customMetadata: { deleted: "true", sha256: "deleted" },
+          });
+          if (!deleted) conflicts.push(path);
+        }
+        return conflicts;
+      };
+      return runtimeEnv.withProjectWorkspaceMutation ? runtimeEnv.withProjectWorkspaceMutation(legacyMerge) : legacyMerge();
     };
 
     hooks.finalizeWorkspace = async () => {

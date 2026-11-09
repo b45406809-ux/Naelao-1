@@ -1020,6 +1020,8 @@ export interface ScriptEngineEnv {
     head: { branch: string; revision: number; updatedAt: string };
     entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }>;
   } | null>;
+  /** Project-scoped writer critical section shared with the explicit legacy migration barrier. */
+  withProjectWorkspaceMutation?<T>(operation: () => Promise<T>): Promise<T>;
   /** Canonical publisher available only for an isolated checked workspace branch. */
   publishWorkspaceChecked?: (input: {
     key: string;

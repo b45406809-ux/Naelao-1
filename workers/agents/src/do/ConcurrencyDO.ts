@@ -36,6 +36,7 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases with
 const MAX_SLOT_KEY_LENGTH = 512;
 const MAX_HOLDER_ID_LENGTH = 128;
 const FILE_LOCK_TTL_MS = 30_000;
+const PROJECT_WORKSPACE_MIGRATION_TTL_MS = 10 * 60_000;
 const MAX_OUTBOUND_PACER_DELAY_MS = 30_000;
 export const SLOT_HOLD_TTL_MS = 15_000;
 export const NODE_LEASE_TTL_MS = 15_000;
@@ -314,8 +315,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
       || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
       || !Number.isSafeInteger(requestedTtl) || (requestedTtl as number) <= 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
-    // File locks are deliberately short lived. Callers may request less, never more.
-    const ttlMs = Math.min(FILE_LOCK_TTL_MS, requestedTtl as number);
+    // The project migration mutex may cover a bounded bulk import; ordinary file locks stay short.
+    const ttlMs = Math.min(key.endsWith(":workspace-migration-barrier") ? PROJECT_WORKSPACE_MIGRATION_TTL_MS : FILE_LOCK_TTL_MS, requestedTtl as number);
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec(`SELECT holder_id, expires_at, fencing_token FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; expires_at: number; fencing_token?: number }>;
     const held = rows[0];
@@ -350,7 +351,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
       || !Number.isSafeInteger(token) || (token as number) < 1
       || !Number.isSafeInteger(requestedTtl) || (requestedTtl as number) <= 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
-    const ttlMs = Math.min(FILE_LOCK_TTL_MS, requestedTtl as number);
+    const ttlMs = Math.min(key.endsWith(":workspace-migration-barrier") ? PROJECT_WORKSPACE_MIGRATION_TTL_MS : FILE_LOCK_TTL_MS, requestedTtl as number);
     const expiresAt = now + ttlMs;
     const result = this.ctx.storage.sql.exec("UPDATE locks SET expires_at=? WHERE key=? AND holder_id=? AND fencing_token=? AND expires_at>?", expiresAt, key, holderId, token, now);
     await this.scheduleNextAlarm();

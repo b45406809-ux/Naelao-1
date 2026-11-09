@@ -525,6 +525,101 @@ app.post("/internal/workspaces/erase", async (c) => {
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/erase", { body: { scope: body.scope, confirm: true } });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+app.post("/internal/workspaces/migrate-existing-project", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; migrationId?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_migration_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.migrationId)) return c.json({ error_code: "invalid_workspace_migration_request" }, 400);
+  if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "workspace_migration_barrier_unavailable" }, 503);
+  const gateKey = `lock:${body.scope.spaceId}:${body.scope.projectId}:workspace-migration-barrier`;
+  const gate = c.env.CONCURRENCY_DO.get(c.env.CONCURRENCY_DO.idFromName(gateKey));
+  // Every request must own a distinct lease. ConcurrencyDO treats a repeated holder
+  // id as the same owner and would otherwise allow a concurrent retry through.
+  const holderId = `migration:${body.migrationId.slice(-72)}:${crypto.randomUUID()}`.slice(0, 128);
+  const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, ttlMs: 10 * 60_000 }) }));
+  const lease: { acquired?: boolean; fencingToken?: number } = await readBoundedResponseJson<{ acquired?: boolean; fencingToken?: number }>(acquired, 8 * 1024).catch((): { acquired?: boolean; fencingToken?: number } => ({}));
+  if (!acquired.ok || !lease.acquired || !Number.isSafeInteger(lease.fencingToken)) return c.json({ error_code: "workspace_migration_barrier_busy" }, 423);
+  const abort = new AbortController();
+  let renewing = true;
+  let renewalFailed = false;
+  let stopHeartbeat!: () => void;
+  const stopped = new Promise<void>(resolve => { stopHeartbeat = resolve; });
+  const heartbeat = (async () => {
+    while (renewing) {
+      await Promise.race([new Promise<void>(resolve => setTimeout(resolve, 60_000)), stopped]);
+      if (!renewing) break;
+      const renewed = await gate.fetch(new Request("http://concurrency-do/locks/renew", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken, ttlMs: 10 * 60_000 }) }));
+      if (!renewed.ok) { renewalFailed = true; abort.abort(); break; }
+    }
+  })();
+  try {
+    const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/import", { body: { scope: body.scope, migrationId: body.migrationId }, signal: abort.signal });
+    if (renewalFailed) { abort.abort(); return c.json({ error_code: "workspace_migration_barrier_lost" }, 503); }
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  } catch {
+    return c.json({ error_code: renewalFailed ? "workspace_migration_barrier_lost" : "workspace_migration_failed" }, 503);
+  } finally {
+    renewing = false;
+    stopHeartbeat();
+    await heartbeat;
+    await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+  }
+});
+app.post("/internal/workspaces/migration-status", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_scope" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/status", {});
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+async function withLegacyProjectWorkspaceMutation<T>(env: AgentsEnv, scope: import("./workspace/workspace-contract.js").WorkspaceScope, holderId: string, operation: () => Promise<T>): Promise<T> {
+  if (!env.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
+  const gateKey = `lock:${scope.spaceId}:${scope.projectId}:workspace-migration-barrier`;
+  const gate = env.CONCURRENCY_DO.get(env.CONCURRENCY_DO.idFromName(gateKey));
+  const holder = `${holderId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 80)}:${crypto.randomUUID()}`.slice(0, 128);
+  const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId: holder, ttlMs: 10 * 60_000 }) }));
+  const lease: { acquired?: boolean; fencingToken?: number } = await readBoundedResponseJson<{ acquired?: boolean; fencingToken?: number }>(acquired, 8 * 1024).catch((): { acquired?: boolean; fencingToken?: number } => ({}));
+  if (!acquired.ok || !lease.acquired || !Number.isSafeInteger(lease.fencingToken)) throw new Error("workspace_project_mutation_barrier_busy");
+  try {
+    const status = await workspaceCoordinatorRequest(env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/status", {});
+    if (!status.ok) throw new Error("workspace_migration_status_unavailable");
+    const state = await status.json() as { migration?: unknown };
+    if (state.migration) throw new Error("workspace_legacy_migration_barrier_active");
+    return await operation();
+  } finally {
+    await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId: holder, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+  }
+}
+app.post("/internal/workspaces/legacy-write", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; actorId?: unknown; path?: unknown; expectedHash?: unknown; contentBase64?: unknown; contentType?: unknown; idempotencyKey?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 1_100_000)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_legacy_workspace_write" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.actorId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actorId)
+    || typeof body.path !== "string" || !validateWorkspacePath(body.path) || body.expectedHash !== null && (typeof body.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedHash))
+    || typeof body.contentBase64 !== "string" || body.contentBase64.length > 1_048_576 || typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.idempotencyKey)) return c.json({ error_code: "invalid_legacy_workspace_write" }, 400);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_storage_unavailable" }, 503);
+  const scope = body.scope as import("./workspace/workspace-contract.js").WorkspaceScope;
+  try {
+    const result = await withLegacyProjectWorkspaceMutation(c.env, scope, `legacy-write:${body.idempotencyKey}`, async () => {
+      const key = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/${body.path}`;
+      const bytes = Uint8Array.from(atob(body.contentBase64 as string), character => character.charCodeAt(0));
+      const written = await putBytesCas(c.env.SCRIPTS_R2!, key, bytes, body.expectedHash as string | null, { authorId: body.actorId as string, migrationAlias: "preserved" },
+        typeof body.contentType === "string" ? { contentType: body.contentType } : undefined);
+      return { hash: written.hash };
+    });
+    return c.json({ written: true, hash: result.hash });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "workspace_write_failed";
+    return c.json({ error_code: message === "workspace_legacy_migration_barrier_active" ? message : "workspace_write_failed" }, message === "workspace_legacy_migration_barrier_active" ? 423 : 409);
+  }
+});
 // Read-only compatibility adapter for legacy clients that still expose the project file tree.
 // Callers must authorize the user/project first. Once unified mode is enabled and a canonical
 // head exists, this route returns manifest entries only; it never reads the legacy per-file tree.
@@ -6826,8 +6921,12 @@ app.post("/internal/attachments/copy", async (c) => {
         throw new Error(`attachment_workspace_publish_failed:${checked.status}`);
       }
     } else {
-      await putBytesCas(c.env.SCRIPTS_R2, destinationKey, content, null,
-        { naelaoAttachmentId: body.id }, { contentType: attachment.mime_type });
+      const writeLegacyAttachment = () => putBytesCas(c.env.SCRIPTS_R2!, destinationKey, content, null,
+        { naelaoAttachmentId: body.id as string }, { contentType: attachment.mime_type });
+      if (body.projectId) {
+        await withLegacyProjectWorkspaceMutation(c.env, { tenantId, spaceId: body.spaceId, projectId: body.projectId,
+          jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, `attachment-copy:${claimId}`, writeLegacyAttachment);
+      } else await writeLegacyAttachment();
     }
     return c.json({ copied: true, path: clean, filename: attachment.filename, mime_type: attachment.mime_type, size_bytes: bytes.byteLength });
   } catch (error) {
@@ -8160,26 +8259,32 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     return c.json({ error_code: "invalid_checked_workspace_upload_name" }, 400);
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const uploaded: Array<{ name: string; key: string; size: number; content_type: string; branch?: string; revision?: number }> = [];
-  for (const [index, file] of incoming.entries()) {
-    const name = names[index]!;
-    const key = `${prefix}${name}`;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (unifiedProjectWorkspace) {
-      const scope = { tenantId, spaceId, projectId: projectId!, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
-      const result = await publishProjectChatUpload({
-        scope, sessionId, filename: name, actorId: identity.userId!, bytes,
-        readSnapshot: path => readChatUploadManifest(c.env, scope, path),
-        publish: change => checkedChatUploadPublish(c.env, scope, identity.userId!, change),
-      });
-      uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream", branch: "main", revision: result.revision });
-    } else {
-      const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
-      await putBytesCas(c.env.SCRIPTS_R2!, key, bytes, current?.hash ?? null, {}, {
-        contentType: file.type || "application/octet-stream",
-      });
-      uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
+  const uploadAll = async () => {
+    for (const [index, file] of incoming.entries()) {
+      const name = names[index]!;
+      const key = `${prefix}${name}`;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (unifiedProjectWorkspace) {
+        const scope = { tenantId, spaceId, projectId: projectId!, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+        const result = await publishProjectChatUpload({
+          scope, sessionId, filename: name, actorId: identity.userId!, bytes,
+          readSnapshot: path => readChatUploadManifest(c.env, scope, path),
+          publish: change => checkedChatUploadPublish(c.env, scope, identity.userId!, change),
+        });
+        uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream", branch: "main", revision: result.revision });
+      } else {
+        const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
+        await putBytesCas(c.env.SCRIPTS_R2!, key, bytes, current?.hash ?? null, {}, {
+          contentType: file.type || "application/octet-stream",
+        });
+        uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
+      }
     }
-  }
+  };
+  if (!unifiedProjectWorkspace && projectId) {
+    const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+    await withLegacyProjectWorkspaceMutation(c.env, scope, `chat-upload:${sessionId}:${crypto.randomUUID()}`, uploadAll);
+  } else await uploadAll();
   return c.json({ uploaded, count: uploaded.length }, 201);
 });
 
@@ -8249,8 +8354,13 @@ app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) =
     });
     return c.json({ deleted: result.deleted, branch: "main", revision: result.revision });
   }
-  const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
-  const result = await deleteBytesCas(c.env.SCRIPTS_R2!, key, current?.hash ?? null);
+  const removeLegacy = async () => {
+    const current = await readBytesWithHash(c.env.SCRIPTS_R2!, key);
+    return deleteBytesCas(c.env.SCRIPTS_R2!, key, current?.hash ?? null);
+  };
+  const result = projectId
+    ? await withLegacyProjectWorkspaceMutation(c.env, { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" }, `chat-upload-delete:${sessionId}:${crypto.randomUUID()}`, removeLegacy)
+    : await removeLegacy();
   return c.json({ deleted: result.deleted });
 });
 

@@ -39,6 +39,7 @@ interface Env {
   /** Canonical mutable workspace files; Git refs/objects are a materialized projection. */
   WORKSPACE_R2?: R2Bucket;
   WORKSPACE_COORDINATOR?: DurableObjectNamespace;
+  CONCURRENCY_DO?: DurableObjectNamespace;
   PLATFORM_SECRET?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
@@ -237,6 +238,16 @@ export class RepositoryDO extends DurableObject<Env> {
   /** Journal Git-to-workspace publication before effects. Replay never overwrites a new writer. */
   private async publishWorkspaceState(scope: RepositoryScope, state: RepoState, branch: string, before: Entries): Promise<void> {
     if (!this.env.WORKSPACE_R2) { await this.save(state); return; }
+    if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true") {
+      await this.withLegacyWorkspaceMutation(scope, async () => {
+        await this.publishLegacyWorkspaceState(scope, state, branch, before);
+      });
+      return;
+    }
+    await this.publishLegacyWorkspaceState(scope, state, branch, before);
+  }
+
+  private async publishLegacyWorkspaceState(scope: RepositoryScope, state: RepoState, branch: string, before: Entries): Promise<void> {
     const after = state.worktrees[branch] ?? {};
     const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])]
       .filter(path => before[path]?.hash !== after[path]?.hash)
@@ -247,7 +258,27 @@ export class RepositoryDO extends DurableObject<Env> {
     const key = root + crypto.randomUUID() + ".json";
     await this.env.REPOSITORY_OBJECTS.put(key, JSON.stringify({ scope, state, branch, changes }));
     await this.ctx.storage.put("workspace_publication", { key, scope });
-    await this.recoverWorkspacePublication(scope);
+    await this.replayWorkspacePublication(scope);
+  }
+
+  private async withLegacyWorkspaceMutation<T>(scope: RepositoryScope, operation: () => Promise<T>): Promise<T> {
+    if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") return operation();
+    if (!this.env.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
+    const gateKey = `lock:${scope.spaceId}:${scope.projectId}:workspace-migration-barrier`;
+    const gate = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(gateKey));
+    const holderId = `repository:${scope.projectId}:${crypto.randomUUID()}`.slice(0, 128);
+    const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, ttlMs: 10 * 60_000 }) }));
+    const lease = await acquired.json<{ acquired?: boolean; fencingToken?: number }>().catch((): { acquired?: boolean; fencingToken?: number } => ({}));
+    if (!acquired.ok || !lease.acquired || !lease.fencingToken) throw new Error("workspace_project_mutation_barrier_busy");
+    try {
+      const status = await this.coordinatorRequest(scope, "/v1/migration/status");
+      if (!status.ok) throw new Error("workspace_migration_status_unavailable");
+      const value = await status.json() as { migration?: unknown };
+      if (value.migration) throw new Error("workspace_legacy_migration_barrier_active");
+      return await operation();
+    } finally {
+      await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+    }
   }
 
   private async coordinatorRequest(scope: RepositoryScope, path: string, body?: unknown): Promise<Response> {
@@ -352,12 +383,8 @@ export class RepositoryDO extends DurableObject<Env> {
   }
 
   private async recoverWorkspacePublication(scope: RepositoryScope): Promise<void> {
-    try {
-      await this.replayWorkspacePublication(scope);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Storage operation failed";
-      throw new Error(message.startsWith("workspace_publication_") ? message : `workspace_publication_interrupted:${message}`);
-    }
+    try { await this.withLegacyWorkspaceMutation(scope, () => this.replayWorkspacePublication(scope)); }
+    catch (error) { const message = error instanceof Error ? error.message : "Storage operation failed"; throw new Error(message.startsWith("workspace_publication_") ? message : `workspace_publication_interrupted:${message}`); }
   }
 
   private async replayWorkspacePublication(scope: RepositoryScope): Promise<void> {

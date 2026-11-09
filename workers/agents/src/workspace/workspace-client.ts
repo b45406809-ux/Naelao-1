@@ -13,7 +13,7 @@ export async function workspaceCoordinatorRequest(
   bindings: WorkspaceCoordinatorBindings,
   scope: WorkspaceScope,
   path: string,
-  options: { method?: "GET" | "POST"; body?: unknown },
+  options: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal },
 ): Promise<Response> {
   if (!bindings.WORKSPACE_COORDINATOR || !bindings.PLATFORM_SECRET) throw new Error("workspace_coordinator_unavailable");
   const resource = `${scope.spaceId}:${scope.projectId}`;
@@ -27,6 +27,7 @@ export async function workspaceCoordinatorRequest(
   return stub.fetch(new Request(`https://workspace-coordinator${path}`, {
     method: options.method ?? (options.body === undefined ? "GET" : "POST"),
     headers,
+    ...(options.signal ? { signal: options.signal } : {}),
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   }));
 }

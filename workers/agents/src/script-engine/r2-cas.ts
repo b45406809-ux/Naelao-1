@@ -5,6 +5,7 @@ interface WorkspaceCasEnv {
   runId?: string;
   spaceId?: string;
   projectId?: string;
+  withProjectWorkspaceMutation?<T>(operation: () => Promise<T>): Promise<T>;
   workspaceManifestRead?: () => Promise<unknown>;
   publishWorkspaceChecked?: (input: { key: string; bytes: Uint8Array | null; expectedHash: string | null }) => Promise<{ hash: string | null; revision: number; deleted: boolean }>;
   validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
@@ -50,37 +51,31 @@ export async function publishWorkspaceBytesCas(
   metadata: Record<string, string> = {},
   httpMetadata?: R2HTTPMetadata,
 ): Promise<CasWriteResult> {
-  if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
-  if (env.publishWorkspaceChecked) {
-    const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash });
-    if (!result.hash || !Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_publication_unconfirmed");
-    return { hash: result.hash, etag: `revision:${result.revision}` };
-  }
-  rejectLegacyUnifiedWorkspaceWrite(env, key);
-  const gateway = env.lockGateway;
-  if (!gateway?.publishWorkspace || !env.runId) return putBytesCas(bucket, key, bytes, expectedHash, metadata, httpMetadata);
-  const lockKey = `workspace-file:${key}`;
-  const lease = await gateway.acquire({ key: lockKey, holderId: env.runId, limit: 1, ttlMs: 30_000 });
-  if (!lease.granted || !Number.isSafeInteger(lease.fencingToken) || !lease.fencingToken) {
-    throw new Error(`Workspace lease unavailable for '${key}'${lease.heldBy ? ` (held by ${lease.heldBy})` : ""}`);
-  }
-  try {
-    const result = await gateway.publishWorkspace({
-      key: lockKey,
-      holderId: env.runId,
-      fencingToken: lease.fencingToken,
-      path: key,
-      operation: "write",
-      expectedHash,
-      contentBase64: encodeBase64(bytes),
-      metadata,
-      ...(httpMetadata?.contentType ? { contentType: httpMetadata.contentType } : {}),
-    });
-    if (!result.hash || result.fencingToken !== lease.fencingToken) throw new Error(`Workspace publication did not confirm its fenced revision: '${key}'`);
-    return { hash: result.hash, etag: result.etag ?? "" };
-  } finally {
-    await gateway.release({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken });
-  }
+  const publish = async (): Promise<CasWriteResult> => {
+    if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
+    if (env.publishWorkspaceChecked) {
+      const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash });
+      if (!result.hash || !Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_publication_unconfirmed");
+      return { hash: result.hash, etag: `revision:${result.revision}` };
+    }
+    rejectLegacyUnifiedWorkspaceWrite(env, key);
+    const gateway = env.lockGateway;
+    if (!gateway?.publishWorkspace || !env.runId) return putBytesCas(bucket, key, bytes, expectedHash, metadata, httpMetadata);
+    const lockKey = `workspace-file:${key}`;
+    const lease = await gateway.acquire({ key: lockKey, holderId: env.runId, limit: 1, ttlMs: 30_000 });
+    if (!lease.granted || !Number.isSafeInteger(lease.fencingToken) || !lease.fencingToken) {
+      throw new Error(`Workspace lease unavailable for '${key}'${lease.heldBy ? ` (held by ${lease.heldBy})` : ""}`);
+    }
+    try {
+      const result = await gateway.publishWorkspace({
+        key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken, path: key, operation: "write", expectedHash,
+        contentBase64: encodeBase64(bytes), metadata, ...(httpMetadata?.contentType ? { contentType: httpMetadata.contentType } : {}),
+      });
+      if (!result.hash || result.fencingToken !== lease.fencingToken) throw new Error(`Workspace publication did not confirm its fenced revision: '${key}'`);
+      return { hash: result.hash, etag: result.etag ?? "" };
+    } finally { await gateway.release({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken }); }
+  };
+  return env.withProjectWorkspaceMutation ? env.withProjectWorkspaceMutation(publish) : publish();
 }
 
 export async function deleteWorkspaceBytesCas(
@@ -89,24 +84,25 @@ export async function deleteWorkspaceBytesCas(
   key: string,
   expectedHash: string | null,
 ): Promise<{ deleted: boolean; etag?: string }> {
-  if (env.publishWorkspaceChecked) {
-    const result = await env.publishWorkspaceChecked({ key, bytes: null, expectedHash });
-    if (!Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_deletion_unconfirmed");
-    return { deleted: result.deleted, etag: `revision:${result.revision}` };
-  }
-  rejectLegacyUnifiedWorkspaceWrite(env, key);
-  const gateway = env.lockGateway;
-  if (!gateway?.publishWorkspace || !env.runId) return deleteBytesCas(bucket, key, expectedHash);
-  const lockKey = `workspace-file:${key}`;
-  const lease = await gateway.acquire({ key: lockKey, holderId: env.runId, limit: 1, ttlMs: 30_000 });
-  if (!lease.granted || !Number.isSafeInteger(lease.fencingToken) || !lease.fencingToken) throw new Error(`Workspace lease unavailable for '${key}'`);
-  try {
-    const result = await gateway.publishWorkspace({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken, path: key, operation: "delete", expectedHash });
-    if (result.fencingToken !== lease.fencingToken) throw new Error(`Workspace deletion did not confirm its fenced revision: '${key}'`);
-    return { deleted: result.deleted === true, ...(result.etag ? { etag: result.etag } : {}) };
-  } finally {
-    await gateway.release({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken });
-  }
+  const remove = async (): Promise<{ deleted: boolean; etag?: string }> => {
+    if (env.publishWorkspaceChecked) {
+      const result = await env.publishWorkspaceChecked({ key, bytes: null, expectedHash });
+      if (!Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_deletion_unconfirmed");
+      return { deleted: result.deleted, etag: `revision:${result.revision}` };
+    }
+    rejectLegacyUnifiedWorkspaceWrite(env, key);
+    const gateway = env.lockGateway;
+    if (!gateway?.publishWorkspace || !env.runId) return deleteBytesCas(bucket, key, expectedHash);
+    const lockKey = `workspace-file:${key}`;
+    const lease = await gateway.acquire({ key: lockKey, holderId: env.runId, limit: 1, ttlMs: 30_000 });
+    if (!lease.granted || !Number.isSafeInteger(lease.fencingToken) || !lease.fencingToken) throw new Error(`Workspace lease unavailable for '${key}'`);
+    try {
+      const result = await gateway.publishWorkspace({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken, path: key, operation: "delete", expectedHash });
+      if (result.fencingToken !== lease.fencingToken) throw new Error(`Workspace deletion did not confirm its fenced revision: '${key}'`);
+      return { deleted: result.deleted === true, ...(result.etag ? { etag: result.etag } : {}) };
+    } finally { await gateway.release({ key: lockKey, holderId: env.runId, fencingToken: lease.fencingToken }); }
+  };
+  return env.withProjectWorkspaceMutation ? env.withProjectWorkspaceMutation(remove) : remove();
 }
 
 export async function sha256Text(text: string): Promise<string> {

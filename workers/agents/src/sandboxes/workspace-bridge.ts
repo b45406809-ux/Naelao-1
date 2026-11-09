@@ -329,6 +329,7 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
   }
   const concurrency = env.CONCURRENCY_DO;
   if (!concurrency) return fail("workspace_publication_unavailable", 503);
+  const publishLegacy = async (): Promise<Response> => {
   const applied: string[] = [];
   const conflicts: Array<{ path: string; expectedHash: string | null; actualHash: string | null }> = [];
   const prefix = workspacePrefix(fs);
@@ -348,7 +349,7 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
         const staged = await env.PLATFORM_DB.prepare("SELECT object_key,sha256,executable FROM sandbox_workspace_blobs WHERE id=? AND tenant_id=? AND filesystem_id=? AND snapshot_id=?")
           .bind(change.blobId, actor.tenantId, fs.id, input.snapshotId).first<{ object_key: string; sha256: string; executable: number }>();
         if (!staged) return fail("blob_not_found", 404);
-        const stagedObject = await readBytesWithHash(env.SCRIPTS_R2, staged.object_key, MAX_FILE_BYTES);
+        const stagedObject = await readBytesWithHash(env.SCRIPTS_R2!, staged.object_key, MAX_FILE_BYTES);
         if (!stagedObject || stagedObject.hash !== staged.sha256) return fail("blob_integrity_failed", 409);
         contentBase64 = b64(stagedObject.bytes);
         newHash = stagedObject.hash;
@@ -357,11 +358,11 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
         // for a newly created file with no mode in the snapshot.
         change.executable = executable;
       }
-      const current = await readBytesWithHash(env.SCRIPTS_R2, key, MAX_FILE_BYTES);
+      const current = await readBytesWithHash(env.SCRIPTS_R2!, key, MAX_FILE_BYTES);
       if ((current?.hash ?? null) === newHash) { applied.push(path); continue; }
       const result = await stub.fetch(new Request("http://concurrency-do/workspace/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: lockKey, holderId, fencingToken: lease.fencingToken, path: key, operation: change.blobId ? "write" : "delete", expectedHash: change.expectedHash, ...(contentBase64 ? { contentBase64 } : {}), metadata: { source: "sandbox-workspace-bridge", workspaceBranch: fs.branch, ...(change.blobId ? { executable: String(change.executable === true) } : {}) } }) }));
       if (result.status === 409) {
-        const actual = await readBytesWithHash(env.SCRIPTS_R2, key, MAX_FILE_BYTES);
+        const actual = await readBytesWithHash(env.SCRIPTS_R2!, key, MAX_FILE_BYTES);
         conflicts.push({ path, expectedHash: change.expectedHash, actualHash: actual?.hash ?? null });
         continue;
       }
@@ -376,6 +377,24 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
     .bind(status, JSON.stringify(applied), JSON.stringify(conflicts), new Date().toISOString(), id).run();
   if (!conflicts.length) await env.PLATFORM_DB.prepare("UPDATE sandbox_workspace_snapshots SET status='published' WHERE id=?").bind(input.snapshotId).run();
   return response({ publication: { id, status, appliedPaths: applied, conflicts } }, conflicts.length ? 409 : 200);
+  };
+  if (!fs.project_id || !fs.space_id) return publishLegacy();
+  const gateKey = `lock:${fs.space_id}:${fs.project_id}:workspace-migration-barrier`;
+  const gate = concurrency.get(concurrency.idFromName(gateKey));
+  const holderId = `sandbox-bridge:${id}:${crypto.randomUUID()}`.slice(0, 128);
+  const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, ttlMs: 10 * 60_000 }) }));
+  const lease = await parseJson(acquired, {} as { acquired?: boolean; fencingToken?: number });
+  if (!acquired.ok || !lease.acquired || !lease.fencingToken) return fail("workspace_migration_barrier_busy", 423);
+  try {
+    const scope: WorkspaceScope = { tenantId: actor.tenantId, spaceId: fs.space_id, projectId: fs.project_id, jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+    const migrationStatus = await coordinatorRequest(env, scope, "/v1/migration/status", {});
+    if (!migrationStatus.ok) return fail("workspace_migration_status_unavailable", 503);
+    const statusBody = await migrationStatus.json() as { migration?: unknown };
+    if (statusBody.migration) return fail("workspace_legacy_migration_barrier_active", 423);
+    return await publishLegacy();
+  } finally {
+    await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+  }
 }
 
 export async function handleSandboxWorkspaceBridge(request: Request, env: BridgeEnv): Promise<Response> {

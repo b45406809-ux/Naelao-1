@@ -32,6 +32,11 @@ name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
 script_name = "naelao-agents"
 
+[[durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+script_name = "naelao-agents"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RepositoryDO"]
@@ -70,6 +75,11 @@ name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
 script_name = "naelao-agents-staging"
 
+[[env.staging.durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+script_name = "naelao-agents-staging"
+
 
 [[env.production.r2_buckets]]
 binding = "ARTIFACT_BUCKET"
@@ -93,4 +103,9 @@ class_name = "RepositoryDO"
 [[env.production.durable_objects.bindings]]
 name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
+script_name = "naelao-agents-production"
+
+[[env.production.durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
 script_name = "naelao-agents-production"

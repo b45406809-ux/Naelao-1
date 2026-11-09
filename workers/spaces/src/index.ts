@@ -3098,6 +3098,31 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   return readWorkspaceObject(obj, relative);
 });
 
+// Existing-project import is an explicit admin action. The coordinator installs a durable
+// write barrier, verifies the legacy snapshot twice, initializes revision 1, and retains the
+// legacy-prefix rollback alias. It is independent of the global rollout flag.
+app.use("/spaces/:spaceId/projects/:projectId/workspace/migrate", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/migrate", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workspace/migrate", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_migration_unavailable" }, 503);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, identity.tenantId).first();
+  if (!space) return c.notFound();
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(scope)));
+  const migrationId = `project-migration-${[...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("").slice(0, 40)}`;
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migrate-existing-project", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ scope, migrationId }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
 // The visual workflow authoring surface can save only validated workflow source paths. It cannot
 // overwrite arbitrary project artifacts or add capabilities; runtime grants remain authoritative.
 app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -3156,8 +3181,18 @@ app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
     return c.json({ saved: true, path: relative, digest: compiled.digest, bytes: compiled.bytes,
       branch: "main", revision: publication.publication?.revision, publicationStatus: publication.publication?.status }, 200, { "cache-control": "no-store" });
   }
-  const saved = await c.env.SCRIPTS_R2.put(key, source, { onlyIf: { etagDoesNotMatch: "*" }, httpMetadata: { contentType: "text/typescript; charset=utf-8" }, customMetadata: { authorId: identity.userId, kind: "compiled_workflow_plan" } });
-  if (!saved) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
+  const sourceBytes = new TextEncoder().encode(source);
+  let binary = "";
+  for (let offset = 0; offset < sourceBytes.length; offset += 0x8000) binary += String.fromCharCode(...sourceBytes.subarray(offset, offset + 0x8000));
+  const legacyScope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const legacySaved = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/legacy-write", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ scope: legacyScope, actorId: identity.userId, path: relative, expectedHash: null, contentBase64: btoa(binary),
+      contentType: "text/typescript; charset=utf-8", idempotencyKey: `workflow:${projectId}:${compiled.digest}` }),
+  }));
+  if (legacySaved.status === 409) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
+  if (!legacySaved.ok) return new Response(legacySaved.body, { status: legacySaved.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   return c.json({ saved: true, path: relative, digest: compiled.digest, bytes: compiled.bytes });
 });
 

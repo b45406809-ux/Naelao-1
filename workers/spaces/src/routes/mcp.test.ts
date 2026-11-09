@@ -37,6 +37,30 @@ describe("project MCP Streamable HTTP endpoint", () => {
     expect(response.status).toBe(403);
   });
 
+  it("serializes feature-off project patches through the migration barrier adapter", async () => {
+    const app = new Hono<{ Bindings: { SCRIPTS_R2: R2Bucket; AGENTS_WORKER: Fetcher; PLATFORM_SECRET: string; UNIFIED_WORKSPACE_ENABLED: string } }>();
+    registerProjectMcpRoutes(app, async () => null);
+    const bucket = new MemoryBucket();
+    bucket.data.set("spaces/s/projects/p/workspace/readme.md", "before");
+    let legacyBody: Record<string, unknown> | null = null;
+    const agentsWorker = { fetch: async (request: Request) => {
+      if (new URL(request.url).pathname.endsWith("/legacy-write")) {
+        legacyBody = await request.json() as Record<string, unknown>;
+        return Response.json({ written: true, hash: "a".repeat(64) });
+      }
+      return Response.json({ error_code: "unexpected_route" }, { status: 404 });
+    } } as unknown as Fetcher;
+    const response = await app.request("/spaces/s/projects/p/mcp", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "user" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "runAstPatch", arguments: { path: "readme.md", oldText: "before", newText: "after" } } }) },
+      { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret", UNIFIED_WORKSPACE_ENABLED: "false" });
+    const result = await response.json() as any;
+    expect(result.result.content[0].text).toContain('"hash"');
+    expect(legacyBody).toMatchObject({ scope: { tenantId: "tenant", spaceId: "s", projectId: "p" }, actorId: "user", path: "readme.md", expectedHash: expect.stringMatching(/^[a-f0-9]{64}$/), idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    const encoded = (legacyBody as Record<string, unknown>).contentBase64 as string;
+    expect(new TextDecoder().decode(Uint8Array.from(atob(encoded), character => character.charCodeAt(0)))).toBe("after");
+    expect(bucket.data.get("spaces/s/projects/p/workspace/readme.md")).toBe("before");
+  });
+
   it("serves project MCP reads from the canonical manifest in unified mode", async () => {
     const app = new Hono<{ Bindings: { SCRIPTS_R2: R2Bucket; AGENTS_WORKER: Fetcher; PLATFORM_SECRET: string; UNIFIED_WORKSPACE_ENABLED: string } }>();
     registerProjectMcpRoutes(app, async () => null);

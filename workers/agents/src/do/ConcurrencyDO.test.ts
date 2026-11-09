@@ -16,6 +16,11 @@ function harness() {
       if (query.includes("DELETE FROM locks WHERE key = ? AND expires_at")) {
         const row = locks.get(String(args[0]));
         if (row && row.expires_at <= Number(args[1])) locks.delete(String(args[0]));
+      } else if (query.includes("UPDATE locks SET expires_at=? WHERE key=? AND holder_id=? AND fencing_token=? AND expires_at>?")) {
+        const row = locks.get(String(args[1]));
+        const changed = Boolean(row && row.holder_id === args[2] && row.fencing_token === args[3] && row.expires_at > Number(args[4]));
+        if (changed) row!.expires_at = Number(args[0]);
+        return { rowsWritten: changed ? 1 : 0, toArray: () => [] };
       } else if (query.includes("DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?")) {
         const row = locks.get(String(args[0]));
         if (row?.holder_id === args[1] && row.fencing_token === args[2]) locks.delete(String(args[0]));
@@ -135,6 +140,19 @@ describe("ConcurrencyDO file mutexes", () => {
     expect(await (await send("release", { key: "row", holderId: "run", fencingToken: second.fencingToken })).json()).toMatchObject({ released: true });
     expect(h.locks.has("row")).toBe(false);
     vi.useRealTimers();
+  });
+
+  it("bounds and renews the project migration barrier lease separately from file locks", async () => {
+    const h = harness();
+    const send = (path: string, body: Record<string, unknown>) => h.instance.fetch(new Request(`http://do/locks/${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    const barrier = await (await send("acquire", { key: "lock:space:project:workspace-migration-barrier", holderId: "migration", ttlMs: 60 * 60_000 })).json<Record<string, unknown>>();
+    expect(barrier).toMatchObject({ acquired: true, ttlMs: 10 * 60_000 });
+    const ordinary = await (await send("acquire", { key: "lock:space:project:file:a", holderId: "writer", ttlMs: 60 * 60_000 })).json<Record<string, unknown>>();
+    expect(ordinary).toMatchObject({ acquired: true, ttlMs: 30_000 });
+    const renewed = await (await send("renew", { key: "lock:space:project:workspace-migration-barrier", holderId: "migration", fencingToken: barrier.fencingToken, ttlMs: 60 * 60_000 })).json<Record<string, unknown>>();
+    expect(renewed).toMatchObject({ renewed: true, ttlMs: 10 * 60_000, fencingToken: barrier.fencingToken });
   });
 
   it("rejects malformed lock identities and TTLs before touching the lease table", async () => {

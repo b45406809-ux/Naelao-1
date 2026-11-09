@@ -81,6 +81,8 @@ describe("sandbox workspace snapshot bridge", () => {
       idFromName: (name: string) => name,
       get: () => ({ async fetch(request: Request) {
         const url = new URL(request.url);
+        if (url.pathname === "/locks/acquire") return Response.json({ acquired: true, fencingToken: 2 });
+        if (url.pathname === "/locks/release") return Response.json({ released: true });
         if (url.pathname === "/lock/acquire") return Response.json({ acquired: true, fencingToken: 1 });
         if (url.pathname === "/lock/release") return Response.json({ released: true });
         const value = await request.json() as { path: string; expectedHash: string | null; operation: string; contentBase64?: string };
@@ -92,7 +94,8 @@ describe("sandbox workspace snapshot bridge", () => {
         return Response.json({ published: true });
       } }),
     } as unknown as DurableObjectNamespace;
-    const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "test-secret", SCRIPTS_R2: bucket, CONCURRENCY_DO: concurrency };
+    const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "test-secret", SCRIPTS_R2: bucket, CONCURRENCY_DO: concurrency,
+      WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ async fetch() { return Response.json({ migration: null }); } }) } };
     const path = "http://agents/internal/sandbox-workspaces/snapshot";
     const noAuth = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), env);
     expect(noAuth.status).toBe(403);
