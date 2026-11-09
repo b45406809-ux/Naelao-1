@@ -1,9 +1,10 @@
 name = "workspace-coordinator-runtime-smoke"
 main = "./worker.ts"
-compatibility_date = "2026-11-08"
+compatibility_date = "2026-10-13"
 
-[vars]
-PLATFORM_SECRET = "local-workspace-runtime-smoke-secret"
+# The smoke Worker fails closed unless run-specific disposable variables and secrets are
+# supplied at startup. Never put PLATFORM_SECRET or WORKSPACE_SMOKE_TOKEN in this file.
+# `UNIFIED_WORKSPACE_ENABLED=true` is only needed to exercise the disposable migration path.
 
 [[durable_objects.bindings]]
 name = "WORKSPACE_COORDINATOR"
