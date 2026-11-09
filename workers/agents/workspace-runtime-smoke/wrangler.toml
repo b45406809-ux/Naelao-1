@@ -10,10 +10,48 @@ compatibility_date = "2026-10-13"
 name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
 
+[[durable_objects.bindings]]
+name = "REPOSITORY_DO"
+class_name = "RepositoryDO"
+
+[[durable_objects.bindings]]
+name = "REPOSITORY_JOURNAL_DO"
+class_name = "WorkspaceSmokeJournalRepositoryDO"
+
+[[durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
+[[durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "WorkspaceSmokeToolSandboxDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["WorkspaceCoordinatorDO"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RepositoryDO", "WorkspaceSmokeJournalRepositoryDO", "ConcurrencyDO"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["WorkspaceSmokeToolSandboxDO"]
+
+[[containers]]
+class_name = "WorkspaceSmokeToolSandboxDO"
+image = "../Dockerfile.toolsandbox"
+max_instances = 1
+instance_type = "basic"
+
 [[r2_buckets]]
 binding = "SCRIPTS_R2"
+bucket_name = "workspace-coordinator-runtime-smoke"
+
+[[r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "workspace-coordinator-runtime-smoke"
+
+[[r2_buckets]]
+binding = "WORKSPACE_R2"
 bucket_name = "workspace-coordinator-runtime-smoke"

@@ -261,7 +261,11 @@ export class RepositoryDO extends DurableObject<Env> {
     const key = root + crypto.randomUUID() + ".json";
     await this.env.REPOSITORY_OBJECTS.put(key, JSON.stringify({ scope, state, branch, changes }));
     await this.ctx.storage.put("workspace_publication", { key, scope });
-    await this.replayWorkspacePublication(scope);
+    try { await this.replayWorkspacePublication(scope); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "Storage operation failed";
+      throw new Error(message.startsWith("workspace_publication_") ? message : `workspace_publication_interrupted:${message}`);
+    }
   }
 
   private async withLegacyWorkspaceMutation<T>(scope: RepositoryScope, operation: () => Promise<T>): Promise<T> {
