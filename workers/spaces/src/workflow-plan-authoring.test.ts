@@ -7,9 +7,11 @@ describe("declarative workflow plan authoring endpoint", () => {
     const secret = "workflow-plan-authoring-test-secret";
     const put = vi.fn(async () => ({ key: "saved" }));
     const agentFetch = vi.fn(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe("/internal/workflow-extensions/compile");
       expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
-      return Response.json({ valid: true, digest: "a".repeat(64), bytes: 256 });
+      const path = new URL(request.url).pathname;
+      if (path === "/internal/workflow-extensions/compile") return Response.json({ valid: true, digest: "a".repeat(64), bytes: 256 });
+      expect(path).toBe("/internal/workspaces/legacy-write");
+      return Response.json({ written: true, revision: 1 });
     });
     const spaceStub = { fetch: vi.fn(async () => Response.json({ id: "project-a" })) };
     const env = {
@@ -25,10 +27,13 @@ describe("declarative workflow plan authoring endpoint", () => {
     }), env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ saved: true, path: "workflows/daily-summary.ts", digest: "a".repeat(64), bytes: 256 });
-    expect(agentFetch).toHaveBeenCalledOnce();
+    expect(agentFetch).toHaveBeenCalledTimes(2);
     const compiledRequest = agentFetch.mock.calls[0]?.[0] as Request;
     expect(await compiledRequest.clone().text()).toContain("tools.read");
-    expect(put).toHaveBeenCalledWith("spaces/space-a/projects/project-a/workspace/workflows/daily-summary.ts", expect.any(String), expect.objectContaining({ onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { authorId: "owner-a", kind: "compiled_workflow_plan" } }));
+    const legacyRequest = agentFetch.mock.calls[1]?.[0] as Request;
+    expect(new URL(legacyRequest.url).pathname).toBe("/internal/workspaces/legacy-write");
+    expect(await legacyRequest.clone().text()).toContain('"contentType":"text/typescript; charset=utf-8"');
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("rejects arbitrary paths and does not compile or write them", async () => {
@@ -62,7 +67,10 @@ describe("declarative workflow plan authoring endpoint", () => {
   });
 
   it("uses an atomic create condition if another request wins the name race", async () => {
-    const secret = "workflow-plan-authoring-test-secret", agentFetch = vi.fn(async () => Response.json({ valid: true, digest: "b".repeat(64), bytes: 10 }));
+    const secret = "workflow-plan-authoring-test-secret", agentFetch = vi.fn(async (request: Request) =>
+      new URL(request.url).pathname === "/internal/workspaces/legacy-write"
+        ? Response.json({ error_code: "workspace_path_exists" }, { status: 409 })
+        : Response.json({ valid: true, digest: "b".repeat(64), bytes: 10 }));
     const put = vi.fn(async () => null);
     const env = { ENVIRONMENT: "test", PLATFORM_SECRET: secret,
       PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ found: 1 }) }) }) },
@@ -73,7 +81,8 @@ describe("declarative workflow plan authoring endpoint", () => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner", "x-naelao-role": "admin", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
       body: JSON.stringify({ path: "workflows/raced.ts", plan: { schemaVersion: "1.0", steps: [{ id: "read", operation: "tools.read", args: {} }] } }) }), env);
     expect(response.status).toBe(409);
-    expect(put).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ onlyIf: { etagDoesNotMatch: "*" } }));
+    expect(agentFetch).toHaveBeenCalledTimes(2);
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("rejects malformed plans without accepting caller-provided executable source", async () => {

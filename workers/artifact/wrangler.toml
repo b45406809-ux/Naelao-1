@@ -44,12 +44,13 @@ new_sqlite_classes = ["RepositoryDO"]
 [vars]
 ENVIRONMENT = "development"
 UNIFIED_WORKSPACE_ENABLED = "false"
+WORKSPACE_DUAL_READ_ENABLED = "false"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging", UNIFIED_WORKSPACE_ENABLED = "false" }
+vars = { ENVIRONMENT = "staging", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false" }
 
 [env.production]
-vars = { ENVIRONMENT = "production", UNIFIED_WORKSPACE_ENABLED = "false" }
+vars = { ENVIRONMENT = "production", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false" }
 
 [[env.staging.r2_buckets]]
 binding = "ARTIFACT_BUCKET"

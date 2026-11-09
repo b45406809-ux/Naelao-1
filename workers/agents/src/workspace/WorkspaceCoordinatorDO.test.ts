@@ -1,6 +1,7 @@
 import { mintInternalToken } from "@naelao/http";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceCoordinatorDO } from "./WorkspaceCoordinatorDO.js";
+import { sha256Hex } from "./workspace-contract.js";
 
 class Storage {
   values = new Map<string, unknown>();
@@ -29,15 +30,19 @@ class Storage {
 function setup(options: { liveEnabled?: boolean } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
+  const metadata = new Map<string, { contentType?: string }>();
+  const customMetadata = new Map<string, Record<string, string>>();
   const r2: Record<string, (...args: never[]) => unknown> = {
     async get(key: string) {
       const bytes = objects.get(key);
-      return bytes ? { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } } : null;
+      return bytes ? { size: bytes.byteLength, httpMetadata: metadata.get(key) ?? {}, async arrayBuffer() { return bytes.slice().buffer; } } : null;
     },
-    async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream, options?: { onlyIf?: { etagDoesNotMatch?: string } }) {
+    async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }) {
       if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
       const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
       objects.set(key, bytes.slice());
+      if (options?.httpMetadata) metadata.set(key, options.httpMetadata);
+      if (options?.customMetadata) customMetadata.set(key, options.customMetadata);
       return { key, size: bytes.byteLength };
     },
     async head(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength } : null; },
@@ -46,13 +51,13 @@ function setup(options: { liveEnabled?: boolean } = {}) {
       const matching = [...objects.keys()].filter(key => key.startsWith(prefix) && (!after || key > after)).sort();
       const selected = matching.slice(0, limit);
       const truncated = matching.length > selected.length;
-      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength })), truncated, cursor: truncated && selected.length ? `opaque:${btoa(selected.at(-1)!)}` : undefined };
+      return { objects: selected.map(key => ({ key, uploaded: new Date(0), size: objects.get(key)!.byteLength, httpMetadata: metadata.get(key) ?? {}, customMetadata: customMetadata.get(key) ?? {} })), truncated, cursor: truncated && selected.length ? `opaque:${btoa(selected.at(-1)!)}` : undefined };
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
   const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
-  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, r2 };
+  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2 };
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
@@ -64,9 +69,10 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
   it("imports an existing project behind a durable barrier and retains a verified rollback alias", async () => {
-    const { instance, objects, storage } = setup();
+    const { instance, objects, storage, metadata } = setup();
     const legacyKey = "spaces/space/projects/project/workspace/docs/legacy.md";
     objects.set(legacyKey, new TextEncoder().encode("existing project content"));
+    metadata.set(legacyKey, { contentType: "text/markdown; charset=utf-8" });
     const migration = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-existing-project" });
     expect(migration.status).toBe(201);
     expect(await migration.json()).toMatchObject({
@@ -76,10 +82,39 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     });
     expect(storage.values.get("legacy_rollback_alias")).toMatchObject({ verificationStatus: "verified" });
     expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({
-      head: { revision: 1 }, entries: [{ path: "docs/legacy.md", size: 24 }],
+      head: { revision: 1 }, entries: [{ path: "docs/legacy.md", size: 24, contentType: "text/markdown; charset=utf-8" }],
     });
+    const entries = await (await call(instance, "/v1/read?branch=main")).json() as { entries: Array<{ objectKey: string }> };
+    expect(metadata.get(entries.entries[0]!.objectKey)).toEqual({ contentType: "text/markdown; charset=utf-8" });
     expect(objects.has(legacyKey)).toBe(true);
     expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-existing-project" })).status).toBe(200);
+  });
+
+  it("serves bounded file history and retained manifest revisions for checked restore", async () => {
+    const { instance, objects } = setup();
+    const original = new TextEncoder().encode("first version");
+    const originalHash = await sha256Hex(original);
+    const originalKey = `workspace-v1/tenant/space/project/global/content/${originalHash}`;
+    objects.set(originalKey, original);
+    const initialized = await call(instance, "/v1/initialize", { scope, branch: "main", entries: [
+      { path: "docs/history.txt", sha256: originalHash, size: original.byteLength, executable: false, objectKey: originalKey, contentType: "text/plain; charset=utf-8" },
+    ] });
+    expect(initialized.status).toBe(200);
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string; fence: number } };
+    const latest = new TextEncoder().encode("second version");
+    const updated = await call(instance, "/v1/checkpoint", {
+      sessionId: opened.session.id, runtimeId: "runtime", allocationGeneration: 1, fence: opened.session.fence,
+      baseRevision: 1, idempotencyKey: "history-update", changes: [{ path: "docs/history.txt", expectedHash: originalHash,
+        contentBase64: btoa(String.fromCharCode(...latest)), contentType: "text/plain; charset=utf-8" }],
+    });
+    expect(updated.status).toBe(200);
+    const history = await call(instance, "/v1/history?branch=main&path=docs%2Fhistory.txt&limit=100");
+    expect(await history.json()).toMatchObject({ headRevision: 2, cursor: 2, hasMore: false, versions: [
+      { revision: 1, sha256: originalHash, size: original.byteLength, deleted: false },
+      { revision: 2, sha256: await sha256Hex(latest), size: latest.byteLength, deleted: false },
+    ] });
+    const historical = await call(instance, "/v1/read?branch=main&revision=1&path=docs%2Fhistory.txt");
+    expect(await historical.json()).toMatchObject({ head: { revision: 1 }, entries: [{ path: "docs/history.txt", sha256: originalHash, contentType: "text/plain; charset=utf-8" }] });
   });
 
   it("refuses to migrate a scope that conflicts with the coordinator identity", async () => {
@@ -105,6 +140,76 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(retry.status).toBe(201);
     expect(await storage.get("project_migration")).toMatchObject({ status: "verified", revision: 1 });
     expect(await storage.get("legacy_rollback_alias")).toMatchObject({ verificationStatus: "verified", revision: 1 });
+  });
+
+  it("requires an explicit legacy branch inventory and imports checked branch overlays with tombstones", async () => {
+    const { instance, objects, storage, customMetadata } = setup();
+    objects.set("spaces/space/projects/project/workspace/docs/main.md", new TextEncoder().encode("main"));
+    objects.set("spaces/space/projects/project/workspace/shared/inherited.md", new TextEncoder().encode("inherited"));
+    objects.set("spaces/space/projects/project/workspace/branches/workers/worker-a/output.md", new TextEncoder().encode("worker"));
+    const tombstone = "spaces/space/projects/project/workspace/branches/workers/worker-a/docs/main.md";
+    objects.set(tombstone, new Uint8Array());
+    customMetadata.set(tombstone, { deleted: "true", sha256: "deleted" });
+    const response = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-with-branches" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_migration_branch_inventory_required", migration: { status: "failed", errorCode: "workspace_migration_branch_inventory_required" } });
+    expect(await storage.get("head:main")).toBeUndefined();
+    expect((await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).status).toBe(423);
+    const retry = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-with-branches", branchNames: ["workers/worker-a"] });
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toMatchObject({ migration: { status: "verified", branchNames: ["workers/worker-a"] }, branchCount: 1 });
+    const branch = await call(instance, "/v1/read?branch=workers%2Fworker-a");
+    const branchBody = await branch.json() as { entries: Array<{ path: string }> };
+    expect(branchBody.entries.map(entry => entry.path)).toEqual(["output.md", "shared/inherited.md"]);
+    expect(await (await call(instance, "/v1/head?branch=workers%2Fworker-a")).json()).toMatchObject({ branchBase: { parentBranch: "main", revision: 1 } });
+  });
+
+  it("restores retained main and branch snapshots through checked publication and resumes after partial restore", async () => {
+    const { instance, objects, customMetadata, r2 } = setup();
+    const mainPath = "spaces/space/projects/project/workspace/docs/main.md";
+    const overlayPath = "spaces/space/projects/project/workspace/branches/workers/worker-a/output.md";
+    const tombstonePath = "spaces/space/projects/project/workspace/branches/workers/worker-a/docs/main.md";
+    const mainBytes = new TextEncoder().encode("original main");
+    const branchBytes = new TextEncoder().encode("original branch overlay");
+    objects.set(mainPath, mainBytes);
+    objects.set(overlayPath, branchBytes);
+    objects.set(tombstonePath, new Uint8Array());
+    customMetadata.set(tombstonePath, { deleted: "true", sha256: "deleted" });
+    const migrated = await call(instance, "/v1/migration/import", { scope, migrationId: "migration-rollback-test", branchNames: ["workers/worker-a"] });
+    expect(migrated.status).toBe(201);
+    const migratedBranch = await (await call(instance, "/v1/read?branch=workers%2Fworker-a")).json() as { entries: Array<{ path: string; objectKey: string }> };
+    const branchContentKey = migratedBranch.entries.find(entry => entry.path === "output.md")!.objectKey;
+
+    const updateBranch = async (branch: string, path: string, oldBytes: Uint8Array, nextBytes: Uint8Array, key: string) => {
+      const oldHash = await sha256Hex(oldBytes);
+      const { session } = await (await call(instance, "/v1/open", { scope, branch, actorId: "test-user", runtimeId: `runtime-${key}`, allocationGeneration: 1 })).json() as { session: { id: string; fence: number } };
+      const publication = await call(instance, "/v1/checkpoint", { sessionId: session.id, runtimeId: `runtime-${key}`, allocationGeneration: 1,
+        fence: session.fence, baseRevision: (await (await call(instance, `/v1/head?branch=${encodeURIComponent(branch)}`)).json() as { head: { revision: number } }).head.revision,
+        idempotencyKey: key, changes: [{ path, expectedHash: oldHash, contentBase64: btoa(String.fromCharCode(...nextBytes)) }] });
+      expect(publication.status).toBe(200);
+    };
+    await updateBranch("main", "docs/main.md", mainBytes, new TextEncoder().encode("changed main"), "edit-main-before-rollback");
+    await updateBranch("workers/worker-a", "output.md", branchBytes, new TextEncoder().encode("changed branch"), "edit-branch-before-rollback");
+
+    const before = await (await call(instance, "/v1/migration/status")).json() as { currentHeads: Record<string, { revision: number; manifestHash: string }> };
+    const originalGet = r2.get;
+    r2.get = async (...args: never[]) => String(args[0]) === branchContentKey ? null : await originalGet(...args) as never;
+    const interrupted = await call(instance, "/v1/migration/restore", { scope, confirm: true, restoreId: "rollback-test-1", expectedHeads: before.currentHeads });
+    expect(interrupted.status).toBe(503);
+    expect(await interrupted.json()).toMatchObject({ error_code: "workspace_migration_restore_retry_required", restore: { status: "restoring", completedBranches: ["main"] } });
+    expect((await call(instance, "/v1/read?branch=main")).status).toBe(423);
+
+    r2.get = originalGet;
+    const resumed = await call(instance, "/v1/migration/restore", { scope, confirm: true, restoreId: "rollback-test-1" });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({ restore: { status: "verified", completedBranches: ["main", "workers/worker-a"] } });
+    expect(await (await call(instance, "/v1/migration/status")).json()).toMatchObject({ migration: { status: "verified" }, restore: { status: "verified" } });
+    const mainAfter = await (await call(instance, "/v1/read?branch=main")).json() as { entries: Array<{ path: string; sha256: string }> };
+    expect(mainAfter.entries).toMatchObject([{ path: "docs/main.md", sha256: await sha256Hex(mainBytes) }]);
+    expect(mainAfter.entries).toHaveLength(1);
+    const branchAfter = await (await call(instance, "/v1/read?branch=workers%2Fworker-a")).json() as { entries: Array<{ path: string; sha256: string }> };
+    expect(branchAfter.entries.map(entry => entry.path)).toEqual(["output.md"]);
+    expect(branchAfter.entries[0]!.sha256).toBe(await sha256Hex(branchBytes));
   });
 
   it("schedules bounded maintenance and records retryable failures", async () => {
@@ -172,6 +277,28 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "project-ui", revision: 2 })).json()).toMatchObject({ revision: 2 });
     expect(await (await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "project-ui", revision: 1 })).json()).toMatchObject({ revision: 2 });
     expect((await call(instance, "/v1/changes?branch=main&afterRevision=3")).status).toBe(409);
+  });
+
+  it("preserves canonical MIME when a VFS write updates a file and defaults unknown new files safely", async () => {
+    const { instance, objects } = setup();
+    const initialBytes = new TextEncoder().encode("id,name\n1,Naelao");
+    const initialHash = await sha256Hex(initialBytes);
+    const initialKey = `workspace-v1/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}/content/${initialHash}`;
+    objects.set(initialKey, initialBytes);
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [{ path: "data.csv", sha256: initialHash, size: initialBytes.length,
+      executable: false, objectKey: initialKey, contentType: "text/csv; charset=utf-8" }] });
+    const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string } };
+    const updated = btoa("id,name\n2,Naelao");
+    const publication = await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1,
+      idempotencyKey: "mime-vfs-write", changes: [
+        { path: "data.csv", expectedHash: initialHash, contentBase64: updated },
+        { path: "opaque.bin", expectedHash: null, contentBase64: btoa("bytes") },
+      ] });
+    expect(publication.status).toBe(200);
+    expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [
+      { path: "data.csv", contentType: "text/csv; charset=utf-8" },
+      { path: "opaque.bin", contentType: "application/octet-stream" },
+    ] });
   });
 
   it("supports validated prefix-filtered manifest reads for bounded scoped clients", async () => {
@@ -244,6 +371,26 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await published.json()).toMatchObject({ publication: { status: "published", revision: 2, appliedPaths: ["src/staged.bin"] } });
     const read = await call(recoveredCoordinator, "/v1/read?branch=main");
     expect(await read.json()).toMatchObject({ head: { revision: 2 }, entries: [{ path: "src/staged.bin" }] });
+  });
+
+  it("preserves canonical MIME metadata and accepts files above the old session upload cap", async () => {
+    const { instance, metadata } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1 })).json() as { session: { id: string; fence: number } };
+    const bytes = new Uint8Array(1024 * 1024).fill(0x61);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    const staged = await call(instance, "/v1/stage", { sessionId: session.id, stageId: "mime-large-stage", allocationGeneration: 1, fence: session.fence,
+      changes: [{ path: "uploads/large.bin", expectedHash: null, contentBase64: btoa(binary), contentType: "application/octet-stream" }] });
+    expect(staged.status).toBe(200);
+    const checkpoint = await call(instance, "/v1/checkpoint", { sessionId: session.id, runtimeId: "runtime", allocationGeneration: 1, fence: session.fence,
+      baseRevision: 1, idempotencyKey: "mime-large-checkpoint", stageId: "mime-large-stage" });
+    expect(checkpoint.status).toBe(200);
+    const manifest = await call(instance, "/v1/read?branch=main");
+    const manifestResult = await manifest.json() as { head: { revision: number }; entries: Array<{ path: string; objectKey: string; size: number; contentType?: string }> };
+    expect(manifestResult).toMatchObject({ entries: [{ path: "uploads/large.bin", size: 1024 * 1024, contentType: "application/octet-stream" }] });
+    expect((await call(instance, `/v1/head?branch=main`)).status).toBe(200);
+    expect(metadata.get(manifestResult.entries[0]!.objectKey)).toEqual({ contentType: "application/octet-stream" });
   });
 
   it("collects only aged consumed staging objects and retains canonical content", async () => {

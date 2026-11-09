@@ -96,6 +96,9 @@ interface WorkspacePublication {
 }
 
 const HARNESS_PORT = 8080;
+const MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_WORKSPACE_BATCH_BYTES = 20_000_000;
+const MAX_WORKSPACE_REQUEST_BYTES = 30 * 1024 * 1024;
 const BASE_IDLE_WINDOW_MS = 60_000;
 // A task-active hint is not proof that the next scheduled step needs this runtime. Keep the base
 // container's idle exposure within its normal bound until an exact runtime lease is held.
@@ -209,16 +212,21 @@ export class ToolSandboxDO extends DurableObject {
   private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController; workspaceMetrics: { lists: number; reads: number; writes: number; deletes: number } } | undefined;
 
   override async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const largeWorkspaceWrite = ["/workspace/write", "/workspace/state-sync", "/workspace/rehydrate"].includes(path);
+    if (largeWorkspaceWrite) {
+      try { await this.authenticatedScope(request); }
+      catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
+    }
     if (request.body) {
       try {
-        request = new Request(request, { body: await readBoundedRequestBytes(request, 4 * 1024 * 1024) });
+        request = new Request(request, { body: await readBoundedRequestBytes(request, largeWorkspaceWrite ? MAX_WORKSPACE_REQUEST_BYTES : 4 * 1024 * 1024) });
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError)
           return Response.json({ ok: false, error: "request_body_too_large" }, { status: 413 });
         return Response.json({ ok: false, error: "bad_request" }, { status: 400 });
       }
     }
-    const path = new URL(request.url).pathname;
     if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
     const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
@@ -822,7 +830,7 @@ export class ToolSandboxDO extends DurableObject {
         if (contentBase64 === null) throw new Error(`Incomplete container snapshot; refusing publication: ${path}`);
         const bytes = Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0));
         capturedBytes += bytes.byteLength;
-        if (bytes.byteLength > 768 * 1024) throw new Error(`workspace_file_limit_exceeded:${path}`);
+        if (bytes.byteLength > 20 * 1024 * 1024) throw new Error(`workspace_file_limit_exceeded:${path}`);
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         newHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       }
@@ -1135,8 +1143,8 @@ export class ToolSandboxDO extends DurableObject {
       let scope: ContainerInvocationScope;
       try { scope = await this.authenticatedScope(request); }
       catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
-      const body = await request.json<{ status?: "active" | "blocked" | "completed"; tenantId?: string; spaceId?: string;
-        projectId?: string; workspaceBranch?: string }>().catch((): { status?: "active" | "blocked" | "completed"; tenantId?: string;
+      const body = await request.json<{ status?: "active" | "blocked" | "completed" | "failed" | "cancelled" | "suspended" | "indeterminate"; tenantId?: string; spaceId?: string;
+        projectId?: string; workspaceBranch?: string }>().catch((): { status?: "active" | "blocked" | "completed" | "failed" | "cancelled" | "suspended" | "indeterminate"; tenantId?: string;
           spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
       if (body.tenantId !== scope.tenantId || body.spaceId !== scope.spaceId || body.projectId !== scope.projectId
         || body.workspaceBranch !== scope.workspaceBranch) {
@@ -1177,8 +1185,8 @@ export class ToolSandboxDO extends DurableObject {
         }
       }
       if (body.status === "active") await this.ctx.storage.put("task_active", true);
-      else if (body.status === "blocked" || body.status === "completed") await this.ctx.storage.delete("task_active");
-      else return Response.json({ error: "status must be active, blocked, or completed" }, { status: 400 });
+      else if (["blocked", "completed", "failed", "cancelled", "suspended", "indeterminate"].includes(body.status ?? "")) await this.ctx.storage.delete("task_active");
+      else return Response.json({ error: "status must be active or a recognized terminal state" }, { status: 400 });
       const idleWindow = body.status === "active" ? ACTIVE_TASK_IDLE_WINDOW_MS : BASE_IDLE_WINDOW_MS;
       const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
       await this.ctx.storage.setAlarm(Math.min(this.lastUsedAt + idleWindow, meter?.expiresAt ?? Infinity));
@@ -1257,7 +1265,7 @@ export class ToolSandboxDO extends DurableObject {
           || !Object.hasOwn(change, "expected_hash") || change.expected_hash !== null && (typeof change.expected_hash !== "string" || !/^[a-f0-9]{64}$/.test(change.expected_hash)))
           return Response.json({ error: "workspace_file_invalid" }, { status: 400 });
         const size = new TextEncoder().encode(change.content).byteLength;
-        if (size > 2 * 1024 * 1024 || (totalBytes += size) > 20_000_000) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
+        if (size > MAX_WORKSPACE_FILE_BYTES || (totalBytes += size) > MAX_WORKSPACE_BATCH_BYTES) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
       }
       for (const [path, expected] of deletions) if (!isPortableWorkspacePath(path) || !/^[a-f0-9]{64}$/.test(expected))
         return Response.json({ error: "workspace_delete_invalid" }, { status: 400 });
@@ -1435,7 +1443,7 @@ export class ToolSandboxDO extends DurableObject {
       for (const [path, content] of entries) {
         if (!isPortableWorkspacePath(path) || typeof content !== "string") return Response.json({ error: "workspace_file_invalid" }, { status: 400 });
         const size = new TextEncoder().encode(content).byteLength;
-        if (size > 2 * 1024 * 1024 || (totalBytes += size) > 20_000_000) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
+        if (size > MAX_WORKSPACE_FILE_BYTES || (totalBytes += size) > MAX_WORKSPACE_BATCH_BYTES) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
       }
       const records = (await this.ctx.storage.get<Record<string, WorkspaceRecord>>("workspace_files")) ?? {};
       if (!restoring) {

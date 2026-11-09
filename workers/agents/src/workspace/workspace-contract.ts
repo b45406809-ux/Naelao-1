@@ -14,6 +14,7 @@ export type WorkspaceEntry = {
   size: number;
   executable: boolean;
   objectKey: string;
+  contentType?: string;
 };
 export type WorkspaceHead = {
   version: 1;
@@ -69,6 +70,11 @@ export function validateWorkspacePath(value: unknown): value is string {
     !value.split("/").some((part) => EXCLUDED.has(part) || part === ".env" || (part.startsWith(".env.") && part !== ".env.example"));
 }
 
+export function validateWorkspaceContentType(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 256 &&
+    /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=(?:[A-Za-z0-9!#$&^_.+-]+|"[^"\r\n]*"))*$/.test(value);
+}
+
 export function validateWorkspaceMode(value: unknown): value is WorkspaceConsistencyMode {
   return value === "checked_handoff" || value === "live_single_writer";
 }
@@ -78,7 +84,8 @@ export function validateWorkspaceEntry(value: unknown): value is WorkspaceEntry 
   const entry = value as Record<string, unknown>;
   return validateWorkspacePath(entry.path) && typeof entry.sha256 === "string" && HASH.test(entry.sha256) &&
     Number.isSafeInteger(entry.size) && Number(entry.size) >= 0 && typeof entry.executable === "boolean" &&
-    typeof entry.objectKey === "string" && entry.objectKey.length <= 1024;
+    typeof entry.objectKey === "string" && entry.objectKey.length <= 1024 &&
+    (entry.contentType === undefined || validateWorkspaceContentType(entry.contentType));
 }
 
 export function canonicalManifest(entries: WorkspaceEntry[]): string {

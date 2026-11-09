@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RepositoryDO } from "./RepositoryDO.js";
 
 describe("RepositoryDO direct request body limit", () => {
-  it("rejects streamed bodies over 16 MiB before entering the serialized state gate", async () => {
+  it("rejects streamed commit bodies over 48 MiB before entering the serialized state gate", async () => {
     const blockConcurrencyWhile = vi.fn(
       async (callback: () => Promise<Response>) => callback()
     );
@@ -15,7 +15,7 @@ describe("RepositoryDO direct request body limit", () => {
         method: "POST",
         body: new ReadableStream({
           start(controller) {
-            controller.enqueue(new Uint8Array(16 * 1024 * 1024 + 1));
+            controller.enqueue(new Uint8Array(48 * 1024 * 1024 + 1));
             controller.close();
           },
         }),
@@ -39,7 +39,7 @@ describe("RepositoryDO direct request body limit", () => {
         REPOSITORY_OBJECTS: {} as R2Bucket,
         WORKSPACE_R2: {
           list: async () => ({
-            objects: [{ key: "spaces/s/projects/p/workspace/large.bin", size: 8 * 1024 * 1024 + 1 }],
+            objects: [{ key: "spaces/s/projects/p/workspace/large.bin", size: 24 * 1024 * 1024 + 1 }],
             truncated: false,
           }),
           get,

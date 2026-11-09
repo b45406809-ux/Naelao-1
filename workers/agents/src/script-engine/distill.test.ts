@@ -30,8 +30,8 @@ class MemoryBucket {
   }
   async put(
     key: string,
-    value: string | ArrayBuffer,
-    options?: { onlyIf?: { etagDoesNotMatch?: string; etagMatches?: string } }
+    value: string | ArrayBuffer | Uint8Array,
+    options?: { onlyIf?: { etagDoesNotMatch?: string; etagMatches?: string }; httpMetadata?: { contentType?: string } }
   ) {
     if (options?.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key))
       return null;
@@ -42,8 +42,9 @@ class MemoryBucket {
       return null;
     this.objects.set(
       key,
-      typeof value === "string" ? value : new TextDecoder().decode(value)
+      typeof value === "string" ? value : new TextDecoder().decode(value instanceof Uint8Array ? value : value)
     );
+    if (options?.httpMetadata?.contentType) this.metadata.set(key, { contentType: options.httpMetadata.contentType });
     const etag = "e" + (Number(this.etags.get(key)?.slice(1) ?? 0) + 1);
     this.etags.set(key, etag);
     return { etag };
@@ -73,8 +74,10 @@ describe("skill distillation", () => {
       {
         library: new SkillLibrary(bucket as unknown as R2Bucket, "s1"),
         workspace: {
-          bucket: bucket as unknown as R2Bucket,
           prefix: "spaces/s1/projects/p1/workspace/",
+          publish: async (path, bytes, contentType) => {
+            await bucket.put(`spaces/s1/projects/p1/workspace/${path}`, bytes, { httpMetadata: { contentType } });
+          },
         },
       }
     );
@@ -90,6 +93,7 @@ describe("skill distillation", () => {
         "spaces/s1/projects/p1/workspace/.avos/skills/find-leads/SCRIPT.md"
       )
     ).toContain("requires_tier: 2");
+    expect(bucket.metadata.get("spaces/s1/projects/p1/workspace/.avos/skills/find-leads/code.ts")).toEqual({ contentType: "text/typescript; charset=utf-8" });
   });
 
   it("synthesizes semantic video drafts with parameterized inputs and a final assertion", () => {

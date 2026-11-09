@@ -3102,10 +3102,31 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
 // write barrier, verifies the legacy snapshot twice, initializes revision 1, and retains the
 // legacy-prefix rollback alias. It is independent of the global rollout flag.
 app.use("/spaces/:spaceId/projects/:projectId/workspace/migrate", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/workspace/migrate", requireSpaceMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/migrate", requireSpaceMembership({ GET: "admin", POST: "admin" }));
+app.get("/spaces/:spaceId/projects/:projectId/workspace/migrate", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_migration_unavailable" }, 503);
+  const actorRole = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (actorRole !== "owner" && actorRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, identity.tenantId), `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migration-status", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ scope }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 app.post("/spaces/:spaceId/projects/:projectId/workspace/migrate", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);
+  const actorRole = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (actorRole !== "owner" && actorRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let migrationRequest: { branchNames?: unknown } = {};
+  try {
+    const raw = await readBoundedRequestText(c.req.raw, 64 * 1024);
+    if (raw.trim()) migrationRequest = JSON.parse(raw) as typeof migrationRequest;
+  } catch { return c.json({ error_code: "invalid_workspace_migration_request" }, 400); }
   if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_migration_unavailable" }, 503);
   const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, identity.tenantId).first();
   if (!space) return c.notFound();
@@ -3118,7 +3139,32 @@ app.post("/spaces/:spaceId/projects/:projectId/workspace/migrate", async (c) => 
   const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migrate-existing-project", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
-    body: JSON.stringify({ scope, migrationId }),
+    body: JSON.stringify({ scope, migrationId, ...(migrationRequest.branchNames !== undefined ? { branchNames: migrationRequest.branchNames } : {}) }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/workspace/restore", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/restore", requireSpaceMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workspace/restore", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.AGENTS_WORKER) return c.json({ error_code: "workspace_restore_unavailable" }, 503);
+  const actorRole = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId) : identity.role;
+  if (actorRole !== "owner" && actorRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let restoreRequest: { confirm?: unknown; restoreId?: unknown; expectedHeads?: unknown };
+  try { restoreRequest = JSON.parse(await readBoundedRequestText(c.req.raw, 64 * 1024)) as typeof restoreRequest; }
+  catch { return c.json({ error_code: "invalid_workspace_restore_request" }, 400); }
+  if (restoreRequest.confirm !== true || typeof restoreRequest.restoreId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(restoreRequest.restoreId)) return c.json({ error_code: "invalid_workspace_restore_request" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, identity.tenantId).first();
+  if (!space) return c.notFound();
+  const access = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, identity.tenantId), `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const scope = { tenantId: identity.tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/migration-restore", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+    body: JSON.stringify({ scope, confirm: true, restoreId: restoreRequest.restoreId,
+      ...(restoreRequest.expectedHeads !== undefined ? { expectedHeads: restoreRequest.expectedHeads } : {}) }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
@@ -3283,6 +3329,42 @@ app.patch("/spaces/:spaceId/projects/:projectId", async (c) => {
   // updateProject can live-sync via broadcastSpaceEvent.
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// Project workspace deletion is retryable and starts by archiving the project so new work is
+// no longer admitted. Coordinator erasure revokes workspace sessions/subscriptions and removes
+// aliases/staging; legacy project-prefix objects are then deleted a bounded page at a time.
+// Tenant provider connections live outside this project-owned prefix and remain untouched.
+app.use("/spaces/:spaceId/projects/:projectId", requireSpaceMembership({ DELETE: "admin" }));
+app.delete("/spaces/:spaceId/projects/:projectId", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const actorRole = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, tenantId) : identity.role;
+  if (actorRole !== "owner" && actorRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let body: { confirm?: unknown; cursor?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_project_deletion_request" }, 400); }
+  if (body.confirm !== true || (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 1024))) return c.json({ error_code: "invalid_project_deletion_request" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
+  if (!space) return c.notFound();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
+  const archived = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", JSON.stringify({ status: "archived" }));
+  if (!archived.ok) return new Response(archived.body, { status: archived.status, headers: { "content-type": "application/json" } });
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "project_workspace_cleanup_unavailable", archived: true }, 503);
+  const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
+  const cleanup = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/delete-project", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ scope, confirm: true, ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}) }),
+  }));
+  const result = await cleanup.json().catch(() => ({ error_code: "project_workspace_cleanup_unavailable" }));
+  return Response.json({ ...(result && typeof result === "object" ? result as Record<string, unknown> : { error_code: "project_workspace_cleanup_unavailable" }), archived: true }, {
+    status: cleanup.status, headers: { "cache-control": "no-store" },
+  });
 });
 
 // F9: authoritative per-project daily spend, single writer (SpaceDO — one DO per space, so

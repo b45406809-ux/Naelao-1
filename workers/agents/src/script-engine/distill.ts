@@ -5,8 +5,11 @@ export interface DistillTraceOptions {
   library: SkillLibrary;
   description?: string;
   requiresTier?: ExecutionTier;
-  /** Optional project workspace mirror implementing the public /.avos layout. */
-  workspace?: { bucket: R2Bucket; prefix: string };
+  /** Optional project workspace publisher implementing the public /.avos layout. */
+  workspace?: {
+    prefix: string;
+    publish(path: string, bytes: Uint8Array, contentType: string): Promise<void>;
+  };
 }
 
 const safeName = (name: string): string => {
@@ -62,14 +65,14 @@ export async function distillSkillFromTrace(
     parameters, calls: successful.map((s) => s.name), origin: "distilled",
   }});
   if (options.workspace) {
-    const dir = `${options.workspace.prefix}.avos/skills/${skillName}/`;
+    const dir = `.avos/skills/${skillName}/`;
     const frontMatter = ["---", `description: ${JSON.stringify(description)}`,
       `parameters: ${JSON.stringify(parameters)}`, `requires_tier: ${metadata.requires_tier}`, "---", "",
       `# ${skillName}`, "", description, ""].join("\n");
-    await Promise.all([
-      options.workspace.bucket.put(`${dir}code.ts`, code),
-      options.workspace.bucket.put(`${dir}SCRIPT.md`, frontMatter),
-    ]);
+    // Publish each workspace file through the injected checked adapter. These paths are a
+    // canonical project-workspace mirror; direct R2 puts here would bypass coordinator CAS.
+    await options.workspace.publish(`${dir}code.ts`, new TextEncoder().encode(code), "text/typescript; charset=utf-8");
+    await options.workspace.publish(`${dir}SCRIPT.md`, new TextEncoder().encode(frontMatter), "text/markdown; charset=utf-8");
   }
   return { code, metadata };
 }

@@ -10,10 +10,11 @@ export { DynamicSandboxDO };
 import { WorkspaceCoordinatorDO } from "./workspace/WorkspaceCoordinatorDO.js";
 export { WorkspaceCoordinatorDO };
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
-import { validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
+import { validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
 import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-publish-route.js";
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
+import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
@@ -525,11 +526,61 @@ app.post("/internal/workspaces/erase", async (c) => {
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/erase", { body: { scope: body.scope, confirm: true } });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+app.post("/internal/workspaces/delete-project", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; confirm?: unknown; cursor?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw.clone(), 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_cleanup_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || body.confirm !== true ||
+      (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 1024))) return c.json({ error_code: "invalid_workspace_cleanup_request" }, 400);
+  return withWorkspaceMigrationLease(c.env, body.scope, `delete-project:${body.scope.projectId.slice(-72)}`, signal =>
+    handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; SCRIPTS_R2?: R2Bucket }, signal));
+});
+async function withWorkspaceMigrationLease(
+  env: AgentsEnv,
+  scope: import("./workspace/workspace-contract.js").WorkspaceScope,
+  holderPrefix: string,
+  operation: (signal: AbortSignal) => Promise<Response>,
+): Promise<Response> {
+  if (!env.CONCURRENCY_DO) return Response.json({ error_code: "workspace_migration_barrier_unavailable" }, { status: 503 });
+  const gateKey = `lock:${scope.spaceId}:${scope.projectId}:workspace-migration-barrier`;
+  const gate = env.CONCURRENCY_DO.get(env.CONCURRENCY_DO.idFromName(gateKey));
+  const holderId = `${holderPrefix}:${crypto.randomUUID()}`.slice(0, 128);
+  const acquired = await gate.fetch(new Request("http://concurrency-do/locks/acquire", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, ttlMs: 10 * 60_000 }) }));
+  const lease: { acquired?: boolean; fencingToken?: number } = await readBoundedResponseJson<{ acquired?: boolean; fencingToken?: number }>(acquired, 8 * 1024).catch((): { acquired?: boolean; fencingToken?: number } => ({}));
+  if (!acquired.ok || !lease.acquired || !Number.isSafeInteger(lease.fencingToken)) return Response.json({ error_code: "workspace_migration_barrier_busy" }, { status: 423 });
+  const abort = new AbortController();
+  let renewing = true;
+  let renewalFailed = false;
+  let stopHeartbeat!: () => void;
+  const stopped = new Promise<void>(resolve => { stopHeartbeat = resolve; });
+  const heartbeat = (async () => {
+    while (renewing) {
+      await Promise.race([new Promise<void>(resolve => setTimeout(resolve, 60_000)), stopped]);
+      if (!renewing) break;
+      const renewed = await gate.fetch(new Request("http://concurrency-do/locks/renew", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken, ttlMs: 10 * 60_000 }) }));
+      if (!renewed.ok) { renewalFailed = true; abort.abort(); break; }
+    }
+  })();
+  try {
+    const response = await operation(abort.signal);
+    if (renewalFailed) return Response.json({ error_code: "workspace_migration_barrier_lost" }, { status: 503 });
+    return response;
+  } catch {
+    return Response.json({ error_code: renewalFailed ? "workspace_migration_barrier_lost" : "workspace_migration_failed" }, { status: 503 });
+  } finally {
+    renewing = false;
+    stopHeartbeat();
+    await heartbeat;
+    await gate.fetch(new Request("http://concurrency-do/locks/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: gateKey, holderId, fencingToken: lease.fencingToken }) })).catch(() => undefined);
+  }
+}
 app.post("/internal/workspaces/migrate-existing-project", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
-  let body: { scope?: unknown; migrationId?: unknown };
-  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  let body: { scope?: unknown; migrationId?: unknown; branchNames?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 64 * 1024)) as typeof body; }
   catch { return c.json({ error_code: "invalid_workspace_migration_request" }, 400); }
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.migrationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.migrationId)) return c.json({ error_code: "invalid_workspace_migration_request" }, 400);
   if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "workspace_migration_barrier_unavailable" }, 503);
@@ -555,7 +606,7 @@ app.post("/internal/workspaces/migrate-existing-project", async (c) => {
     }
   })();
   try {
-    const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/import", { body: { scope: body.scope, migrationId: body.migrationId }, signal: abort.signal });
+    const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/import", { body: { scope: body.scope, migrationId: body.migrationId, ...(body.branchNames !== undefined ? { branchNames: body.branchNames } : {}) }, signal: abort.signal });
     if (renewalFailed) { abort.abort(); return c.json({ error_code: "workspace_migration_barrier_lost" }, 503); }
     return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   } catch {
@@ -575,6 +626,20 @@ app.post("/internal/workspaces/migration-status", async (c) => {
   catch { return c.json({ error_code: "invalid_workspace_scope" }, 400); }
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_workspace_scope" }, 400);
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/migration/status", {});
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/migration-restore", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; restoreId?: unknown; confirm?: unknown; expectedHeads?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 64 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_restore_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || body.confirm !== true || typeof body.restoreId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.restoreId)) return c.json({ error_code: "invalid_workspace_restore_request" }, 400);
+  const scope = body.scope;
+  const response = await withWorkspaceMigrationLease(c.env, scope, `rollback:${body.restoreId.slice(-72)}`, signal =>
+    workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/restore", {
+      body: { scope, restoreId: body.restoreId, confirm: true, ...(body.expectedHeads !== undefined ? { expectedHeads: body.expectedHeads } : {}) }, signal,
+    }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
 async function withLegacyProjectWorkspaceMutation<T>(env: AgentsEnv, scope: import("./workspace/workspace-contract.js").WorkspaceScope, holderId: string, operation: () => Promise<T>): Promise<T> {
@@ -599,11 +664,12 @@ app.post("/internal/workspaces/legacy-write", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   let body: { scope?: unknown; actorId?: unknown; path?: unknown; expectedHash?: unknown; contentBase64?: unknown; contentType?: unknown; idempotencyKey?: unknown };
-  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 1_100_000)) as typeof body; }
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 30 * 1024 * 1024)) as typeof body; }
   catch { return c.json({ error_code: "invalid_legacy_workspace_write" }, 400); }
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.actorId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actorId)
     || typeof body.path !== "string" || !validateWorkspacePath(body.path) || body.expectedHash !== null && (typeof body.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedHash))
-    || typeof body.contentBase64 !== "string" || body.contentBase64.length > 1_048_576 || typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.idempotencyKey)) return c.json({ error_code: "invalid_legacy_workspace_write" }, 400);
+    || typeof body.contentBase64 !== "string" || body.contentBase64.length > 28_000_000 || (body.contentType !== undefined && !validateWorkspaceContentType(body.contentType))
+    || typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.idempotencyKey)) return c.json({ error_code: "invalid_legacy_workspace_write" }, 400);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_storage_unavailable" }, 503);
   const scope = body.scope as import("./workspace/workspace-contract.js").WorkspaceScope;
   try {
@@ -816,8 +882,11 @@ export async function fetchAgentsRequest(request: Request, env: AgentsEnv, ctx: 
   const contentType = request.headers.get("content-type") ?? "";
   const isJson = /^application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(contentType);
   if (!isJson || request.method === "GET" || request.method === "HEAD") return app.fetch(request, env, ctx);
+  const pathname = new URL(request.url).pathname;
+  const bodyLimit = pathname === "/internal/workspaces/checked-publish" || pathname === "/internal/workspaces/legacy-write" || pathname.startsWith("/internal/sandbox-workspaces/")
+    ? 30 * 1024 * 1024 : MAX_JSON_REQUEST_BYTES;
   let body: string;
-  try { body = await readBoundedRequestText(request, MAX_JSON_REQUEST_BYTES); }
+  try { body = await readBoundedRequestText(request, bodyLimit); }
   catch { return Response.json({ error_code: "payload_too_large" }, { status: 413 }); }
   const headers = new Headers(request.headers);
   headers.delete("content-length");
@@ -6914,7 +6983,7 @@ app.post("/internal/attachments/copy", async (c) => {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": c.req.header("x-naelao-internal-token") ?? "" },
         body: JSON.stringify({ scope, branch: body.workspaceBranch ?? "main", actorId: "attachment-copy", path: clean,
-          expectedHash: null, contentBase64: bytesToBase64(content), idempotencyKey: `attachment-${claimId}` }),
+          expectedHash: null, contentBase64: bytesToBase64(content), contentType: attachment.mime_type, idempotencyKey: `attachment-${claimId}` }),
       }), c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string });
       if (!checked.ok) {
         if (checked.status === 409) throw new R2CasConflictError(destinationKey);
@@ -8179,14 +8248,14 @@ async function checkedChatUploadPublish(
   env: AgentsEnv,
   scope: { tenantId: string; spaceId: string; projectId: string; jurisdiction: "global" | "eu" },
   actorId: string,
-  change: { path: string; expectedHash: string | null; bytes: Uint8Array | null; idempotencyKey: string },
+  change: { path: string; expectedHash: string | null; bytes: Uint8Array | null; contentType: string; idempotencyKey: string },
 ): Promise<{ status: "published" | "noop" | "conflicted"; revision: number }> {
   const token = await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId);
   const request = new Request("http://agents-worker/internal/workspaces/checked-publish", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": token },
     body: JSON.stringify({ scope, branch: "main", actorId, path: change.path, expectedHash: change.expectedHash,
-      contentBase64: change.bytes ? bytesToBase64(change.bytes) : null, idempotencyKey: change.idempotencyKey }),
+      contentBase64: change.bytes ? bytesToBase64(change.bytes) : null, contentType: change.contentType, idempotencyKey: change.idempotencyKey }),
   });
   const response = await handleWorkspaceCheckedPublish(request, env as unknown as ChatUploadWorkspaceBindings);
   const payload = await readBoundedResponseJson<{ error_code?: string; publication?: { status?: "published" | "noop" | "conflicted"; revision?: number } }>(response, 16 * 1024);
@@ -8268,6 +8337,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
         const scope = { tenantId, spaceId, projectId: projectId!, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
         const result = await publishProjectChatUpload({
           scope, sessionId, filename: name, actorId: identity.userId!, bytes,
+          contentType: file.type || "application/octet-stream",
           readSnapshot: path => readChatUploadManifest(c.env, scope, path),
           publish: change => checkedChatUploadPublish(c.env, scope, identity.userId!, change),
         });
@@ -8311,7 +8381,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     const uploadPrefix = `uploads/${sessionId}/`;
     const files = snapshot.entries.filter(entry => entry.path.startsWith(uploadPrefix)).map(entry => ({
       name: entry.path.slice(uploadPrefix.length), key: prefix + entry.path.slice(uploadPrefix.length), size: entry.size,
-      content_type: "application/octet-stream", uploaded: snapshot.head.updatedAt ?? "",
+      content_type: entry.contentType ?? "application/octet-stream", uploaded: snapshot.head.updatedAt ?? "",
     }));
     return c.json({ files, count: files.length, branch: snapshot.head.branch, revision: snapshot.head.revision });
   }

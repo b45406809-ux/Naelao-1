@@ -597,6 +597,24 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(executionMetrics?.doubles).toHaveLength(4); // list/read/write/delete counters are emitted per execution
   });
 
+  it("accepts workspace writes above the legacy 2 MiB cap and checkpoints the full content", async () => {
+    const { sandbox, coordinator } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "large-workspace-run" });
+    const content = "x".repeat(5 * 1024 * 1024);
+    const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "uploads/large.txt": content }, expected_hashes: { "uploads/large.txt": null } }),
+    }));
+    expect(written.status, await written.clone().text()).toBe(200);
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("large-workspace-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const read = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(`runs/${runHash.slice(0, 32)}`)}`, {});
+    const workspace = await read.json() as { entries?: Array<{ path: string; size: number }> };
+    expect(workspace.entries).toMatchObject([{ path: "uploads/large.txt", size: 5 * 1024 * 1024 }]);
+  }, 20_000);
+
   it("requires the barrier migration workflow instead of implicitly importing an existing project during hydration", async () => {
     const { sandbox, coordinatorStorage, r2Objects } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, workspaceProjectUnmigrated: true, runId: "unmigrated-project" });
     const response = await sandbox.fetch(new Request("https://sandbox/workspace/list", { method: "POST" }));
@@ -707,6 +725,29 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cancel-run")))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     expect(await read("main")).toMatchObject({ head: { revision: 1 }, entries: [] });
     expect(await read(`runs/${runHash.slice(0, 32)}`)).toMatchObject({ head: { revision: 2 }, entries: [{ path: "drafts/cancelled.txt" }] });
+  });
+
+  it.each(["failed", "indeterminate"] as const)("keeps a %s execution's checked branch isolated from main", async status => {
+    const runId = `${status}-run`;
+    const { sandbox, coordinator } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId });
+    const write = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "drafts/result.txt": `${status} output` }, expected_hashes: { "drafts/result.txt": null } }),
+    }));
+    expect(write.status).toBe(200);
+    const response = await sandbox.fetch(new Request("https://sandbox/lifecycle", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status, tenantId: "tenant", spaceId: "space", projectId: "project" }),
+    }));
+    expect(response.status).toBe(200);
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+    const read = (branch: string) => workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
+    }, PLATFORM_SECRET: "test-secret" }, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {}).then(result => result.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string }> }>);
+    const runHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(runId)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(await read("main")).toMatchObject({ head: { revision: 1 }, entries: [] });
+    expect(await read(`runs/${runHash.slice(0, 32)}`)).toMatchObject({ head: { revision: 2 }, entries: [{ path: "drafts/result.txt" }] });
   });
 
   it("reopens a new checked session after a cold runtime replacement", async () => {

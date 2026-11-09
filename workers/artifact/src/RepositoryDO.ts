@@ -28,11 +28,13 @@ interface RepoState {
 type Entries = Record<string, TreeEntry>;
 
 const RECONCILE_MAX_FILES = 1_000;
-const COORDINATOR_MAX_FILE_BYTES = 768 * 1024;
-const COORDINATOR_MAX_PUBLICATION_BYTES = 5 * 1024 * 1024;
+const COORDINATOR_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const COORDINATOR_MAX_PUBLICATION_BYTES = 24 * 1024 * 1024;
 // Changes are base64 encoded in the internal commit request, so keep raw workspace
 // content below half of the direct request-body ceiling to leave room for paths/metadata.
-const RECONCILE_MAX_BYTES = 8 * 1024 * 1024;
+const RECONCILE_MAX_BYTES = 24 * 1024 * 1024;
+const GIT_DUAL_READ_MAX_FILES = 1_000;
+const GIT_DUAL_READ_MAX_MISMATCHES = 50;
 
 interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
@@ -43,6 +45,7 @@ interface Env {
   PLATFORM_SECRET?: string;
   DATA_JURISDICTION?: "eu";
   UNIFIED_WORKSPACE_ENABLED?: string;
+  WORKSPACE_DUAL_READ_ENABLED?: string;
 }
 const EMPTY: RepoState = {
   initialized: false,
@@ -297,6 +300,35 @@ export class RepositoryDO extends DurableObject<Env> {
     }));
   }
 
+  private async verifyWorkspaceProjection(scope: RepositoryScope, branch: string, projection: Record<string, TreeEntry>): Promise<Record<string, unknown>> {
+    if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true" || this.env.WORKSPACE_DUAL_READ_ENABLED !== "true") return { enabled: false };
+    const response = await this.coordinatorRequest(scope, `/v1/read?branch=${encodeURIComponent(branch)}`);
+    if (!response.ok) throw new Error(`workspace_dual_read_failed:${response.status}`);
+    const snapshot = await response.json() as { head?: { branch?: string; revision?: number }; entries?: Array<{ path: string; sha256: string; size: number }> };
+    if (snapshot.head?.branch !== branch || !Number.isSafeInteger(snapshot.head.revision) || !Array.isArray(snapshot.entries)) throw new Error("workspace_dual_read_snapshot_invalid");
+    const canonical = new Map(snapshot.entries.map(entry => [normalizePath(entry.path), entry]));
+    const projected = new Map(Object.entries(projection).map(([path, entry]) => [normalizePath(path), entry]));
+    const paths = [...new Set([...canonical.keys(), ...projected.keys()])].sort();
+    const comparedPaths = paths.slice(0, GIT_DUAL_READ_MAX_FILES);
+    const mismatches: Array<Record<string, unknown>> = [];
+    for (const path of comparedPaths) {
+      const manifest = canonical.get(path);
+      const git = projected.get(path);
+      const mismatchClass = !manifest ? "manifest_missing" : !git ? "projection_missing"
+        : manifest.size !== git.size ? "size_mismatch" : manifest.sha256 !== git.hash ? "hash_mismatch" : null;
+      if (mismatchClass) mismatches.push({ pathHash: await sha256(new TextEncoder().encode(path)), manifestHash: manifest?.sha256 ?? null,
+        projectionHash: git?.hash ?? null, mismatchClass });
+    }
+    const mismatchClasses = [...new Set(mismatches.map(item => String(item.mismatchClass)))].sort();
+    const result = { enabled: true, branch, revision: snapshot.head.revision, compared: comparedPaths.length,
+      mismatchCount: mismatches.length, mismatchClasses, truncated: paths.length > comparedPaths.length,
+      mismatches: mismatches.slice(0, GIT_DUAL_READ_MAX_MISMATCHES) };
+    console.info("workspace_dual_read", { client: "repository-git-read", tenantId: scope.tenantId, spaceId: scope.spaceId,
+      projectId: scope.projectId, branch, revision: snapshot.head.revision, compared: result.compared,
+      mismatchCount: result.mismatchCount, mismatchClasses, truncated: result.truncated, mismatches: result.mismatches });
+    return result;
+  }
+
   /** Publish one Git commit's complete file delta as one fenced coordinator revision. */
   private async publishGitChanges(
     scope: RepositoryScope,
@@ -383,6 +415,7 @@ export class RepositoryDO extends DurableObject<Env> {
   }
 
   private async recoverWorkspacePublication(scope: RepositoryScope): Promise<void> {
+    if (!await this.ctx.storage.get("workspace_publication")) return;
     try { await this.withLegacyWorkspaceMutation(scope, () => this.replayWorkspacePublication(scope)); }
     catch (error) { const message = error instanceof Error ? error.message : "Storage operation failed"; throw new Error(message.startsWith("workspace_publication_") ? message : `workspace_publication_interrupted:${message}`); }
   }
@@ -563,7 +596,9 @@ export class RepositoryDO extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     if (request.body && request.method !== "GET" && request.method !== "HEAD") {
       try {
-        request = new Request(request, { body: await readBoundedRequestBytes(request, 16 * 1024 * 1024) });
+        const path = new URL(request.url).pathname;
+        const bodyLimit = path === "/commit" || path === "/reconcile" ? 48 * 1024 * 1024 : 16 * 1024 * 1024;
+        request = new Request(request, { body: await readBoundedRequestBytes(request, bodyLimit) });
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError)
           return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
@@ -741,6 +776,14 @@ export class RepositoryDO extends DurableObject<Env> {
           ...(snapshotRevision === undefined ? {} : { workspace_branch: branch, workspace_revision: snapshotRevision }) }, { status: 200 });
       }
 
+      if (op === "verify-workspace" && request.method === "GET") {
+        if (this.env.UNIFIED_WORKSPACE_ENABLED !== "true" || this.env.WORKSPACE_DUAL_READ_ENABLED !== "true") return jsonError("Workspace dual-read verification is disabled", 409);
+        const entries = state.worktrees[branch];
+        if (!entries) return jsonError("Branch not found", 404);
+        const verification = await this.verifyWorkspaceProjection(scope, branch, entries);
+        return Response.json({ verified: verification.mismatchCount === 0 && verification.truncated === false, workspace_dual_read: verification });
+      }
+
       if (op === "tree" && request.method === "GET") {
         const at = url.searchParams.get("at");
         const entries = at
@@ -757,7 +800,8 @@ export class RepositoryDO extends DurableObject<Env> {
             entry.path === prefix ||
             entry.path.startsWith(`${prefix}/`)
         );
-        return Response.json({ data, commit_id: at ?? state.refs[branch] });
+        const dualRead = at ? undefined : await this.verifyWorkspaceProjection(scope, branch, entries);
+        return Response.json({ data, commit_id: at ?? state.refs[branch], ...(dualRead?.enabled ? { workspace_dual_read: dualRead } : {}) });
       }
       if (op === "file" && request.method === "GET") {
         const path = normalizePath(url.searchParams.get("path") ?? "");
@@ -768,10 +812,12 @@ export class RepositoryDO extends DurableObject<Env> {
         if (!entry) return jsonError("File not found", 404);
         const object = await this.readVerifiedObject(scope, entry.oid);
         if (object.type !== "blob" || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash) return jsonError("Blob integrity check failed", 500);
+        const dualRead = at ? undefined : await this.verifyWorkspaceProjection(scope, branch, state.worktrees[branch]!);
         return new Response(object.body, {
           headers: {
             "content-type": "application/octet-stream",
             "x-git-oid": entry.oid,
+            ...(dualRead?.enabled ? { "x-workspace-branch": branch, "x-workspace-revision": String(dualRead.revision), "x-workspace-dual-read-mismatches": String(dualRead.mismatchCount) } : {}),
           },
         });
       }
@@ -1299,6 +1345,11 @@ export class RepositoryDO extends DurableObject<Env> {
         const message = String(body.message ?? `Restore ${commit.oid}`).slice(0, 10_000);
         const encoded = await encodeGitObject("commit", commitBody(hierarchy.root.oid, currentHead ?? undefined, message, metadata, createdAt));
         await this.putObject(scope, encoded.oid, encoded.bytes);
+        let workspaceRevision: number | undefined;
+        if (this.env.UNIFIED_WORKSPACE_ENABLED === "true") {
+          const changes = await this.gitDelta(scope, state.worktrees[branch]!, restored);
+          if (changes.length) workspaceRevision = await this.publishGitChanges(scope, branch, currentHead ?? null, changes);
+        }
         state.worktrees[branch] = restored;
         state.commits[encoded.oid] = {
           oid: encoded.oid, tree: hierarchy.root.oid, ...(currentHead ? { parent: currentHead, parents: [currentHead] } : {}),
@@ -1306,7 +1357,8 @@ export class RepositoryDO extends DurableObject<Env> {
         };
         state.refs[branch] = encoded.oid;
         await this.save(state);
-        return Response.json({ branch, commit_id: encoded.oid, restored_from: commit.oid, parent: currentHead ?? null }, { status: 201 });
+        return Response.json({ branch, commit_id: encoded.oid, restored_from: commit.oid, parent: currentHead ?? null,
+          ...(workspaceRevision === undefined ? {} : { workspace_branch: branch, workspace_revision: workspaceRevision }) }, { status: 201 });
       }
       if (op === "history" && request.method === "GET") {
         let currentOid =
@@ -1317,7 +1369,8 @@ export class RepositoryDO extends DurableObject<Env> {
           commits.push(rec);
           currentOid = rec.parent;
         }
-        return Response.json({ data: commits, count: commits.length });
+        const dualRead = await this.verifyWorkspaceProjection(scope, branch, state.worktrees[branch]!);
+        return Response.json({ data: commits, count: commits.length, ...(dualRead.enabled ? { workspace_dual_read: dualRead } : {}) });
       }
       if (op === "blame" && request.method === "GET") {
         const path = normalizePath(url.searchParams.get("path") ?? "");

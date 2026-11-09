@@ -5,7 +5,7 @@ import { workspace } from "./prebuilt/workspace.js";
 import { documentClauseNodeId } from "@naelao/agent-sdk";
 
 function makeContext() {
-  const files = new Map<string, { content: string; hash: string; etag: string; customMetadata?: Record<string, string> }>();
+  const files = new Map<string, { content: string; hash: string; etag: string; customMetadata?: Record<string, string>; contentType?: string }>();
   const digest = async (content: string) => {
     const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
     return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -17,16 +17,16 @@ function makeContext() {
     },
     async get(key: string) {
       const file = files.get(key);
-      return file && file.customMetadata?.deleted !== "true" ? { size: new TextEncoder().encode(file.content).byteLength, text: async () => file.content, arrayBuffer: async () => new TextEncoder().encode(file.content).buffer, customMetadata: file.customMetadata, httpEtag: file.etag } : null;
+      return file && file.customMetadata?.deleted !== "true" ? { size: new TextEncoder().encode(file.content).byteLength, text: async () => file.content, arrayBuffer: async () => new TextEncoder().encode(file.content).buffer, customMetadata: file.customMetadata, httpMetadata: { contentType: file.contentType }, httpEtag: file.etag } : null;
     },
-    async put(key: string, value: string, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) {
+    async put(key: string, value: string, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }) {
       const current = files.get(key);
       if (options?.onlyIf?.etagMatches && current?.etag !== options.onlyIf.etagMatches) return undefined;
       if (options?.onlyIf?.etagDoesNotMatch === "*" && current) return undefined;
       const content = typeof value === "string" ? value : new TextDecoder().decode(value);
       const hash = await digest(content);
       const etag = `etag-${files.size + 1}-${Date.now()}`;
-      files.set(key, { content, hash, etag, customMetadata: options?.customMetadata });
+      files.set(key, { content, hash, etag, customMetadata: options?.customMetadata, contentType: options?.httpMetadata?.contentType });
       return { etag };
     },
     async delete(key: string) { files.delete(key); },
@@ -36,10 +36,11 @@ function makeContext() {
 
 describe("r2-workspace SHA-256 CAS", () => {
   it("requires a base hash and rejects stale writes", async () => {
-    const { ctx } = makeContext();
+    const { ctx, files } = makeContext();
     const write = r2Workspace.operations["write_file"]!;
     await expect(write({ path: "notes.md", content: "one" }, ctx as never)).rejects.toThrow("expectedHash");
     const created = await write({ path: "notes.md", content: "one", expectedHash: null }, ctx as never) as { hash: string };
+    expect(files.get("spaces/s1/projects/p1/workspace/notes.md")?.contentType).toBe("text/plain; charset=utf-8");
     await expect(write({ path: "notes.md", content: "two", expectedHash: "0".repeat(64) }, ctx as never)).rejects.toThrow("Conflict Error");
     const updated = await write({ path: "notes.md", content: "two", expectedHash: created.hash }, ctx as never) as { hash: string };
     expect(updated.hash).not.toBe(created.hash);
@@ -65,10 +66,12 @@ describe("r2-workspace SHA-256 CAS", () => {
     const diff = await fileManager.operations["file.diff"]!({ path_a: "a.txt", path_b: "b.txt" }, ctx as never);
     expect(diff).toMatchObject({ revision: { branch: "workers/sub-1", revision: 6 } });
 
+    let publishedContentType: string | undefined;
     const withCheckedPublisher = { ...ctx, env: { ...ctx.env, workspaceBranch: "workers/sub-1",
-      publishWorkspaceChecked: async ({ bytes }: { bytes: Uint8Array }) => ({ hash: await digest(new TextDecoder().decode(bytes)), revision: 9, deleted: false }) } };
+      publishWorkspaceChecked: async ({ bytes, contentType }: { bytes: Uint8Array; contentType?: string }) => { publishedContentType = contentType; return { hash: await digest(new TextDecoder().decode(bytes)), revision: 9, deleted: false }; } } };
     const appended = await fileManager.operations["file.append"]!({ path: "a.txt", content: "!", expectedHash: await digest("alpha") }, withCheckedPublisher as never);
     expect(appended).toMatchObject({ revision: { branch: "workers/sub-1", revision: 9 } });
+    expect(publishedContentType).toBe("text/plain; charset=utf-8");
   });
 
   it("uses the guarded R2 writer for container sync-back", async () => {

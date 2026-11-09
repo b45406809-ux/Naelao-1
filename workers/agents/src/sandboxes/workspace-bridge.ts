@@ -1,7 +1,7 @@
 import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "../workspace/workspace-client.js";
-import type { WorkspaceEntry, WorkspaceHead, WorkspaceScope } from "../workspace/workspace-contract.js";
+import { validateWorkspaceContentType, type WorkspaceEntry, type WorkspaceHead, type WorkspaceScope } from "../workspace/workspace-contract.js";
 import type { Env as AgentsEnv } from "../env.js";
 import type { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO.js";
 
@@ -9,8 +9,10 @@ import type { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO
 const MAX_FILES = 200;
 const MAX_PUBLICATION_CHANGES = 100;
 // ConcurrencyDO accepts at most 1 MiB of base64 payload per CAS mutation.
-const MAX_FILE_BYTES = 768 * 1024;
-const MAX_STAGE_REQUEST_BYTES = 6 * 1024 * 1024;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+// A single 20 MiB file is sent as base64 in the checked coordinator handoff.
+const MAX_STAGE_REQUEST_BYTES = 28 * 1024 * 1024;
+const MAX_PUBLICATION_REQUEST_BYTES = 30 * 1024 * 1024;
 const MAX_CONTROL_REQUEST_BYTES = 1024 * 1024;
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -96,7 +98,7 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
   const now = new Date();
   const createdAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + SNAPSHOT_TTL_MS).toISOString();
-  const entries: Array<{ path: string; sha256: string; size: number; executable: boolean; blobId: string }> = [];
+  const entries: Array<{ path: string; sha256: string; size: number; executable: boolean; blobId: string; contentType?: string }> = [];
   let coordinatorRevision: number | null = null;
   const staged: string[] = [];
   let totalBytes = 0;
@@ -116,15 +118,18 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
         const canonical = await readBytesWithHash(env.SCRIPTS_R2, item.objectKey, MAX_FILE_BYTES);
         if (!canonical || canonical.hash !== item.sha256 || canonical.bytes.byteLength !== item.size) throw new Error("workspace_manifest_content_invalid");
         const legacy = await readBytesWithHash(env.SCRIPTS_R2, workspacePrefix(fs) + item.path, MAX_FILE_BYTES).catch(() => null);
-        if ((legacy?.hash ?? null) !== item.sha256 || (legacy?.bytes.byteLength ?? null) !== item.size) {
-          mismatches.push({ pathHash: await sha256(new TextEncoder().encode(item.path)), manifestHash: item.sha256, legacyHash: legacy?.hash ?? null, mismatchClass: legacy ? "hash_or_size_mismatch" : "legacy_missing" });
+        const mismatchClass = !legacy ? "legacy_missing"
+          : legacy.hash !== item.sha256 || legacy.bytes.byteLength !== item.size ? "hash_or_size_mismatch"
+          : (legacy.contentType ?? "application/octet-stream") !== (item.contentType ?? "application/octet-stream") ? "content_type_mismatch" : null;
+        if (mismatchClass) {
+          mismatches.push({ pathHash: await sha256(new TextEncoder().encode(item.path)), manifestHash: item.sha256, legacyHash: legacy?.hash ?? null, mismatchClass });
         }
         const blobId = `swb_${crypto.randomUUID()}`;
         const key = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${blobId}`;
-        await env.SCRIPTS_R2.put(key, canonical.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: canonical.hash, filesystemId: fs.id, executable: String(item.executable) } });
+        await env.SCRIPTS_R2.put(key, canonical.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: canonical.hash, filesystemId: fs.id, executable: String(item.executable) }, ...(item.contentType ? { httpMetadata: { contentType: item.contentType } } : {}) });
         staged.push(key);
         totalBytes += canonical.bytes.byteLength;
-        entries.push({ path: item.path, sha256: canonical.hash, size: canonical.bytes.byteLength, executable: item.executable, blobId });
+        entries.push({ path: item.path, sha256: canonical.hash, size: canonical.bytes.byteLength, executable: item.executable, blobId, ...(item.contentType ? { contentType: item.contentType } : {}) });
       }
       const legacyPage = await env.SCRIPTS_R2.list({ prefix: workspacePrefix(fs), limit: MAX_FILES + 1, include: ["customMetadata"] } as R2ListOptions & { include: string[] });
       if (legacyPage.objects.length > MAX_FILES || legacyPage.truncated) {
@@ -158,10 +163,10 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
         const blobId = `swb_${crypto.randomUUID()}`;
         const key = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${blobId}`;
         const executable = source.metadata.executable === "true";
-        await env.SCRIPTS_R2.put(key, source.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: source.hash, filesystemId: fs.id, executable: String(executable) } });
+        await env.SCRIPTS_R2.put(key, source.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: source.hash, filesystemId: fs.id, executable: String(executable) }, ...(source.contentType ? { httpMetadata: { contentType: source.contentType } } : {}) });
         staged.push(key);
         totalBytes += source.bytes.byteLength;
-        entries.push({ path, sha256: source.hash, size: source.bytes.byteLength, executable, blobId });
+        entries.push({ path, sha256: source.hash, size: source.bytes.byteLength, executable, blobId, ...(source.contentType ? { contentType: source.contentType } : {}) });
       }
       cursor = page.truncated ? page.cursor : undefined;
       } while (cursor);
@@ -201,18 +206,19 @@ async function blob(request: Request, env: BridgeEnv, actor: { tenantId: string;
   if (request.method === "GET") {
     const object = await readBytesWithHash(env.SCRIPTS_R2, row.object_key, MAX_FILE_BYTES);
     if (!object || object.bytes.byteLength !== row.size_bytes || object.hash !== row.sha256) return fail("blob_unavailable", 404);
-    return new Response(object.bytes, { headers: { "content-type": "application/octet-stream", "content-length": String(row.size_bytes), "x-content-sha256": row.sha256, "cache-control": "no-store" } });
+    return new Response(object.bytes, { headers: { "content-type": object.contentType ?? "application/octet-stream", "content-length": String(row.size_bytes), "x-content-sha256": row.sha256, "cache-control": "no-store" } });
   }
   return fail("method_not_allowed", 405);
 }
 
 async function stage(request: Request, env: BridgeEnv, actor: { tenantId: string; userId: string }): Promise<Response> {
   if (!env.SCRIPTS_R2) return fail("workspace_storage_unavailable", 503);
-  const input = await parseJson(request, {} as { filesystemId?: unknown; snapshotId?: unknown; sha256?: unknown; contentBase64?: unknown; executable?: unknown }, MAX_STAGE_REQUEST_BYTES);
+  const input = await parseJson(request, {} as { filesystemId?: unknown; snapshotId?: unknown; sha256?: unknown; contentBase64?: unknown; executable?: unknown; contentType?: unknown }, MAX_STAGE_REQUEST_BYTES);
   const fs = await filesystem(env, input.filesystemId, actor.tenantId, actor.userId);
   if (!fs) return fail("filesystem_not_found", 404);
   // Staging remains outside the canonical workspace namespace.
-  if (typeof input.snapshotId !== "string" || typeof input.sha256 !== "string" || !HASH.test(input.sha256) || typeof input.contentBase64 !== "string" || (input.executable !== undefined && typeof input.executable !== "boolean")) return fail("invalid_blob", 400);
+  if (typeof input.snapshotId !== "string" || typeof input.sha256 !== "string" || !HASH.test(input.sha256) || typeof input.contentBase64 !== "string" ||
+      (input.executable !== undefined && typeof input.executable !== "boolean") || (input.contentType !== undefined && !validateWorkspaceContentType(input.contentType))) return fail("invalid_blob", 400);
   const snap = await env.PLATFORM_DB.prepare("SELECT id FROM sandbox_workspace_snapshots WHERE id=? AND filesystem_id=? AND tenant_id=? AND status IN ('active','published') AND expires_at>?")
     .bind(input.snapshotId, fs.id, actor.tenantId, new Date().toISOString()).first();
   if (!snap) return fail("snapshot_not_found", 404);
@@ -226,7 +232,7 @@ async function stage(request: Request, env: BridgeEnv, actor: { tenantId: string
   const now = new Date(); const createdAt = now.toISOString(); const expiresAt = new Date(now.getTime() + SNAPSHOT_TTL_MS).toISOString();
   const objectKey = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${blobId}`;
   const executable = input.executable === true;
-  await env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: input.sha256, filesystemId: fs.id, executable: String(executable) } });
+  await env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: input.sha256, filesystemId: fs.id, executable: String(executable) }, ...(typeof input.contentType === "string" ? { httpMetadata: { contentType: input.contentType } } : {}) });
   try {
     await env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_blobs (id,tenant_id,filesystem_id,snapshot_id,object_key,sha256,size_bytes,executable,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .bind(blobId, actor.tenantId, fs.id, input.snapshotId, objectKey, input.sha256, bytes.byteLength, executable ? 1 : 0, createdAt, expiresAt).run();
@@ -239,7 +245,7 @@ async function stage(request: Request, env: BridgeEnv, actor: { tenantId: string
 
 async function publish(request: Request, env: BridgeEnv, actor: { tenantId: string; userId: string }): Promise<Response> {
   if (!env.SCRIPTS_R2 || (!env.CONCURRENCY_DO && !(env.UNIFIED_WORKSPACE_ENABLED === "true" && env.WORKSPACE_COORDINATOR))) return fail("workspace_publication_unavailable", 503);
-  const input = await parseJson(request, {} as { filesystemId?: unknown; computerId?: unknown; snapshotId?: unknown; idempotencyKey?: unknown; changes?: unknown });
+  const input = await parseJson(request, {} as { filesystemId?: unknown; computerId?: unknown; snapshotId?: unknown; idempotencyKey?: unknown; changes?: unknown }, MAX_PUBLICATION_REQUEST_BYTES);
   const fs = await filesystem(env, input.filesystemId, actor.tenantId, actor.userId);
   if (!fs) return fail("filesystem_not_found", 404);
   const unified = env.UNIFIED_WORKSPACE_ENABLED === "true" && !!fs.project_id;
@@ -293,7 +299,7 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
   if (unified) {
     if (!fs.project_id || !fs.space_id || !env.WORKSPACE_COORDINATOR) return fail("workspace_publication_unavailable", 503);
     const scope: WorkspaceScope = { tenantId: actor.tenantId, spaceId: fs.space_id, projectId: fs.project_id, jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global" };
-    const coordinatorChanges: Array<{ path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean }> = [];
+    const coordinatorChanges: Array<{ path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string }> = [];
     let encodedBytes = 0;
     for (const change of changes) {
       if (!change.blobId) { coordinatorChanges.push({ path: change.path, expectedHash: change.expectedHash, contentBase64: null }); continue; }
@@ -304,7 +310,7 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
       if (!content || content.hash !== staged.sha256) return fail("blob_integrity_failed", 409);
       encodedBytes += Math.ceil(content.bytes.byteLength * 4 / 3);
       if (encodedBytes > MAX_STAGE_REQUEST_BYTES) return fail("workspace_publication_limit", 413);
-      coordinatorChanges.push({ path: change.path, expectedHash: change.expectedHash, contentBase64: b64(content.bytes), executable: change.executable ?? modes.get(change.path) ?? staged.executable === 1 });
+      coordinatorChanges.push({ path: change.path, expectedHash: change.expectedHash, contentBase64: b64(content.bytes), executable: change.executable ?? modes.get(change.path) ?? staged.executable === 1, ...(content.contentType ? { contentType: content.contentType } : {}) });
     }
     const opened = await coordinatorRequest(env, scope, "/v1/open", { body: { scope, branch: fs.branch, actorId: actor.userId, runtimeId: "sandbox-workspace-bridge", allocationGeneration: 1, mode: "checked_handoff" } });
     if (!opened.ok) return new Response(opened.body, { status: opened.status, headers: { "content-type": "application/json" } });

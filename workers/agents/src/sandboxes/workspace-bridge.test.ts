@@ -72,9 +72,13 @@ describe("sandbox workspace snapshot bridge", () => {
       async get(key: string) {
         const bytes = objects.get(key);
         if (!bytes) return null;
-        return { body: new Blob([bytes]).stream(), size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } };
+        return { body: new Blob([bytes]).stream(), size: bytes.byteLength, httpMetadata: metadata.get(`${key}:http`) ?? {}, async arrayBuffer() { return bytes.slice().buffer; } };
       },
-      async put(key: string, value: Uint8Array, options?: { customMetadata?: Record<string, string> }) { objects.set(key, value.slice()); if (options?.customMetadata) metadata.set(key, options.customMetadata); },
+      async put(key: string, value: Uint8Array, options?: { customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }) {
+        objects.set(key, value.slice());
+        if (options?.customMetadata) metadata.set(key, options.customMetadata);
+        if (options?.httpMetadata?.contentType) metadata.set(`${key}:http`, { contentType: options.httpMetadata.contentType });
+      },
       async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
     } as unknown as R2Bucket;
     const concurrency = {
@@ -108,13 +112,19 @@ describe("sandbox workspace snapshot bridge", () => {
     expect(blockedSnapshot.status).toBe(503);
     const contentHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("ok")))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const coordinatorCalls: string[] = [];
+    let coordinatorCheckpoint: { changes?: Array<{ contentType?: string }> } | null = null;
     const coordinatorEnv = { ...unifiedEnv, WORKSPACE_COORDINATOR: { idFromName: (name: string) => name, get: () => ({ async fetch(request: Request) {
       const url = new URL(request.url); coordinatorCalls.push(url.pathname);
-      if (url.pathname === "/v1/read") return Response.json({ head: { revision: 7 }, entries: [{ path: "src/main.ts", sha256: contentHash, size: 2, executable: false, objectKey: "spaces/space-1/projects/project-1/workspace/branches/main/src/main.ts" }] });
+      if (url.pathname === "/v1/read") return Response.json({ head: { revision: 7, branch: "main" }, entries: [{ path: "src/main.ts", sha256: contentHash, size: 2, executable: false, contentType: "text/plain", objectKey: `workspace-v1/tenant-1/space-1/project-1/global/content/${contentHash}` }] });
       if (url.pathname === "/v1/open") return Response.json({ session: { id: `ws_${"a".repeat(8)}-${"b".repeat(4)}-${"c".repeat(4)}-${"d".repeat(4)}-${"e".repeat(12)}`, fence: 0 }, head: { revision: 7 } });
-      if (url.pathname === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 8, appliedPaths: ["src/main.ts"], conflicts: [] } });
+      if (url.pathname === "/v1/checkpoint") { coordinatorCheckpoint = await request.json() as { changes?: Array<{ contentType?: string }> }; return Response.json({ publication: { status: "published", revision: 8, appliedPaths: ["src/main.ts"], conflicts: [] } }); }
       return Response.json({ ok: true });
     } }) } };
+    const canonicalKey = `workspace-v1/tenant-1/space-1/project-1/global/content/${contentHash}`;
+    const legacyMainKey = "spaces/space-1/projects/project-1/workspace/branches/main/src/main.ts";
+    metadata.set(`${legacyMainKey}:http`, { contentType: "text/plain" });
+    objects.set(canonicalKey, new TextEncoder().encode("ok"));
+    metadata.set(`${canonicalKey}:http`, { contentType: "text/plain" });
     const legacyOnlyKey = "spaces/space-1/projects/project-1/workspace/branches/main/legacy-only.txt";
     objects.set(legacyOnlyKey, new TextEncoder().encode("drift"));
     const driftSnapshot = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
@@ -122,19 +132,34 @@ describe("sandbox workspace snapshot bridge", () => {
     expect(driftSnapshot.status).toBe(409);
     expect(await driftSnapshot.json()).toMatchObject({ error_code: "workspace_dual_read_drift" });
     objects.delete(legacyOnlyKey);
+    metadata.set(`${legacyMainKey}:http`, { contentType: "application/pdf" });
+    const mimeDrift = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), coordinatorEnv);
+    expect(mimeDrift.status).toBe(409);
+    expect(await mimeDrift.json()).toMatchObject({ error_code: "workspace_dual_read_drift" });
+    metadata.set(`${legacyMainKey}:http`, { contentType: "text/plain" });
     const manifestSnapshotResponse = await handleSandboxWorkspaceBridge(new Request(path, { method: "POST", headers: unifiedHeaders,
       body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }) }), coordinatorEnv);
     expect(manifestSnapshotResponse.status).toBe(200);
     const manifestSnapshotBody = await manifestSnapshotResponse.json() as { snapshot: { id: string; revision: number; entries: Array<{ sha256: string }> } };
     expect(manifestSnapshotBody).toMatchObject({ snapshot: { revision: 7, entries: [{ sha256: contentHash }] } });
     const unifiedStaged = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/blobs", { method: "POST", headers: unifiedHeaders,
-      body: JSON.stringify({ filesystemId: "fs-1", snapshotId: manifestSnapshotBody.snapshot.id, sha256: contentHash, contentBase64: btoa("ok") }) }), coordinatorEnv);
+      body: JSON.stringify({ filesystemId: "fs-1", snapshotId: manifestSnapshotBody.snapshot.id, sha256: contentHash, contentBase64: btoa("ok"), contentType: "application/pdf" }) }), coordinatorEnv);
     const unifiedStagedBody = await unifiedStaged.json() as { blobId: string };
     const unifiedPublished = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/publish", { method: "POST", headers: unifiedHeaders,
       body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1", snapshotId: manifestSnapshotBody.snapshot.id, idempotencyKey: "unified-publish-1", changes: [{ path: "src/main.ts", expectedHash: contentHash, blobId: unifiedStagedBody.blobId }] }) }), coordinatorEnv);
     expect(unifiedPublished.status).toBe(200);
     expect(await unifiedPublished.json()).toMatchObject({ publication: { revision: 8, status: "published" } });
+    expect(coordinatorCheckpoint).toMatchObject({ changes: [{ contentType: "application/pdf" }] });
     expect(coordinatorCalls).toContain("/v1/checkpoint");
+
+    const largeBytes = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const largeHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", largeBytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    let largeBinary = "";
+    for (let offset = 0; offset < largeBytes.length; offset += 0x8000) largeBinary += String.fromCharCode(...largeBytes.subarray(offset, offset + 0x8000));
+    const largeStage = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/blobs", { method: "POST", headers: unifiedHeaders,
+      body: JSON.stringify({ filesystemId: "fs-1", snapshotId: manifestSnapshotBody.snapshot.id, sha256: largeHash, contentBase64: btoa(largeBinary), contentType: "application/octet-stream" }) }), coordinatorEnv);
+    expect(largeStage.status).toBe(200);
     const result = await handleSandboxWorkspaceBridge(new Request(path, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token },

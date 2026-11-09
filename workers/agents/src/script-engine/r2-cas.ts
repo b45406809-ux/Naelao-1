@@ -7,7 +7,7 @@ interface WorkspaceCasEnv {
   projectId?: string;
   withProjectWorkspaceMutation?<T>(operation: () => Promise<T>): Promise<T>;
   workspaceManifestRead?: () => Promise<unknown>;
-  publishWorkspaceChecked?: (input: { key: string; bytes: Uint8Array | null; expectedHash: string | null }) => Promise<{ hash: string | null; revision: number; deleted: boolean }>;
+  publishWorkspaceChecked?: (input: { key: string; bytes: Uint8Array | null; expectedHash: string | null; contentType?: string }) => Promise<{ hash: string | null; revision: number; deleted: boolean }>;
   validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
   lockGateway?: {
     acquire(input: { key: string; holderId: string; limit: number; ttlMs?: number }): Promise<{ granted: boolean; fencingToken?: number; heldBy?: string }>;
@@ -29,7 +29,7 @@ function rejectLegacyUnifiedWorkspaceWrite(env: WorkspaceCasEnv, key: string): v
 }
 
 export interface CasWriteResult { hash: string; etag: string }
-export interface CasReadResult { bytes: Uint8Array; hash: string; etag: string; metadata: Record<string, string> }
+export interface CasReadResult { bytes: Uint8Array; hash: string; etag: string; metadata: Record<string, string>; contentType?: string }
 
 function encodeBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -54,7 +54,7 @@ export async function publishWorkspaceBytesCas(
   const publish = async (): Promise<CasWriteResult> => {
     if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
     if (env.publishWorkspaceChecked) {
-      const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash });
+      const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash, ...(httpMetadata?.contentType ? { contentType: httpMetadata.contentType } : {}) });
       if (!result.hash || !Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_publication_unconfirmed");
       return { hash: result.hash, etag: `revision:${result.revision}` };
     }
@@ -147,6 +147,7 @@ export async function readBytesWithHash(bucket: R2Bucket, key: string, maximumBy
     hash,
     etag: head.etag,
     metadata: head.customMetadata ?? {},
+    ...(object.httpMetadata?.contentType ? { contentType: object.httpMetadata.contentType } : {}),
   };
 }
 

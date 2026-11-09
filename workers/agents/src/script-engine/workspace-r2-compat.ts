@@ -1,6 +1,6 @@
 export type WorkspaceManifestRead = () => Promise<{
   head: { branch: string; revision: number; updatedAt: string };
-  entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }>;
+  entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }>;
 } | null>;
 
 export interface WorkspaceReadDriftOptions {
@@ -39,7 +39,7 @@ export function withWorkspaceManifestRead(
   let driftBytes = 0;
   let driftMismatches = 0;
   let driftTruncated = false;
-  const verifyLegacy = async (key: string, canonical: { sha256: string; size: number } | null, head?: { branch: string; revision: number }): Promise<void> => {
+  const verifyLegacy = async (key: string, canonical: { sha256: string; size: number; contentType?: string } | null, head?: { branch: string; revision: number }): Promise<void> => {
     if (!driftOptions?.enabled || driftCompared >= DUAL_READ_MAX_FILES) { if (driftOptions?.enabled) driftTruncated = true; return; }
     let legacy: R2ObjectBody | null;
     try { legacy = await source.get(key); }
@@ -51,7 +51,7 @@ export function withWorkspaceManifestRead(
       return;
     }
     driftCompared++;
-    let mismatchClass: "legacy_missing" | "manifest_missing" | "hash_mismatch" | "size_mismatch" | undefined;
+    let mismatchClass: "legacy_missing" | "manifest_missing" | "hash_mismatch" | "size_mismatch" | "content_type_mismatch" | undefined;
     let legacyHash: string | null = null;
     if (!legacy) mismatchClass = "legacy_missing";
     else {
@@ -60,6 +60,7 @@ export function withWorkspaceManifestRead(
       legacyHash = await sha256(bytes);
       if (!canonical) mismatchClass = "manifest_missing";
       else if (legacy.size !== canonical.size || bytes.byteLength !== canonical.size) mismatchClass = "size_mismatch";
+      else if ((legacy.httpMetadata?.contentType ?? "application/octet-stream") !== (canonical.contentType ?? "application/octet-stream")) mismatchClass = "content_type_mismatch";
       else if (legacyHash !== canonical.sha256) mismatchClass = "hash_mismatch";
     }
     if (!mismatchClass) return;
@@ -86,7 +87,7 @@ export function withWorkspaceManifestRead(
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
         if (hash !== entry.sha256) throw new Error("workspace_content_integrity_failed");
-        await verifyLegacy(key, { sha256: entry.sha256, size: entry.size }, manifest.head);
+        await verifyLegacy(key, { sha256: entry.sha256, size: entry.size, ...(entry.contentType ? { contentType: entry.contentType } : {}) }, manifest.head);
         let selected = bytes;
         const range = options?.range as { offset?: number; length?: number; suffix?: number } | undefined;
         if (range && Number.isSafeInteger(range.offset)) {
@@ -98,7 +99,7 @@ export function withWorkspaceManifestRead(
         const copy = selected.slice();
         return {
           key, version: "workspace-v1", size: entry.size, etag: entry.sha256,
-          uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+          uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
             workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) },
           async arrayBuffer() { return copy.slice().buffer; },
           async text() { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(copy); },
@@ -112,7 +113,7 @@ export function withWorkspaceManifestRead(
         if (!manifest) return target.head(key);
         const entry = manifest.entries.find((candidate) => prefix + candidate.path === key);
         if (!entry) return null;
-        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
           workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } } as unknown as R2Object;
       };
       if (property === "list") return async (options: R2ListOptions = {}) => {
@@ -128,7 +129,7 @@ export function withWorkspaceManifestRead(
         const limit = Math.max(1, Math.min(1000, options.limit ?? 1000));
         const page = items.slice(start, start + limit);
         const objects = page.map((entry) => ({ key: prefix + entry.path, version: "workspace-v1", size: entry.size,
-          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: {}, customMetadata: { sha256: entry.sha256,
+          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
             workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } }));
         const truncated = start + page.length < items.length;
         return { objects, delimitedPrefixes: [], ...(truncated ? { truncated: true as const, cursor: String(start + page.length) } : { truncated: false as const }) } as unknown as R2Objects;

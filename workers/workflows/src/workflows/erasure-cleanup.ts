@@ -66,10 +66,22 @@ export async function eraseWorkspaceCoordinatorsForSpace(input: {
   for (const projectId of projectIds) {
     if (typeof projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(projectId)) throw new Error("Invalid project identifier during workspace erasure");
     const scope = { tenantId: input.tenantId, spaceId: input.spaceId, projectId, jurisdiction: input.jurisdiction };
-    const erased = await input.agentsWorker.fetch(new Request("http://agents/internal/workspaces/erase", {
-      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ scope }),
-    }));
-    if (!erased.ok) throw new Error(`Workspace coordinator erasure failed for ${projectId} (${erased.status})`);
+    let cursor: string | undefined;
+    let cleanupPage = 0;
+    do {
+      const erased = await input.agentsWorker.fetch(new Request("http://agents/internal/workspaces/delete-project", {
+        method: "POST", headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ scope, confirm: true, ...(cursor ? { cursor } : {}) }),
+      }));
+      if (!erased.ok) throw new Error(`Workspace project cleanup failed for ${projectId} (${erased.status})`);
+      const cleanup = await erased.json<{ hasMore?: unknown; nextCursor?: unknown }>().catch(() => ({} as { hasMore?: unknown; nextCursor?: unknown }));
+      if (typeof cleanup.hasMore !== "boolean" || (cleanup.hasMore && (typeof cleanup.nextCursor !== "string" || cleanup.nextCursor === cursor))) {
+        throw new Error(`Invalid workspace project cleanup cursor for ${projectId}`);
+      }
+      cursor = cleanup.hasMore ? cleanup.nextCursor as string : undefined;
+      cleanupPage++;
+      if (cleanupPage > 10_000) throw new Error(`Workspace project cleanup page limit exceeded for ${projectId}`);
+    } while (cursor);
   }
   return { erasedCount: projectIds.size, nextCursor, hasMore: listBody.hasMore };
 }

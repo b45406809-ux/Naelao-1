@@ -457,8 +457,16 @@ describe("unified workspace transition guards", () => {
       target: "main", source: "workers/child", expected_head: canonicalCommit.commit_id, metadata,
     }) }));
     expect(merged.status).toBe(200);
-    expect(await merged.json()).toMatchObject({ fast_forward: true, workspace_branch: "main", workspace_revision: 2 });
+    const mergeResult = await merged.json() as { commit_id: string };
+    expect(mergeResult).toMatchObject({ fast_forward: true, workspace_branch: "main", workspace_revision: 2 });
     expect(published.at(-1)).toMatchObject({ changes: [{ path: "worker.txt", expectedHash: null }] });
+
+    const rollback = await repo.fetch(new Request("http://repo/rollback", { method: "POST", headers, body: JSON.stringify({
+      commit_id: canonicalCommit.commit_id, expected_head: mergeResult.commit_id, metadata,
+    }) }));
+    expect(rollback.status).toBe(201);
+    expect(await rollback.json()).toMatchObject({ restored_from: canonicalCommit.commit_id, workspace_branch: "main", workspace_revision: 2 });
+    expect(published.at(-1)).toMatchObject({ changes: [{ path: "worker.txt", expectedHash: await sha256Text("subagent result"), contentBase64: null }] });
   });
 
   it("reconciles Git from one verified coordinator snapshot without republishing canonical files", async () => {
@@ -473,6 +481,7 @@ describe("unified workspace transition guards", () => {
       put: async (key: string, value: unknown) => { storage.set(key, value); },
     } } as never, {
       UNIFIED_WORKSPACE_ENABLED: "true", PLATFORM_SECRET: "platform-secret",
+      WORKSPACE_DUAL_READ_ENABLED: "true",
       WORKSPACE_R2: {
         get: async (key: string) => key.endsWith(`/content/${hash}`) ? { size: file.byteLength, arrayBuffer: async () => file.slice().buffer } : null,
         list: workspaceList,
@@ -482,7 +491,7 @@ describe("unified workspace transition guards", () => {
         get: () => ({ fetch: async (request: Request) => {
           const path = new URL(request.url).pathname;
           calls.push(path);
-          if (path === "/v1/read") return Response.json({ head: { revision: 7 }, entries: [{ path: "notes/status.md", sha256: hash, size: file.byteLength, objectKey: `workspace-v1/tenant/space/project/global/content/${hash}` }] });
+          if (path === "/v1/read") return Response.json({ head: { branch: "main", revision: 7 }, entries: [{ path: "notes/status.md", sha256: hash, size: file.byteLength, objectKey: `workspace-v1/tenant/space/project/global/content/${hash}` }] });
           if (path === "/v1/head") return Response.json({ head: { revision: 7 } });
           return Response.json({ error_code: "unexpected_coordinator_write" }, { status: 500 });
         } }),
@@ -501,6 +510,16 @@ describe("unified workspace transition guards", () => {
     expect(await reconciled.json()).toMatchObject({ reconciled: true, changed: 1, workspace_branch: "main", workspace_revision: 7 });
     expect(calls).toEqual(["/v1/read", "/v1/head"]);
     expect(workspaceList).not.toHaveBeenCalled();
+
+    const saved = storage.get("repository") as { worktrees: Record<string, Record<string, { hash: string; size: number; path: string; oid: string }>> };
+    saved.worktrees.main!["notes/status.md"]!.hash = "f".repeat(64);
+    storage.set("repository", saved);
+    const drift = await repo.fetch(new Request("http://repo/verify-workspace?branch=main", { headers }));
+    expect(await drift.json()).toMatchObject({ verified: false, workspace_dual_read: { mismatchCount: 1, mismatchClasses: ["hash_mismatch"] } });
+    const repaired = await repo.fetch(new Request("http://repo/reconcile", { method: "POST", headers, body: JSON.stringify({ branch: "main", metadata }) }));
+    expect(repaired.status).toBe(200);
+    const clean = await repo.fetch(new Request("http://repo/verify-workspace?branch=main", { headers }));
+    expect(await clean.json()).toMatchObject({ verified: true, workspace_dual_read: { mismatchCount: 0, truncated: false } });
   });
 });
 

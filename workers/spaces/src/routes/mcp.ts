@@ -109,7 +109,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
         if (!tenantId || !c.env.AGENTS_WORKER || !c.env.PLATFORM_SECRET) throw new Error("checked workspace publication unavailable");
         if (c.env.UNIFIED_WORKSPACE_ENABLED === "true") {
           if (compatibility.kind !== "canonical") throw new Error("checked coordinator publication unavailable");
-          if (updatedBytes.byteLength > 768 * 1024) throw new Error("workspace file limit exceeded");
+          if (updatedBytes.byteLength > 20 * 1024 * 1024) throw new Error("workspace file limit exceeded");
           const idempotencyKey = await sha256Bytes(new TextEncoder().encode(`${tenantId}\0${spaceId}\0${projectId}\0main\0${path}\0${object.hash}\0${await sha256Bytes(updatedBytes)}`));
           let binary = "";
           for (let offset = 0; offset < updatedBytes.length; offset += 0x8000) binary += String.fromCharCode(...updatedBytes.subarray(offset, offset + 0x8000));
@@ -119,7 +119,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
               "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
             body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
               branch: "main", actorId: c.req.header("x-naelao-user-id") || "spaces-project-mcp", path,
-              expectedHash: object.hash, contentBase64, idempotencyKey }),
+              expectedHash: object.hash, contentBase64, contentType: "text/plain; charset=utf-8", idempotencyKey }),
           }));
           if (!published.ok) throw new Error(`checked coordinator publication failed:${published.status}`);
           const publication = await published.json<{ publication?: { revision?: number; status?: string } }>();

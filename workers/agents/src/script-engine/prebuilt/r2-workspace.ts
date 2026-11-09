@@ -132,7 +132,7 @@ async function writeFileImpl(
   if (path.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
   const storageKey = key(ctx, path);
   let hash: string;
-  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash)); }
+  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash, {}, { contentType: "text/plain; charset=utf-8" })); }
   catch { throw new ConflictError(path); }
   // The file IS the handoff between projects: one project's agent records what it found, that
   // write fires an event, and a no-code rule wakes whoever owns the next stage. Fired after the
@@ -149,11 +149,12 @@ async function copyBinaryImpl(
   path: string,
   bytes: ArrayBuffer,
   expectedHash: string | null,
+  contentType?: string,
 ): Promise<{ ok: true; path: string; size: number; hash: string }> {
   if (path.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
   const storageKey = key(ctx, path);
   let hash: string;
-  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new Uint8Array(bytes), expectedHash)); }
+  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new Uint8Array(bytes), expectedHash, {}, contentType ? { contentType } : undefined)); }
   catch { throw new ConflictError(path); }
   await ctx.env.onWorkspaceChange?.({ path, operation: "write", created: expectedHash === null });
   return { ok: true, path, size: bytes.byteLength, hash };
@@ -459,7 +460,7 @@ export const r2Workspace: PrebuiltScript = {
       const path = reqStr(args, "path");
       if (typeof args["content"] !== "string") throw new Error("'content' (string) is required");
       const storageKey = sharedDriveKey(ctx, path, "write");
-      const { hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(args["content"] as string), requiredExpectedHash(args));
+      const { hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(args["content"] as string), requiredExpectedHash(args), {}, { contentType: "text/plain; charset=utf-8" });
       return { ok: true, path, hash };
     },
 
@@ -658,7 +659,7 @@ export const r2Workspace: PrebuiltScript = {
       if (reqStr(args, "from").replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("private_tool_output_cannot_be_published");
       const from = await readBytesWithHash(bucket(ctx), key(ctx, reqStr(args, "from")));
       if (!from) throw new Error("source file not found");
-      return copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));
+      return copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args), from.contentType);
     },
 
     async move_file(args, ctx) {
@@ -667,7 +668,7 @@ export const r2Workspace: PrebuiltScript = {
       const fromKey = key(ctx, fromPath);
       const from = await readBytesWithHash(bucket(ctx), fromKey);
       if (!from) throw new Error("source file not found");
-      const result = await copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));
+      const result = await copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args), from.contentType);
       try { await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), fromKey, from.hash); }
       catch { throw new ConflictError(reqStr(args, "from")); }
       return result;

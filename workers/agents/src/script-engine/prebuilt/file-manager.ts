@@ -8,10 +8,11 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
-import { publishWorkspaceBytesCas } from "../r2-cas.js";
+import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas } from "../r2-cas.js";
 import { normalizeWorkspacePath } from "../workspace-paths.js";
 
 const MAX_FILE_OPERATION_BYTES = 1024 * 1024;
+const MAX_FILE_RESTORE_BYTES = 20 * 1024 * 1024;
 
 async function readWorkspaceFile(object: R2ObjectBody | null): Promise<string> {
   if (!object) return "";
@@ -49,11 +50,11 @@ function revisionFromObject(object: R2ObjectBody | null): { branch: string; revi
   return branch && Number.isSafeInteger(revision) && revision >= 1 ? { branch, revision } : undefined;
 }
 
-async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null): Promise<{ hash: string; revision?: { branch: string; revision: number } }> {
+async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null, contentType = "text/plain; charset=utf-8"): Promise<{ hash: string; revision?: { branch: string; revision: number } }> {
   const bytes = new TextEncoder().encode(content);
   if (bytes.byteLength > MAX_FILE_OPERATION_BYTES)
     throw new Error(`file operation is limited to ${MAX_FILE_OPERATION_BYTES} bytes; use workspace.write_file with ranged edits for larger files`);
-  const result = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, bytes, expectedHash);
+  const result = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, bytes, expectedHash, {}, { contentType });
   const revision = /^revision:(\d+)$/.exec(result.etag)?.[1];
   return { hash: result.hash, ...(revision && ctx.env.workspaceBranch ? { revision: { branch: ctx.env.workspaceBranch, revision: Number(revision) } } : {}) };
 }
@@ -80,7 +81,7 @@ export const fileManager: PrebuiltScript = {
       const existing = await bucket(ctx).get(k);
       const prior = await readWorkspaceFile(existing);
       const content = prior + reqStr(args, "content");
-      const write = await casWrite(ctx, k, content, requiredExpectedHash(args));
+      const write = await casWrite(ctx, k, content, requiredExpectedHash(args), existing?.httpMetadata?.contentType ?? "text/plain; charset=utf-8");
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return { ok: true, size: content.length, ...write };
     },
@@ -108,15 +109,50 @@ export const fileManager: PrebuiltScript = {
       const find = reqStr(args, "find");
       const replace = reqStr(args, "replace");
       const after = before.split(find).join(replace);
-      const write = await casWrite(ctx, k, after, requiredExpectedHash(args));
+      const write = await casWrite(ctx, k, after, requiredExpectedHash(args), obj.httpMetadata?.contentType ?? "text/plain; charset=utf-8");
       await ctx.env.onWorkspaceChange?.({ path: reqStr(args, "path"), operation: "write" });
       return { ok: true, changed: before !== after, ...write };
     },
 
-    async "file.history"(_args, _ctx) {
-      // Workspace files are not versioned (only the skill library is). Return empty
-      // history rather than fabricate one; agents that need history write to scripts/.
-      return { versions: [] };
+    async "file.history"(args, ctx) {
+      if (!ctx.env.workspaceHistoryRead) return { versions: [], available: false };
+      const path = normalizeWorkspacePath(reqStr(args, "path"));
+      const afterRevision = args["afterRevision"] === undefined ? undefined : Number(args["afterRevision"]);
+      const limit = args["limit"] === undefined ? 100 : Number(args["limit"]);
+      if (afterRevision !== undefined && (!Number.isSafeInteger(afterRevision) || afterRevision < 0)) throw new Error("'afterRevision' must be a non-negative integer");
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("'limit' must be an integer from 1 to 100");
+      const history = await ctx.env.workspaceHistoryRead({ path, ...(afterRevision === undefined ? {} : { afterRevision }), limit });
+      return { ...history, available: true, versions: [...history.versions].reverse() };
+    },
+
+    async "file.restore"(args, ctx) {
+      if (!ctx.env.workspaceRevisionRead) throw new Error("workspace_history_unavailable");
+      const path = normalizeWorkspacePath(reqStr(args, "path"));
+      const revision = Number(args["revision"]);
+      if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("'revision' must be a positive integer");
+      const expectedHash = requiredExpectedHash(args);
+      const historical = await ctx.env.workspaceRevisionRead({ path, revision });
+      if (!historical) throw new Error("workspace_revision_not_found");
+      const storageKey = key(ctx, path);
+      let restored: { revision?: number; deleted: boolean; hash: string | null };
+      if (historical.deleted || !historical.bytes) {
+        const result = await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, expectedHash);
+        const revisionMatch = /^revision:(\d+)$/.exec(result.etag ?? "");
+        restored = { ...(revisionMatch ? { revision: Number(revisionMatch[1]) } : {}), deleted: result.deleted, hash: null };
+      } else {
+        if (historical.bytes.byteLength > MAX_FILE_RESTORE_BYTES) throw new Error(`file restore is limited to ${MAX_FILE_RESTORE_BYTES} bytes`);
+        const digest = await crypto.subtle.digest("SHA-256", historical.bytes);
+        const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+        if (hash !== historical.sha256) throw new Error("workspace_revision_content_integrity_failed");
+        const write = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, historical.bytes, expectedHash, {}, {
+          contentType: historical.contentType ?? "application/octet-stream",
+        });
+        const revisionMatch = /^revision:(\d+)$/.exec(write.etag);
+        restored = { ...(revisionMatch ? { revision: Number(revisionMatch[1]) } : {}), deleted: false, hash: write.hash };
+      }
+      await ctx.env.onWorkspaceChange?.({ path, operation: restored.deleted ? "delete" : "write" });
+      return { ok: true, path, restoredFromRevision: revision, ...restored,
+        ...(restored.revision && ctx.env.workspaceBranch ? { branch: ctx.env.workspaceBranch } : {}) };
     },
   },
 };

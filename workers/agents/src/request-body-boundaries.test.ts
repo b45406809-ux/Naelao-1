@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { app, fetchAgentsRequest } from "./index.js";
+import { mintInternalToken } from "@naelao/http";
 
 describe("Agents inbound request body limits", () => {
   it("rejects an oversized tunnel enrollment before parsing or reaching Spaces", async () => {
@@ -33,5 +34,23 @@ describe("Agents inbound request body limits", () => {
     await expect(response.json()).resolves.toEqual({
       error_code: "payload_too_large",
     });
+  });
+
+  it("allows sandbox workspace transfer bodies above the generic JSON limit", async () => {
+    const secret = "test-secret";
+    const tenantId = "tenant-a";
+    const request = new Request("https://agents.example.test/internal/sandbox-workspaces/blobs", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": "user-a",
+        "x-naelao-internal-token": await mintInternalToken(secret, tenantId) },
+      body: JSON.stringify({ filesystemId: "missing", contentBase64: "A".repeat(5 * 1024 * 1024) }),
+    });
+    const response = await fetchAgentsRequest(request, {
+      PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) },
+      SCRIPTS_R2: {} as never,
+    } as never, {} as never);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error_code: "filesystem_not_found" });
   });
 });

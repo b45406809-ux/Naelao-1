@@ -1020,6 +1020,15 @@ export interface ScriptEngineEnv {
     head: { branch: string; revision: number; updatedAt: string };
     entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }>;
   } | null>;
+  /** Bounded per-file revision metadata for the coordinator-backed workspace history tool. */
+  workspaceHistoryRead?: (input: { path: string; afterRevision?: number; limit?: number }) => Promise<{
+    branch: string; path: string; headRevision: number; cursor: number; hasMore: boolean; resetRequired: boolean;
+    versions: Array<{ revision: number; updatedAt: string; sha256?: string; size?: number; contentType?: string; deleted: boolean }>;
+  }>;
+  /** Reads one retained manifest version after validating the scoped manifest and content hash. */
+  workspaceRevisionRead?: (input: { path: string; revision: number }) => Promise<{
+    revision: number; sha256: string | null; bytes: Uint8Array | null; contentType?: string; deleted: boolean;
+  } | null>;
   /** Project-scoped writer critical section shared with the explicit legacy migration barrier. */
   withProjectWorkspaceMutation?<T>(operation: () => Promise<T>): Promise<T>;
   /** Canonical publisher available only for an isolated checked workspace branch. */
@@ -1027,6 +1036,7 @@ export interface ScriptEngineEnv {
     key: string;
     bytes: Uint8Array | null;
     expectedHash: string | null;
+    contentType?: string;
   }) => Promise<{ hash: string | null; revision: number; deleted: boolean }>;
   /** Host-provided multimodal analyzer. Media bytes never leave through the text reasoner. */
   videoSkillAnalyzer?: {

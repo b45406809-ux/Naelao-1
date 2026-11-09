@@ -56,7 +56,7 @@ const WORKSPACE_DIR = "/workspace";
 // Mirrors ToolSandboxDO's own sync bounds — the harness enforces its side independently so a
 // runaway script can't OOM/hang the container even if the DO's caps were somehow bypassed.
 const MAX_WORKSPACE_FILES = 300;
-const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_PDF_BYTES = 1024 * 1024;
 const MAX_PDF_RENDER_PAGES = 5;
 const MAX_PDF_PAGE_PIXELS = 2048 * 2048;
@@ -330,11 +330,13 @@ createServer((req, res) => {
   const controller = new AbortController();
   req.once("aborted", () => controller.abort());
   res.once("close", () => { if (!res.writableEnded) controller.abort(); });
-  const MAX_BODY_BYTES = 10_000_000; // §A1.17 Phase R: no more bundled workspace_files, back to a script-code-sized budget
+  const MAX_BODY_BYTES = path.endsWith("/workspace/write") ? 30 * 1024 * 1024 : 10_000_000;
   let body = "";
+  let bodyBytes = 0;
   req.on("data", (c) => {
     body += c;
-    if (body.length > MAX_BODY_BYTES) req.destroy();
+    bodyBytes += c.length;
+    if (bodyBytes > MAX_BODY_BYTES) req.destroy();
   });
   req.on("end", async () => {
     try {

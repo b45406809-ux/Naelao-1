@@ -36,6 +36,7 @@ import { mintInternalToken } from "@naelao/http";
 import { distillSkillFromTrace } from "../distill.js";
 import { distillSkillFromVideo } from "../video-distill.js";
 import { workspacePrefix } from "../types.js";
+import { publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
 function library(ctx: PrebuiltOpContext): SkillLibrary {
   return new SkillLibrary(ctx.env.scriptsBucket, ctx.env.spaceId);
@@ -224,10 +225,19 @@ async function promote(a: Record<string, unknown>, ctx: PrebuiltOpContext): Prom
 
 async function distillTrace(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {
   if (!Array.isArray(a["trace"])) throw new Error("skill.distill_from_trace requires trace[]");
+  const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
+  const prefix = workspacePrefix(ctx.env);
   const result = await distillSkillFromTrace(a["trace"] as never[], String(a["skillName"] ?? ""), {
     library: library(ctx),
     ...(typeof a["description"] === "string" ? { description: a["description"] } : {}),
-    workspace: { bucket: ctx.env.workspaceBucket ?? ctx.env.scriptsBucket, prefix: workspacePrefix(ctx.env) },
+    workspace: {
+      prefix,
+      publish: async (path, bytes, contentType) => {
+        const key = `${prefix}${path}`;
+        const current = await readBytesWithHash(bucket, key);
+        await publishWorkspaceBytesCas(ctx.env, bucket, key, bytes, current?.hash ?? null, {}, { contentType });
+      },
+    },
   });
   return { ok: true, name: result.metadata.name, parameters: result.metadata.parameters, verified: false, validation: "syntactic_only" };
 }

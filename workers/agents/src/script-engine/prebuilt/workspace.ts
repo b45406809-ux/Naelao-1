@@ -52,7 +52,7 @@ function reqWorkspace(args: Record<string, unknown>, name: string): WorkspaceNam
 
 async function writeR2Cas(ctx: PrebuiltOpContext, path: string, content: string, expectedHash: string | null): Promise<void> {
   const storageKey = key(ctx, path);
-  await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash);
+  await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash, {}, { contentType: "text/plain; charset=utf-8" });
 }
 
 async function deleteR2Cas(ctx: PrebuiltOpContext, path: string, expectedHash: string | null): Promise<void> {
@@ -240,7 +240,7 @@ export const workspace: PrebuiltScript = {
           return { ok: false, status: "proposal_required", node_id: nodeId, message: "The document edit lease was taken over; do not retry without a fresh read and human review." };
         }
         try {
-          await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(clauses.join("\n\n")), current.hash);
+          await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(clauses.join("\n\n")), current.hash, {}, { contentType: "text/plain; charset=utf-8" });
         } catch (error) {
           if (error instanceof Error && error.message.includes("changed concurrently")) return { ok: false, status: "revision_conflict", path, node_id: nodeId };
           throw error;

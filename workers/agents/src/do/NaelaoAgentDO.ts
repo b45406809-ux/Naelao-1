@@ -2315,7 +2315,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const response = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, `/v1/read?branch=${encodeURIComponent(branch)}`, {});
         if (response.status === 404) return null;
         if (!response.ok) throw new Error(`workspace_read_failed:${response.status}`);
-        return response.json() as Promise<{ head: { branch: string; revision: number; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> }>;
+        return response.json() as Promise<{ head: { branch: string; revision: number; updatedAt: string }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }> }>;
+      };
+      env.workspaceHistoryRead = async input => {
+        const branch = workspaceBranch ?? "main";
+        const query = new URLSearchParams({ branch, path: input.path, limit: String(input.limit ?? 100) });
+        if (input.afterRevision !== undefined) query.set("afterRevision", String(input.afterRevision));
+        const response = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, `/v1/history?${query}`, {});
+        if (!response.ok) throw new Error(`workspace_history_read_failed:${response.status}`);
+        return response.json() as ReturnType<NonNullable<ScriptEngineEnv["workspaceHistoryRead"]>>;
+      };
+      env.workspaceRevisionRead = async input => {
+        const branch = workspaceBranch ?? "main";
+        const query = new URLSearchParams({ branch, revision: String(input.revision), path: input.path });
+        const response = await workspaceCoordinatorRequest(unifiedWorkspaceBindings, scope, `/v1/read?${query}`, {});
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`workspace_revision_read_failed:${response.status}`);
+        const payload = await response.json() as { head?: { revision?: number }; entries?: Array<{ path: string; sha256: string; size: number; objectKey: string; contentType?: string }> };
+        if (payload.head?.revision !== input.revision || !Array.isArray(payload.entries)) throw new Error("workspace_revision_response_invalid");
+        const entry = payload.entries.find(candidate => candidate.path === input.path);
+        if (!entry) return { revision: input.revision, sha256: null, bytes: null, deleted: true };
+        const object = await (env.immutableArtifactBucket ?? env.scriptsBucket).get(entry.objectKey);
+        if (!object || object.size !== entry.size || entry.size > 20 * 1024 * 1024) throw new Error("workspace_revision_content_unavailable");
+        const bytes = new Uint8Array(await object.arrayBuffer());
+        const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
+        if (bytes.byteLength !== entry.size || hash !== entry.sha256) throw new Error("workspace_revision_content_integrity_failed");
+        return { revision: input.revision, sha256: entry.sha256, bytes, ...(entry.contentType ? { contentType: entry.contentType } : {}), deleted: false };
       };
       // Agent runs can publish only on a pre-created isolated branch; interactive project
       // file-manager operations have no speculative run lifecycle and publish checked edits
@@ -2324,7 +2349,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (checkedBranch && (!commitContext || checkedBranch !== "main")) env.publishWorkspaceChecked = async input => {
         const prefix = workspacePrefix(env);
         if (!input.key.startsWith(prefix)) throw new Error("workspace_checked_publication_scope_mismatch");
-        if (input.bytes && input.bytes.byteLength > 768 * 1024) throw new Error("workspace_file_limit_exceeded");
+        if (input.bytes && input.bytes.byteLength > 20 * 1024 * 1024) throw new Error("workspace_file_limit_exceeded");
         const path = input.key.slice(prefix.length);
         const contentHash = input.bytes ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", input.bytes))].map(value => value.toString(16).padStart(2, "0")).join("") : null;
         const keyMaterial = JSON.stringify({ run: env.runId ?? commitContext?.taskId ?? agentId, branch: checkedBranch, path, expectedHash: input.expectedHash, contentHash });
@@ -2334,7 +2359,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": tenantToken },
           body: JSON.stringify({ scope, branch: checkedBranch, actorId: userId ?? agentId, path, expectedHash: input.expectedHash,
-            contentBase64: input.bytes ? bytesToBase64(input.bytes) : null, idempotencyKey }),
+            contentBase64: input.bytes ? bytesToBase64(input.bytes) : null, ...(input.contentType ? { contentType: input.contentType } : {}), idempotencyKey }),
         });
         const response = await handleWorkspaceCheckedPublish(publishRequest, unifiedWorkspaceBindings);
         const result = await readBoundedResponseJson<{ error_code?: string; publication?: { status?: string; revision?: number } }>(response, 16 * 1024);
@@ -3555,40 +3580,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         await this.ctx.storage.put(seedKey, "complete");
         return;
       }
-      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
-      const targetPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
-      const target = await bucket.list({ prefix: targetPrefix, limit: 1 });
-      if (target.objects.length && await this.ctx.storage.get(seedKey) !== "started") {
-        // Preserve a branch created by an older runtime; it may already contain worker output.
-        await this.ctx.storage.put(seedKey, "complete");
-        return;
-      }
-      await this.ctx.storage.put(seedKey, "started");
-      let staleCursor: string | undefined;
-      do {
-        const stale = await bucket.list({ prefix: targetPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
-        for (const object of stale.objects) await bucket.delete(object.key);
-        staleCursor = stale.truncated ? stale.cursor : undefined;
-      } while (staleCursor);
-      const sourcePrefix = workspacePrefix(runtimeEnv);
-      let cursor: string | undefined;
-      let fileCount = 0, totalBytes = 0;
-      do {
-        const page = await bucket.list({ prefix: sourcePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-        for (const object of page.objects) {
-          const path = object.key.slice(sourcePrefix.length);
-          if (!path || path.startsWith("branches/")) continue;
-          if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("task_workspace_snapshot_limit_exceeded");
-          const source = await bucket.get(object.key);
-          if (!source) continue;
-          await bucket.put(`${targetPrefix}${path}`, await source.arrayBuffer(), {
-            ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
-            ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
-          });
+      const seedLegacyBranch = async () => {
+        const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+        const targetPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
+        const target = await bucket.list({ prefix: targetPrefix, limit: 1 });
+        if (target.objects.length && await this.ctx.storage.get(seedKey) !== "started") {
+          // Preserve a branch created by an older runtime; it may already contain worker output.
+          await this.ctx.storage.put(seedKey, "complete");
+          return;
         }
-        cursor = page.truncated ? page.cursor : undefined;
-      } while (cursor);
-      await this.ctx.storage.put(seedKey, "complete");
+        await this.ctx.storage.put(seedKey, "started");
+        let staleCursor: string | undefined;
+        do {
+          const stale = await bucket.list({ prefix: targetPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
+          for (const object of stale.objects) await bucket.delete(object.key);
+          staleCursor = stale.truncated ? stale.cursor : undefined;
+        } while (staleCursor);
+        const sourcePrefix = workspacePrefix(runtimeEnv);
+        let cursor: string | undefined;
+        let fileCount = 0, totalBytes = 0;
+        do {
+          const page = await bucket.list({ prefix: sourcePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+          for (const object of page.objects) {
+            const path = object.key.slice(sourcePrefix.length);
+            if (!path || path.startsWith("branches/")) continue;
+            if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("task_workspace_snapshot_limit_exceeded");
+            const source = await bucket.get(object.key);
+            if (!source) continue;
+            await bucket.put(`${targetPrefix}${path}`, await source.arrayBuffer(), {
+              ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
+              ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
+            });
+          }
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor);
+        await this.ctx.storage.put(seedKey, "complete");
+      };
+      if (runtimeEnv.withProjectWorkspaceMutation) await runtimeEnv.withProjectWorkspaceMutation(seedLegacyBranch);
+      else await seedLegacyBranch();
     };
 
     const reserveTaskBranch = async (): Promise<string | undefined> => {
@@ -3699,37 +3728,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           baseline[entry.path] = entry.sha256;
         }
       } else {
-        const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
-        const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
-        const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
-        // A retry after a partial fork must not leave stale keys that were absent from the source
-        // snapshot; remove the incomplete destination before rebuilding its baseline.
-        let staleCursor: string | undefined;
-        do {
-          const stalePage = await bucket.list({ prefix: workerPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
-          for (const object of stalePage.objects) await bucket.delete(object.key);
-          staleCursor = stalePage.truncated ? stalePage.cursor : undefined;
-        } while (staleCursor);
-        let cursor: string | undefined;
-        let fileCount = 0, totalBytes = 0;
-        do {
-          const page = await bucket.list({ prefix: basePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-          for (const object of page.objects) {
-            const path = object.key.slice(basePrefix.length);
-            if (!path || path.includes("../")) continue;
-            if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
-            const source = await bucket.get(object.key);
-            if (!source) continue;
-            const bytes = await source.arrayBuffer();
-            const hash = source.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
-            baseline[path] = hash;
-            await bucket.put(`${workerPrefix}${path}`, bytes, {
-              ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
-              ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
-            });
-          }
-          cursor = page.truncated ? page.cursor : undefined;
-        } while (cursor);
+        const seedLegacyWorkerBranch = async () => {
+          const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
+          const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
+          const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+          // A retry after a partial fork must not leave stale keys that were absent from the source
+          // snapshot; remove the incomplete destination before rebuilding its baseline.
+          let staleCursor: string | undefined;
+          do {
+            const stalePage = await bucket.list({ prefix: workerPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
+            for (const object of stalePage.objects) await bucket.delete(object.key);
+            staleCursor = stalePage.truncated ? stalePage.cursor : undefined;
+          } while (staleCursor);
+          let cursor: string | undefined;
+          let fileCount = 0, totalBytes = 0;
+          do {
+            const page = await bucket.list({ prefix: basePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+            for (const object of page.objects) {
+              const path = object.key.slice(basePrefix.length);
+              if (!path || path.includes("../")) continue;
+              if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
+              const source = await bucket.get(object.key);
+              if (!source) continue;
+              const bytes = await source.arrayBuffer();
+              const hash = source.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+              baseline[path] = hash;
+              await bucket.put(`${workerPrefix}${path}`, bytes, {
+                ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
+                ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
+              });
+            }
+            cursor = page.truncated ? page.cursor : undefined;
+          } while (cursor);
+        };
+        if (runtimeEnv.withProjectWorkspaceMutation) await runtimeEnv.withProjectWorkspaceMutation(seedLegacyWorkerBranch);
+        else await seedLegacyWorkerBranch();
       }
       await this.ctx.storage.put(baselineKey, baseline);
       if (baselineRevision !== undefined && baselineManifestHash) {

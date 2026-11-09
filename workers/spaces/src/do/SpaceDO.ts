@@ -4380,7 +4380,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const compiled = compileBlueprint(blueprint, targetSpaceId);
     const ids = new Map<string, string>();
     for (const project of compiled.projects) ids.set(project.id ?? project.name, crypto.randomUUID());
-    const preparedFiles: Array<{ projectId: string; path: string; content: string; contentHash: string; sizeBytes: number }> = [];
+    const preparedFiles: Array<{ projectId: string; path: string; content: string; contentHash: string; sizeBytes: number; contentType: string }> = [];
     const fixturesByProject = new Map<string, ReturnType<typeof validateDemoFixtureRows>>();
     let totalSeedBytes = 0;
     for (const project of compiled.projects) {
@@ -4395,9 +4395,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!path || path.split("/").some((segment) => !segment || segment === "." || segment === "..")) throw new Error("invalid_starter_artifact_path");
         const sizeBytes = new TextEncoder().encode(file.content).byteLength;
         totalSeedBytes += sizeBytes;
-        const maxFileBytes = this.env.UNIFIED_WORKSPACE_ENABLED === "true" ? 768 * 1024 : 2 * 1024 * 1024;
+        const maxFileBytes = this.env.UNIFIED_WORKSPACE_ENABLED === "true" ? 20 * 1024 * 1024 : 2 * 1024 * 1024;
         if (sizeBytes > maxFileBytes || totalSeedBytes > 10 * 1024 * 1024) throw new Error("starter_artifact_size_limit");
-        preparedFiles.push({ projectId, path, content: file.content, contentHash: await sha256Hex(file.content), sizeBytes });
+        const extension = file.path.split(".").pop()?.toLowerCase();
+        const contentType = extension === "json" ? "application/json; charset=utf-8"
+          : extension === "csv" ? "text/csv; charset=utf-8"
+            : "text/plain; charset=utf-8";
+        preparedFiles.push({ projectId, path, content: file.content, contentHash: await sha256Hex(file.content), sizeBytes, contentType });
       }
     }
 
@@ -4416,17 +4420,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         for (const project of compiled.projects) {
           const projectId = ids.get(project.id ?? project.name)!;
           const scope = { tenantId, spaceId: targetSpaceId, projectId, jurisdiction };
-          const entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }> = [];
+          const entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType: string }> = [];
           for (const file of preparedFiles.filter((item) => item.projectId === projectId)) {
             const objectKey = `workspace-v1/${tenantId}/${targetSpaceId}/${projectId}/${jurisdiction}/content/${file.contentHash}`;
             const bytes = new TextEncoder().encode(file.content);
-            const stored = await this.env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.contentHash, size: String(file.sizeBytes) } });
+            const stored = await this.env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.contentHash, size: String(file.sizeBytes) }, httpMetadata: { contentType: file.contentType } });
             if (stored) canonicalUploadedKeys.push(objectKey);
             else {
               const existing = await this.env.SCRIPTS_R2.get(objectKey);
               if (!existing || existing.size !== file.sizeBytes || await sha256Hex(new TextDecoder().decode(await existing.arrayBuffer())) !== file.contentHash) throw new Error("workspace_seed_content_integrity_failed");
             }
-            entries.push({ path: file.path, sha256: file.contentHash, size: file.sizeBytes, executable: false, objectKey });
+            entries.push({ path: file.path, sha256: file.contentHash, size: file.sizeBytes, executable: false, objectKey, contentType: file.contentType });
           }
           initializationAttemptedScopes.push(scope);
           const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/initialize", {
@@ -4439,12 +4443,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } else for (const file of preparedFiles) {
         const key = `spaces/${targetSpaceId}/projects/${file.projectId}/workspace/${file.path}`;
         if (this.env.SCRIPTS_R2) {
-          const extension = file.path.split(".").pop()?.toLowerCase();
-          const contentType = extension === "json" ? "application/json; charset=utf-8"
-            : extension === "csv" ? "text/csv; charset=utf-8"
-              : "text/plain; charset=utf-8";
           await this.env.SCRIPTS_R2.put(key, file.content, {
-            httpMetadata: { contentType },
+            httpMetadata: { contentType: file.contentType },
             customMetadata: { seeded: "true", blueprintId: compiled.id },
           });
           stagedKeys.push(key);

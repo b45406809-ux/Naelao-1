@@ -19,15 +19,16 @@ describe("space erasure workflow checkpointing", () => {
     }) } as unknown as Fetcher;
     const erasedScopes: unknown[] = [];
     const agentsWorker = { fetch: vi.fn(async (request: Request) => {
-      erasedScopes.push(await request.json());
-      return Response.json({ erased: true });
+      const body = await request.json() as { scope?: unknown; confirm?: boolean };
+      erasedScopes.push(body);
+      return Response.json({ erased: true, hasMore: false, providerConnectionsDeleted: false });
     }) } as unknown as Fetcher;
     const result = await eraseWorkspaceCoordinatorsForSpace({ tenantId: "tenant-a", spaceId: "space-a", jurisdiction: "eu", platformSecret: "secret", spacesWorker, agentsWorker, after: "project-0" });
     expect(result).toEqual({ erasedCount: 2, nextCursor: "project-b", hasMore: true });
     expect(enumerationRequest && new URL(enumerationRequest.url).searchParams.get("after")).toBe("project-0");
     expect(erasedScopes).toEqual([
-      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", jurisdiction: "eu" } },
-      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-b", jurisdiction: "eu" } },
+      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", jurisdiction: "eu" }, confirm: true },
+      { scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-b", jurisdiction: "eu" }, confirm: true },
     ]);
   });
 
