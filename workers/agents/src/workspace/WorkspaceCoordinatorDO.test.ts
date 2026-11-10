@@ -868,6 +868,30 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
   });
 
+  it("preserves single-writer admission across repeated competing-runtime races", async () => {
+    const { instance } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    let priorFence = 0;
+    for (let index = 0; index < 50; index++) {
+      const candidates = [`race-${index}-a`, `race-${index}-b`];
+      const results = await Promise.all(candidates.map((runtimeId, offset) => {
+        const allocationGeneration = index * 2 + offset + 1;
+        return call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId, allocationGeneration,
+          mode: "live_single_writer", capabilityEvidence: liveEvidence(allocationGeneration, { runtimeId }) });
+      }));
+      expect(results.filter((result) => result.status === 200)).toHaveLength(1);
+      expect(results.filter((result) => result.status === 409)).toHaveLength(1);
+      const winningResponse = results.find((result) => result.status === 200);
+      if (!winningResponse) throw new Error("competing writer race had no winner");
+      const winner = await winningResponse.json() as { session: { id: string; allocationGeneration: number; fence: number } };
+      expect(winner.session.fence).toBeGreaterThan(priorFence);
+      priorFence = winner.session.fence;
+      const revoked = await call(instance, "/v1/revoke", { sessionId: winner.session.id,
+        allocationGeneration: winner.session.allocationGeneration, fence: winner.session.fence });
+      expect(revoked.status).toBe(200);
+    }
+  });
+
   it("uses the authority verifier's selected qualifying runtime instead of silently downgrading the requested runtime", async () => {
     const { instance } = setup({ liveEnabled: true, candidateSelection: { runtimeId: "runtime-qualified", allocationGeneration: 3 } });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
