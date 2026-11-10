@@ -27,11 +27,13 @@ class Storage {
   }
 }
 
-function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean } = {}) {
+function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure";
+  candidateSelection?: { runtimeId: string; allocationGeneration: number } } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
   const metadata = new Map<string, { contentType?: string }>();
   const customMetadata = new Map<string, Record<string, string>>();
+  const verificationState = { authorized: true };
   const r2: Record<string, (...args: never[]) => unknown> = {
     async get(key: string) {
       const bytes = objects.get(key);
@@ -57,12 +59,45 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
   };
   const verifier = options.liveVerifier ?? options.liveEnabled ? { async fetch(request: Request) {
     const body = await request.json() as { capabilityEvidence?: unknown };
-    return Response.json({ verified: true, evidence: body.capabilityEvidence });
+    if (!verificationState.authorized) return Response.json({ verified: false, missing: ["authorizationRevoked"] });
+    const evidence = body.capabilityEvidence && typeof body.capabilityEvidence === "object" ? body.capabilityEvidence as Record<string, unknown> : {};
+    const selection = options.candidateSelection;
+    const complete = { authorized: true, residencyAllowed: true, liveMountReady: true, fuseReady: true, incrementalSyncReady: true,
+      flushReady: true, reconnectGenerationCheck: true, authenticatedTransport: true, billingReserved: true, budgetReserved: true,
+      runtimeAccountingReady: true, ...evidence, ...(selection ? { ...selection, allocationId: `allocation-${selection.allocationGeneration}`,
+        billingReservationId: `billing-${selection.allocationGeneration}`, budgetReservationId: `budget-${selection.allocationGeneration}` } : {}) };
+    return Response.json({ verified: true, evidence: complete,
+      ...(selection ? { candidateSearchPerformed: true } : {}) });
+  } } : undefined;
+  const runtimeControl = options.runtimeControl ? { async fetch(request: Request) {
+    const body = await request.json() as Record<string, unknown>;
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/checkpoint/sync")) return Response.json({ synced: true, nonce: body.nonce, requestId: body.requestId,
+      sessionId: body.sessionId, runtimeId: body.runtimeId, allocationGeneration: body.allocationGeneration, fence: body.fence,
+      changes: [{ path: "live.txt", expectedHash: null, contentBase64: btoa("live checkpoint") }], cursor: "runtime-cursor-1" });
+    if (path.endsWith("/checkpoint/ack")) return Response.json({ acknowledged: true });
+    if (path.endsWith("/prepare")) {
+      if (options.runtimeControl === "flush_failure") return Response.json({ prepared: false, error_code: "flush_failed" }, { status: 503 });
+      return Response.json({ prepared: true, receipt: {
+        id: "flush-verified", nonce: body.nonce, sessionId: body.sessionId, runtimeId: body.runtimeId,
+        allocationGeneration: body.allocationGeneration, fence: body.fence, revision: 1,
+        writeAdmissionStopped: true, inFlightDrained: true, filesystemFlushed: true,
+        flushMethod: "fsync", flushCompletedAt: Date.now(),
+      } });
+    }
+    if (path.endsWith("/activate")) {
+      if (options.runtimeControl === "activation_failure") return Response.json({ activated: false }, { status: 503 });
+      return Response.json({ activated: true, nonce: body.nonce, sessionId: body.sessionId, runtimeId: body.runtimeId,
+        allocationGeneration: body.allocationGeneration, fence: body.fence, revision: body.revision });
+    }
+    return Response.json({ aborted: true });
   } } : undefined;
   const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false",
-    ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}), UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
+    ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}),
+    ...(runtimeControl ? { LIVE_RUNTIME_CONTROL: runtimeControl as unknown as Fetcher } : {}),
+    UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
-  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2 };
+  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState };
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
@@ -833,6 +868,15 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
   });
 
+  it("uses the authority verifier's selected qualifying runtime instead of silently downgrading the requested runtime", async () => {
+    const { instance } = setup({ liveEnabled: true, candidateSelection: { runtimeId: "runtime-qualified", allocationGeneration: 3 } });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-preferred", allocationGeneration: 1,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(1, { runtimeId: "runtime-preferred" }) });
+    expect(opened.status).toBe(200);
+    expect(await opened.json()).toMatchObject({ session: { mode: "live_single_writer", runtimeId: "runtime-qualified", allocationGeneration: 3 } });
+  });
+
   it("creates an isolated branch head without changing the source branch", async () => {
     const { instance } = setup();
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
@@ -876,14 +920,22 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("requires a committed revision for writer handoff and rejects stale writes after fencing", async () => {
-    const { instance } = setup({ liveEnabled: true });
+    const noControl = setup({ liveEnabled: true });
+    await call(noControl.instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const noControlSession = await (await call(noControl.instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(7, { runtimeId: "runtime-a" }) })).json() as { session: { id: string; fence: number } };
+    const forgedReceipt = await call(noControl.instance, "/v1/handoff", { sessionId: noControlSession.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7,
+      targetAllocationGeneration: 8, checkpointRevision: 1, drained: true,
+      flushReceipt: { id: "caller-invented", status: "flushed", sessionId: noControlSession.session.id, runtimeId: "runtime-a", allocationGeneration: 7, fence: noControlSession.session.fence, revision: 1 },
+      targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
+    expect(await forgedReceipt.json()).toMatchObject({ error_code: "runtime_control_unavailable" });
+
+    const { instance } = setup({ liveEnabled: true, runtimeControl: "ok" });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
     const evidence = liveEvidence(7, { runtimeId: "runtime-a" });
     const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7, mode: "live_single_writer", capabilityEvidence: evidence })).json() as { session: { id: string; fence: number } };
-    const rejectedHandoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1 });
-    expect(await rejectedHandoff.json()).toMatchObject({ error_code: "handoff_flush_required" });
     const handoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1,
-      drained: true, flushReceipt: { id: "flush-1", status: "flushed", sessionId: opened.session.id, runtimeId: "runtime-a", allocationGeneration: 7, fence: opened.session.fence, revision: 1 }, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
+      targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
     const next = await handoff.json() as { session: { id: string; fence: number; allocationGeneration: number } };
     expect(handoff.status, JSON.stringify(next)).toBe(200);
     expect(next.session).toMatchObject({ fence: opened.session.fence + 1, allocationGeneration: 8 });
@@ -903,6 +955,57 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       drained: true, flushReceipt: { id: "flush-pending", status: "flushed", sessionId: opened.session.id, runtimeId: "runtime-a", allocationGeneration: 7, fence: opened.session.fence, revision: 1 }, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
     expect(await response.json()).toMatchObject({ error_code: "handoff_staging_unpublished" });
     expect((await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 7, fence: opened.session.fence, baseRevision: 1, idempotencyKey: "handoff-recovery", stageId: "handoff-pending" })).status).toBe(200);
+  });
+
+  it("keeps the old writer lease when runtime drain or real flush cannot be verified", async () => {
+    const { instance } = setup({ liveEnabled: true, runtimeControl: "flush_failure" });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(7, { runtimeId: "runtime-a" }) })).json() as { session: { id: string; fence: number } };
+    const handoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7,
+      targetAllocationGeneration: 8, checkpointRevision: 1, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
+    expect(handoff.status).toBe(409);
+    expect(await handoff.json()).toMatchObject({ error_code: "handoff_flush_unverified", recoverable: true });
+    expect(await (await call(instance, "/v1/renew", { sessionId: opened.session.id, allocationGeneration: 7, fence: opened.session.fence })).json()).toMatchObject({ sessionId: opened.session.id, fence: opened.session.fence });
+  });
+
+  it("coalesces live checkpoint requests on a durable two-second deadline and publishes runtime sync through the checked service", async () => {
+    const { instance, storage } = setup({ liveEnabled: true, runtimeControl: "ok" });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-live", allocationGeneration: 2,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(2, { runtimeId: "runtime-live" }) })).json() as { session: { id: string; fence: number } };
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const request = { sessionId: opened.session.id, allocationGeneration: 2, fence: opened.session.fence };
+      const first = await call(instance, "/v1/live-checkpoint/request", request);
+      const firstBody = await first.json() as { dueAt: number; coalescedRequests: number };
+      const second = await call(instance, "/v1/live-checkpoint/request", request);
+      const secondBody = await second.json() as { dueAt: number; coalescedRequests: number };
+      expect(firstBody.dueAt).toBe(now + 2_000);
+      expect(secondBody).toMatchObject({ dueAt: firstBody.dueAt, coalescedRequests: 2 });
+      expect(storage.alarmAt).toBeLessThanOrEqual(firstBody.dueAt);
+
+      now += 2_001;
+      await instance.alarm();
+      expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
+      expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "live.txt" }] });
+      expect(storage.values.has("live-checkpoint:main")).toBe(false);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("revokes the handoff target if runtime activation fails after the old writer is fenced", async () => {
+    const { instance, storage } = setup({ liveEnabled: true, runtimeControl: "activation_failure" });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(7, { runtimeId: "runtime-a" }) })).json() as { session: { id: string; fence: number } };
+    const response = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7,
+      targetAllocationGeneration: 8, checkpointRevision: 1, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "handoff_target_activation_failed", recoverable: true });
+    expect(storage.values.get(`writer:main`)).toBeUndefined();
+    const prior = [...storage.values.values()].find((value) => value && typeof value === "object" && (value as { id?: string }).id === opened.session.id) as { status: string };
+    expect(prior.status).toBe("closed");
   });
 
   it("expires live leases, advances the fence, and rejects mutations from the prior writer", async () => {
@@ -936,6 +1039,23 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const replacement = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-next", allocationGeneration: 4,
       mode: "live_single_writer", capabilityEvidence: liveEvidence(4, { runtimeId: "runtime-next" }) });
     expect(await replacement.json()).toMatchObject({ session: { fence: session.session.fence + 2 } });
+  });
+
+  it("fails closed on authority revocation while the writer process and lease are still live", async () => {
+    const { instance, verificationState } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 11,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(11, { runtimeId: "runtime" }) })).json() as { session: { id: string; fence: number } };
+    verificationState.authorized = false;
+    const checkpoint = await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, runtimeId: "runtime", allocationGeneration: 11,
+      fence: opened.session.fence, baseRevision: 1, idempotencyKey: "revoked-authority-checkpoint",
+      changes: [{ path: "late.txt", expectedHash: null, contentBase64: btoa("must not publish") }] });
+    expect(await checkpoint.json()).toMatchObject({ error_code: "writer_lease_expired" });
+    expect(await (await call(instance, "/v1/stage", { sessionId: opened.session.id, runtimeId: "runtime", stageId: "revoked-authority-stage",
+      allocationGeneration: 11, fence: opened.session.fence, changes: [] })).json()).toMatchObject({ error_code: "writer_lease_expired" });
+    expect((await call(instance, `/v1/session-snapshot?sessionId=${opened.session.id}&runtimeId=runtime&allocationGeneration=11&fence=${opened.session.fence}`)).status).toBe(409);
+    expect(await (await call(instance, "/v1/renew", { sessionId: opened.session.id, allocationGeneration: 11, fence: opened.session.fence })).json()).toMatchObject({ error_code: "writer_lease_expired" });
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 1 } });
   });
 
   it("reports cursor freshness from the authoritative head when a revision notification was missed", async () => {

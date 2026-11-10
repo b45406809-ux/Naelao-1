@@ -20,6 +20,8 @@ interface Env {
   SCRIPTS_R2?: R2Bucket;
   LIVE_WORKSPACE_ENABLED?: string;
   LIVE_CAPABILITY_VERIFIER?: Fetcher;
+  /** Trusted runtime control plane. It must quiesce the process and verify the real filesystem flush. */
+  LIVE_RUNTIME_CONTROL?: Fetcher;
   UNIFIED_WORKSPACE_ENABLED?: string;
 }
 interface Change { path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string; }
@@ -85,6 +87,37 @@ interface LiveCapabilityBinding {
   billingReservationId: string;
   budgetReservationId: string;
   verifiedAt: number;
+}
+interface LiveHandoffReceipt {
+  id: string;
+  nonce: string;
+  sessionId: string;
+  runtimeId: string;
+  allocationGeneration: number;
+  fence: number;
+  revision: number;
+  writeAdmissionStopped: true;
+  inFlightDrained: true;
+  filesystemFlushed: true;
+  flushMethod: string;
+  flushCompletedAt: number;
+}
+interface LiveCheckpointJob {
+  sessionId: string;
+  branch: string;
+  runtimeId: string;
+  allocationGeneration: number;
+  fence: number;
+  requestedAt: number;
+  dueAt: number;
+  requestCount: number;
+  rerun?: boolean;
+  processing?: boolean;
+  syncCursor?: string;
+  stageId?: string;
+  idempotencyKey?: string;
+  baseRevision?: number;
+  failure?: string;
 }
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_CHANGES = 100;
@@ -219,6 +252,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await this.ctx.storage.deleteAlarm();
       return;
     }
+    await this.processLiveCheckpoint();
     const startedAt = Date.now();
     const previous = await this.ctx.storage.get<{ failures: number }>("workspace_gc_status") ?? { failures: 0 };
     try {
@@ -248,7 +282,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         ...(hasMore ? {} : { completedAt: new Date().toISOString() }), failures: 0,
         ...(stageBody.hasMore ? { stagingHasMore: true } : {}),
       });
-      await this.ctx.storage.setAlarm(Date.now() + (hasMore ? 1_000 : WORKSPACE_MAINTENANCE_INTERVAL_MS));
+      await this.scheduleAlarmAt(Date.now() + (hasMore ? 1_000 : WORKSPACE_MAINTENANCE_INTERVAL_MS));
       await this.scheduleMetadataExpiry();
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "workspace_gc_failed";
@@ -257,7 +291,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         failures: previous.failures + 1, error: message,
       });
       console.error(`[workspace-gc] maintenance failed scope=${(await this.ctx.storage.get<WorkspaceScope>("scope"))?.spaceId ?? "unknown"} retry=${previous.failures + 1}: ${message}`);
-      await this.ctx.storage.setAlarm(Date.now() + WORKSPACE_MAINTENANCE_RETRY_MS);
+      await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_RETRY_MS);
     }
   }
 
@@ -286,6 +320,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return json({ migration, rollbackAlias, restore, readPolicy, currentHeads, aliasCleanup: await this.ctx.storage.get("legacy_alias_cleanup_receipt") ?? null });
     }
     if (request.method === "GET" && url.pathname === "/v1/read-policy") return json(await this.getReadPolicy());
+    if (request.method === "GET" && url.pathname === "/v1/live-checkpoint/status") return this.liveCheckpointStatus(url);
     if (request.method === "POST" && url.pathname === "/v1/migration/import") return this.migrateLegacyProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/repair") return this.repairMigratedProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/restore") return this.restoreMigratedProject(body!, tenantId);
@@ -297,7 +332,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     if (migration && migration.status !== "verified" && url.pathname !== "/v1/migration/status" && url.pathname !== "/v1/migration/import") return fail("workspace_migration_barrier_active", 423);
-    if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/revoke", "/v1/subscriptions/ack"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/revoke", "/v1/subscriptions/ack", "/v1/live-checkpoint/request"].includes(url.pathname)) {
       const policy = await this.getReadPolicy();
       const canInitialize = url.pathname === "/v1/initialize" && policy.mode === "legacy" &&
         !(await this.ctx.storage.get<WorkspaceMigration>("project_migration")) &&
@@ -327,6 +362,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/v1/handoff") return this.handoff(body!);
     if (request.method === "POST" && url.pathname === "/v1/close") return this.close(body!);
     if (request.method === "POST" && url.pathname === "/v1/revoke") return this.revoke(body!);
+    if (request.method === "POST" && url.pathname === "/v1/live-checkpoint/request") return this.requestLiveCheckpoint(body!);
     return fail("not_found", 404);
   }
 
@@ -1116,18 +1152,21 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         current.allocationGeneration !== session.allocationGeneration || current.fence !== session.fence) return false;
     if (current.mode !== "live_single_writer") return true;
     const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${current.branch}`);
-    return Boolean(lease && lease.sessionId === current.id && lease.fence === current.fence && lease.expiresAt > Date.now());
+    if (!lease || lease.sessionId !== current.id || lease.fence !== current.fence || lease.expiresAt <= Date.now()) return false;
+    return await this.verifyBoundLiveCapability(current);
   }
 
-  private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, evidence: unknown): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
+  private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, evidence: unknown, requireExact = false): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
     if (!this.env.LIVE_CAPABILITY_VERIFIER) return { missing: ["authorityBackedVerification"] };
     let response: Response;
     try {
-      response = await this.env.LIVE_CAPABILITY_VERIFIER.fetch(new Request("https://live-capability-verifier/internal/verify", {
+      response = await this.env.LIVE_CAPABILITY_VERIFIER.fetch(new Request("https://live-capability-verifier/internal/search-and-verify", {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId) },
-        body: JSON.stringify({ scope, actorId, runtimeId, allocationGeneration: generation, capabilityEvidence: evidence }),
+        body: JSON.stringify({ scope, actorId, preferredRuntimeId: runtimeId, preferredAllocationGeneration: generation, capabilityEvidence: evidence,
+          requireExact,
+          requiredCapabilities: ["live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "runtime_accounting"] }),
       }));
     } catch {
       return { missing: ["authorityBackedVerification"] };
@@ -1135,8 +1174,33 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (!response.ok) return { missing: ["authorityBackedVerification"] };
     let verified: Record<string, unknown>;
     try { verified = await response.json() as Record<string, unknown>; } catch { return { missing: ["authorityBackedVerification"] }; }
-    if (verified.verified !== true) return { missing: ["authorityBackedVerification"] };
-    return validateLiveCapabilityEvidence(verified.evidence, generation, runtimeId);
+    if (verified.verified !== true) {
+      const reported = Array.isArray(verified.missing) ? verified.missing.filter((item): item is string => typeof item === "string") : [];
+      return { missing: reported.length ? reported : ["authorityBackedVerification"] };
+    }
+    const selected = verified.evidence && typeof verified.evidence === "object" && !Array.isArray(verified.evidence)
+      ? verified.evidence as Record<string, unknown> : {};
+    const selectedRuntimeId = typeof selected.runtimeId === "string" ? selected.runtimeId : runtimeId;
+    const selectedGeneration = Number.isSafeInteger(selected.allocationGeneration) ? Number(selected.allocationGeneration) : generation;
+    if ((selectedRuntimeId !== runtimeId || selectedGeneration !== generation) && verified.candidateSearchPerformed !== true) return { missing: ["candidateSearchAuthority"] };
+    return validateLiveCapabilityEvidence(selected, selectedGeneration, selectedRuntimeId);
+  }
+
+  private async verifyBoundLiveCapability(session: Session): Promise<boolean> {
+    if (session.mode !== "live_single_writer") return true;
+    if (!session.capabilityBinding) return false;
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope) return false;
+    const binding = session.capabilityBinding;
+    const current = await this.verifyLiveCapability(scope, session.actorId, session.runtimeId, session.allocationGeneration, binding, true);
+    if (!current.binding) return false;
+    const verified = current.binding;
+    return verified.runtimeId === binding.runtimeId && verified.runtimeType === binding.runtimeType &&
+      verified.templateId === binding.templateId && verified.templateDigest === binding.templateDigest && verified.region === binding.region &&
+      verified.authorizationId === binding.authorizationId && verified.authorizationEpoch === binding.authorizationEpoch &&
+      verified.residencyPolicyId === binding.residencyPolicyId && verified.allocationId === binding.allocationId &&
+      verified.allocationGeneration === binding.allocationGeneration && verified.billingReservationId === binding.billingReservationId &&
+      verified.budgetReservationId === binding.budgetReservationId;
   }
 
   private async open(body: Record<string, unknown>, tenantId: string): Promise<Response> {
@@ -1153,7 +1217,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (this.env.LIVE_WORKSPACE_ENABLED !== "true" || !capability.binding) {
         return json({ error_code: "capability_unavailable", mode, requiredRuntimeCapabilities: [
           "live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "authorization", "residency", "billing", "budget", "runtime_accounting",
-        ], missing: capability.missing, candidateSearch: "not_performed_by_workspace_coordinator" }, 409);
+        ], missing: capability.missing, candidateSearch: this.env.LIVE_CAPABILITY_VERIFIER ? "authority_verifier_required" : "verifier_not_configured" }, 409);
       }
       capabilityBinding = capability.binding;
     }
@@ -1166,8 +1230,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const baseRevision = branchBase?.revision ?? current.revision;
     const baseManifestHash = branchBase?.manifestHash ?? current.manifestHash;
     const id = `ws_${crypto.randomUUID()}`;
-    const session: Session = { id, actorId: body.actorId, runtimeId: body.runtimeId, branch, parentBranch, baseRevision, baseManifestHash,
-      mode, requestedMode: mode, resolvedMode: mode, allocationGeneration: Number(body.allocationGeneration), fence: 0,
+    const session: Session = { id, actorId: body.actorId,
+      runtimeId: capabilityBinding?.runtimeId ?? body.runtimeId, branch, parentBranch, baseRevision, baseManifestHash,
+      mode, requestedMode: mode, resolvedMode: mode, allocationGeneration: capabilityBinding?.allocationGeneration ?? Number(body.allocationGeneration), fence: 0,
       ...(capabilityBinding ? { capabilityBinding } : {}), status: "active", createdAt: new Date().toISOString() };
     const result = await this.ctx.storage.transaction(async (tx) => {
       const migration = await tx.get<WorkspaceMigration>("project_migration");
@@ -1195,6 +1260,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
     if (!session || session.status !== "active" || session.mode !== "live_single_writer") return fail("workspace_session_not_found", 404);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("writer_lease_expired", 409);
     const result = await this.ctx.storage.transaction(async (tx) => {
       const current = await tx.get<Session>(sessionKey(session.id));
       const lease = await tx.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
@@ -1575,6 +1641,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.status !== "active") return fail("stale_fence", 409);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== body.fence) return fail("stale_fence", 409);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("writer_lease_expired", 409);
     let changes: Change[];
     if (body.stageId !== undefined) {
       const staged = await this.ctx.storage.get<StageRecord>(stageKey(sessionId, String(body.stageId)));
@@ -1748,6 +1815,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (typeof body.runtimeId === "string" && session.runtimeId !== body.runtimeId) return fail("workspace_session_scope_mismatch", 403);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== body.fence) return fail("stale_fence", 409);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("writer_lease_expired", 409);
     if (session.mode === "live_single_writer") {
       const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
       if (!lease || lease.sessionId !== sessionId || lease.fence !== session.fence || lease.expiresAt <= Date.now()) return fail("writer_lease_expired", 409);
@@ -2211,48 +2279,282 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     });
   }
 
+  private async callLiveRuntimeControl(path: string, scope: WorkspaceScope, body: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    if (!this.env.LIVE_RUNTIME_CONTROL) return null;
+    let response: Response;
+    try {
+      response = await this.env.LIVE_RUNTIME_CONTROL.fetch(new Request(`https://live-runtime-control${path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": scope.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId),
+        },
+        body: JSON.stringify(body),
+      }));
+    } catch {
+      return null;
+    }
+    if (!response.ok) return null;
+    try {
+      const value: unknown = await response.json();
+      return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async requestLiveCheckpoint(body: Record<string, unknown>): Promise<Response> {
+    if (!this.env.LIVE_RUNTIME_CONTROL) return fail("runtime_control_unavailable", 503);
+    if (typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId) ||
+        !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return fail("invalid_live_checkpoint_request");
+    const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
+    if (!session || session.status !== "active" || session.mode !== "live_single_writer") return fail("workspace_session_not_found", 404);
+    if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
+    if (session.fence !== body.fence) return fail("stale_fence", 409);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("writer_lease_expired", 409);
+    const now = Date.now();
+    const result = await this.ctx.storage.transaction(async (tx) => {
+      const key = `live-checkpoint:${session.branch}`;
+      const current = await tx.get<LiveCheckpointJob>(key);
+      if (current && (current.sessionId !== session.id || current.fence !== session.fence || current.allocationGeneration !== session.allocationGeneration)) return { error: "live_checkpoint_recovery_required" };
+      if (current?.failure) return { error: "live_checkpoint_recovery_required" };
+      const job: LiveCheckpointJob = current
+        ? { ...current, requestCount: current.requestCount + 1, ...((current.processing || current.stageId || current.rerun) ? { rerun: true } : {}) }
+        : { sessionId: session.id, branch: session.branch, runtimeId: session.runtimeId, allocationGeneration: session.allocationGeneration,
+            fence: session.fence, requestedAt: now, dueAt: now + 2_000, requestCount: 1, idempotencyKey: `live-${crypto.randomUUID()}` };
+      await tx.put(key, job);
+      return { job };
+    });
+    if ("error" in result) return fail(result.error, 409);
+    await this.scheduleAlarmAt(result.job.dueAt);
+    return json({ scheduled: true, branch: session.branch, dueAt: result.job.dueAt,
+      coalescedRequests: result.job.requestCount, targetLatencyMs: 2_000 });
+  }
+
+  private async liveCheckpointStatus(url: URL): Promise<Response> {
+    const branch = url.searchParams.get("branch");
+    if (!validateWorkspaceBranch(branch)) return fail("invalid_live_checkpoint_branch");
+    const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
+    if (!head) return fail("workspace_not_found", 404);
+    const job = await this.ctx.storage.get<LiveCheckpointJob>(`live-checkpoint:${branch}`);
+    return json({ branch, job: job ? { sessionId: job.sessionId, runtimeId: job.runtimeId, allocationGeneration: job.allocationGeneration,
+      fence: job.fence, requestedAt: job.requestedAt, dueAt: job.dueAt, requestCount: job.requestCount,
+      processing: job.processing === true, staged: Boolean(job.stageId), failure: job.failure ?? null } : null,
+      freshness: { observedRevision: head.revision, source: "authoritative_workspace_head" } });
+  }
+
+  private async updateLiveCheckpointJob(key: string, patch: Partial<LiveCheckpointJob>, clear: Array<"stageId" | "failure"> = []): Promise<LiveCheckpointJob | null> {
+    return this.ctx.storage.transaction(async (tx) => {
+      const current = await tx.get<LiveCheckpointJob>(key);
+      if (!current) return null;
+      const next: LiveCheckpointJob = { ...current, ...patch, requestCount: Math.max(current.requestCount, patch.requestCount ?? 0),
+        ...(current.rerun && patch.rerun === undefined ? { rerun: true } : {}) };
+      for (const field of clear) delete (next as Partial<LiveCheckpointJob>)[field];
+      await tx.put(key, next);
+      return next;
+    });
+  }
+
+  private async processLiveCheckpoint(): Promise<void> {
+    const jobs = await this.ctx.storage.list<LiveCheckpointJob>({ prefix: "live-checkpoint:", limit: 20 });
+    for (const [key, storedJob] of jobs) {
+      let job = storedJob;
+      if (job.dueAt > Date.now()) {
+        await this.scheduleAlarmAt(job.dueAt);
+        continue;
+      }
+      const session = await this.ctx.storage.get<Session>(sessionKey(job.sessionId));
+      if (!session || session.status !== "active" || session.mode !== "live_single_writer" || session.runtimeId !== job.runtimeId ||
+          session.allocationGeneration !== job.allocationGeneration || session.fence !== job.fence || !await this.hasCurrentSessionAuthority(session)) {
+        await this.ctx.storage.delete(key);
+        continue;
+      }
+      const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+      if (!scope || !this.env.LIVE_RUNTIME_CONTROL) {
+        await this.ctx.storage.put(key, { ...job, failure: "runtime_control_unavailable", dueAt: Date.now() + 2_000 });
+        await this.scheduleAlarmAt(Date.now() + 2_000);
+        continue;
+      }
+      job = await this.updateLiveCheckpointJob(key, { processing: true }) ?? job;
+      const startedAt = Date.now();
+      let checkpointResult: Record<string, unknown> | undefined;
+      if (job.stageId && job.idempotencyKey && Number.isSafeInteger(job.baseRevision)) {
+        const response = await this.checkpoint({ sessionId: job.sessionId, runtimeId: job.runtimeId, allocationGeneration: job.allocationGeneration,
+          fence: job.fence, baseRevision: job.baseRevision, idempotencyKey: job.idempotencyKey, stageId: job.stageId });
+        checkpointResult = await response.json<Record<string, unknown>>().catch(() => undefined);
+        if (!response.ok || !checkpointResult?.publication) {
+          const transient = response.status >= 500;
+          const failedJob = { ...job, processing: false, failure: String(checkpointResult?.error_code ?? `checkpoint_http_${response.status}`), dueAt: transient ? Date.now() + 2_000 : job.dueAt };
+          await this.updateLiveCheckpointJob(key, failedJob);
+          if (transient) await this.scheduleAlarmAt(failedJob.dueAt);
+          continue;
+        }
+      } else {
+        const nonce = crypto.randomUUID();
+        const synchronized = await this.callLiveRuntimeControl("/internal/v1/checkpoint/sync", scope, {
+          nonce, requestId: job.idempotencyKey, sessionId: job.sessionId, runtimeId: job.runtimeId,
+          allocationGeneration: job.allocationGeneration, fence: job.fence, branch: job.branch, afterCursor: job.syncCursor ?? null,
+        });
+        if (synchronized?.synced !== true || synchronized.nonce !== nonce || synchronized.requestId !== job.idempotencyKey ||
+            synchronized.sessionId !== job.sessionId || synchronized.runtimeId !== job.runtimeId ||
+            synchronized.allocationGeneration !== job.allocationGeneration || synchronized.fence !== job.fence ||
+            !Array.isArray(synchronized.changes) || typeof synchronized.cursor !== "string") {
+          await this.updateLiveCheckpointJob(key, { failure: "runtime_sync_unverified", processing: false, dueAt: Date.now() + 2_000 });
+          await this.scheduleAlarmAt(Date.now() + 2_000);
+          continue;
+        }
+        const head = await this.ctx.storage.get<WorkspaceHead>(headKey(job.branch));
+        if (!head) {
+          await this.updateLiveCheckpointJob(key, { failure: "workspace_not_found", processing: false, dueAt: Date.now() + 2_000 });
+          await this.scheduleAlarmAt(Date.now() + 2_000);
+          continue;
+        }
+        const stageId = `live-stage-${crypto.randomUUID()}`;
+        const baseRevision = head.revision;
+        const hasChanges = synchronized.changes.length > 0;
+        const durablePatch: Partial<LiveCheckpointJob> = { baseRevision, syncCursor: synchronized.cursor, dueAt: Date.now(), idempotencyKey: job.idempotencyKey! };
+        if (hasChanges) durablePatch.stageId = stageId;
+        const durableJob = await this.updateLiveCheckpointJob(key, durablePatch, [...(hasChanges ? [] : ["stageId" as const]), "failure"]) ?? job;
+        if (hasChanges) {
+          const staged = await this.stage({ sessionId: job.sessionId, runtimeId: job.runtimeId, allocationGeneration: job.allocationGeneration,
+            fence: job.fence, stageId, changes: synchronized.changes });
+          const stageBody: Record<string, unknown> = await staged.json<Record<string, unknown>>().catch(() => ({}));
+          if (!staged.ok || stageBody.status !== "staged") {
+            const transient = staged.status >= 500;
+            const failedJob = { ...durableJob, processing: false, failure: String(stageBody.error_code ?? `stage_http_${staged.status}`), dueAt: transient ? Date.now() + 2_000 : durableJob.dueAt };
+            await this.updateLiveCheckpointJob(key, failedJob);
+            if (transient) await this.scheduleAlarmAt(failedJob.dueAt);
+            continue;
+          }
+          const stagedJob = await this.updateLiveCheckpointJob(key, { dueAt: Date.now(), processing: true }) ?? durableJob;
+          const published = await this.checkpoint({ sessionId: job.sessionId, runtimeId: job.runtimeId, allocationGeneration: job.allocationGeneration,
+            fence: job.fence, baseRevision, idempotencyKey: job.idempotencyKey, stageId: stagedJob.stageId ?? stageId });
+          checkpointResult = await published.json<Record<string, unknown>>().catch(() => undefined);
+          if (!published.ok || !checkpointResult?.publication) {
+            const transient = published.status >= 500;
+            const failedJob = { ...durableJob, processing: false, failure: String(checkpointResult?.error_code ?? `checkpoint_http_${published.status}`), dueAt: transient ? Date.now() + 2_000 : durableJob.dueAt };
+            await this.updateLiveCheckpointJob(key, failedJob);
+            if (transient) await this.scheduleAlarmAt(failedJob.dueAt);
+            continue;
+          }
+        } else {
+          checkpointResult = { publication: { status: "noop", revision: head.revision } };
+        }
+      }
+      const completion = await this.ctx.storage.transaction(async (tx) => {
+        const latest = await tx.get<LiveCheckpointJob>(key);
+        if (!latest?.rerun) { await tx.delete(key); return { nextJob: null, requestCount: latest?.requestCount ?? job.requestCount }; }
+        const next: LiveCheckpointJob = { sessionId: job.sessionId, branch: job.branch, runtimeId: job.runtimeId,
+          allocationGeneration: job.allocationGeneration, fence: job.fence, requestedAt: Date.now(), dueAt: Date.now() + 2_000,
+          requestCount: 1, ...(latest.syncCursor ? { syncCursor: latest.syncCursor } : {}), idempotencyKey: `live-${crypto.randomUUID()}` };
+        await tx.put(key, next);
+        return { nextJob: next, requestCount: latest.requestCount };
+      });
+      if (completion.nextJob) {
+        await this.scheduleAlarmAt(Date.now() + 2_000);
+      }
+      const head = await this.ctx.storage.get<WorkspaceHead>(headKey(job.branch));
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      await this.callLiveRuntimeControl("/internal/v1/checkpoint/ack", scope, {
+        requestId: job.idempotencyKey, sessionId: job.sessionId, runtimeId: job.runtimeId,
+        allocationGeneration: job.allocationGeneration, fence: job.fence, revision: head?.revision ?? null,
+        elapsedMs, scheduledLatencyMs: Math.max(0, startedAt - job.requestedAt), checkpointLatencyMs: Math.max(0, Date.now() - job.requestedAt),
+        latencyTargetMs: 2_000, withinLatencyTarget: Date.now() - job.requestedAt <= 2_000,
+        coalescedRequests: completion.requestCount,
+        publication: checkpointResult?.publication ?? null,
+      });
+    }
+  }
+
   private async handoff(body: Record<string, unknown>): Promise<Response> {
     if (typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId) || typeof body.targetRuntimeId !== "string" || !ID.test(body.targetRuntimeId) || !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.targetAllocationGeneration) || !Number.isSafeInteger(body.checkpointRevision)) return fail("invalid_handoff");
     const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
     if (!session || session.status !== "active" || session.mode !== "live_single_writer") return fail("workspace_session_not_found", 404);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
-    const flushReceipt = body.flushReceipt as Record<string, unknown> | undefined;
-    if (body.drained !== true || !flushReceipt || flushReceipt.status !== "flushed" || flushReceipt.sessionId !== session.id ||
-        flushReceipt.runtimeId !== session.runtimeId || flushReceipt.fence !== session.fence || flushReceipt.allocationGeneration !== session.allocationGeneration ||
-        flushReceipt.revision !== body.checkpointRevision || typeof flushReceipt.id !== "string" || !ID.test(flushReceipt.id)) {
-      return fail("handoff_flush_required", 409);
-    }
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("writer_lease_expired", 409);
     const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (!scope) return fail("workspace_scope_missing", 503);
     const targetCapability = await this.verifyLiveCapability(scope, session.actorId, String(body.targetRuntimeId), Number(body.targetAllocationGeneration), body.targetCapabilityEvidence);
     if (this.env.LIVE_WORKSPACE_ENABLED !== "true" || !targetCapability.binding) {
       return json({ error_code: "capability_unavailable", mode: "live_single_writer", requiredRuntimeCapabilities: [
         "live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "authorization", "residency", "billing", "budget", "runtime_accounting",
-      ], missing: targetCapability.missing, candidateSearch: "not_performed_by_workspace_coordinator" }, 409);
+      ], missing: targetCapability.missing, candidateSearch: this.env.LIVE_CAPABILITY_VERIFIER ? "authority_verifier_required" : "verifier_not_configured" }, 409);
     }
+    const targetRuntimeId = targetCapability.binding.runtimeId;
+    const targetAllocationGeneration = targetCapability.binding.allocationGeneration;
     const stagedRecords = await this.ctx.storage.list<StageRecord>({ prefix: `stage:${session.id}:`, limit: 500 });
     if (stagedRecords.size >= 500 || [...stagedRecords.values()].some((stage) => stage.status !== "consumed")) {
       return fail("handoff_staging_unpublished", 409);
+    }
+    if (!this.env.LIVE_RUNTIME_CONTROL) return json({ error_code: "runtime_control_unavailable", required: ["write_quiescence", "in_flight_drain", "filesystem_flush", "target_activation"] }, 503);
+    const handoffNonce = crypto.randomUUID();
+    const flushResult = await this.callLiveRuntimeControl("/internal/v1/handoff/prepare", scope, {
+      nonce: handoffNonce, scope, branch: session.branch, sessionId: session.id, runtimeId: session.runtimeId,
+      allocationGeneration: session.allocationGeneration, fence: session.fence, targetRuntimeId,
+      targetAllocationGeneration,
+    });
+    const flushReceipt = flushResult?.receipt as LiveHandoffReceipt | undefined;
+    if (flushResult?.prepared !== true || !flushReceipt || flushReceipt.nonce !== handoffNonce ||
+        flushReceipt.sessionId !== session.id || flushReceipt.runtimeId !== session.runtimeId ||
+        flushReceipt.fence !== session.fence || flushReceipt.allocationGeneration !== session.allocationGeneration ||
+        !Number.isSafeInteger(flushReceipt.revision) || typeof flushReceipt.id !== "string" || !ID.test(flushReceipt.id) ||
+        flushReceipt.writeAdmissionStopped !== true || flushReceipt.inFlightDrained !== true || flushReceipt.filesystemFlushed !== true ||
+        typeof flushReceipt.flushMethod !== "string" || !flushReceipt.flushMethod ||
+        typeof flushReceipt.flushCompletedAt !== "number" || !Number.isFinite(flushReceipt.flushCompletedAt) ||
+        flushReceipt.flushCompletedAt > Date.now() + 30_000 || Date.now() - flushReceipt.flushCompletedAt > 30_000) {
+      await this.callLiveRuntimeControl("/internal/v1/handoff/abort", scope, {
+        nonce: handoffNonce, sessionId: session.id, runtimeId: session.runtimeId,
+        allocationGeneration: session.allocationGeneration, fence: session.fence,
+      });
+      return json({ error_code: "handoff_flush_unverified", recoverable: true }, 409);
     }
     const result = await this.ctx.storage.transaction(async (tx) => {
       const lease = await tx.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
       if (!lease || lease.sessionId !== session.id || lease.fence !== session.fence || lease.expiresAt <= Date.now()) return { error: "stale_fence" };
       const head = await tx.get<WorkspaceHead>(headKey(session.branch));
       if (!head) return { error: "workspace_not_found" };
-      if (head.revision !== body.checkpointRevision) return { error: "handoff_checkpoint_required" };
-      if (Number(body.targetAllocationGeneration) <= session.allocationGeneration) return { error: "allocation_generation_must_advance" };
+      if (head.revision !== body.checkpointRevision || head.revision !== flushReceipt.revision) return { error: "handoff_checkpoint_required" };
+      if (targetAllocationGeneration <= session.allocationGeneration) return { error: "allocation_generation_must_advance" };
       session.status = "closed";
       await tx.put(sessionKey(session.id), session);
       const fence = (await tx.get<number>(`fence:${session.branch}`) ?? lease.fence) + 1;
       await tx.put(`fence:${session.branch}`, fence);
-      const newSession: Session = { ...session, id: `ws_${crypto.randomUUID()}`, runtimeId: body.targetRuntimeId as string, baseRevision: head.revision,
-        baseManifestHash: head.manifestHash, allocationGeneration: Number(body.targetAllocationGeneration), fence,
+      const newSession: Session = { ...session, id: `ws_${crypto.randomUUID()}`, runtimeId: targetRuntimeId, baseRevision: head.revision,
+        baseManifestHash: head.manifestHash, allocationGeneration: targetAllocationGeneration, fence,
         ...(targetCapability.binding ? { capabilityBinding: targetCapability.binding } : {}), status: "active", createdAt: new Date().toISOString() };
       await tx.put(sessionKey(newSession.id), newSession);
       await tx.put(`writer:${session.branch}`, { sessionId: newSession.id, fence, expiresAt: Date.now() + 60_000 });
       return { session: newSession, head };
     });
-    return "error" in result ? fail(result.error, 409) : json({ session: result.session, head: result.head });
+    if ("error" in result) {
+      await this.callLiveRuntimeControl("/internal/v1/handoff/abort", scope, {
+        nonce: handoffNonce, sessionId: session.id, runtimeId: session.runtimeId,
+        allocationGeneration: session.allocationGeneration, fence: session.fence,
+      });
+      return fail(result.error, 409);
+    }
+    const activationNonce = crypto.randomUUID();
+    const activated = await this.callLiveRuntimeControl("/internal/v1/handoff/activate", scope, {
+      nonce: activationNonce, sessionId: result.session.id, runtimeId: result.session.runtimeId,
+      allocationGeneration: result.session.allocationGeneration, fence: result.session.fence,
+      revision: result.head.revision, manifestHash: result.head.manifestHash, capabilityBinding: result.session.capabilityBinding,
+    });
+    if (activated?.activated !== true || activated.nonce !== activationNonce || activated.sessionId !== result.session.id ||
+        activated.runtimeId !== result.session.runtimeId || activated.allocationGeneration !== result.session.allocationGeneration ||
+        activated.fence !== result.session.fence || activated.revision !== result.head.revision) {
+      await this.ctx.storage.transaction(async (tx) => {
+        const current = await tx.get<Session>(sessionKey(result.session.id));
+        const lease = await tx.get<{ sessionId: string; fence: number }>(`writer:${session.branch}`);
+        if (!current || current.status !== "active" || current.fence !== result.session.fence || lease?.sessionId !== current.id || lease.fence !== current.fence) return;
+        current.status = "revoked";
+        await tx.put(sessionKey(current.id), current);
+        await tx.put(`fence:${session.branch}`, current.fence + 1);
+        await tx.delete(`writer:${session.branch}`);
+      });
+      return json({ error_code: "handoff_target_activation_failed", recoverable: true, committedRevision: result.head.revision }, 503);
+    }
+    return json({ session: result.session, head: result.head });
   }
 
   private async close(body: Record<string, unknown>): Promise<Response> {
