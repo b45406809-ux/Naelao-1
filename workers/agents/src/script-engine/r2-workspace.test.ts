@@ -55,6 +55,7 @@ function createMockEnv() {
     projectId: "proj-1",
     agentId: "agent-1",
     tenantId: "tenant-1",
+    withProjectWorkspaceMutation: async <T>(operation: () => Promise<T>) => operation(),
     workspaceFileScope: undefined as string[] | undefined,
   };
 }

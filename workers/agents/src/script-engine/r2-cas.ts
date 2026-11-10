@@ -28,6 +28,17 @@ function rejectLegacyUnifiedWorkspaceWrite(env: WorkspaceCasEnv, key: string): v
   if (key.startsWith(prefix)) throw new Error("workspace_write_requires_checked_publication");
 }
 
+function requireProjectWorkspaceMutationBarrier(env: WorkspaceCasEnv, key: string): void {
+  const match = key.match(/^spaces\/([^/]+)\/projects\/([^/]+)\/workspace\//);
+  if (!match) return;
+  if (env.spaceId !== match[1] || env.projectId !== match[2]) {
+    throw new Error("workspace_project_scope_mismatch");
+  }
+  if (!env.publishWorkspaceChecked && !env.withProjectWorkspaceMutation) {
+    throw new Error("workspace_project_mutation_barrier_unavailable");
+  }
+}
+
 export interface CasWriteResult { hash: string; etag: string }
 export interface CasReadResult { bytes: Uint8Array; hash: string; etag: string; metadata: Record<string, string>; contentType?: string }
 
@@ -52,6 +63,7 @@ export async function publishWorkspaceBytesCas(
   httpMetadata?: R2HTTPMetadata,
 ): Promise<CasWriteResult> {
   const publish = async (): Promise<CasWriteResult> => {
+    requireProjectWorkspaceMutationBarrier(env, key);
     if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
     if (env.publishWorkspaceChecked) {
       const result = await env.publishWorkspaceChecked({ key, bytes, expectedHash, ...(httpMetadata?.contentType ? { contentType: httpMetadata.contentType } : {}) });
@@ -85,6 +97,7 @@ export async function deleteWorkspaceBytesCas(
   expectedHash: string | null,
 ): Promise<{ deleted: boolean; etag?: string }> {
   const remove = async (): Promise<{ deleted: boolean; etag?: string }> => {
+    requireProjectWorkspaceMutationBarrier(env, key);
     if (env.publishWorkspaceChecked) {
       const result = await env.publishWorkspaceChecked({ key, bytes: null, expectedHash });
       if (!Number.isSafeInteger(result.revision)) throw new Error("workspace_checked_deletion_unconfirmed");

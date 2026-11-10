@@ -84,4 +84,47 @@ describe("shared R2 compare-and-swap", () => {
     expect(publishWorkspaceChecked).toHaveBeenLastCalledWith({ key, bytes: null, expectedHash: written.hash });
     expect(bucket.entries.size).toBe(0);
   });
+
+  it("fails closed when a legacy project-workspace writer has no mutation barrier", async () => {
+    const bucket = fakeBucket();
+    const env = { spaceId: "s", projectId: "p" };
+    const key = "spaces/s/projects/p/workspace/branches/workers/agent-1/report.txt";
+    const bytes = new TextEncoder().encode("legacy");
+
+    await expect(publishWorkspaceBytesCas(env, bucket, key, bytes, null))
+      .rejects.toThrow("workspace_project_mutation_barrier_unavailable");
+    await expect(deleteWorkspaceBytesCas(env, bucket, key, null))
+      .rejects.toThrow("workspace_project_mutation_barrier_unavailable");
+    expect(bucket.entries.size).toBe(0);
+  });
+
+  it("rejects a project workspace key outside the writer's authorized scope", async () => {
+    const bucket = fakeBucket();
+    const publishWorkspaceChecked = vi.fn(async () => ({ hash: "a".repeat(64), revision: 1, deleted: false }));
+    const env = { spaceId: "s", projectId: "p", publishWorkspaceChecked };
+    const key = "spaces/s/projects/other/workspace/file.txt";
+
+    await expect(publishWorkspaceBytesCas(env, bucket, key, new TextEncoder().encode("cross-project"), null))
+      .rejects.toThrow("workspace_project_scope_mismatch");
+    expect(publishWorkspaceChecked).not.toHaveBeenCalled();
+    expect(bucket.entries.size).toBe(0);
+  });
+
+  it("holds the project mutation barrier around a legacy workspace CAS", async () => {
+    const bucket = fakeBucket();
+    const calls: string[] = [];
+    const env = {
+      spaceId: "s", projectId: "p",
+      withProjectWorkspaceMutation: async <T>(operation: () => Promise<T>) => {
+        calls.push("acquire");
+        try { return await operation(); }
+        finally { calls.push("release"); }
+      },
+    };
+    const key = "spaces/s/projects/p/workspace/branches/workers/agent-1/report.txt";
+
+    await publishWorkspaceBytesCas(env, bucket, key, new TextEncoder().encode("legacy"), null);
+    expect(calls).toEqual(["acquire", "release"]);
+    expect(bucket.entries.has(key)).toBe(true);
+  });
 });

@@ -31,7 +31,8 @@ function makeContext() {
     },
     async delete(key: string) { files.delete(key); },
   };
-  return { files, ctx: { env: { workspaceBucket: bucket, spaceId: "s1", projectId: "p1", agentId: "a1", tenantId: "t1" }, run: async () => undefined } };
+  return { files, ctx: { env: { workspaceBucket: bucket, spaceId: "s1", projectId: "p1", agentId: "a1", tenantId: "t1",
+    withProjectWorkspaceMutation: async <T>(operation: () => Promise<T>) => operation() }, run: async () => undefined } };
 }
 
 describe("r2-workspace SHA-256 CAS", () => {
