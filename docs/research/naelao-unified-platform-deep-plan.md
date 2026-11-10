@@ -403,6 +403,12 @@ The previous files are research inputs and topic inventories, not evidence that 
 - Label other runtimes/readers with committed revision/freshness. If the live writer loses capability, block further writes and preserve staging; require explicit checked recovery/handoff.
 - **Gate:** exactly one writer accepted through repeated multi-runtime races and kill/reconnect tests; no silent fallback to file-copy mode.
 
+#### Phase 5 implementation review (2026-11-10)
+
+The coordinator now persists `requestedMode` and `resolvedMode` on sessions (omitted mode resolves to `checked_handoff`) and requires an internal capability-verifier service binding to attest the exact runtime/template digest/region, authorization epoch, residency policy, allocation generation, authenticated transport, FUSE/mount, synchronization, flush, reconnect, and billing/budget/accounting tuple. If the verifier is missing, fails, or returns incomplete evidence, admission returns a structured `capability_unavailable`; it does not downgrade. No verifier binding is configured in the current Worker deployment, so live admission remains closed. Live session snapshots and content reads, staging, renewals, and publication now reject an absent/expired/mismatched lease; access revocation closes the session and advances the fence. Reader change polling reports freshness against the authoritative head, including when retained events are missing. Handoff requires a scoped flush receipt and target-runtime capability evidence before atomically fencing the old session and opening the successor from the current committed manifest.
+
+This is coordinator protocol work with local Worker/DO mocks only. A verifier binding contract is now required, but no authority-backed verifier is deployed or configured. The coordinator still does not search an authorized runtime catalog, measure or schedule two-second runtime checkpoints, observe actual in-flight filesystem syscalls, or verify that a runtime flush receipt represents a real `fsync`/daemon flush. No `computerd`/FUSE live adapter is wired, and Agent37/ToolSandbox cannot currently produce the required live capability evidence. The live admission flag remains off. Phase 5 is **partial and not accepted**; do not treat asserted mock evidence as runtime capability proof.
+
 ### Phase 6 — Migration cleanup, privacy and production operations
 
 - Finish tombstone-aware erasure, provider delete tracking, retention policy, restore replay, storage garbage collection, and bounded observability.

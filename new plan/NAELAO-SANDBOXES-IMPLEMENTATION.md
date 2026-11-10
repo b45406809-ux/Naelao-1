@@ -72,6 +72,12 @@ Official provider docs reviewed 2026-11-08: [Files](https://www.agent37.com/docs
 
 Live blocker: no authorized Agent37 workspace/account, control and instance credentials, approved Agent template/version, region approval, billing-wallet access, or deployed Naelao guest/runtime protocol is available in this environment. Provider file API behavior, lifecycle transitions, generation continuity, actual billing, and uncertain-run reconciliation remain unaccepted. Generic cancellation is not available through the documented exec interface; cancellation stays recovery-required. The Agent37 product execution dispatcher remains fail-closed and provider status/scheduling flags remain disabled. Keep Agent37 out of scheduling until live checks pass, and keep the separate Phase 2 Cloudflare Container, billing, and remaining caller-migration gates open.
 
+## Phase 5 — Live single-writer coordinator contract (2026-11-10)
+
+The shared coordinator persists each session's requested/resolved workspace mode, defaults omitted mode to `checked_handoff`, and requires an internal capability-verifier service binding to attest fresh exact-runtime/template/region, authorization, residency, allocation generation, authenticated transport, FUSE/mount, incremental sync, flush, reconnect, billing, budget, and runtime-accounting evidence. The binding is not configured in the current Worker, so live admission fails closed; it never downgrades. Session snapshot/content, staging and publication check the lease/fence; access revocation advances the fence. Revision polling derives freshness from the committed head, and handoff requires a scope-bound flush receipt plus target capability evidence before advancing the fence and opening from the committed manifest.
+
+This is a local coordinator contract, not a completed Agent37 live path. Candidate search is not implemented in the coordinator; no Agent37 guest daemon, FUSE mount, incremental sync, real flush, checkpoint timer, reconnect, or billing/accounting proof exists. Agent37 and OpenSandbox remain unavailable and all live/workspace rollout flags remain off.
+
 ## Safe continuation order
 
 1. Ship a pinned Naelao guest runtime protocol and test it inside the existing root-owned supervisor/unprivileged guest boundary before linking provider allocation.

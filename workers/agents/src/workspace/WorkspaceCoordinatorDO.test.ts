@@ -27,7 +27,7 @@ class Storage {
   }
 }
 
-function setup(options: { liveEnabled?: boolean; unifiedEnabled?: boolean } = {}) {
+function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
   const metadata = new Map<string, { contentType?: string }>();
@@ -55,12 +55,27 @@ function setup(options: { liveEnabled?: boolean; unifiedEnabled?: boolean } = {}
     },
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
-  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false", UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
+  const verifier = options.liveVerifier ?? options.liveEnabled ? { async fetch(request: Request) {
+    const body = await request.json() as { capabilityEvidence?: unknown };
+    return Response.json({ verified: true, evidence: body.capabilityEvidence });
+  } } : undefined;
+  const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false",
+    ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}), UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
   return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2 };
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
+function liveEvidence(generation: number, overrides: Record<string, unknown> = {}) {
+  return {
+    authorized: true, authorizationId: "grant-live", authorizationEpoch: 1, residencyAllowed: true, residencyPolicyId: "residency-global",
+    runtimeId: "runtime", runtimeType: "agent37-vm", templateId: "naelao-live", templateDigest: `sha256:${"a".repeat(64)}`, region: "us-east-1",
+    liveMountReady: true, fuseReady: true, incrementalSyncReady: true, flushReady: true, reconnectGenerationCheck: true,
+    authenticatedTransport: true, allocationId: `allocation-${generation}`, allocationGeneration: generation,
+    billingReserved: true, billingReservationId: `billing-${generation}`, budgetReserved: true, budgetReservationId: `budget-${generation}`,
+    runtimeAccountingReady: true, verifiedAt: Date.now(), ...overrides,
+  };
+}
 interface InventorySummaryRecord {
   inventoryHash: string; pathHash: string; contentHash: string; sizeHash: string; mimeHash: string; executableHash: string;
   tombstoneHash: string; fileCount: number; tombstoneCount: number; totalBytes: number;
@@ -773,8 +788,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const { instance } = setup({ liveEnabled: true });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
     const open = () => call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 7, mode: "live_single_writer", capabilityEvidence: {
-      liveMountReady: true, authenticatedTransport: true, allocationId: "allocation-7", allocationGeneration: 7,
-      templateDigest: `sha256:${"a".repeat(64)}`, verifiedAt: Date.now(),
+      ...liveEvidence(7),
     } });
     const { session } = await (await open()).json() as { session: { id: string; fence: number } };
     expect((await open()).status).toBe(409);
@@ -790,6 +804,33 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const response = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 1, mode: "live_single_writer" });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "capability_unavailable" });
+  });
+
+  it("rejects live mode without the exact runtime, authorization, residency, transport, and accounting evidence and never downgrades", async () => {
+    const { instance } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const response = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 2,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(2, { fuseReady: false, billingReserved: false, authorizationEpoch: undefined }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "capability_unavailable", mode: "live_single_writer", missing: expect.arrayContaining(["fuseReady", "billingReserved", "authorizationEpoch"]) });
+    expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 1 } });
+  });
+
+  it("requires authority-backed runtime capability verification even when the caller supplies a complete claim", async () => {
+    const { instance } = setup({ liveEnabled: true, liveVerifier: false });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const response = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 2,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(2) });
+    expect(await response.json()).toMatchObject({ error_code: "capability_unavailable", missing: ["authorityBackedVerification"] });
+  });
+
+  it("admits exactly one writer when two live runtimes race", async () => {
+    const { instance } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const open = (runtimeId: string, generation: number) => call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId,
+      allocationGeneration: generation, mode: "live_single_writer", capabilityEvidence: liveEvidence(generation, { runtimeId }) });
+    const results = await Promise.all([open("runtime-race-a", 1), open("runtime-race-b", 2)]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
   });
 
   it("creates an isolated branch head without changing the source branch", async () => {
@@ -837,9 +878,12 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   it("requires a committed revision for writer handoff and rejects stale writes after fencing", async () => {
     const { instance } = setup({ liveEnabled: true });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
-    const evidence = { liveMountReady: true, authenticatedTransport: true, allocationId: "allocation-7", allocationGeneration: 7, templateDigest: `sha256:${"a".repeat(64)}`, verifiedAt: Date.now() };
+    const evidence = liveEvidence(7, { runtimeId: "runtime-a" });
     const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7, mode: "live_single_writer", capabilityEvidence: evidence })).json() as { session: { id: string; fence: number } };
-    const handoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1 });
+    const rejectedHandoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1 });
+    expect(await rejectedHandoff.json()).toMatchObject({ error_code: "handoff_flush_required" });
+    const handoff = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1,
+      drained: true, flushReceipt: { id: "flush-1", status: "flushed", sessionId: opened.session.id, runtimeId: "runtime-a", allocationGeneration: 7, fence: opened.session.fence, revision: 1 }, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
     const next = await handoff.json() as { session: { id: string; fence: number; allocationGeneration: number } };
     expect(handoff.status, JSON.stringify(next)).toBe(200);
     expect(next.session).toMatchObject({ fence: opened.session.fence + 1, allocationGeneration: 8 });
@@ -848,20 +892,61 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await stale.json()).toMatchObject({ error_code: "stale_fence" });
   });
 
+  it("refuses handoff while recoverable staging has not been published", async () => {
+    const { instance } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(7, { runtimeId: "runtime-a" }) })).json() as { session: { id: string; fence: number } };
+    await call(instance, "/v1/stage", { sessionId: opened.session.id, stageId: "handoff-pending", allocationGeneration: 7, fence: opened.session.fence,
+      changes: [{ path: "recover-me.txt", expectedHash: null, contentBase64: btoa("staging remains recoverable") }] });
+    const response = await call(instance, "/v1/handoff", { sessionId: opened.session.id, targetRuntimeId: "runtime-b", allocationGeneration: 7, targetAllocationGeneration: 8, checkpointRevision: 1,
+      drained: true, flushReceipt: { id: "flush-pending", status: "flushed", sessionId: opened.session.id, runtimeId: "runtime-a", allocationGeneration: 7, fence: opened.session.fence, revision: 1 }, targetCapabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b" }) });
+    expect(await response.json()).toMatchObject({ error_code: "handoff_staging_unpublished" });
+    expect((await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 7, fence: opened.session.fence, baseRevision: 1, idempotencyKey: "handoff-recovery", stageId: "handoff-pending" })).status).toBe(200);
+  });
+
   it("expires live leases, advances the fence, and rejects mutations from the prior writer", async () => {
     const { instance } = setup({ liveEnabled: true });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
-    const evidence = { liveMountReady: true, authenticatedTransport: true, allocationId: "allocation-live", allocationGeneration: 7, templateDigest: `sha256:${"b".repeat(64)}`, verifiedAt: Date.now() };
+    const evidence = liveEvidence(7, { runtimeId: "runtime-a", allocationId: "allocation-live", templateDigest: `sha256:${"b".repeat(64)}` });
     const first = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 7, mode: "live_single_writer", capabilityEvidence: evidence })).json() as { session: { id: string; fence: number } };
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now + 60_001);
     try {
       expect((await call(instance, "/v1/renew", { sessionId: first.session.id, allocationGeneration: 7, fence: first.session.fence })).status).toBe(409);
-      const second = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-b", allocationGeneration: 8, mode: "live_single_writer", capabilityEvidence: { ...evidence, allocationId: "allocation-next", allocationGeneration: 8, verifiedAt: now + 60_001 } });
+      const second = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-b", allocationGeneration: 8, mode: "live_single_writer", capabilityEvidence: liveEvidence(8, { runtimeId: "runtime-b", verifiedAt: now + 60_001 }) });
       expect(await second.json()).toMatchObject({ session: { fence: first.session.fence + 1, allocationGeneration: 8 } });
       const stale = await call(instance, "/v1/checkpoint", { sessionId: first.session.id, allocationGeneration: 7, fence: first.session.fence, baseRevision: 1, idempotencyKey: "expired-live-write", changes: [{ path: "late.txt", expectedHash: null, contentBase64: btoa("stale") }] });
       expect(await stale.json()).toMatchObject({ error_code: "writer_lease_expired" });
+      const staleStage = await call(instance, "/v1/stage", { sessionId: first.session.id, stageId: "expired-stage", allocationGeneration: 7, fence: first.session.fence,
+        changes: [{ path: "late-stage.txt", expectedHash: null, contentBase64: btoa("stale") }] });
+      expect(await staleStage.json()).toMatchObject({ error_code: "writer_lease_expired" });
+      expect((await call(instance, "/v1/session-snapshot?sessionId=" + encodeURIComponent(first.session.id) + "&runtimeId=runtime-a&allocationGeneration=7&fence=" + first.session.fence)).status).toBe(409);
     } finally { vi.restoreAllMocks(); }
+  });
+
+  it("revokes a live session and fences subsequent virtual/provider mutation callbacks", async () => {
+    const { instance } = setup({ liveEnabled: true });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const session = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 3,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(3, { runtimeId: "runtime" }) })).json() as { session: { id: string; fence: number } };
+    expect(await (await call(instance, "/v1/revoke", { sessionId: session.session.id, allocationGeneration: 3, fence: session.session.fence })).json()).toMatchObject({ status: "revoked" });
+    expect((await call(instance, "/v1/stage", { sessionId: session.session.id, stageId: "revoked-stage", allocationGeneration: 3, fence: session.session.fence, changes: [] })).status).toBe(404);
+    expect(await (await call(instance, "/v1/checkpoint", { sessionId: session.session.id, allocationGeneration: 3, fence: session.session.fence, baseRevision: 1, idempotencyKey: "revoked-callback", changes: [] })).json()).toMatchObject({ error_code: "stale_fence" });
+    const replacement = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-next", allocationGeneration: 4,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(4, { runtimeId: "runtime-next" }) });
+    expect(await replacement.json()).toMatchObject({ session: { fence: session.session.fence + 2 } });
+  });
+
+  it("reports cursor freshness from the authoritative head when a revision notification was missed", async () => {
+    const { instance, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "reader", runtimeId: "writer", allocationGeneration: 1 })).json() as { session: { id: string } };
+    await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "missed-event", changes: [{ path: "fresh.txt", expectedHash: null, contentBase64: btoa("revision two") }] });
+    storage.values.delete("revision:main:2");
+    const response = await call(instance, "/v1/changes?branch=main&afterRevision=1");
+    expect(await response.json()).toMatchObject({ head: { revision: 2 }, resetRequired: true, cursor: 1,
+      freshness: { observedRevision: 2, cursorRevision: 1, stale: true, source: "authoritative_workspace_head" } });
   });
 
   it("serializes concurrent checkpoints so a reader sees one complete manifest", async () => {

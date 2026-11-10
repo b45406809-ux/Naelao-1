@@ -25,3 +25,7 @@ This record is the requirements companion to the [unified platform implementatio
 ## Release evidence
 
 For each phase, record changes, focused tests, typecheck/build results, deployment/runtime evidence, and unresolved blockers in [implementation progress](unified-platform-implementation-progress.md). Keep live-mode and provider capability flags disabled until their phase gates have real evidence.
+
+## Phase 5 code status (2026-11-10)
+
+The coordinator persists default/resolved modes and fails live admission unless an internal capability-verifier service binding attests the exact runtime/template/region, authorization, residency, transport, generation, FUSE/sync/flush/reconnect, and billing/budget/accounting evidence. The binding is not configured, so live admission currently fails closed. The coordinator also enforces durable lease/fence and allocation-generation checks on runtime snapshot/content, stage, renew, and publication paths, supports access revocation, requires a flush receipt and target capability evidence for handoff, and reports authoritative revision-cursor freshness. The focused coordinator/ToolSandbox/checked-publish set passed 78 local tests. This does not supply a deployed verifier, authorized candidate search, true syscall drain or flush, two-second checkpoint scheduler/coalescing, live UI/tool/provider adapters, or exact-runtime/template/region evidence. Phase 5 and Phase 4 remain partial; acceptance criteria and rollout gates are unchanged.

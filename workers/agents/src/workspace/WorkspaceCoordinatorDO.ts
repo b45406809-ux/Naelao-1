@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import {
   canonicalManifest,
   sha256Hex,
@@ -19,6 +19,7 @@ interface Env {
   PLATFORM_SECRET: string;
   SCRIPTS_R2?: R2Bucket;
   LIVE_WORKSPACE_ENABLED?: string;
+  LIVE_CAPABILITY_VERIFIER?: Fetcher;
   UNIFIED_WORKSPACE_ENABLED?: string;
 }
 interface Change { path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string; }
@@ -62,10 +63,28 @@ interface Session {
   baseRevision: number;
   baseManifestHash: string;
   mode: WorkspaceConsistencyMode;
+  requestedMode: WorkspaceConsistencyMode;
+  resolvedMode: WorkspaceConsistencyMode;
   allocationGeneration: number;
   fence: number;
-  status: "active" | "closed";
+  capabilityBinding?: LiveCapabilityBinding;
+  status: "active" | "closed" | "revoked";
   createdAt: string;
+}
+interface LiveCapabilityBinding {
+  runtimeId: string;
+  runtimeType: string;
+  templateId: string;
+  templateDigest: string;
+  region: string;
+  authorizationId: string;
+  authorizationEpoch: number;
+  residencyPolicyId: string;
+  allocationId: string;
+  allocationGeneration: number;
+  billingReservationId: string;
+  budgetReservationId: string;
+  verifiedAt: number;
 }
 const MAX_BODY = 30 * 1024 * 1024;
 const MAX_CHANGES = 100;
@@ -112,6 +131,43 @@ function base64(value: Uint8Array): string {
 }
 function keyScope(scope: WorkspaceScope): string {
   return `${scope.tenantId}/${scope.spaceId}/${scope.projectId}/${scope.jurisdiction}`;
+}
+
+function validateLiveCapabilityEvidence(value: unknown, generation: number, runtimeId: string): { binding?: LiveCapabilityBinding; missing: string[] } {
+  const evidence = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const requiredBooleans = [
+    "authorized", "residencyAllowed", "liveMountReady", "fuseReady", "incrementalSyncReady",
+    "flushReady", "reconnectGenerationCheck", "authenticatedTransport", "billingReserved", "budgetReserved",
+    "runtimeAccountingReady",
+  ];
+  const missing = requiredBooleans.filter((key) => evidence[key] !== true);
+  const requiredStrings = ["runtimeId", "runtimeType", "templateId", "region", "authorizationId", "residencyPolicyId", "allocationId", "billingReservationId", "budgetReservationId"];
+  for (const key of requiredStrings) if (typeof evidence[key] !== "string" || !(evidence[key] as string).trim() || !ID.test(evidence[key] as string)) missing.push(key);
+  if (evidence.runtimeId !== runtimeId) missing.push("runtimeIdBinding");
+  const templateDigest = evidence.templateDigest;
+  if (typeof templateDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(templateDigest)) missing.push("templateDigest");
+  if (!Number.isSafeInteger(evidence.authorizationEpoch) || Number(evidence.authorizationEpoch) < 1) missing.push("authorizationEpoch");
+  if (!Number.isSafeInteger(evidence.allocationGeneration) || Number(evidence.allocationGeneration) !== generation) missing.push("allocationGeneration");
+  if (typeof evidence.verifiedAt !== "number" || !Number.isFinite(evidence.verifiedAt) || Date.now() - evidence.verifiedAt > 5 * 60_000 || evidence.verifiedAt > Date.now() + 30_000) missing.push("recentVerification");
+  if (missing.length) return { missing: [...new Set(missing)] };
+  return {
+    missing: [],
+    binding: {
+      runtimeId: evidence.runtimeId as string,
+      runtimeType: evidence.runtimeType as string,
+      templateId: evidence.templateId as string,
+      templateDigest: templateDigest as string,
+      region: evidence.region as string,
+      authorizationId: evidence.authorizationId as string,
+      authorizationEpoch: Number(evidence.authorizationEpoch),
+      residencyPolicyId: evidence.residencyPolicyId as string,
+      allocationId: evidence.allocationId as string,
+      allocationGeneration: generation,
+      billingReservationId: evidence.billingReservationId as string,
+      budgetReservationId: evidence.budgetReservationId as string,
+      verifiedAt: Number(evidence.verifiedAt),
+    },
+  };
 }
 function manifestKey(scope: WorkspaceScope, hash: string): string {
   return `workspace-v1/${keyScope(scope)}/manifests/${hash}.json`;
@@ -241,7 +297,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await this.ctx.storage.get<WorkspaceScope>("scope")) await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_INTERVAL_MS);
     const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     if (migration && migration.status !== "verified" && url.pathname !== "/v1/migration/status" && url.pathname !== "/v1/migration/import") return fail("workspace_migration_barrier_active", 423);
-    if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/subscriptions/ack"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/v1/initialize", "/v1/open", "/v1/renew", "/v1/branch", "/v1/merge", "/v1/checkpoint", "/v1/stage", "/v1/handoff", "/v1/close", "/v1/revoke", "/v1/subscriptions/ack"].includes(url.pathname)) {
       const policy = await this.getReadPolicy();
       const canInitialize = url.pathname === "/v1/initialize" && policy.mode === "legacy" &&
         !(await this.ctx.storage.get<WorkspaceMigration>("project_migration")) &&
@@ -270,6 +326,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "GET" && url.pathname === "/v1/gc/status") return json(await this.ctx.storage.get("workspace_gc_status") ?? { status: "not_scheduled" });
     if (request.method === "POST" && url.pathname === "/v1/handoff") return this.handoff(body!);
     if (request.method === "POST" && url.pathname === "/v1/close") return this.close(body!);
+    if (request.method === "POST" && url.pathname === "/v1/revoke") return this.revoke(body!);
     return fail("not_found", 404);
   }
 
@@ -1053,6 +1110,35 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     return JSON.parse(new TextDecoder().decode(bytes)) as WorkspaceEntry[];
   }
 
+  private async hasCurrentSessionAuthority(session: Session): Promise<boolean> {
+    const current = await this.ctx.storage.get<Session>(sessionKey(session.id));
+    if (!current || current.status !== "active" || current.runtimeId !== session.runtimeId ||
+        current.allocationGeneration !== session.allocationGeneration || current.fence !== session.fence) return false;
+    if (current.mode !== "live_single_writer") return true;
+    const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${current.branch}`);
+    return Boolean(lease && lease.sessionId === current.id && lease.fence === current.fence && lease.expiresAt > Date.now());
+  }
+
+  private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, evidence: unknown): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
+    if (!this.env.LIVE_CAPABILITY_VERIFIER) return { missing: ["authorityBackedVerification"] };
+    let response: Response;
+    try {
+      response = await this.env.LIVE_CAPABILITY_VERIFIER.fetch(new Request("https://live-capability-verifier/internal/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId) },
+        body: JSON.stringify({ scope, actorId, runtimeId, allocationGeneration: generation, capabilityEvidence: evidence }),
+      }));
+    } catch {
+      return { missing: ["authorityBackedVerification"] };
+    }
+    if (!response.ok) return { missing: ["authorityBackedVerification"] };
+    let verified: Record<string, unknown>;
+    try { verified = await response.json() as Record<string, unknown>; } catch { return { missing: ["authorityBackedVerification"] }; }
+    if (verified.verified !== true) return { missing: ["authorityBackedVerification"] };
+    return validateLiveCapabilityEvidence(verified.evidence, generation, runtimeId);
+  }
+
   private async open(body: Record<string, unknown>, tenantId: string): Promise<Response> {
     const validated = await this.validateScope(body.scope, body.branch, tenantId);
     if (validated instanceof Response) return validated;
@@ -1061,14 +1147,15 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         (body.mode !== undefined && body.mode !== "checked_handoff" && body.mode !== "live_single_writer")) return fail("invalid_workspace_session");
     const { branch } = validated;
     const mode = (body.mode ?? "checked_handoff") as WorkspaceConsistencyMode;
+    let capabilityBinding: LiveCapabilityBinding | undefined;
     if (mode === "live_single_writer") {
-      const evidence = body.capabilityEvidence as Record<string, unknown> | undefined;
-      if (this.env.LIVE_WORKSPACE_ENABLED !== "true" || !evidence || evidence.liveMountReady !== true || evidence.authenticatedTransport !== true ||
-          typeof evidence.allocationId !== "string" || !ID.test(evidence.allocationId) || evidence.allocationGeneration !== body.allocationGeneration ||
-          typeof evidence.templateDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(evidence.templateDigest) ||
-          typeof evidence.verifiedAt !== "number" || !Number.isFinite(evidence.verifiedAt) || Date.now() - evidence.verifiedAt > 5 * 60_000 || evidence.verifiedAt > Date.now() + 30_000) {
-        return fail("capability_unavailable", 409);
+      const capability = await this.verifyLiveCapability(validated.scope, String(body.actorId), String(body.runtimeId), Number(body.allocationGeneration), body.capabilityEvidence);
+      if (this.env.LIVE_WORKSPACE_ENABLED !== "true" || !capability.binding) {
+        return json({ error_code: "capability_unavailable", mode, requiredRuntimeCapabilities: [
+          "live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "authorization", "residency", "billing", "budget", "runtime_accounting",
+        ], missing: capability.missing, candidateSearch: "not_performed_by_workspace_coordinator" }, 409);
       }
+      capabilityBinding = capability.binding;
     }
     const current = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
     if (!current) return fail("workspace_not_initialized", 404);
@@ -1079,7 +1166,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const baseRevision = branchBase?.revision ?? current.revision;
     const baseManifestHash = branchBase?.manifestHash ?? current.manifestHash;
     const id = `ws_${crypto.randomUUID()}`;
-    const session: Session = { id, actorId: body.actorId, runtimeId: body.runtimeId, branch, parentBranch, baseRevision, baseManifestHash, mode, allocationGeneration: Number(body.allocationGeneration), fence: 0, status: "active", createdAt: new Date().toISOString() };
+    const session: Session = { id, actorId: body.actorId, runtimeId: body.runtimeId, branch, parentBranch, baseRevision, baseManifestHash,
+      mode, requestedMode: mode, resolvedMode: mode, allocationGeneration: Number(body.allocationGeneration), fence: 0,
+      ...(capabilityBinding ? { capabilityBinding } : {}), status: "active", createdAt: new Date().toISOString() };
     const result = await this.ctx.storage.transaction(async (tx) => {
       const migration = await tx.get<WorkspaceMigration>("project_migration");
       if (migration && migration.status !== "verified" && body.actorId !== "workspace-migration") return { error: "workspace_migration_barrier_active" };
@@ -1362,6 +1451,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.runtimeId !== runtimeId) return fail("workspace_session_scope_mismatch", 403);
     if (session.allocationGeneration !== generation) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== fence) return fail("stale_fence", 409);
+    if (session.mode === "live_single_writer") {
+      const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
+      if (!lease || lease.sessionId !== session.id || lease.fence !== session.fence || lease.expiresAt <= Date.now()) return fail("writer_lease_expired", 409);
+    }
     const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (!scope) return fail("workspace_scope_missing", 503);
     const object = await this.env.SCRIPTS_R2!.get(manifestKey(scope, session.baseManifestHash));
@@ -1370,6 +1463,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (await sha256Hex(bytes) !== session.baseManifestHash) return fail("workspace_manifest_corrupt", 503);
     const entries = JSON.parse(new TextDecoder().decode(bytes)) as WorkspaceEntry[];
     if (entries.length > MAX_SANDBOX_HANDOFF_FILES || entries.reduce((total, entry) => total + entry.size, 0) > MAX_SANDBOX_HANDOFF_BYTES) return fail("workspace_handoff_limit_exceeded", 413);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("stale_fence", 409);
     return json({ session: { id: session.id, branch: session.branch, baseRevision: session.baseRevision, baseManifestHash: session.baseManifestHash, fence: session.fence, allocationGeneration: session.allocationGeneration }, entries });
   }
 
@@ -1385,6 +1479,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (session.runtimeId !== runtimeId) return fail("workspace_session_scope_mismatch", 403);
     if (session.allocationGeneration !== generation) return fail("allocation_generation_mismatch", 409);
     if (session.fence !== fence) return fail("stale_fence", 409);
+    if (session.mode === "live_single_writer") {
+      const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
+      if (!lease || lease.sessionId !== session.id || lease.fence !== session.fence || lease.expiresAt <= Date.now()) return fail("writer_lease_expired", 409);
+    }
     const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (!scope) return fail("workspace_scope_missing", 503);
     const manifest = await this.env.SCRIPTS_R2!.get(manifestKey(scope, session.baseManifestHash));
@@ -1399,6 +1497,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (!content || content.size !== entry.size) return fail("workspace_content_unavailable", 503);
     const bytes = new Uint8Array(await content.arrayBuffer());
     if (await sha256Hex(bytes) !== entry.sha256) return fail("workspace_content_corrupt", 503);
+    if (!await this.hasCurrentSessionAuthority(session)) return fail("stale_fence", 409);
     return new Response(bytes, { headers: { "content-type": entry.contentType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "x-content-sha256": entry.sha256, "x-executable": String(entry.executable), "cache-control": "no-store" } });
   }
 
@@ -1427,10 +1526,15 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const revisions: RevisionEvent[] = [];
     for (let revision = afterRevision + 1; revision <= through; revision++) {
       const event = await this.ctx.storage.get<RevisionEvent>(revisionEventKey(branch, revision));
-      if (!event) return json({ head, revisions, resetRequired: true, cursor: revisions.at(-1)?.revision ?? afterRevision });
+      if (!event) {
+        const cursor = revisions.at(-1)?.revision ?? afterRevision;
+        return json({ head, revisions, resetRequired: true, cursor, freshness: { observedRevision: head.revision, cursorRevision: cursor, stale: cursor < head.revision, source: "authoritative_workspace_head" } });
+      }
       revisions.push(event);
     }
-    return json({ head, revisions, resetRequired: false, cursor: revisions.at(-1)?.revision ?? afterRevision, hasMore: through < head.revision });
+    const cursor = revisions.at(-1)?.revision ?? afterRevision;
+    return json({ head, revisions, resetRequired: false, cursor, hasMore: through < head.revision,
+      freshness: { observedRevision: head.revision, cursorRevision: cursor, stale: cursor < head.revision, source: "authoritative_workspace_head" } });
   }
 
   private async acknowledge(body: Record<string, unknown>): Promise<Response> {
@@ -1686,6 +1790,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const current = await tx.get<Session>(sessionKey(sessionId));
       if (await tx.get<boolean>("erased")) return "workspace_erased";
       if (!current || current.status !== "active" || current.allocationGeneration !== body.allocationGeneration || current.fence !== body.fence) return "stale_fence";
+      if (current.mode === "live_single_writer") {
+        const lease = await tx.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${current.branch}`);
+        if (!lease || lease.sessionId !== current.id || lease.fence !== current.fence || lease.expiresAt <= Date.now()) return "writer_lease_expired";
+      }
       const migration = await tx.get<WorkspaceMigration>("project_migration");
       if (migration && migration.status !== "verified" && !(current.actorId === "workspace-migration" && (migration.status === "importing" || migration.status === "repairing" || migration.status === "restoring"))) return "workspace_migration_barrier_active";
       const existing = await tx.get<StageRecord>(stageKey(sessionId, stageId));
@@ -2108,6 +2216,24 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
     if (!session || session.status !== "active" || session.mode !== "live_single_writer") return fail("workspace_session_not_found", 404);
     if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
+    const flushReceipt = body.flushReceipt as Record<string, unknown> | undefined;
+    if (body.drained !== true || !flushReceipt || flushReceipt.status !== "flushed" || flushReceipt.sessionId !== session.id ||
+        flushReceipt.runtimeId !== session.runtimeId || flushReceipt.fence !== session.fence || flushReceipt.allocationGeneration !== session.allocationGeneration ||
+        flushReceipt.revision !== body.checkpointRevision || typeof flushReceipt.id !== "string" || !ID.test(flushReceipt.id)) {
+      return fail("handoff_flush_required", 409);
+    }
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope) return fail("workspace_scope_missing", 503);
+    const targetCapability = await this.verifyLiveCapability(scope, session.actorId, String(body.targetRuntimeId), Number(body.targetAllocationGeneration), body.targetCapabilityEvidence);
+    if (this.env.LIVE_WORKSPACE_ENABLED !== "true" || !targetCapability.binding) {
+      return json({ error_code: "capability_unavailable", mode: "live_single_writer", requiredRuntimeCapabilities: [
+        "live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "authorization", "residency", "billing", "budget", "runtime_accounting",
+      ], missing: targetCapability.missing, candidateSearch: "not_performed_by_workspace_coordinator" }, 409);
+    }
+    const stagedRecords = await this.ctx.storage.list<StageRecord>({ prefix: `stage:${session.id}:`, limit: 500 });
+    if (stagedRecords.size >= 500 || [...stagedRecords.values()].some((stage) => stage.status !== "consumed")) {
+      return fail("handoff_staging_unpublished", 409);
+    }
     const result = await this.ctx.storage.transaction(async (tx) => {
       const lease = await tx.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${session.branch}`);
       if (!lease || lease.sessionId !== session.id || lease.fence !== session.fence || lease.expiresAt <= Date.now()) return { error: "stale_fence" };
@@ -2119,7 +2245,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await tx.put(sessionKey(session.id), session);
       const fence = (await tx.get<number>(`fence:${session.branch}`) ?? lease.fence) + 1;
       await tx.put(`fence:${session.branch}`, fence);
-      const newSession: Session = { ...session, id: `ws_${crypto.randomUUID()}`, runtimeId: body.targetRuntimeId as string, baseRevision: head.revision, allocationGeneration: Number(body.targetAllocationGeneration), fence, status: "active", createdAt: new Date().toISOString() };
+      const newSession: Session = { ...session, id: `ws_${crypto.randomUUID()}`, runtimeId: body.targetRuntimeId as string, baseRevision: head.revision,
+        baseManifestHash: head.manifestHash, allocationGeneration: Number(body.targetAllocationGeneration), fence,
+        ...(targetCapability.binding ? { capabilityBinding: targetCapability.binding } : {}), status: "active", createdAt: new Date().toISOString() };
       await tx.put(sessionKey(newSession.id), newSession);
       await tx.put(`writer:${session.branch}`, { sessionId: newSession.id, fence, expiresAt: Date.now() + 60_000 });
       return { session: newSession, head };
@@ -2144,6 +2272,30 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return "closed";
     });
     return json({ sessionId: session.id, status: result });
+  }
+
+  private async revoke(body: Record<string, unknown>): Promise<Response> {
+    if (typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId) ||
+        !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return fail("invalid_session");
+    const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
+    if (!session) return fail("workspace_session_not_found", 404);
+    if (session.allocationGeneration !== body.allocationGeneration) return fail("allocation_generation_mismatch", 409);
+    if (session.fence !== body.fence) return fail("stale_fence", 409);
+    const revoked = await this.ctx.storage.transaction(async (tx) => {
+      const current = await tx.get<Session>(sessionKey(session.id));
+      if (!current || current.status !== "active" || current.fence !== body.fence || current.allocationGeneration !== body.allocationGeneration) return false;
+      current.status = "revoked";
+      await tx.put(sessionKey(current.id), current);
+      if (current.mode === "live_single_writer") {
+        const lease = await tx.get<{ sessionId: string; fence: number }>(`writer:${current.branch}`);
+        if (lease?.sessionId === current.id && lease.fence === current.fence) {
+          await tx.put(`fence:${current.branch}`, Math.max(await tx.get<number>(`fence:${current.branch}`) ?? 0, current.fence) + 1);
+          await tx.delete(`writer:${current.branch}`);
+        }
+      }
+      return true;
+    });
+    return revoked ? json({ sessionId: session.id, status: "revoked" }) : fail("stale_fence", 409);
   }
 
   private async verifyEntries(scope: WorkspaceScope, entries: WorkspaceEntry[]): Promise<Response | null> {
