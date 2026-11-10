@@ -3,30 +3,23 @@
 # ToolSandboxDO and slept when idle.
 FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 
-# Python for tools/scripts that need a Python runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip util-linux \
-      xvfb fluxbox xdotool imagemagick x11vnc websockify \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # The local dev launcher stages pnpm-installed, platform-matched esbuild packages here. Keeping
 # dependency resolution outside Docker makes local builds reproducible behind TLS-intercepting
-# proxies and avoids package-manager access from the sandbox image build.
-COPY container/.vendor/node_modules /app/node_modules
-
-COPY container/server.mjs /app/server.mjs
-COPY container/workspace-path.mjs /app/workspace-path.mjs
-COPY container/child-runner.mjs /app/child-runner.mjs
-COPY container/compile-runner.mjs /app/compile-runner.mjs
-COPY container/process-supervisor.mjs /app/process-supervisor.mjs
-COPY container/binary-bridge.mjs /app/binary-bridge.mjs
-COPY container/artifact-fs.mjs /app/artifact-fs.mjs
-COPY container/start.sh /app/start.sh
+# proxies and avoids package-manager access from the sandbox image build. Keep the complete
+# harness in one copy layer: the local Docker-in-Docker VFS driver duplicates prior layers.
+COPY container/.vendor/node_modules container/server.mjs container/workspace-path.mjs \
+     container/child-runner.mjs container/compile-runner.mjs container/process-supervisor.mjs \
+     container/binary-bridge.mjs container/artifact-fs.mjs container/start.sh /app/
 
 # §A1.17 Phase K: per-project workspace the harness materializes from R2 before each /exec and
 # collects back into afterward — the container's own approximation of an R2-mounted filesystem.
-RUN groupadd -g 10001 runtime && useradd -u 10001 -g 10001 -d /home/runtime -s /bin/bash runtime \
+# Keep OS dependencies and final filesystem setup in one layer for VFS-backed local builds.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip util-linux \
+      xvfb fluxbox xdotool imagemagick x11vnc websockify \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 runtime && useradd -u 10001 -g 10001 -d /home/runtime -s /bin/bash runtime \
     && mkdir -p /workspace /home/runtime /tmp/guest /tmp/naelao-control \
     && chown -R 10001:10001 /workspace /home/runtime /tmp/guest \
     && chmod 700 /tmp/naelao-control \

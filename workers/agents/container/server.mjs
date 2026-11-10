@@ -457,7 +457,7 @@ createServer((req, res) => {
           ...execution, cwd, env: parsed.session?.env ?? {},
         });
         const text = String(stdout);
-        const stateAt = text.lastIndexOf(`\n${marker}`);
+        const stateAt = text.indexOf(`\n${marker}`);
         const visible = stateAt >= 0 ? text.slice(0, stateAt) : text;
         const state = stateAt >= 0 ? text.slice(stateAt + marker.length + 1) : "1\n" + cwd;
         const [statusLine, cwdLine, envBlock = ""] = state.split(`${marker}ENV\n`)[0].split("\n").length >= 2
