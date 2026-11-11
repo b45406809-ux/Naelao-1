@@ -69,6 +69,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       }
       const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
       const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+      const workspaceErasure = await this.ctx.storage.get("workspace_erasure_blocked");
       const restoreError = await this.ctx.storage.get<string>("dynamic_snapshot_restore_error")
         ?? (await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate") ? "dynamic_snapshot_restore_incomplete" : undefined);
       const saveError = await this.ctx.storage.get<string>("dynamic_snapshot_save_error");
@@ -84,16 +85,17 @@ export class DynamicSandboxDO extends ToolSandboxDO {
                     : !Number.isFinite(snapshotExpiresAt) ? "dynamic_snapshot_record_invalid"
                       : snapshotExpiresAt! <= Date.now() ? "dynamic_snapshot_expired" : undefined
         : undefined;
-      const recoveryError = restoreError ?? snapshotStatusError;
+      const recoveryError = workspaceErasure ? "workspace_erased" : restoreError ?? snapshotStatusError;
       const retryableRestoreFailure = restoreError === "dynamic_snapshot_restore_failed"
         || restoreError === "dynamic_snapshot_restore_incomplete";
-      const canRestore = Boolean(snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
+      const canRestore = Boolean(!workspaceErasure && snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
         && this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true");
       return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true",
         state: recoveryError ? "recovery_required" : snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
         image: selection?.image, checkpoint_created_at: snapshot?.createdAt,
         checkpoint_size_bytes: snapshot?.sizeBytes, checkpoint_generation: snapshot?.allocationGeneration,
         checkpoint_expires_at: snapshotExpiresAt, recovery_error: recoveryError,
+        workspace_erasure_blocked: Boolean(workspaceErasure),
         snapshot_save_error: saveError,
         can_restore: canRestore });
     }

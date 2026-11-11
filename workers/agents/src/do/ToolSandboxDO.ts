@@ -89,6 +89,7 @@ interface SandboxBindings {
   ANALYTICS?: AnalyticsEngineDataset;
   PLATFORM_DB?: D1Database;
 }
+type ProjectErasureState = "active" | "erased" | "unavailable";
 
 interface WorkspacePublication {
   scope: SandboxWorkspaceScope;
@@ -299,6 +300,57 @@ export class ToolSandboxDO extends DurableObject {
     }
   }
 
+  /** The D1 tombstone is the durable write barrier for project scoped runtime work. Keep a
+   * local marker after observing it so restoring D1 to an older point cannot revive this DO. */
+  private async projectErasureState(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<ProjectErasureState> {
+    if (!scope.projectId) return "active";
+    const marker = await this.ctx.storage.get<{ tenantId: string; spaceId: string; projectId: string }>("workspace_erasure_blocked");
+    if (marker) return marker.tenantId === scope.tenantId && marker.spaceId === scope.spaceId && marker.projectId === scope.projectId ? "erased" : "unavailable";
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    if (!db) return "unavailable";
+    try {
+      const row = await db.prepare(`SELECT 1 AS erased FROM workspace_erasure_tombstones
+        WHERE tenant_id=? AND space_id=? AND project_id=? LIMIT 1`)
+        .bind(scope.tenantId, scope.spaceId, scope.projectId).first<{ erased: number }>();
+      return row ? "erased" : "active";
+    } catch {
+      return "unavailable";
+    }
+  }
+
+  /** Stop project execution and remove the local content cache. Provider snapshots are separate
+   * external resources; retain their receipt metadata for reconciliation, while the local marker
+   * permanently prevents this object from restoring them. */
+  private async blockErasedProject(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<void> {
+    await this.ctx.storage.put("workspace_erasure_blocked", { ...scope, observedAt: new Date().toISOString() });
+    this.activeExecution?.controller.abort();
+    await this.discardCheckpoint();
+    const container = this.container;
+    if (container?.running) {
+      if (!container.destroy) throw new Error("container_hard_stop_unsupported");
+      await container.destroy();
+    }
+    const pending = await this.ctx.storage.get<ContainerMeter>("container_reservation_pending");
+    if (pending) {
+      await finalizeWorkflowBudget(this.env as Env, pending.tenantId, pending.reservationId, "release");
+      await this.ctx.storage.delete("container_reservation_pending");
+    }
+    await this.settleMeter();
+    for (const key of ["workspace_snapshot", "workspace_files", "workspace_hashes", "workspace_pending_coordinator_checkpoint", "shell_state"]) {
+      await this.ctx.storage.delete(key);
+    }
+    const executions = await this.ctx.storage.list({ prefix: "execution:" });
+    for (const key of executions.keys()) await this.ctx.storage.delete(key);
+    await this.ctx.storage.delete("sidecar_warm_expires_at");
+    await this.ctx.storage.put("container_status", "hibernated");
+  }
+
+  private async requireProjectNotErased(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<ProjectErasureState> {
+    const state = await this.projectErasureState(scope);
+    if (state === "erased") await this.blockErasedProject(scope);
+    return state;
+  }
+
   /** Package-host interception is still network egress. Resolve it from authoritative Space
    * policy on every scoped execution; a missing/unavailable policy store must never enable it. */
   private async packageEgressProfile(scope: ContainerInvocationScope): Promise<ContainerEgressProfile> {
@@ -311,6 +363,9 @@ export class ToolSandboxDO extends DurableObject {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch { return Response.json({ error: "container_scope_denied" }, { status: 403 }); }
     if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
+    const erasure = await this.requireProjectNotErased(scope);
+    if (erasure === "erased") return Response.json({ ok: false, error: "workspace_project_erased" }, { status: 410 });
+    if (erasure === "unavailable") return Response.json({ ok: false, error: "workspace_erasure_check_unavailable" }, { status: 503 });
     const record = await this.ctx.storage.get<ExecutionRecord>("execution:" + scope.executionId);
     if (!record || JSON.stringify(record.scope) !== JSON.stringify(scope)) return Response.json({ error: "container_execution_not_found" }, { status: 404 });
     if (!this.container?.running) return Response.json({ stdout: "", stderr: "" });
@@ -429,6 +484,9 @@ export class ToolSandboxDO extends DurableObject {
       await this.discardCheckpoint();
       return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
     }
+    const erasure = await this.requireProjectNotErased(scope);
+    if (erasure === "erased") return Response.json({ ok: false, error: "workspace_project_erased" }, { status: 410 });
+    if (erasure === "unavailable") return Response.json({ ok: false, error: "workspace_erasure_check_unavailable" }, { status: 503 });
     const body = await request.clone().text();
     const payloadHash = await hashWorkspaceContent(new URL(request.url).pathname + body);
     const key = "execution:" + scope.executionId;
@@ -480,6 +538,11 @@ export class ToolSandboxDO extends DurableObject {
         new Promise<Response>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("container_cancelled_or_deadline")), { once: true })),
       ]);
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
+      const erasureAfterExecution = await this.projectErasureState(scope);
+      if (erasureAfterExecution !== "active") {
+        if (erasureAfterExecution === "erased") await this.blockErasedProject(scope);
+        throw new Error(erasureAfterExecution === "erased" ? "workspace_project_erased" : "workspace_erasure_check_unavailable");
+      }
       if (response.headers.get("x-naelao-container-tainted") === "1") throw new Error("container_guest_cleanup_unverified");
       retainSidecarWarm = Boolean(scope.installationId && response.ok);
       if (new URL(request.url).pathname !== "/computer/screenshot") {
@@ -489,7 +552,10 @@ export class ToolSandboxDO extends DurableObject {
       return response;
     } catch (error) {
       controller.abort();
-      await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
+      // Once erasure is durable, do not recreate an execution record that the erasure barrier
+      // removed. For an unavailable check, keep the indeterminate receipt for reconciliation.
+      if (await this.projectErasureState(scope) !== "erased")
+        await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
       if (metered) {
         await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
         await this.flushExecutionWorkspaceMetrics(scope);
@@ -752,6 +818,12 @@ export class ToolSandboxDO extends DurableObject {
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
     const spaceId = invocation?.spaceId ?? meter?.spaceId;
     if (tenantId && spaceId && !await this.tenantSpaceIsActive(tenantId, spaceId)) throw new Error("tenant_suspended");
+    if (scope.projectId) {
+      if (!tenantId) throw new Error("workspace_tenant_scope_required");
+      const erasure = await this.requireProjectNotErased({ tenantId, spaceId: scope.spaceId, projectId: scope.projectId });
+      if (erasure === "unavailable") throw new Error("workspace_erasure_check_unavailable");
+      if (erasure === "erased") throw new Error("workspace_project_erased");
+    }
     const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2 || !bindings.CONCURRENCY_DO) throw new Error("Fenced workspace publication is unavailable");
     const port = container.getTcpPort(HARNESS_PORT);
@@ -915,6 +987,9 @@ export class ToolSandboxDO extends DurableObject {
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
     if (publication.scope.projectId) {
       if (!tenantId) throw new Error("workspace_tenant_scope_required");
+      const erasure = await this.requireProjectNotErased({ tenantId, spaceId: publication.scope.spaceId, projectId: publication.scope.projectId });
+      if (erasure === "unavailable") throw new Error("workspace_erasure_check_unavailable");
+      if (erasure === "erased") throw new Error("workspace_project_erased");
       if (!bindings.CONCURRENCY_DO) throw new Error("workspace_project_mutation_barrier_unavailable");
       const gateKey = `lock:${publication.scope.spaceId}:${publication.scope.projectId}:workspace-migration-barrier`;
       const gate = bindings.CONCURRENCY_DO.get(bindings.CONCURRENCY_DO.idFromName(gateKey));
@@ -1018,6 +1093,24 @@ export class ToolSandboxDO extends DurableObject {
       await this.ctx.storage.put("container_status", "hibernated");
       return;
     }
+    const storedInvocation = executionScope ?? await this.ctx.storage.get<ContainerInvocationScope>("container_invocation_scope");
+    if (storedInvocation?.projectId) {
+      const erasure = await this.requireProjectNotErased(storedInvocation);
+      if (erasure !== "active") {
+        if (erasure === "unavailable") {
+          this.activeExecution?.controller.abort();
+          const container = this.container;
+          if (container?.running) {
+            if (!container.destroy) throw new Error("container_hard_stop_unsupported");
+            await container.destroy();
+          }
+          await this.settleMeter();
+          await this.ctx.storage.put("container_status", "hibernated");
+        }
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+        return;
+      }
+    }
     if (meter?.endedAt !== undefined || meter && meter.expiresAt <= Date.now()) {
       this.activeExecution?.controller.abort();
       await this.stopContainer(); return;
@@ -1088,6 +1181,9 @@ export class ToolSandboxDO extends DurableObject {
     if (scopeHeader) {
       const scope = JSON.parse(scopeHeader) as ContainerInvocationScope;
       if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
+      const erasure = await this.requireProjectNotErased(scope);
+      if (erasure === "erased") return Response.json({ ok: false, error: "workspace_project_erased" }, { status: 410 });
+      if (erasure === "unavailable") return Response.json({ ok: false, error: "workspace_erasure_check_unavailable" }, { status: 503 });
     }
     const url = new URL(request.url);
     let execScope: SandboxWorkspaceScope | undefined;

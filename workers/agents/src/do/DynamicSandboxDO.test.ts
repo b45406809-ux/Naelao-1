@@ -19,7 +19,7 @@ function capacityService() {
     slots.set(holder, Date.now() + ttl); return Response.json({ granted: true });
   } }) } };
 }
-function runtime(options: { tier?: string; cpu?: number; memory?: number; capacity?: ReturnType<typeof capacityService>; enabled?: boolean; snapshots?: boolean } = {}) {
+function runtime(options: { tier?: string; cpu?: number; memory?: number; capacity?: ReturnType<typeof capacityService>; enabled?: boolean; snapshots?: boolean; erased?: boolean } = {}) {
   const records = new Map<string, any>();
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
@@ -28,6 +28,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
   let alarmAt = 0;
   let task: Promise<Response> | undefined;
   let controlReady = true;
+  let workspaceErased = options.erased ?? false;
   const transport = {
     images: { base: image, tool: image }, get running() { return running; },
     start: vi.fn((args: any) => { running = true; info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels }; }),
@@ -43,11 +44,13 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
   const ctx = { container: transport, storage: {
     get: async (key: string) => structuredClone(records.get(key)), put: async (key: string, v: any) => { records.set(key, structuredClone(v)); },
     delete: async (key: string) => records.delete(key), setAlarm: async (at: number) => { alarmAt = at; },
+    list: async ({ prefix = "" }: { prefix?: string } = {}) => new Map([...records.entries()].filter(([key]) => key.startsWith(prefix))),
   } };
   const env = { PLATFORM_SECRET: "secret", DYNAMIC_CONTAINERS_ENABLED: options.enabled === false ? "false" : "true",
     DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false", CONCURRENCY_DO: capacity.namespace,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () =>
-      sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" } : sql.includes("config_json")
+      sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" } : sql.includes("workspace_erasure_tombstones")
+        ? workspaceErased ? { erased: 1 } : null : sql.includes("config_json")
         ? { config_json: JSON.stringify({ compliance: { airGappedOnly: true } }) } : { id: "space" } }) }) },
     CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
       cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 }]),
@@ -70,7 +73,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
   return { invoke, profile, transport, records, capacity, env, billing, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { task = new Promise<Response>(() => undefined); },
-    setControlReady: (value: boolean) => { controlReady = value; },
+    setControlReady: (value: boolean) => { controlReady = value; }, setWorkspaceErased: (value: boolean) => { workspaceErased = value; },
     legacy: () => new ToolSandboxDO(ctx as never, env as never) };
 }
 afterEach(() => vi.restoreAllMocks());
@@ -269,6 +272,23 @@ describe("Cloudflare dynamic execution", () => {
     r.restart();
     expect((await r.invoke("/prewarm", { ...mainScope, runId: "main-run-two", executionId: "main-run-two-exec" })).status).toBe(200);
     expect(r.records.get("dynamic_selection").owner).toBe(previousOwner);
+    expect(r.transport.start).toHaveBeenCalledOnce();
+  });
+
+  it("does not restore a private runtime snapshot after project erasure or a database rollback", async () => {
+    let now = 5500000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke()).status).toBe(200);
+    now += 5001; await r.alarm();
+    expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
+    r.restart();
+    r.setWorkspaceErased(true);
+    const erased = await r.invoke("/prewarm", { executionId: "after-erasure" });
+    expect(erased.status).toBe(410);
+    expect(await (await r.profile()).json()).toMatchObject({ workspace_erasure_blocked: true, recovery_error: "workspace_erased", can_restore: false });
+    expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
+    r.setWorkspaceErased(false);
+    expect((await r.invoke("/prewarm", { executionId: "after-database-restore" })).status).toBe(410);
     expect(r.transport.start).toHaveBeenCalledOnce();
   });
   it("destroys a timed-out dynamic execution and returns its concurrency leases", async () => {

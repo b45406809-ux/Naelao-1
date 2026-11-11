@@ -25,6 +25,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     let alarmTime = null;
     let containerRunning = false;
     let tenantActive = true;
+    let workspaceErased = false;
     let airGapped = options.airGapped ?? false;
     let announceReservation: (() => void) | undefined;
     let releaseReservation: (() => void) | undefined;
@@ -144,6 +145,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         delete: async (k) => {
           storage.delete(k);
         },
+        list: async ({ prefix = "" }: { prefix?: string } = {}) => new Map(
+          [...storage.entries()].filter(([key]) => String(key).startsWith(prefix)),
+        ),
         setAlarm: async (time) => {
           alarmTime = time;
         },
@@ -168,12 +172,12 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         return Response.json({ ok: true });
       } },
       ANALYTICS: { writeDataPoint: (point) => { analyticsPoints.push(point); } },
-      ...(options.platformDb ? { PLATFORM_DB: {
+      ...(options.platformDb || options.workspaceProject || options.workspaceProjectUnmigrated || options.sidecar ? { PLATFORM_DB: {
         prepare: (query: string) => ({
           bind: () => ({
             first: async () => {
               if (!tenantActive) return null;
-              if (query.includes("workspace_erasure_tombstones")) return null;
+              if (query.includes("workspace_erasure_tombstones")) return workspaceErased ? { erased: 1 } : null;
               return query.includes("config_json")
                 ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
                 : { id: "space" };
@@ -194,7 +198,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, recreate: () => { realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, coordinator, r2Objects };
+    return { sandbox, recreate: () => { realSandbox = new ToolSandboxDO(mockCtx, sandboxEnv); }, storage, coordinatorStorage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; }, setWorkspaceErased: (erased: boolean) => { workspaceErased = erased; }, coordinator, r2Objects };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -207,6 +211,41 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(await response.json()).toMatchObject({ ok: false, error: "tenant_suspended" });
     expect(storage.get("container_meter")?.reservationId).toBe(reservationId);
     expect(mockContainer.start).toHaveBeenCalledTimes(starts);
+  });
+
+  it("blocks execution after project erasure and preserves the local barrier through a database restore", async () => {
+    const { sandbox, storage, mockContainer, setWorkspaceErased } = await createTestSandbox({ platformDb: true, workspaceProject: true });
+    const startCount = mockContainer.start.mock.calls.length;
+    storage.set("workspace_files", { "secret.txt": { content: "private project data", hash: "a".repeat(64) } });
+    storage.set("workspace_snapshot", { "secret.txt": "private project data" });
+    setWorkspaceErased(true);
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ ok: false, error: "workspace_project_erased" });
+    expect(storage.get("workspace_erasure_blocked")).toMatchObject({ tenantId: "tenant", spaceId: "space", projectId: "project" });
+    expect(mockContainer.start).toHaveBeenCalledTimes(startCount);
+    expect(storage.get("workspace_files")).toBeUndefined();
+    expect(storage.get("workspace_snapshot")).toBeUndefined();
+
+    setWorkspaceErased(false);
+    const replay = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(replay.status).toBe(410);
+    expect(mockContainer.start).toHaveBeenCalledTimes(startCount);
+  });
+
+  it("aborts an active project execution when the erasure alarm observes a late tombstone", async () => {
+    const { sandbox, storage, mockContainer, executionStarted, setWorkspaceErased } = await createTestSandbox({
+      platformDb: true, workspaceProject: true, hangExecution: true,
+    });
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    await executionStarted;
+    setWorkspaceErased(true);
+    await sandbox.alarm();
+    expect(mockContainer.destroy).toHaveBeenCalled();
+    expect(storage.get("workspace_erasure_blocked")).toMatchObject({ projectId: "project" });
+    expect(storage.get("workspace_pending_coordinator_checkpoint")).toBeUndefined();
+    await execution;
+    expect([...storage.keys()].some(key => String(key).startsWith("execution:"))).toBe(false);
   });
 
   it("aborts and destroys active execution on suspension without publishing its workspace", async () => {
