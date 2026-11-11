@@ -539,6 +539,16 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(lifecycle[0]?.blobs?.[1]).toBe("marketplace-sidecar");
     expect(lifecycle[0]?.doubles?.[0]).toBeGreaterThanOrEqual(5_000);
     expect(lifecycle[0]?.doubles?.[4]).toBe(1); // exact warm reuse
+    const lifecycleV2 = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.lifecycle_v2");
+    expect(lifecycleV2).toHaveLength(1);
+    expect(lifecycleV2[0]?.blobs?.[8]).toBe("workspace-metrics-v2");
+    expect(lifecycleV2[0]?.doubles).toHaveLength(20);
+    expect(lifecycleV2[0]?.doubles?.slice(-3)).toEqual([0, 0, 0]);
+    const pricing = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.pricing");
+    expect(pricing).toHaveLength(1);
+    expect(pricing[0]?.blobs?.slice(1, 4)).toEqual(["marketplace-sidecar", "internal_credits", expect.any(String)]);
+    expect(pricing[0]?.doubles?.[2]).toBe(5); // default internal rate-card credits/hour, not provider spend
+    expect(pricing[0]?.doubles?.[3]).toBe(0); // default rate source
     expect(analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution")).toHaveLength(2); // prewarm and user execution
     vi.useRealTimers();
   });
@@ -608,7 +618,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     vi.useRealTimers();
   });
 
-  it("routes an internal project sandbox checkpoint through the atomic workspace coordinator when enabled", async () => {
+  it("routes an internal project sandbox checkpoint through the atomic workspace coordinator and reports per-execution byte dimensions", async () => {
     const { sandbox, coordinator, r2Objects, storage, analyticsPoints } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "workspace-run" });
     const written = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -635,6 +645,11 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const executionMetrics = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution").at(-1);
     expect(executionMetrics?.blobs?.[8]).toBe("workspace-metrics-v1");
     expect(executionMetrics?.doubles).toHaveLength(4); // list/read/write/delete counters are emitted per execution
+    const executionMetricsV2 = analyticsPoints.filter((point) => point.blobs?.[0] === "container.runtime.execution_v2").at(-1);
+    expect(executionMetricsV2?.blobs?.[8]).toBe("workspace-metrics-v2");
+    expect(executionMetricsV2?.doubles?.slice(6, 10)).toEqual([0, 24, 24, 1]); // hydrated, captured, staged bytes, successful checkpoints
+    expect(executionMetricsV2?.doubles?.slice(11, 14)).toEqual([0, 0, expect.any(Number)]); // failures, failed latency, pending stage age
+    expect(executionMetricsV2?.blobs?.join(" ")).not.toContain("workspace-run");
   });
 
   it("accepts workspace writes above the legacy 2 MiB cap and checkpoints the full content", async () => {
@@ -666,7 +681,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("replays a staged checkpoint after Durable Object reconstruction without publishing partial state", async () => {
-    const { sandbox, recreate, coordinator, coordinatorStorage, storage } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "restart-recovery", failCheckpointOnce: true });
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const { sandbox, recreate, coordinator, coordinatorStorage, storage, analyticsPoints } = await createTestSandbox({ unifiedWorkspace: true, workspaceProject: true, runId: "restart-recovery", failCheckpointOnce: true });
     const attempted = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ spaceId: "space", projectId: "project", files: { "recovery/state.txt": "survives restart" }, expected_hashes: { "recovery/state.txt": null } }),
@@ -677,6 +694,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(pending.changes).toBeUndefined();
     const originalSession = storage.get("workspace_session") as { id: string };
     expect(coordinatorStorage.get(`session:${originalSession.id}`)).toMatchObject({ status: "active", allocationGeneration: originalSession.allocationGeneration, fence: originalSession.fence });
+    const failedSample = analyticsPoints.filter(point => point.blobs?.[0] === "container.runtime.execution_v2").at(-1);
+    expect(failedSample?.doubles?.[11]).toBe(1);
+    expect(failedSample?.doubles?.[12]).toBeGreaterThanOrEqual(0);
+    vi.setSystemTime(Date.now() + 1_500);
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
     const mainBeforeRecovery = await workspaceCoordinatorRequest({ WORKSPACE_COORDINATOR: {
       idFromName: (name: string) => name,
@@ -700,6 +721,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       get: () => ({ fetch: (request: Request) => coordinator.fetch(request) }),
     }, PLATFORM_SECRET: "test-secret" }, scope, "/v1/read?branch=main", {}).then(response => response.json() as Promise<{ head: { revision: number }; entries: Array<{ path: string; objectKey: string }> }>);
     expect(mainAfterRecovery).toMatchObject({ head: { revision: 2 }, entries: [{ path: "recovery/state.txt" }] });
+    const recoveredSample = analyticsPoints.filter(point => point.blobs?.[0] === "container.runtime.execution_v2").at(-1);
+    expect(recoveredSample?.doubles?.[9]).toBe(1);
+    expect(recoveredSample?.doubles?.[13]).toBeGreaterThanOrEqual(1_500);
+    vi.useRealTimers();
   });
 
   it("merges a completed run branch into its requested branch only after checked publication", async () => {

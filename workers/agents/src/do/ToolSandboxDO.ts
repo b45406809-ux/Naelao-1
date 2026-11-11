@@ -39,7 +39,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
 import { readBoundedRequestBytes, readBoundedResponseText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
-import { infraTimeToCredits } from "@naelao/billing-core";
+import { BILLING_CORE_RATE_CARD_VERSION, infraTimeToCredits } from "@naelao/billing-core";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import type { InstallationScope } from "@naelao/agent-sdk";
@@ -94,6 +94,7 @@ type ProjectErasureState = "active" | "erased" | "unavailable";
 interface WorkspacePublication {
   scope: SandboxWorkspaceScope;
   changes: Array<{ path: string; expectedHash: string | null; newHash: string | null; stagedKey?: string }>;
+  createdAt?: string;
 }
 
 const HARNESS_PORT = 8080;
@@ -120,7 +121,13 @@ interface ContainerMeter { creditsPerHour?: number; tenantId: string; spaceId: s
 interface ContainerRuntimeMetrics {
   sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number;
   workspaceBytesHydrated: number; workspaceBytesCaptured: number; workspaceBytesStaged: number; workspaceCheckpoints: number; workspaceCheckpointMs: number;
+  workspaceCheckpointFailures: number; workspaceCheckpointFailureMs: number; workspaceStagingAgeMs: number;
   workspaceR2Lists: number; workspaceR2Reads: number; workspaceR2Writes: number; workspaceR2Deletes: number;
+}
+interface ExecutionWorkspaceMetrics {
+  lists: number; reads: number; writes: number; deletes: number;
+  bytesRead: number; bytesWriteAttempted: number; bytesHydrated: number; bytesCaptured: number; bytesStaged: number;
+  checkpoints: number; checkpointMs: number; failedCheckpoints: number; failedCheckpointMs: number; stagingAgeMs: number;
 }
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
@@ -210,7 +217,7 @@ function isSyncableWorkspacePath(path: string): boolean {
 export class ToolSandboxDO extends DurableObject {
   private lastUsedAt = Date.now();
   private executionQueue: Promise<void> = Promise.resolve();
-  private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController; workspaceMetrics: { lists: number; reads: number; writes: number; deletes: number } } | undefined;
+  private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController; workspaceMetrics: ExecutionWorkspaceMetrics } | undefined;
 
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -431,6 +438,18 @@ export class ToolSandboxDO extends DurableObject {
             metrics.workspaceBytesHydrated, metrics.workspaceBytesCaptured, metrics.workspaceBytesStaged, metrics.workspaceCheckpoints, metrics.workspaceCheckpointMs,
             metrics.workspaceR2Lists, metrics.workspaceR2Reads, metrics.workspaceR2Writes, metrics.workspaceR2Deletes],
         });
+        analytics.writeDataPoint({
+          blobs: ["container.runtime.lifecycle_v2", metrics.sidecar ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v2"],
+          doubles: [allocatedMs, credits, metrics.coldStarts, metrics.startupMs, metrics.warmHits, metrics.warmIdleMs, metrics.executions, metrics.executionMs,
+            metrics.workspaceBytesHydrated, metrics.workspaceBytesCaptured, metrics.workspaceBytesStaged, metrics.workspaceCheckpoints, metrics.workspaceCheckpointMs,
+            metrics.workspaceR2Lists, metrics.workspaceR2Reads, metrics.workspaceR2Writes, metrics.workspaceR2Deletes,
+            metrics.workspaceCheckpointFailures, metrics.workspaceCheckpointFailureMs, metrics.workspaceStagingAgeMs],
+        });
+        const effectiveCreditsPerHour = meter.creditsPerHour ?? infraTimeToCredits("container", 3_600_000);
+        analytics.writeDataPoint({
+          blobs: ["container.runtime.pricing", metrics.sidecar ? "marketplace-sidecar" : "base", "internal_credits", BILLING_CORE_RATE_CARD_VERSION, "", "", "", "", "container-pricing-v1"],
+          doubles: [allocatedMs, credits, effectiveCreditsPerHour, meter.creditsPerHour === undefined ? 0 : 1],
+        });
       } catch { /* telemetry must never delay or prevent billing settlement */ }
     }
     await this.ctx.storage.delete("container_runtime_metrics");
@@ -442,7 +461,19 @@ export class ToolSandboxDO extends DurableObject {
   private async updateRuntimeMetrics(update: Partial<Record<keyof Omit<ContainerRuntimeMetrics, "sidecar">, number>>, sidecar?: boolean): Promise<void> {
     const defaults: ContainerRuntimeMetrics = { sidecar: sidecar === true, coldStarts: 0, startupMs: 0, warmHits: 0, warmIdleMs: 0, executions: 0, executionMs: 0,
       workspaceBytesHydrated: 0, workspaceBytesCaptured: 0, workspaceBytesStaged: 0, workspaceCheckpoints: 0, workspaceCheckpointMs: 0,
+      workspaceCheckpointFailures: 0, workspaceCheckpointFailureMs: 0, workspaceStagingAgeMs: 0,
       workspaceR2Lists: 0, workspaceR2Reads: 0, workspaceR2Writes: 0, workspaceR2Deletes: 0 };
+    const execution = this.activeExecution?.workspaceMetrics;
+    if (execution) {
+      execution.bytesHydrated += Math.max(0, update.workspaceBytesHydrated ?? 0);
+      execution.bytesCaptured += Math.max(0, update.workspaceBytesCaptured ?? 0);
+      execution.bytesStaged += Math.max(0, update.workspaceBytesStaged ?? 0);
+      execution.checkpoints += Math.max(0, update.workspaceCheckpoints ?? 0);
+      execution.checkpointMs += Math.max(0, update.workspaceCheckpointMs ?? 0);
+      execution.failedCheckpoints += Math.max(0, update.workspaceCheckpointFailures ?? 0);
+      execution.failedCheckpointMs += Math.max(0, update.workspaceCheckpointFailureMs ?? 0);
+      execution.stagingAgeMs += Math.max(0, update.workspaceStagingAgeMs ?? 0);
+    }
     const current = { ...defaults, ...await this.ctx.storage.get<Partial<ContainerRuntimeMetrics>>("container_runtime_metrics") };
     if (sidecar !== undefined) current.sidecar = sidecar;
     for (const [key, value] of Object.entries(update) as Array<[keyof typeof update, number]>) current[key] += value;
@@ -502,7 +533,11 @@ export class ToolSandboxDO extends DurableObject {
     const startedAt = Date.now();
     const sidecarWasWarm = Boolean(scope.installationId && this.container?.running);
     const controller = new AbortController();
-    this.activeExecution = { id: scope.executionId, scope, controller, workspaceMetrics: { lists: 0, reads: 0, writes: 0, deletes: 0 } };
+    this.activeExecution = { id: scope.executionId, scope, controller, workspaceMetrics: {
+      lists: 0, reads: 0, writes: 0, deletes: 0, bytesRead: 0, bytesWriteAttempted: 0,
+      bytesHydrated: 0, bytesCaptured: 0, bytesStaged: 0, checkpoints: 0, checkpointMs: 0,
+      failedCheckpoints: 0, failedCheckpointMs: 0, stagingAgeMs: 0,
+    } };
     const abort = () => controller.abort();
     let executionLimitExceeded = false;
     request.signal.addEventListener("abort", abort, { once: true });
@@ -590,14 +625,22 @@ export class ToolSandboxDO extends DurableObject {
     return sandboxWorkspacePrefix(scope);
   }
 
-  private recordWorkspaceR2(operation: "lists" | "reads" | "writes" | "deletes"): void {
+  private recordWorkspaceR2(operation: "lists" | "reads" | "writes" | "deletes", bytes = 0): void {
     const metrics = this.activeExecution?.workspaceMetrics;
-    if (metrics) metrics[operation]++;
+    if (!metrics) return;
+    metrics[operation]++;
+    if (operation === "reads") metrics.bytesRead += Math.max(0, bytes);
+    if (operation === "writes") metrics.bytesWriteAttempted += Math.max(0, bytes);
   }
 
   private async readWorkspaceBytes(bucket: R2Bucket, key: string) {
     this.recordWorkspaceR2("reads");
-    return readBytesWithHash(bucket, key);
+    const result = await readBytesWithHash(bucket, key);
+    if (result) {
+      const metrics = this.activeExecution?.workspaceMetrics;
+      if (metrics) metrics.bytesRead += result.bytes.byteLength;
+    }
+    return result;
   }
 
   private async flushExecutionWorkspaceMetrics(scope: ContainerInvocationScope): Promise<void> {
@@ -606,8 +649,24 @@ export class ToolSandboxDO extends DurableObject {
     const metrics = active.workspaceMetrics;
     await this.updateRuntimeMetrics({ workspaceR2Lists: metrics.lists, workspaceR2Reads: metrics.reads, workspaceR2Writes: metrics.writes, workspaceR2Deletes: metrics.deletes });
     const analytics = (this.env as unknown as SandboxBindings).ANALYTICS;
-    try { analytics?.writeDataPoint({ blobs: ["container.runtime.execution", scope.installationId ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v1"], doubles: [metrics.lists, metrics.reads, metrics.writes, metrics.deletes] }); } catch { /* telemetry must never delay execution cleanup */ }
-    metrics.lists = 0; metrics.reads = 0; metrics.writes = 0; metrics.deletes = 0;
+    try {
+      analytics?.writeDataPoint({ blobs: ["container.runtime.execution", scope.installationId ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v1"], doubles: [metrics.lists, metrics.reads, metrics.writes, metrics.deletes] });
+      analytics?.writeDataPoint({
+        blobs: ["container.runtime.execution_v2", scope.installationId ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", "workspace-metrics-v2"],
+        doubles: [metrics.lists, metrics.reads, metrics.writes, metrics.deletes,
+          metrics.bytesRead, metrics.bytesWriteAttempted, metrics.bytesHydrated, metrics.bytesCaptured, metrics.bytesStaged,
+          metrics.checkpoints, metrics.checkpointMs, metrics.failedCheckpoints, metrics.failedCheckpointMs, metrics.stagingAgeMs],
+      });
+    } catch { /* telemetry must never delay execution cleanup */ }
+    for (const key of Object.keys(metrics) as Array<keyof ExecutionWorkspaceMetrics>) metrics[key] = 0;
+  }
+
+  private async recordWorkspaceStagingAge(createdAt: unknown): Promise<void> {
+    if (typeof createdAt !== "string") return;
+    const createdMs = Date.parse(createdAt);
+    if (!Number.isFinite(createdMs) || createdMs > Date.now()) return;
+    try { await this.updateRuntimeMetrics({ workspaceStagingAgeMs: Math.min(Date.now() - createdMs, 365 * 24 * 60 * 60_000) }); }
+    catch { /* telemetry must not change publication or recovery decisions */ }
   }
 
   private async *listR2Workspace(prefix: string): AsyncGenerator<{ path: string; bytes: Uint8Array; hash: string }> {
@@ -731,7 +790,7 @@ export class ToolSandboxDO extends DurableObject {
       for await (const file of this.listR2Workspace(this.workspacePrefix(scope))) {
         if (file.path.startsWith("shared/")) continue;
         const objectKey = `workspace-v1/${identity.scope.tenantId}/${identity.scope.spaceId}/${identity.scope.projectId}/${identity.scope.jurisdiction}/content/${file.hash}`;
-        this.recordWorkspaceR2("writes");
+        this.recordWorkspaceR2("writes", file.bytes.byteLength);
         const put = await bindings.SCRIPTS_R2.put(objectKey, file.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: file.hash, size: String(file.bytes.byteLength) } });
         if (!put) {
           const existing = await this.readWorkspaceBytes(bindings.SCRIPTS_R2, objectKey);
@@ -858,7 +917,7 @@ export class ToolSandboxDO extends DurableObject {
       if (path.startsWith("shared/")) sharedObjectKey(scope, path, "write");
       const stagedKey = bytes ? `workspace-staging/${scope.spaceId}/${scope.projectId ?? "_assistant"}/${holderId}/${newHash}` : undefined;
       if (bytes && stagedKey) {
-        this.recordWorkspaceR2("writes");
+        this.recordWorkspaceR2("writes", bytes.byteLength);
         await bindings.SCRIPTS_R2.put(stagedKey, bytes, { customMetadata: { sha256: newHash! }, onlyIf: { etagDoesNotMatch: "*" } });
         stagedBytes += bytes.byteLength;
       }
@@ -868,10 +927,17 @@ export class ToolSandboxDO extends DurableObject {
     if (!changes.length) return { changed: 0 };
     // The journal is written before the first remote publication. Recovery completes the same
     // intended revisions, including a publication whose response was lost, before hydration.
-    await this.ctx.storage.put("workspace_pending_publication", { scope, changes } satisfies WorkspacePublication);
+    const createdAt = new Date().toISOString();
+    await this.ctx.storage.put("workspace_pending_publication", { scope, changes, createdAt } satisfies WorkspacePublication);
     const checkpointStarted = Date.now();
-    await this.replayWorkspacePublication(holderId);
-    await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
+    try {
+      await this.replayWorkspacePublication(holderId);
+      await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
+    } catch (error) {
+      await this.updateRuntimeMetrics({ workspaceCheckpointFailures: 1, workspaceCheckpointFailureMs: Math.max(0, Date.now() - checkpointStarted) }).catch(() => undefined);
+      await this.recordWorkspaceStagingAge(createdAt);
+      throw error;
+    }
     return { changed: changes.length };
   }
 
@@ -919,7 +985,7 @@ export class ToolSandboxDO extends DurableObject {
     const idempotencyKey = `workspace-${executionHash.slice(0, 24)}-${changeSetHash.slice(0, 32)}`;
     const checkpoint = { sessionId: runtimeSession.id, allocationGeneration: runtimeSession.allocationGeneration, fence: runtimeSession.fence,
       baseRevision: (await this.requireWorkspaceResponse(await this.workspaceCoordinatorCall(identity.scope, `/v1/head?branch=${encodeURIComponent(runtimeSession.branch)}`)) as { head: WorkspaceHead }).head.revision,
-      idempotencyKey, stageId: idempotencyKey, changes, workspaceScope: identity.scope };
+      idempotencyKey, stageId: idempotencyKey, changes, workspaceScope: identity.scope, createdAt: new Date().toISOString() };
     await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", checkpoint);
     await this.stageAndCheckpointUnified(identity.scope, checkpoint);
     const nextHashes = { ...priorHashes };
@@ -938,30 +1004,37 @@ export class ToolSandboxDO extends DurableObject {
 
   private async stageAndCheckpointUnified(identity: WorkspaceScope, checkpoint: Record<string, unknown>): Promise<{ publication: { status?: string }; error_code?: string }> {
     const checkpointStarted = Date.now();
-    let stagedCheckpoint = checkpoint;
-    if (Array.isArray(checkpoint.changes)) {
-      const stageId = typeof checkpoint.stageId === "string" ? checkpoint.stageId : String(checkpoint.idempotencyKey ?? "");
-      const staged = await this.workspaceCoordinatorCall(identity, "/v1/stage", {
-        sessionId: checkpoint.sessionId, allocationGeneration: checkpoint.allocationGeneration, fence: checkpoint.fence,
-        stageId, changes: checkpoint.changes,
-      });
-      await this.requireWorkspaceResponse(staged);
-      const stagedBytes = checkpoint.changes.reduce((total, change) => {
-        const contentBase64 = change && typeof change === "object" ? (change as { contentBase64?: unknown }).contentBase64 : undefined;
-        return total + (typeof contentBase64 === "string" ? Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0)).byteLength : 0);
-      }, 0);
-      if (stagedBytes) await this.updateRuntimeMetrics({ workspaceBytesStaged: stagedBytes });
-      const { changes: _changes, ...checkpointRef } = checkpoint;
-      stagedCheckpoint = { ...checkpointRef, stageId };
-      await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", stagedCheckpoint);
+    try {
+      let stagedCheckpoint = checkpoint;
+      if (Array.isArray(checkpoint.changes)) {
+        const stageId = typeof checkpoint.stageId === "string" ? checkpoint.stageId : String(checkpoint.idempotencyKey ?? "");
+        const staged = await this.workspaceCoordinatorCall(identity, "/v1/stage", {
+          sessionId: checkpoint.sessionId, allocationGeneration: checkpoint.allocationGeneration, fence: checkpoint.fence,
+          stageId, changes: checkpoint.changes,
+        });
+        await this.requireWorkspaceResponse(staged);
+        const stagedBytes = checkpoint.changes.reduce((total, change) => {
+          const contentBase64 = change && typeof change === "object" ? (change as { contentBase64?: unknown }).contentBase64 : undefined;
+          return total + (typeof contentBase64 === "string" ? Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0)).byteLength : 0);
+        }, 0);
+        if (stagedBytes) await this.updateRuntimeMetrics({ workspaceBytesStaged: stagedBytes });
+        const { changes: _changes, ...checkpointRef } = checkpoint;
+        stagedCheckpoint = { ...checkpointRef, stageId };
+        await this.ctx.storage.put("workspace_pending_coordinator_checkpoint", stagedCheckpoint);
+      }
+      const response = await this.workspaceCoordinatorCall(identity, "/v1/checkpoint", stagedCheckpoint);
+      const result = await response.json<{ publication?: { status?: string }; error_code?: string }>().catch(() => ({} as { publication?: { status?: string }; error_code?: string }));
+      if (!response.ok || !result.publication || !["published", "noop"].includes(result.publication.status ?? "")) {
+        throw new Error(`workspace_${result.error_code ?? result.publication?.status ?? `http_${response.status}`}`);
+      }
+      await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
+      await this.recordWorkspaceStagingAge(checkpoint.createdAt);
+      return result as { publication: { status?: string }; error_code?: string };
+    } catch (error) {
+      await this.updateRuntimeMetrics({ workspaceCheckpointFailures: 1, workspaceCheckpointFailureMs: Math.max(0, Date.now() - checkpointStarted) }).catch(() => undefined);
+      await this.recordWorkspaceStagingAge(checkpoint.createdAt);
+      throw error;
     }
-    const response = await this.workspaceCoordinatorCall(identity, "/v1/checkpoint", stagedCheckpoint);
-    const result = await response.json<{ publication?: { status?: string }; error_code?: string }>().catch(() => ({} as { publication?: { status?: string }; error_code?: string }));
-    if (!response.ok || !result.publication || !["published", "noop"].includes(result.publication.status ?? "")) {
-      throw new Error(`workspace_${result.error_code ?? result.publication?.status ?? `http_${response.status}`}`);
-    }
-    await this.updateRuntimeMetrics({ workspaceCheckpoints: 1, workspaceCheckpointMs: Math.max(0, Date.now() - checkpointStarted) });
-    return result as { publication: { status?: string }; error_code?: string };
   }
 
   private async replayPendingUnifiedCheckpoint(identity: WorkspaceScope): Promise<void> {
@@ -1060,6 +1133,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     await this.ctx.storage.put("workspace_hashes", nextHashes);
     await this.ctx.storage.delete("workspace_pending_publication");
+    await this.recordWorkspaceStagingAge(publication.createdAt);
     const stagedKeys = changes.flatMap((change) => change.stagedKey ? [change.stagedKey] : []);
     if (stagedKeys.length) { this.recordWorkspaceR2("deletes"); await bindings.SCRIPTS_R2.delete(stagedKeys).catch(() => undefined); }
   }
