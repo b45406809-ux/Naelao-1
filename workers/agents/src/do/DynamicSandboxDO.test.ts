@@ -27,6 +27,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
   let info: any;
   let alarmAt = 0;
   let task: Promise<Response> | undefined;
+  let controlReady = true;
   const transport = {
     images: { base: image, tool: image }, get running() { return running; },
     start: vi.fn((args: any) => { running = true; info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels }; }),
@@ -35,6 +36,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
     snapshotContainer: vi.fn(async () => ({ id: "snapshot-one", size: 1024 })),
     getTcpPort: () => ({ fetch: async (request: Request) => {
       if (new URL(request.url).pathname === "/build" && task) return task;
+      if (new URL(request.url).pathname === "/control/init" && !controlReady) return Response.json({ ok: false }, { status: 503 });
       return Response.json({ ok: true });
     } }),
   };
@@ -68,6 +70,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
   return { invoke, profile, transport, records, capacity, env, billing, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { task = new Promise<Response>(() => undefined); },
+    setControlReady: (value: boolean) => { controlReady = value; },
     legacy: () => new ToolSandboxDO(ctx as never, env as never) };
 }
 afterEach(() => vi.restoreAllMocks());
@@ -82,7 +85,7 @@ describe("Cloudflare dynamic execution", () => {
     now += 5001;
     await r.alarm();
     expect(await (await r.profile()).json()).toMatchObject({ state: "checkpointed", can_restore: true });
-    expect(await (await r.profile(true)).json()).toEqual({ reset: true });
+    expect(await (await r.profile(true)).json()).toEqual({ reset: true, providerSnapshotPurge: "not_supported" });
     expect(r.records.has("dynamic_snapshot")).toBe(false);
     expect(r.records.has("dynamic_selection")).toBe(false);
     expect(r.transport.destroy).toHaveBeenCalledOnce();
@@ -143,7 +146,8 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start.mock.calls.at(-1)?.[0].image).toBeUndefined();
     r.setInfo({ image: "", labels: { naelao_owner: "other" } });
     expect((await r.invoke()).ok).toBe(false);
-    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.records.has("dynamic_snapshot")).toBe(true);
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", recovery_error: "dynamic_snapshot_identity_mismatch" });
   });
   it("restores an installed runtime snapshot on a later worker run for the same installation", async () => {
     let now = 2500000; vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -187,14 +191,85 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.capacity.held.get("global")?.size).toBe(0);
     expect(r.capacity.held.get("tenant:tenant")?.size).toBe(0);
   });
-  it("falls back to the approved image if the provider rejects an idle checkpoint", async () => {
+  it("fails closed on snapshot restore failure and preserves the previous recovery point", async () => {
     let now = 5000000; vi.spyOn(Date, "now").mockImplementation(() => now);
     const r = runtime({ snapshots: true }); await r.invoke();
     now += 5001; await r.alarm();
+    const lastGood = structuredClone(r.records.get("dynamic_snapshot"));
     r.transport.start.mockImplementationOnce(() => { throw new Error("snapshot_expired"); });
-    expect((await r.invoke()).ok).toBe(true);
-    expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ image }));
-    expect(r.transport.start.mock.calls.at(-1)?.[0].containerSnapshot).toBeUndefined();
+    const failed = await r.invoke("/prewarm", { executionId: "restore-failed" });
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toMatchObject({ error: "Error: dynamic_snapshot_restore_failed" });
+    expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ containerSnapshot: { id: "snapshot-one" } }));
+    expect(r.transport.start.mock.calls.at(-1)?.[0].image).toBeUndefined();
+    expect(r.records.get("dynamic_snapshot")).toEqual(lastGood);
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", recovery_error: "dynamic_snapshot_restore_failed", can_restore: true });
+    expect((await r.invoke("/prewarm", { executionId: "restore-retried" })).status).toBe(200);
+    expect(r.records.get("dynamic_snapshot")).toEqual(lastGood);
+  });
+
+  it("retains the prior recovery point when a replacement snapshot attempt fails", async () => {
+    let now = 5100000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true }); await r.invoke();
+    now += 5001; await r.alarm();
+    const lastGood = structuredClone(r.records.get("dynamic_snapshot"));
+    expect((await r.invoke("/prewarm", { executionId: "after-restore" })).status).toBe(200);
+    r.transport.snapshotContainer.mockRejectedValueOnce(new Error("snapshot_write_failed"));
+    now += 5001; await r.alarm();
+    expect(r.records.get("dynamic_snapshot")).toEqual(lastGood);
+    expect(await (await r.profile()).json()).toMatchObject({ state: "checkpointed", can_restore: true, snapshot_save_error: "dynamic_snapshot_save_failed" });
+  });
+
+  it("does not silently start an empty image when a retained snapshot has expired", async () => {
+    let now = 5200000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true }); await r.invoke();
+    now += 5001; await r.alarm();
+    now += 30 * 24 * 60 * 60 * 1000;
+    const result = await r.invoke("/prewarm", { executionId: "expired-restore" });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ error: "Error: dynamic_snapshot_expired" });
+    expect(r.transport.start).toHaveBeenCalledTimes(1);
+    expect(r.records.has("dynamic_snapshot")).toBe(true);
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", can_restore: false, recovery_error: "dynamic_snapshot_expired" });
+  });
+
+  it("rejects tampered snapshot provenance metadata and preserves the recovery record", async () => {
+    let now = 5250000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true }); await r.invoke();
+    now += 5001; await r.alarm();
+    const saved = structuredClone(r.records.get("dynamic_snapshot"));
+    r.records.set("dynamic_snapshot", { ...saved, imageDigest: "f".repeat(64) });
+    const result = await r.invoke("/prewarm", { executionId: "tampered-snapshot" });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ error: "Error: dynamic_snapshot_incompatible" });
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.records.get("dynamic_snapshot")).toMatchObject({ id: "snapshot-one", imageDigest: "f".repeat(64) });
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", can_restore: false, recovery_error: "dynamic_snapshot_incompatible" });
+  });
+
+  it("surfaces a restored container readiness failure and keeps its recovery point", async () => {
+    let now = 5300000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true }); await r.invoke();
+    now += 5001; await r.alarm();
+    const lastGood = structuredClone(r.records.get("dynamic_snapshot"));
+    r.setControlReady(false);
+    const result = await r.invoke("/prewarm", { executionId: "not-ready", timeoutMs: 15, deadline: now + 15 });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ error: expect.stringContaining("container_execution_time_limit_exceeded") });
+    await new Promise(resolve => setTimeout(resolve, 120));
+    expect(r.records.get("dynamic_snapshot")).toEqual(lastGood);
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", can_restore: true, recovery_error: "dynamic_snapshot_restore_failed" });
+  });
+
+  it("keeps the project main computer owner stable across worker runs", async () => {
+    const r = runtime();
+    const mainScope = { installationId: undefined, installationScope: undefined, image: undefined, dynamicImage: false };
+    expect((await r.invoke("/prewarm", { ...mainScope, runId: "main-run-one" })).status).toBe(200);
+    const previousOwner = r.records.get("dynamic_selection").owner;
+    r.restart();
+    expect((await r.invoke("/prewarm", { ...mainScope, runId: "main-run-two", executionId: "main-run-two-exec" })).status).toBe(200);
+    expect(r.records.get("dynamic_selection").owner).toBe(previousOwner);
+    expect(r.transport.start).toHaveBeenCalledOnce();
   });
   it("destroys a timed-out dynamic execution and returns its concurrency leases", async () => {
     const r = runtime(); await r.invoke(); r.hangBuild();

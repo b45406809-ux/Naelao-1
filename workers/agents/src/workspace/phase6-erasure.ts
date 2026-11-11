@@ -102,6 +102,13 @@ export async function replayWorkspaceErasureLedgerReceipt(
   const current = await db.prepare("SELECT tombstone_id,jurisdiction FROM workspace_erasure_tombstones WHERE tenant_id=? AND space_id=? AND project_id=?")
     .bind(scope.tenantId, scope.spaceId, scope.projectId).first<{ tombstone_id: string; jurisdiction: string }>();
   if (!current || current.tombstone_id !== expectedId || current.jurisdiction !== scope.jurisdiction) throw new Error("workspace_erasure_tombstone_conflict");
+  // A database restore may also roll back the provider-deletion outbox. Recreate its
+  // idempotent intents before scheduled cleanup resumes; the dispatcher still uses its
+  // inspect-before-dispatch rules for every external effect.
+  await queueProjectSandboxDeletions(db, scope, now);
+  // A restored primary R2 point may resurrect legacy aliases or bridge staging even when
+  // the D1 tombstone survived. Reopen completed cleanup so its persisted cursors sweep them.
+  await restartCompletedWorkspaceErasure(db, scope, now);
   return !existed;
 }
 

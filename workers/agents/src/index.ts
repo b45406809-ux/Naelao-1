@@ -16,6 +16,7 @@ import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-pub
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
 import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
+import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage } from "./workspace/erasure-backup.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
@@ -352,6 +353,9 @@ export interface AgentsEnv extends Cloudflare.Env {
   // CF Workers AI — for free-tier agents and sub-agent vision tasks.
   AI: Ai;
   PLATFORM_DB: D1Database;
+  /** Separate immutable erasure-receipt backups. Global and EU resources must be distinct. */
+  WORKSPACE_ERASURE_BACKUP_R2?: R2Bucket;
+  WORKSPACE_ERASURE_BACKUP_EU_R2?: R2Bucket;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   OWNER_VOICE_AGENT: DurableObjectNamespace<OwnerVoiceAgent>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
@@ -557,6 +561,32 @@ app.post("/internal/workspaces/erasure/replay", async c => {
   return c.json({ receiptsReplayed: body.receipts.length, tombstonesCreated: created, cleanupResumesOnSchedule: true }, 200,
     { "cache-control": "no-store" });
 });
+app.post("/internal/workspaces/erasure/restore-backup", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { jurisdiction?: unknown; cursor?: unknown; limit?: unknown; confirm?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_erasure_backup_replay" }, 400); }
+  if (body.confirm !== true || (body.jurisdiction !== "global" && body.jurisdiction !== "eu") ||
+      (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 1024)) ||
+      (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100))) {
+    return c.json({ error_code: "invalid_workspace_erasure_backup_replay" }, 400);
+  }
+  if (!c.env.PLATFORM_DB || !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_erasure_replay_unavailable" }, 503);
+  try {
+    const result = await replayWorkspaceErasureBackupPage(c.env.PLATFORM_DB, c.env.SCRIPTS_R2, c.env, {
+      tenantId, jurisdiction: body.jurisdiction, ...(typeof body.cursor === "string" ? { cursor: body.cursor } : {}),
+      ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+    });
+    return c.json({ ...result, cleanupResumesOnSchedule: true }, 200, { "cache-control": "no-store" });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "workspace_erasure_backup_replay_failed";
+    const status = reason === "workspace_erasure_backup_unavailable" ? 503
+      : reason.includes("conflict") ? 409
+        : reason.includes("invalid") || reason.includes("scope_mismatch") || reason.includes("cursor") ? 400 : 503;
+    return c.json({ error_code: reason, cleanupResumesOnSchedule: true }, status, { "cache-control": "no-store" });
+  }
+});
 app.post("/internal/workspaces/erasure-check", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -602,7 +632,7 @@ app.post("/internal/workspaces/delete-project", async c => {
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || body.confirm !== true ||
       (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 1024))) return c.json({ error_code: "invalid_workspace_cleanup_request" }, 400);
   return withWorkspaceMigrationLease(c.env, body.scope, `delete-project:${body.scope.projectId.slice(-72)}`, signal =>
-    handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; PLATFORM_DB?: D1Database; SCRIPTS_R2?: R2Bucket }, signal));
+    handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; PLATFORM_DB?: D1Database; SCRIPTS_R2?: R2Bucket } & import("./workspace/erasure-backup.js").WorkspaceErasureBackupBindings, signal));
 });
 async function withWorkspaceMigrationLease(
   env: AgentsEnv,
@@ -9501,6 +9531,10 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
     if (controller.cron === "*/5 * * * *") {
+      if (env.WORKSPACE_ERASURE_BACKUP_R2 || env.WORKSPACE_ERASURE_BACKUP_EU_R2) {
+        const backedUp = await exportPendingWorkspaceErasureReceipts(env.PLATFORM_DB, env).catch(() => ({ exported: 0, pending: 0, failed: 1 }));
+        if (backedUp.pending || backedUp.failed) console.warn("workspace_erasure_backup_attention", backedUp);
+      }
       await resumePendingWorkspaceErasures(env, _ctx).catch(() => { console.warn("Workspace erasure reconciliation postponed"); });
       if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
       await sweepExpiredWorkspaceBlobs(env).catch(() => { console.warn("Sandbox workspace blob cleanup postponed"); });

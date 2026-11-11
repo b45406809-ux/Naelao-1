@@ -3,7 +3,7 @@ import { replayWorkspaceErasureLedgerReceipt, workspaceErasureLedgerKey, type Wo
 import { sha256Hex } from "./workspace-contract.js";
 
 class ReplayDb {
-  tombstone: { tombstone_id: string; jurisdiction: string } | null = null;
+  tombstone: { tombstone_id: string; jurisdiction: string; status?: string } | null = null;
   prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
@@ -13,10 +13,14 @@ class ReplayDb {
         if (sql.includes("SELECT tombstone_id,jurisdiction FROM workspace_erasure_tombstones")) return this.tombstone;
         return null;
       },
+      all: async () => ({ results: [] }),
       run: async () => {
         if (sql.includes("INSERT OR IGNORE INTO workspace_erasure_tombstones") && !this.tombstone) {
-          this.tombstone = { tombstone_id: String(values[3]), jurisdiction: String(values[4]) };
+          this.tombstone = { tombstone_id: String(values[3]), jurisdiction: String(values[4]), status: "pending" };
           return { success: true, meta: { changes: 1 } };
+        }
+        if (sql.includes("SET status='pending',cleanup_phase='legacy'")) {
+          if (this.tombstone) this.tombstone = { ...this.tombstone, status: "pending" };
         }
         return { success: true, meta: { changes: 0 } };
       },
@@ -47,7 +51,7 @@ describe("bulk erasure tombstone replay receipt", () => {
     };
     const db = new ReplayDb();
     expect(await replayWorkspaceErasureLedgerReceipt(db as unknown as D1Database, bucket as unknown as R2Bucket, receipt)).toBe(true);
-    expect(db.tombstone).toEqual({ tombstone_id: receipt.tombstone_id, jurisdiction: "global" });
+    expect(db.tombstone).toMatchObject({ tombstone_id: receipt.tombstone_id, jurisdiction: "global", status: "pending" });
     expect(r2.get(workspaceErasureLedgerKey(scope))?.tombstone_id).toBe(receipt.tombstone_id);
     expect(await replayWorkspaceErasureLedgerReceipt(db as unknown as D1Database, bucket as unknown as R2Bucket, receipt)).toBe(false);
   });
@@ -60,6 +64,20 @@ describe("bulk erasure tombstone replay receipt", () => {
     };
     await expect(replayWorkspaceErasureLedgerReceipt(db as unknown as D1Database, {} as R2Bucket, receipt))
       .rejects.toThrow("workspace_erasure_ledger_invalid");
+  });
+
+  it("restarts cleanup when replaying a receipt over a completed tombstone after primary R2 restore", async () => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "restored-project", jurisdiction: "global" as const };
+    const tombstoneId = `wser_${await sha256Hex(new TextEncoder().encode(`${scope.tenantId}\0${scope.spaceId}\0${scope.projectId}`))}`;
+    const db = new ReplayDb();
+    db.tombstone = { tombstone_id: tombstoneId, jurisdiction: "global", status: "complete" };
+    const receipt: WorkspaceErasureLedgerReceipt = {
+      tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId, jurisdiction: scope.jurisdiction,
+      tombstone_id: tombstoneId, requested_at: "2026-10-01T12:00:00.000Z",
+    };
+    const bucket = { async put() { return { key: "ledger" }; }, async get() { return null; } };
+    await replayWorkspaceErasureLedgerReceipt(db as unknown as D1Database, bucket as unknown as R2Bucket, receipt);
+    expect(db.tombstone?.status).toBe("pending");
   });
 
   it("rejects a different immutable receipt already stored at the scope ledger key", async () => {

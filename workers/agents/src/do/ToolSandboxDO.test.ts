@@ -173,6 +173,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
           bind: () => ({
             first: async () => {
               if (!tenantActive) return null;
+              if (query.includes("workspace_erasure_tombstones")) return null;
               return query.includes("config_json")
                 ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
                 : { id: "space" };

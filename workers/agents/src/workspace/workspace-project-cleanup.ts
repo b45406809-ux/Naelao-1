@@ -2,8 +2,9 @@ import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace-client.js";
 import { validateWorkspaceScope } from "./workspace-contract.js";
 import { advanceWorkspaceErasureCursor, beginProjectWorkspaceErasure, finalizeProjectSandboxDataErasure, restartCompletedWorkspaceErasure, workspaceErasureTombstone } from "./phase6-erasure.js";
+import { exportWorkspaceErasureReceipt, type WorkspaceErasureBackupBindings } from "./erasure-backup.js";
 
-type CleanupEnv = WorkspaceCoordinatorBindings & {
+type CleanupEnv = WorkspaceCoordinatorBindings & WorkspaceErasureBackupBindings & {
   PLATFORM_SECRET?: string;
   PLATFORM_DB?: D1Database;
   SCRIPTS_R2?: R2Bucket;
@@ -56,14 +57,29 @@ export async function handleWorkspaceProjectCleanup(request: Request, env: Clean
     const started = await beginProjectWorkspaceErasure(env.PLATFORM_DB, env.SCRIPTS_R2, scope);
     tombstone = started.tombstone;
     providerDeletions = started.providerDeletions;
-    if (tombstone.status === "complete") {
-      await restartCompletedWorkspaceErasure(env.PLATFORM_DB, scope);
-      tombstone = await workspaceErasureTombstone(env.PLATFORM_DB, scope);
-    }
     if (!tombstone) throw new Error("workspace_erasure_tombstone_missing");
   } catch {
     return Response.json({ error_code: "workspace_erasure_ledger_retry_required" }, { status: 503 });
   }
+
+  try {
+    const receiptBackedUp = await exportWorkspaceErasureReceipt(env.PLATFORM_DB, env, scope);
+    if (!receiptBackedUp) return Response.json({ error_code: "workspace_erasure_backup_unavailable" }, { status: 503 });
+  } catch {
+    // Keep the tombstone in place and aliases recoverable until an independent receipt copy
+    // has been verified. A retry can finish the same immutable backup write.
+    return Response.json({ error_code: "workspace_erasure_backup_retry_required" }, { status: 503 });
+  }
+  if (!tombstone) return Response.json({ error_code: "workspace_erasure_tombstone_missing" }, { status: 503 });
+  if (tombstone.status === "complete") {
+    try {
+      await restartCompletedWorkspaceErasure(env.PLATFORM_DB, scope);
+      tombstone = await workspaceErasureTombstone(env.PLATFORM_DB, scope);
+    } catch {
+      return Response.json({ error_code: "workspace_erasure_ledger_retry_required" }, { status: 503 });
+    }
+  }
+  if (!tombstone) return Response.json({ error_code: "workspace_erasure_tombstone_missing" }, { status: 503 });
 
   let erased: Response;
   try {

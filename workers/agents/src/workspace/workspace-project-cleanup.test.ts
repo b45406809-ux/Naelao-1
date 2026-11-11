@@ -15,11 +15,13 @@ function request(cursor?: string) {
 class FakeErasureDb {
   tombstone: Record<string, unknown> | null = null;
   filesystems = ["fs-project"];
+  backupExports = new Map<string, Record<string, unknown>>();
   prepare(sql: string) {
     let values: unknown[] = [];
     const statement = {
       bind: (...next: unknown[]) => { values = next; return statement; },
       first: async () => {
+        if (sql.includes("FROM workspace_erasure_backup_exports")) return this.backupExports.get(String(values[0])) ?? null;
         if (sql.includes("FROM workspace_erasure_tombstones")) return this.tombstone;
         if (sql.includes("SELECT id FROM sandbox_filesystems")) {
           return (this.filesystems.find(id => id > String(values[3] ?? "")) ? { id: this.filesystems.find(id => id > String(values[3] ?? "")) } : null);
@@ -31,7 +33,12 @@ class FakeErasureDb {
       run: async () => {
         if (sql.startsWith("DELETE FROM sandbox_filesystems")) this.filesystems = [];
         if (sql.includes("INSERT OR IGNORE INTO workspace_erasure_tombstones") && !this.tombstone) {
-          this.tombstone = { tenant_id: values[0], space_id: values[1], project_id: values[2], tombstone_id: values[3], jurisdiction: values[4], status: "pending", cleanup_phase: "legacy", cleanup_cursor: null, bridge_cleanup_cursor: null, cleanup_page: 0 };
+          this.tombstone = { tenant_id: values[0], space_id: values[1], project_id: values[2], tombstone_id: values[3], jurisdiction: values[4], requested_at: values[5], status: "pending", cleanup_phase: "legacy", cleanup_cursor: null, bridge_cleanup_cursor: null, cleanup_page: 0 };
+        }
+        if (sql.includes("INSERT OR IGNORE INTO workspace_erasure_backup_exports")) {
+          const [tombstoneId, tenantId, spaceId, projectId, jurisdiction, backupKey, receiptSha256, exportedAt] = values;
+          this.backupExports.set(String(tombstoneId), { tenant_id: tenantId, space_id: spaceId, project_id: projectId,
+            jurisdiction, backup_key: backupKey, receipt_sha256: receiptSha256, exported_at: exportedAt });
         }
         if (sql.includes("SET status='pending',cleanup_phase='legacy'")) {
           if (this.tombstone) this.tombstone = { ...this.tombstone, status: "pending", cleanup_phase: "legacy", cleanup_cursor: null, bridge_cleanup_cursor: null, cleanup_page: 0 };
@@ -60,6 +67,7 @@ function fixture() {
   const eraseCalls: unknown[] = [];
   const db = new FakeErasureDb();
   let ledger: string | null = null;
+  const backupObjects = new Map<string, unknown>();
   const env = {
     PLATFORM_SECRET: "platform-secret",
     PLATFORM_DB: db,
@@ -79,8 +87,16 @@ function fixture() {
       },
       async delete(keys: string[]) { for (const key of keys) objects.delete(key); },
     },
+    WORKSPACE_ERASURE_BACKUP_R2: {
+      async put(key: string, value: string, options?: { onlyIf?: { etagDoesNotMatch?: string } }) {
+        if (options?.onlyIf?.etagDoesNotMatch === "*" && backupObjects.has(key)) return null;
+        backupObjects.set(key, JSON.parse(value));
+        return { key };
+      },
+      async get(key: string) { const value = backupObjects.get(key); return value ? { async json() { return structuredClone(value); } } : null; },
+    },
   };
-  return { env: env as never, objects, eraseCalls, db, ledger: () => ledger };
+  return { env: env as never, objects, eraseCalls, db, ledger: () => ledger, backupObjects };
 }
 
 describe("retryable project workspace cleanup", () => {
@@ -188,5 +204,21 @@ describe("retryable project workspace cleanup", () => {
     }
     expect(eraseAttempts).toBe(5);
     expect([...objects.keys()]).toEqual(["spaces/space-a/provider-connections/shared"]);
+  });
+
+  it("keeps the erasure tombstone active and aliases intact until an independent receipt copy is available", async () => {
+    const { env, objects, db } = fixture();
+    const backup = (env as unknown as { WORKSPACE_ERASURE_BACKUP_R2?: unknown }).WORKSPACE_ERASURE_BACKUP_R2;
+    delete (env as unknown as { WORKSPACE_ERASURE_BACKUP_R2?: unknown }).WORKSPACE_ERASURE_BACKUP_R2;
+    const blocked = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(blocked.status).toBe(503);
+    expect(await blocked.json()).toMatchObject({ error_code: "workspace_erasure_backup_unavailable" });
+    expect(db.tombstone).toMatchObject({ status: "pending" });
+    expect([...objects.keys()]).toContain("spaces/space-a/projects/project-a/workspace/src/main.ts");
+
+    (env as unknown as { WORKSPACE_ERASURE_BACKUP_R2?: unknown }).WORKSPACE_ERASURE_BACKUP_R2 = backup;
+    const retried = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(retried.status).toBe(200);
+    expect(db.backupExports.size).toBe(1);
   });
 });

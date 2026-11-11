@@ -17,8 +17,24 @@ interface DynamicBindings {
   DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED?: string;
 }
 interface Selection { image: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string }
-interface SavedSnapshot { id: string; fingerprint: string; createdAt: number }
+interface SavedSnapshot {
+  id: string;
+  fingerprint: string;
+  ownerFingerprint?: string;
+  imageDigest?: string;
+  profile?: DynamicProfile;
+  allocationGeneration?: number;
+  sizeBytes?: number;
+  createdAt: number;
+  expiresAt?: number;
+}
 interface Capacity { holder: string; tenant: string; expiresAt: number }
+const SNAPSHOT_RECOVERY_TTL_MS = 29 * 24 * 60 * 60 * 1000;
+function snapshotMetadataInvalid(snapshot: SavedSnapshot): boolean {
+  return snapshot.sizeBytes !== undefined && (!Number.isSafeInteger(snapshot.sizeBytes) || snapshot.sizeBytes < 0)
+    || snapshot.allocationGeneration !== undefined && (!Number.isSafeInteger(snapshot.allocationGeneration) || snapshot.allocationGeneration < 0)
+    || snapshot.expiresAt !== undefined && !Number.isFinite(snapshot.expiresAt);
+}
 async function digest(value: string): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(v => v.toString(16).padStart(2, "0")).join("");
 }
@@ -44,22 +60,53 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         await this.stopContainer().catch(() => undefined);
         await this.ctx.storage.delete("dynamic_snapshot");
         await this.ctx.storage.delete("dynamic_restored");
+        await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+        await this.ctx.storage.delete("dynamic_snapshot_restored_id");
+        await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+        await this.ctx.storage.delete("dynamic_snapshot_save_error");
         await this.ctx.storage.delete("dynamic_selection");
-        return Response.json({ reset: true });
+        return Response.json({ reset: true, providerSnapshotPurge: "not_supported" });
       }
       const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
       const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+      const restoreError = await this.ctx.storage.get<string>("dynamic_snapshot_restore_error")
+        ?? (await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate") ? "dynamic_snapshot_restore_incomplete" : undefined);
+      const saveError = await this.ctx.storage.get<string>("dynamic_snapshot_save_error");
+      const snapshotExpiresAt = snapshot ? (snapshot.expiresAt ?? snapshot.createdAt + SNAPSHOT_RECOVERY_TTL_MS) : undefined;
+      const selectedImageDigest = selection ? await digest(selection.image) : undefined;
+      const snapshotStatusError = snapshot
+        ? !snapshot.id || !snapshot.fingerprint || !Number.isFinite(snapshot.createdAt) || snapshotMetadataInvalid(snapshot) ? "dynamic_snapshot_record_invalid"
+          : this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED !== "true" ? "dynamic_snapshot_restore_disabled"
+            : selection?.fingerprint !== snapshot.fingerprint ? "dynamic_snapshot_incompatible"
+              : snapshot.ownerFingerprint !== undefined && snapshot.ownerFingerprint !== selection?.owner ? "dynamic_snapshot_incompatible"
+                : snapshot.imageDigest !== undefined && snapshot.imageDigest !== selectedImageDigest ? "dynamic_snapshot_incompatible"
+                  : snapshot.profile !== undefined && JSON.stringify(snapshot.profile) !== JSON.stringify(selection?.profile) ? "dynamic_snapshot_incompatible"
+                    : !Number.isFinite(snapshotExpiresAt) ? "dynamic_snapshot_record_invalid"
+                      : snapshotExpiresAt! <= Date.now() ? "dynamic_snapshot_expired" : undefined
+        : undefined;
+      const recoveryError = restoreError ?? snapshotStatusError;
+      const retryableRestoreFailure = restoreError === "dynamic_snapshot_restore_failed"
+        || restoreError === "dynamic_snapshot_restore_incomplete";
+      const canRestore = Boolean(snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
+        && this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true");
       return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true",
-        state: snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
+        state: recoveryError ? "recovery_required" : snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
         image: selection?.image, checkpoint_created_at: snapshot?.createdAt,
-        can_restore: Boolean(snapshot && snapshot.createdAt > Date.now() - 29 * 86400000) });
+        checkpoint_size_bytes: snapshot?.sizeBytes, checkpoint_generation: snapshot?.allocationGeneration,
+        checkpoint_expires_at: snapshotExpiresAt, recovery_error: recoveryError,
+        snapshot_save_error: saveError,
+        can_restore: canRestore });
     }
     if (new URL(request.url).pathname === "/_internal/images") {
       if (!this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
         "naelao-container-catalogue", this.bindings.PLATFORM_SECRET)) return new Response(null, { status: 403 });
       return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINERS_ENABLED === "true", images: Object.values(this.container?.images ?? {}) });
     }
-    return super.fetch(request);
+    const response = await super.fetch(request);
+    const restoreCandidate = await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate");
+    if (restoreCandidate && !response.ok && !await this.ctx.storage.get("dynamic_snapshot_restore_error"))
+      await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_restore_failed");
+    return response;
   }
 
   protected override async prepareAllocation(scope: ContainerInvocationScope): Promise<void> {
@@ -80,8 +127,11 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     } else if (scope.image || scope.dynamicImage) throw new Error("container_installation_required");
     if (!image || !Object.values(this.container?.images ?? {}).includes(image)) throw new Error("container_image_not_in_deployed_image_map");
     assertDynamicPlan(profile, tier);
-    const owner = await digest(JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
-      scope.installationScope, scope.installationId ? null : scope.runId]));
+    // Project-scoped main computers survive run boundaries. Non-project assistant sessions
+    // remain run-scoped, while installed sidecars remain bound to their installation identity.
+    const owner = await digest(JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? null,
+      scope.installationId ?? null, scope.installationScope ?? null,
+      scope.installationId || scope.projectId ? null : scope.runId]));
     // Egress-policy changes invalidate snapshots as well as warm processes.
     const fingerprint = await digest(JSON.stringify([image, profile, owner,
       await this.ctx.storage.get("container_egress_profile")]));
@@ -140,31 +190,80 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       await this.ctx.storage.get("container_egress_profile")]));
     await this.ctx.storage.put("dynamic_selection", selected);
     const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
-    const restore = this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true" && snapshot?.fingerprint === selected.fingerprint
-      && snapshot.createdAt > Date.now() - 29 * 86400000;
-    await this.ctx.storage.delete("dynamic_snapshot"); // one attempt; failed restores retry from the image
     const labels = { naelao_owner: selected.owner, naelao_image: await digest(selected.image) };
-    await this.ctx.storage.put("dynamic_restored", Boolean(restore));
     const options = { instance: selected.profile, enableInternet: false, labels };
-    try {
-      container.start({ ...options, ...(restore ? { containerSnapshot: { id: snapshot!.id } } : { image: selected.image }) });
-    } catch (error) {
-      if (!restore) throw error;
-      await this.ctx.storage.put("dynamic_restored", false);
-      container.start({ ...options, image: selected.image });
+    await this.ctx.storage.put("dynamic_restored", false);
+    if (snapshot) {
+      // An incompatible, expired, disabled, or failed restore must be visible to the caller.
+      // Starting a clean image here would silently present an empty computer as a restoration.
+      await this.ctx.storage.put("dynamic_snapshot_restore_candidate", snapshot.id);
+      if (!snapshot.id || !snapshot.fingerprint || !Number.isFinite(snapshot.createdAt) || snapshotMetadataInvalid(snapshot)) {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_record_invalid");
+        throw new Error("dynamic_snapshot_record_invalid");
+      }
+      if (this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED !== "true") {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_restore_disabled");
+        throw new Error("dynamic_snapshot_restore_disabled");
+      }
+      if (snapshot.fingerprint !== selected.fingerprint) {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_incompatible");
+        throw new Error("dynamic_snapshot_incompatible");
+      }
+      if (snapshot.ownerFingerprint !== undefined && snapshot.ownerFingerprint !== selected.owner ||
+          snapshot.imageDigest !== undefined && snapshot.imageDigest !== await digest(selected.image) ||
+          snapshot.profile !== undefined && JSON.stringify(snapshot.profile) !== JSON.stringify(selected.profile)) {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_incompatible");
+        throw new Error("dynamic_snapshot_incompatible");
+      }
+      const expiresAt = snapshot.expiresAt ?? snapshot.createdAt + SNAPSHOT_RECOVERY_TTL_MS;
+      if (!Number.isFinite(expiresAt)) {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_record_invalid");
+        throw new Error("dynamic_snapshot_record_invalid");
+      }
+      if (expiresAt <= Date.now()) {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_expired");
+        throw new Error("dynamic_snapshot_expired");
+      }
+      await this.ctx.storage.put("dynamic_restored", true);
+      try {
+        container.start({ ...options, containerSnapshot: { id: snapshot.id } });
+      } catch {
+        await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_restore_failed");
+        throw new Error("dynamic_snapshot_restore_failed");
+      }
+      return;
     }
+    await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+    await this.ctx.storage.delete("dynamic_snapshot_restored_id");
+    await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+    await this.ctx.storage.put("dynamic_restored", false);
+    container.start({ ...options, image: selected.image });
   }
 
   protected override async verifyContainer(container: ContainerRuntime, _scope: ContainerInvocationScope | null): Promise<void> {
     const selected = this.selected ?? await this.ctx.storage.get<Selection>("dynamic_selection");
     if (!selected) throw new Error("container_selection_required");
     const info = await container.inspect?.();
+    const restored = await this.ctx.storage.get<boolean>("dynamic_restored");
     if (!info || info.labels?.naelao_owner !== selected.owner || info.labels?.naelao_image !== await digest(selected.image)
-      || (info.image !== selected.image && !(info.image === "" && await this.ctx.storage.get("dynamic_restored"))))
+      || (info.image !== selected.image && !(info.image === "" && restored))) {
+      if (restored) await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_identity_mismatch");
       throw new Error("container_deployed_image_digest_mismatch");
+    }
+    if (restored) {
+      const snapshotId = await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate");
+      if (!snapshotId) throw new Error("dynamic_snapshot_restore_receipt_missing");
+      await this.ctx.storage.put("dynamic_snapshot_restored_id", snapshotId);
+      await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+      await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+    }
   }
 
-  protected override async discardCheckpoint(): Promise<void> { await this.ctx.storage.delete("dynamic_snapshot"); }
+  protected override async discardCheckpoint(): Promise<void> {
+    // A failed command or failed replacement snapshot cannot invalidate the last verified
+    // private-filesystem recovery point. The authenticated profile reset is the explicit
+    // control that drops its reference; the provider snapshot itself remains subject to TTL.
+  }
 
   protected override async beforeIdleStop(container: ContainerRuntime): Promise<void> {
     if (this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED !== "true" || !container.snapshotContainer) return;
@@ -176,8 +275,26 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       const snapshot = await Promise.race([container.snapshotContainer(), new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("snapshot_timeout")), 5000);
       })]);
-      await this.ctx.storage.put("dynamic_snapshot", { id: snapshot.id, createdAt: Date.now(), fingerprint: selected.fingerprint } satisfies SavedSnapshot);
-    } catch { await this.ctx.storage.delete("dynamic_snapshot"); }
+      if (!snapshot.id || !Number.isSafeInteger(snapshot.size) || snapshot.size < 0) throw new Error("snapshot_receipt_invalid");
+      const createdAt = Date.now();
+      const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+      const verified: SavedSnapshot = {
+        id: snapshot.id, fingerprint: selected.fingerprint, ownerFingerprint: selected.owner,
+        imageDigest: await digest(selected.image), profile: selected.profile, allocationGeneration: generation,
+        sizeBytes: snapshot.size, createdAt, expiresAt: createdAt + SNAPSHOT_RECOVERY_TTL_MS,
+      };
+      // One durable pointer update keeps the previous verified snapshot usable until this
+      // replacement has actually completed and its receipt is persisted.
+      await this.ctx.storage.put("dynamic_snapshot", verified);
+      await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+      await this.ctx.storage.delete("dynamic_snapshot_restored_id");
+      await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+      await this.ctx.storage.delete("dynamic_snapshot_save_error");
+    } catch {
+      // Keep the last verified recovery point when snapshot creation, timeout, or persistence
+      // fails. Container snapshot objects expire at the provider's TTL if their pointer is lost.
+      await this.ctx.storage.put("dynamic_snapshot_save_error", "dynamic_snapshot_save_failed");
+    }
     finally { if (timer !== undefined) clearTimeout(timer); }
   }
 }
