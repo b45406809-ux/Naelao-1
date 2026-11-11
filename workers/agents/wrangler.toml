@@ -62,6 +62,10 @@ class_name = "ConcurrencyDO"
 name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
 
+[[durable_objects.bindings]]
+name = "LIVE_RUNTIME_CONTROL_DO"
+class_name = "LiveRuntimeControlDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["NaelaoAgentDO"]
@@ -133,6 +137,10 @@ deleted_classes = ["CustomerVoiceAgent"]
 [[migrations]]
 tag = "v16-workspace-coordinator"
 new_sqlite_classes = ["WorkspaceCoordinatorDO"]
+
+[[migrations]]
+tag = "v17-live-runtime-control"
+new_sqlite_classes = ["LiveRuntimeControlDO"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
@@ -543,6 +551,10 @@ class_name = "ConcurrencyDO"
 name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
 
+[[env.staging.durable_objects.bindings]]
+name = "LIVE_RUNTIME_CONTROL_DO"
+class_name = "LiveRuntimeControlDO"
+
 
 [[env.staging.durable_objects.bindings]]
 name = "WORKFLOW_RUN_DO"
@@ -823,6 +835,10 @@ class_name = "ConcurrencyDO"
 [[env.production.durable_objects.bindings]]
 name = "WORKSPACE_COORDINATOR"
 class_name = "WorkspaceCoordinatorDO"
+
+[[env.production.durable_objects.bindings]]
+name = "LIVE_RUNTIME_CONTROL_DO"
+class_name = "LiveRuntimeControlDO"
 
 
 [[env.production.durable_objects.bindings]]

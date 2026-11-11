@@ -9,6 +9,8 @@ import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
 import { WorkspaceCoordinatorDO } from "./workspace/WorkspaceCoordinatorDO.js";
 export { WorkspaceCoordinatorDO };
+import { LiveRuntimeControlDO } from "./workspace/LiveRuntimeControlDO.js";
+export { LiveRuntimeControlDO };
 import { workspaceCoordinatorRequest, workspaceScopeErased, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
 import { validateWorkspaceBranch, validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
@@ -478,6 +480,9 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Shared lock namespace for multi-file agent-config bundle writes. */
   CONCURRENCY_DO?: DurableObjectNamespace;
   WORKSPACE_COORDINATOR?: DurableObjectNamespace<WorkspaceCoordinatorDO>;
+  LIVE_RUNTIME_CONTROL_DO?: DurableObjectNamespace<LiveRuntimeControlDO>;
+  /** Optional adapter binding; unset until a supported runtime and its evidence path are proven. */
+  LIVE_RUNTIME_AGENT?: Fetcher;
 }
 
 // One message per due tick — the unit of work scheduled()'s enumerate-and-enqueue phase
@@ -516,7 +521,7 @@ interface SpaceRow {
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO", "WORKSPACE_COORDINATOR",
+    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO", "WORKSPACE_COORDINATOR", "LIVE_RUNTIME_CONTROL_DO",
   ]);
 }
 

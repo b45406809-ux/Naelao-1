@@ -1,5 +1,6 @@
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { describe, expect, it, vi } from "vitest";
+import { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import { WorkspaceCoordinatorDO } from "./WorkspaceCoordinatorDO.js";
 import { sha256Hex } from "./workspace-contract.js";
 
@@ -28,7 +29,8 @@ class Storage {
 }
 
 function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure";
-  candidateSelection?: { runtimeId: string; allocationGeneration: number } } = {}) {
+  candidateSelection?: { runtimeId: string; allocationGeneration: number };
+  runtimeControlNamespace?: { idFromName(name: string): unknown; get(id: unknown): Fetcher } } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
   const metadata = new Map<string, { contentType?: string }>();
@@ -95,6 +97,7 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
   const env = { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as unknown as R2Bucket, LIVE_WORKSPACE_ENABLED: options.liveEnabled ? "true" : "false",
     ...(verifier ? { LIVE_CAPABILITY_VERIFIER: verifier as unknown as Fetcher } : {}),
     ...(runtimeControl ? { LIVE_RUNTIME_CONTROL: runtimeControl as unknown as Fetcher } : {}),
+    ...(options.runtimeControlNamespace ? { LIVE_RUNTIME_CONTROL_DO: options.runtimeControlNamespace } : {}),
     UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
   return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState };
@@ -122,6 +125,53 @@ async function call(instance: WorkspaceCoordinatorDO, path: string, body?: unkno
 }
 
 describe("WorkspaceCoordinatorDO checked publication", () => {
+  it("routes runtime-control calls to the scope-partitioned durable control object", async () => {
+    let objectName = "";
+    let routedRequest: Request | undefined;
+    const fetcher = {
+      async fetch(request: Request) { routedRequest = request; return Response.json({ accepted: true }); },
+    } as unknown as Fetcher;
+    const runtimeControlNamespace = {
+      idFromName(name: string) { objectName = name; return "control-id"; },
+      get(id: unknown) { expect(id).toBe("control-id"); return fetcher; },
+    };
+    const { instance } = setup({ runtimeControlNamespace });
+    const coordinator = instance as unknown as {
+      callLiveRuntimeControl(path: string, scope: typeof scope, body: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    };
+    await expect(coordinator.callLiveRuntimeControl("/internal/v1/checkpoint/ack", scope, { requestId: "ack-1" })).resolves.toEqual({ accepted: true });
+    expect(objectName).toBe(await sha256Hex(new TextEncoder().encode("tenant/space/project/global")));
+    expect(routedRequest?.url).toBe("https://live-runtime-control/internal/v1/checkpoint/ack");
+    expect(routedRequest?.headers.get("x-naelao-tenant-id")).toBe(scope.tenantId);
+    expect(await verifyInternalToken(routedRequest?.headers.get("x-naelao-internal-token") ?? undefined, scope.tenantId, "secret")).toBe(true);
+    expect(await routedRequest?.json()).toMatchObject({ scope, requestId: "ack-1" });
+  });
+
+  it("records the runtime-control project tombstone before erasure cleanup completes", async () => {
+    const controlValues = new Map<string, unknown>();
+    let controlStorage: {
+      get<T>(key: string): Promise<T | undefined>;
+      put<T>(key: string, value: T): Promise<void>;
+      transaction<T>(callback: (tx: typeof controlStorage) => Promise<T>): Promise<T>;
+    };
+    controlStorage = {
+      async get<T>(key: string) { return controlValues.get(key) as T | undefined; },
+      async put<T>(key: string, value: T) { controlValues.set(key, structuredClone(value)); },
+      async transaction<T>(callback: (tx: typeof controlStorage) => Promise<T>) { return callback(controlStorage); },
+    };
+    const runtimeControl = new LiveRuntimeControlDO({ storage: controlStorage } as never, { PLATFORM_SECRET: "secret" } as never);
+    const { instance } = setup({ runtimeControlNamespace: {
+      idFromName() { return "project-control"; },
+      get() { return runtimeControl as unknown as Fetcher; },
+    } });
+    const response = await call(instance, "/v1/erase", { scope, confirm: true });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ erased: true, runtimeControlTombstoneRecorded: true, providerRuntimeDeletion: "tracked_separately" });
+    expect(controlValues.get("erased")).toMatchObject({ scopeHash: await sha256Hex(new TextEncoder().encode(
+      '{"jurisdiction":"global","projectId":"project","spaceId":"space","tenantId":"tenant"}',
+    )) });
+  });
+
   it("imports an existing project behind a durable barrier and retains a verified rollback alias", async () => {
     const { instance, objects, storage, metadata } = setup();
     const legacyKey = "spaces/space/projects/project/workspace/docs/legacy.md";
@@ -1036,6 +1086,23 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const stale = await call(instance, "/v1/checkpoint", { sessionId: opened.session.id, allocationGeneration: 7, fence: opened.session.fence, baseRevision: 1, idempotencyKey: "stale-after-handoff", changes: [] });
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ error_code: "stale_fence" });
+  });
+
+  it("keeps live checkpoint admission closed when only the durable boundary exists without a runtime adapter", async () => {
+    const namespace = {
+      idFromName() { return "control-id"; },
+      get() { return { async fetch() { return Response.json({ error_code: "runtime_adapter_unavailable" }, { status: 503 }); } } as Fetcher; },
+    };
+    const { instance, storage } = setup({ liveEnabled: true, liveVerifier: true, runtimeControlNamespace: namespace });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-a", allocationGeneration: 1,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(1, { runtimeId: "runtime-a" }) })).json() as { session: { id: string; fence: number } };
+    const response = await call(instance, "/v1/live-checkpoint/request", {
+      sessionId: opened.session.id, allocationGeneration: 1, fence: opened.session.fence,
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "runtime_adapter_unavailable" });
+    expect(storage.values.has("live-checkpoint:main")).toBe(false);
   });
 
   it("refuses handoff while recoverable staging has not been published", async () => {

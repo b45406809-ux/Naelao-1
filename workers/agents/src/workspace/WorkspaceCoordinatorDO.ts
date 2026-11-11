@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import type { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import {
   canonicalManifest,
   sha256Hex,
@@ -22,6 +23,9 @@ interface Env {
   LIVE_CAPABILITY_VERIFIER?: Fetcher;
   /** Trusted runtime control plane. It must quiesce the process and verify the real filesystem flush. */
   LIVE_RUNTIME_CONTROL?: Fetcher;
+  /** Durable runtime-control boundary. It still fails closed without a trusted runtime adapter. */
+  LIVE_RUNTIME_CONTROL_DO?: DurableObjectNamespace<LiveRuntimeControlDO>;
+  LIVE_RUNTIME_AGENT?: Fetcher;
   UNIFIED_WORKSPACE_ENABLED?: string;
   ANALYTICS?: AnalyticsEngineDataset;
 }
@@ -2066,6 +2070,11 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const existingScope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (existingScope && JSON.stringify(existingScope) !== JSON.stringify(requestedScope)) return fail("workspace_scope_mismatch", 403);
     await this.ctx.storage.transaction(async (tx) => { await tx.put("erased", true); });
+    const hasRuntimeControl = Boolean(this.env.LIVE_RUNTIME_CONTROL || this.env.LIVE_RUNTIME_CONTROL_DO);
+    if (hasRuntimeControl) {
+      const controlTombstone = await this.callLiveRuntimeControl("/internal/v1/project/erase", requestedScope, { confirm: true });
+      if (controlTombstone?.erased !== true) return fail("runtime_control_erasure_pending", 503);
+    }
     const prefix = `workspace-v1/${keyScope(requestedScope)}/`;
     let cursor: string | undefined;
     const seen = new Set<string>();
@@ -2098,7 +2107,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (keys.length < 1000) break;
     }
     await this.ctx.storage.put("erased", true);
-    return json({ erased: true, scope: requestedScope, objectsDeleted: deleted });
+    return json({ erased: true, scope: requestedScope, objectsDeleted: deleted,
+      ...(hasRuntimeControl ? { runtimeControlTombstoneRecorded: true, providerRuntimeDeletion: "tracked_separately" } : {}) });
   }
 
   private async collectStaging(body: Record<string, unknown>): Promise<Response> {
@@ -2467,18 +2477,23 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   }
 
   private async callLiveRuntimeControl(path: string, scope: WorkspaceScope, body: Record<string, unknown>): Promise<Record<string, unknown> | null> {
-    if (!this.env.LIVE_RUNTIME_CONTROL) return null;
+    if (!this.env.LIVE_RUNTIME_CONTROL && !this.env.LIVE_RUNTIME_CONTROL_DO) return null;
     let response: Response;
     try {
-      response = await this.env.LIVE_RUNTIME_CONTROL.fetch(new Request(`https://live-runtime-control${path}`, {
+      const request = new Request(`https://live-runtime-control${path}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": scope.tenantId,
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId),
         },
-        body: JSON.stringify(body),
-      }));
+        body: JSON.stringify({ ...body, scope }),
+      });
+      const control = this.env.LIVE_RUNTIME_CONTROL ?? this.env.LIVE_RUNTIME_CONTROL_DO?.get(
+        this.env.LIVE_RUNTIME_CONTROL_DO.idFromName(await sha256Hex(new TextEncoder().encode(keyScope(scope)))),
+      );
+      if (!control) return null;
+      response = await control.fetch(request);
     } catch {
       return null;
     }
@@ -2491,8 +2506,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     }
   }
 
+  private hasLiveRuntimeAdapter(): boolean {
+    return Boolean(this.env.LIVE_RUNTIME_CONTROL || (this.env.LIVE_RUNTIME_CONTROL_DO && this.env.LIVE_RUNTIME_AGENT));
+  }
+
   private async requestLiveCheckpoint(body: Record<string, unknown>): Promise<Response> {
-    if (!this.env.LIVE_RUNTIME_CONTROL) return fail("runtime_control_unavailable", 503);
+    if (!this.hasLiveRuntimeAdapter()) return fail("runtime_adapter_unavailable", 503);
     if (typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId) ||
         !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return fail("invalid_live_checkpoint_request");
     const session = await this.ctx.storage.get<Session>(sessionKey(body.sessionId));
@@ -2558,9 +2577,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         continue;
       }
       const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
-      if (!scope || !this.env.LIVE_RUNTIME_CONTROL) {
-        await this.ctx.storage.put(key, { ...job, failure: "runtime_control_unavailable", dueAt: Date.now() + 2_000 });
-        await this.scheduleAlarmAt(Date.now() + 2_000);
+      if (!scope || !this.hasLiveRuntimeAdapter()) {
+        await this.ctx.storage.put(key, { ...job, failure: scope ? "runtime_adapter_unavailable" : "workspace_scope_missing", dueAt: Date.now() + 60_000 });
+        await this.scheduleAlarmAt(Date.now() + 60_000);
         continue;
       }
       job = await this.updateLiveCheckpointJob(key, { processing: true }) ?? job;
@@ -2675,7 +2694,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (stagedRecords.size >= 500 || [...stagedRecords.values()].some((stage) => stage.status !== "consumed")) {
       return fail("handoff_staging_unpublished", 409);
     }
-    if (!this.env.LIVE_RUNTIME_CONTROL) return json({ error_code: "runtime_control_unavailable", required: ["write_quiescence", "in_flight_drain", "filesystem_flush", "target_activation"] }, 503);
+    if (!this.hasLiveRuntimeAdapter()) return json({ error_code: "runtime_control_unavailable", missing: ["runtime_adapter"], required: ["write_quiescence", "in_flight_drain", "filesystem_flush", "target_activation"] }, 503);
     const handoffNonce = crypto.randomUUID();
     const flushResult = await this.callLiveRuntimeControl("/internal/v1/handoff/prepare", scope, {
       nonce: handoffNonce, scope, branch: session.branch, sessionId: session.id, runtimeId: session.runtimeId,
