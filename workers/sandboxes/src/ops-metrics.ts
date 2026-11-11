@@ -45,6 +45,14 @@ export function boundedAgeMs(timestamp: string | null | undefined, nowMs = Date.
   return Number.isFinite(parsed) ? Math.max(0, Math.min(nowMs - parsed, 365 * 24 * 60 * 60_000)) : 0;
 }
 
+/** Nearest-rank p95 over a bounded observation window; invalid values are ignored. */
+export function boundedP95Ms(values: readonly number[]): number {
+  const sorted = values.filter((value) => Number.isFinite(value) && value >= 0)
+    .map((value) => Math.min(value, 9_000_000_000_000)).sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  return sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? 0;
+}
+
 export interface SandboxOpsMetricsEnv {
   PLATFORM_DB: D1Database;
   ANALYTICS?: SandboxOpsAnalytics;
@@ -83,14 +91,16 @@ export function sandboxOpsAlerts(snapshot: SandboxOpsSnapshot): Array<{ signal: 
 /** Bounded aggregate probe for dashboards/alerts. All SQL dimensions are fixed enums and the
  * result contains no tenant/project/allocation IDs. */
 export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs = Date.now()): Promise<SandboxOpsSnapshot> {
-  const [publications, reconciliation, allocation, startup, idle, storage, erasure, deletion, billing] = await Promise.all([
+  const [publications, publicationSamples, reconciliation, allocation, startupSamples, idle, storage, erasure, deletion, billing] = await Promise.all([
     env.PLATFORM_DB.prepare(`SELECT SUM(CASE WHEN status IN ('pending','recovery_required') THEN 1 ELSE 0 END) AS count,
-      MIN(CASE WHEN status IN ('pending','recovery_required') THEN created_at END) AS oldest,
-      COALESCE(AVG(CASE WHEN status='published' THEN MAX(0,(julianday(updated_at)-julianday(created_at))*86400000) END),0) AS checkpoint_lag_ms
-      FROM sandbox_publications`).first<{ count: number; oldest: string | null; checkpoint_lag_ms: number }>(),
+      MIN(CASE WHEN status IN ('pending','recovery_required') THEN created_at END) AS oldest
+      FROM sandbox_publications`).first<{ count: number; oldest: string | null }>(),
+    env.PLATFORM_DB.prepare(`SELECT MAX(0,(julianday(updated_at)-julianday(created_at))*86400000) AS elapsed_ms
+      FROM sandbox_publications WHERE status='published' ORDER BY updated_at DESC LIMIT 1000`).all<{ elapsed_ms: number }>(),
     env.PLATFORM_DB.prepare("SELECT MIN(updated_at) AS oldest FROM sandbox_operations WHERE status IN ('pending','running','indeterminate')").first<{ oldest: string | null }>(),
     env.PLATFORM_DB.prepare("SELECT MIN(updated_at) AS oldest FROM sandbox_allocations WHERE status IN ('intent','unknown','error')").first<{ oldest: string | null }>(),
-    env.PLATFORM_DB.prepare("SELECT AVG(MAX(0,(julianday(updated_at)-julianday(created_at))*86400000)) AS avg_ms FROM sandbox_operations WHERE operation='start' AND status='complete'").first<{ avg_ms: number | null }>(),
+    env.PLATFORM_DB.prepare(`SELECT MAX(0,(julianday(updated_at)-julianday(created_at))*86400000) AS elapsed_ms
+      FROM sandbox_operations WHERE operation='start' AND status='complete' ORDER BY updated_at DESC LIMIT 1000`).all<{ elapsed_ms: number }>(),
     env.PLATFORM_DB.prepare("SELECT COALESCE(SUM(quantity_micros),0) AS total FROM sandbox_usage_events WHERE kind='billed_idle_micros'").first<{ total: number }>(),
     env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(size_bytes),0) AS total,
       COALESCE(MAX(snapshot_bytes),0) AS largest_snapshot FROM (
@@ -103,10 +113,10 @@ export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs 
   ]);
   const snapshot: SandboxOpsSnapshot = {
     pendingPublications: Number(publications?.count ?? 0),
-    checkpointLagMs: Math.max(0, Number(publications?.checkpoint_lag_ms ?? 0)),
+    checkpointLagMs: boundedP95Ms((publicationSamples.results ?? []).map((row) => typeof row.elapsed_ms === "number" ? row.elapsed_ms : Number.NaN)),
     reconciliationAgeMs: boundedAgeMs([reconciliation?.oldest, allocation?.oldest, publications?.oldest]
       .filter((value): value is string => typeof value === "string").sort()[0], nowMs),
-    runtimeStartupMs: Math.max(0, Number(startup?.avg_ms ?? 0)),
+    runtimeStartupMs: boundedP95Ms((startupSamples.results ?? []).map((row) => typeof row.elapsed_ms === "number" ? row.elapsed_ms : Number.NaN)),
     billedIdleMicros: Math.max(0, Number(idle?.total ?? 0)),
     bridgeStorageBytes: Math.max(0, Number(storage?.total ?? 0)),
     quotaPressurePpm: Math.max(0, Math.min(1_000_000, Math.round(Number(storage?.largest_snapshot ?? 0) / (64 * 1024 * 1024) * 1_000_000))),
