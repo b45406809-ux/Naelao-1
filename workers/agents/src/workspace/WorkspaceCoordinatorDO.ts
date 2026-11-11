@@ -23,6 +23,7 @@ interface Env {
   /** Trusted runtime control plane. It must quiesce the process and verify the real filesystem flush. */
   LIVE_RUNTIME_CONTROL?: Fetcher;
   UNIFIED_WORKSPACE_ENABLED?: string;
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 interface Change { path: string; expectedHash: string | null; contentBase64: string | null; executable?: boolean; contentType?: string; }
 interface StagedChange { path: string; expectedHash: string | null; sha256: string | null; size: number; executable?: boolean; contentType?: string; objectKey?: string; }
@@ -37,6 +38,19 @@ interface WorkspaceReadPolicy { mode: "legacy" | "shadow" | "coordinator"; gener
 interface WorkspaceMigration { migrationId: string; status: "barrier" | "importing" | "repairing" | "cutover" | "restoring" | "failed" | "verified"; sourcePrefix: string; startedAt: string; updatedAt: string; branchNames?: string[]; sourceInventory?: Record<string, InventorySummary>; errorCode?: string; revision?: number; manifestHash?: string; }
 interface WorkspaceRollbackAlias { sourcePrefix: string; migrationId: string; retainedAt: string; verificationStatus: "pending" | "verified"; revision: number; manifestHash: string; branchNames?: string[]; branchHeads?: Record<string, { revision: number; manifestHash: string }>; sourceInventory?: Record<string, InventorySummary>; rollbackExpiresAt?: string; cleanupCursor?: string; cleanupStatus?: "pending" | "cleaning" | "complete"; }
 interface WorkspaceRollbackRestore { restoreId: string; status: "restoring" | "verified"; startedAt: string; completedAt?: string; expectedHeads: Record<string, { revision: number; manifestHash: string }>; restoredHeads?: Record<string, { revision: number; manifestHash: string }>; completedBranches: string[]; errorCode?: string; }
+interface CanonicalRevisionRestore {
+  restoreId: string;
+  branch: string;
+  targetRevision: number;
+  targetManifestHash: string;
+  expectedHead: { revision: number; manifestHash: string };
+  previousMigration: WorkspaceMigration | null;
+  status: "restoring" | "verified";
+  startedAt: string;
+  completedAt?: string;
+  restoredHead?: { revision: number; manifestHash: string };
+  errorCode?: string;
+}
 interface ContentGcState {
   epoch: string;
   phase: "backfill" | "roots" | "mark" | "sweep-manifests" | "sweep-content" | "cleanup";
@@ -290,7 +304,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         status: "failed", failedAt: new Date().toISOString(), startedAt: new Date(startedAt).toISOString(),
         failures: previous.failures + 1, error: message,
       });
-      console.error(`[workspace-gc] maintenance failed scope=${(await this.ctx.storage.get<WorkspaceScope>("scope"))?.spaceId ?? "unknown"} retry=${previous.failures + 1}: ${message}`);
+      console.error("workspace_gc_maintenance_failed", { retry: Math.min(previous.failures + 1, 100) });
       await this.scheduleAlarmAt(Date.now() + WORKSPACE_MAINTENANCE_RETRY_MS);
     }
   }
@@ -317,13 +331,16 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
         if (head) currentHeads[branch] = { revision: head.revision, manifestHash: head.manifestHash };
       }
-      return json({ migration, rollbackAlias, restore, readPolicy, currentHeads, aliasCleanup: await this.ctx.storage.get("legacy_alias_cleanup_receipt") ?? null });
+      return json({ migration, rollbackAlias, restore, canonicalRevisionRestore: await this.ctx.storage.get("canonical_revision_restore") ?? null,
+        readPolicy, currentHeads, aliasCleanup: await this.ctx.storage.get("legacy_alias_cleanup_receipt") ?? null });
     }
     if (request.method === "GET" && url.pathname === "/v1/read-policy") return json(await this.getReadPolicy());
+    if (request.method === "GET" && url.pathname === "/v1/sessions") return this.sessions(url);
     if (request.method === "GET" && url.pathname === "/v1/live-checkpoint/status") return this.liveCheckpointStatus(url);
     if (request.method === "POST" && url.pathname === "/v1/migration/import") return this.migrateLegacyProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/repair") return this.repairMigratedProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/restore") return this.restoreMigratedProject(body!, tenantId);
+    if (request.method === "POST" && url.pathname === "/v1/revision-restore") return this.restoreCanonicalRevision(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/cutover") return this.cutoverMigratedProject(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/migration/retire-alias") return this.retireLegacyAlias(body!, tenantId);
     // Every known workspace gets a durable maintenance alarm. This turns the authenticated
@@ -350,7 +367,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (request.method === "GET" && url.pathname === "/v1/history") return this.history(url);
     if (request.method === "GET" && url.pathname === "/v1/changes") return this.changes(url);
     if (request.method === "POST" && url.pathname === "/v1/subscriptions/ack") return this.acknowledge(body!);
-    if (request.method === "POST" && url.pathname === "/v1/checkpoint") return this.checkpoint(body!);
+    if (request.method === "POST" && url.pathname === "/v1/checkpoint") {
+      const startedAt = Date.now();
+      const result = await this.checkpoint(body!);
+      this.writeOpsMetric("checkpoint_lag_ms", Date.now() - startedAt, result.ok ? "all" : "warning");
+      return result;
+    }
     if (request.method === "POST" && url.pathname === "/v1/stage") return this.stage(body!);
     if (request.method === "GET" && url.pathname === "/v1/session-snapshot") return this.sessionSnapshot(url);
     if (request.method === "GET" && url.pathname === "/v1/session-content") return this.sessionContent(url);
@@ -931,17 +953,29 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const scope = body.scope;
     const alias = await this.ctx.storage.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
     const policy = await this.getReadPolicy();
+    const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
     const priorReceipt = await this.ctx.storage.get<{ migrationId: string; completedAt: string }>("legacy_alias_cleanup_receipt");
     if (!alias && priorReceipt?.migrationId === body.migrationId) return json({ cleanup: priorReceipt, replay: true });
-    if (!alias || alias.migrationId !== body.migrationId || alias.verificationStatus !== "verified" || policy.mode !== "coordinator" ||
-        policy.receipt?.migrationId !== body.migrationId || !policy.rollbackExpiresAt || Date.parse(policy.rollbackExpiresAt) > Date.now()) return fail("workspace_rollback_window_active", 423);
+    const receipt = policy.receipt;
+    const rollbackExpiry = policy.rollbackExpiresAt ? Date.parse(policy.rollbackExpiresAt) : Number.NaN;
+    if (!alias || alias.migrationId !== body.migrationId || alias.verificationStatus !== "verified" || migration?.status !== "verified" || migration.migrationId !== body.migrationId || policy.mode !== "coordinator" ||
+        !receipt || receipt.migrationId !== body.migrationId || !Number.isFinite(rollbackExpiry) || rollbackExpiry > Date.now() ||
+        alias.rollbackExpiresAt !== policy.rollbackExpiresAt || receipt.mismatchCount !== 0 || receipt.readErrorCount !== 0 || receipt.omittedPathCount !== 0 || receipt.truncatedPages !== 0 ||
+        !Number.isFinite(Date.parse(receipt.verifiedAt)) || Date.parse(receipt.verifiedAt) > rollbackExpiry) return fail("workspace_rollback_window_active", 423);
     if (!this.env.SCRIPTS_R2 || alias.sourcePrefix !== `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`) return fail("workspace_alias_cleanup_scope_mismatch", 403);
     const expectedBranches = ["main", ...(alias.branchNames ?? [])].sort();
-    const receiptBranches = Object.keys(policy.receipt.branches).sort();
+    const receiptBranches = Object.keys(receipt.branches).sort();
     if (JSON.stringify(expectedBranches) !== JSON.stringify(receiptBranches)) return fail("workspace_alias_cleanup_inventory_mismatch", 409);
     for (const branch of expectedBranches) {
       const head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
-      if (!head || head.branch !== branch || JSON.stringify(head.scope) !== JSON.stringify(scope)) return fail("workspace_alias_cleanup_head_unavailable", 409);
+      const verified = receipt.branches[branch];
+      const aliasHead = branch === "main"
+        ? { revision: alias.revision, manifestHash: alias.manifestHash }
+        : alias.branchHeads?.[branch];
+      if (!head || head.branch !== branch || JSON.stringify(head.scope) !== JSON.stringify(scope) || !verified || !aliasHead ||
+          verified.revision !== aliasHead.revision || verified.manifestHash !== aliasHead.manifestHash || !Number.isSafeInteger(verified.revision) || !HASH.test(verified.manifestHash)) {
+        return fail("workspace_alias_cleanup_head_unavailable", 409);
+      }
     }
     let cursor = alias.cleanupCursor;
     try {
@@ -960,7 +994,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await this.ctx.storage.transaction(async tx => {
         const current = await tx.get<WorkspaceRollbackAlias>("legacy_rollback_alias");
         const currentPolicy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
-        if (!current || current.migrationId !== alias.migrationId || currentPolicy?.mode !== "coordinator" || currentPolicy.receipt?.migrationId !== alias.migrationId) throw new Error("cleanup_state_changed");
+        const currentMigration = await tx.get<WorkspaceMigration>("project_migration");
+        if (!current || current.migrationId !== alias.migrationId || currentPolicy?.mode !== "coordinator" || currentPolicy.receipt?.migrationId !== alias.migrationId ||
+            currentPolicy.rollbackExpiresAt !== alias.rollbackExpiresAt || !currentMigration || currentMigration.status !== "verified" || currentMigration.migrationId !== alias.migrationId) throw new Error("cleanup_state_changed");
         await tx.put("legacy_alias_cleanup_receipt", cleanup);
         await tx.delete("legacy_rollback_alias");
       });
@@ -1138,6 +1174,137 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     }
   }
 
+  /** Restore one retained canonical revision after the legacy alias has been retired. The
+   * operation is fenced by the same project migration barrier used for cutover and is replayable
+   * by restoreId. All bytes are integrity checked and republished through checked checkpoints. */
+  private async restoreCanonicalRevision(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || !validateWorkspaceBranch(body.branch) ||
+        body.confirm !== true || typeof body.restoreId !== "string" || !ID.test(body.restoreId) ||
+        !Number.isSafeInteger(body.targetRevision) || Number(body.targetRevision) < 1) return fail("invalid_workspace_revision_restore_request");
+    const scope = body.scope;
+    const branch = body.branch;
+    const targetRevision = Number(body.targetRevision);
+    const knownScope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (knownScope && JSON.stringify(knownScope) !== JSON.stringify(scope)) return fail("workspace_scope_mismatch", 403);
+    const suppliedExpected = body.expectedHead && typeof body.expectedHead === "object" && !Array.isArray(body.expectedHead)
+      ? body.expectedHead as Record<string, unknown> : null;
+    if (suppliedExpected && (!Number.isSafeInteger(suppliedExpected.revision) || Number(suppliedExpected.revision) < 1 ||
+        typeof suppliedExpected.manifestHash !== "string" || !HASH.test(suppliedExpected.manifestHash))) return fail("workspace_revision_restore_head_invalid");
+
+    let restore = await this.ctx.storage.get<CanonicalRevisionRestore>("canonical_revision_restore");
+    if (restore?.status === "verified" && restore.restoreId === body.restoreId) {
+      if (restore.branch !== branch || restore.targetRevision !== targetRevision) return fail("workspace_revision_restore_id_conflict", 409);
+      return json({ restore, replay: true });
+    }
+    const target = await this.ctx.storage.get<RetainedRevision>(retainedRevisionKey(branch, targetRevision));
+    if (!target || target.branch !== branch) return fail("workspace_revision_not_found", 404);
+    const snapshotHead: WorkspaceHead = { version: 1, scope, branch, revision: target.revision, manifestHash: target.manifestHash,
+      parentRevision: null, publicationId: null, updatedAt: target.createdAt };
+    const desiredEntries = await this.readManifestEntries(snapshotHead).catch(() => null);
+    if (!desiredEntries) return fail("workspace_manifest_unavailable", 503);
+    if (await this.verifyEntries(scope, desiredEntries)) return fail("workspace_revision_restore_snapshot_integrity_failed", 503);
+    if (desiredEntries.length > MAX_ENTRIES || desiredEntries.reduce((sum, entry) => sum + entry.size, 0) > MAX_WORKSPACE_BYTES) {
+      return fail("workspace_revision_restore_snapshot_limit_exceeded", 413);
+    }
+    if (restore?.status === "restoring") {
+      if (restore.restoreId !== body.restoreId || restore.branch !== branch || restore.targetRevision !== targetRevision ||
+          restore.targetManifestHash !== target.manifestHash ||
+          (suppliedExpected && (Number(suppliedExpected.revision) !== restore.expectedHead.revision || suppliedExpected.manifestHash !== restore.expectedHead.manifestHash))) {
+        return fail("workspace_revision_restore_in_progress", 423);
+      }
+    } else {
+      if (!suppliedExpected) return fail("workspace_revision_restore_head_required", 400);
+      const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration");
+      if (migration && migration.status !== "verified") return fail("workspace_migration_barrier_active", 423);
+      if ((await this.ctx.storage.get<WorkspaceRollbackRestore>("migration_restore"))?.status === "restoring") return fail("workspace_migration_restore_in_progress", 423);
+      if ((await this.getReadPolicy()).mode !== "coordinator") return fail("workspace_project_policy_blocks_coordinator_write", 423);
+      const now = new Date().toISOString();
+      const nextRestore: CanonicalRevisionRestore = {
+        restoreId: body.restoreId, branch, targetRevision, targetManifestHash: target.manifestHash,
+        expectedHead: { revision: Number(suppliedExpected.revision), manifestHash: String(suppliedExpected.manifestHash) },
+        previousMigration: migration ?? null, status: "restoring", startedAt: now,
+      };
+      const started = await this.ctx.storage.transaction(async tx => {
+        const currentScope = await tx.get<WorkspaceScope>("scope");
+        const currentMigration = await tx.get<WorkspaceMigration>("project_migration");
+        const currentRestore = await tx.get<CanonicalRevisionRestore>("canonical_revision_restore");
+        const currentHead = await tx.get<WorkspaceHead>(headKey(branch));
+        const policy = await tx.get<WorkspaceReadPolicy>("workspace_read_policy");
+        if (await tx.get<boolean>("erased")) return "workspace_erased";
+        if (currentScope && JSON.stringify(currentScope) !== JSON.stringify(scope)) return "workspace_scope_mismatch";
+        if (currentRestore?.status === "restoring") return "workspace_revision_restore_in_progress";
+        if (currentMigration && currentMigration.status !== "verified") return "workspace_migration_barrier_active";
+        if (policy?.mode !== "coordinator") return "workspace_project_policy_blocks_coordinator_write";
+        if (!currentHead || currentHead.revision !== nextRestore.expectedHead.revision || currentHead.manifestHash !== nextRestore.expectedHead.manifestHash) return "workspace_revision_restore_head_changed";
+        if (currentMigration) await tx.put("project_migration", { ...currentMigration, status: "restoring", updatedAt: now });
+        else await tx.put("project_migration", { migrationId: `revision-restore-${body.restoreId}`,
+          status: "restoring", sourcePrefix: "", startedAt: now, updatedAt: now } satisfies WorkspaceMigration);
+        await tx.put("canonical_revision_restore", nextRestore);
+        return "started";
+      });
+      if (started !== "started") return fail(started, started === "workspace_scope_mismatch" ? 403 : started === "workspace_erased" ? 410 : 423);
+      restore = nextRestore;
+    }
+
+    const restoreDigest = (await sha256Hex(new TextEncoder().encode(restore.restoreId))).slice(0, 16);
+    try {
+      const currentHead = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
+      if (!currentHead) throw new Error("workspace_revision_restore_head_missing");
+      if (currentHead.revision < restore.expectedHead.revision ||
+          (currentHead.revision === restore.expectedHead.revision && currentHead.manifestHash !== restore.expectedHead.manifestHash)) {
+        throw new Error("workspace_revision_restore_head_changed");
+      }
+      if (currentHead.revision > restore.expectedHead.revision) {
+        const receipts = await this.ctx.storage.list<WorkspacePublicationReceipt>({ prefix: `receipt:${branch}:`, limit: 1000 });
+        for (let revision = restore.expectedHead.revision + 1; revision <= currentHead.revision; revision++) {
+          const event = await this.ctx.storage.get<RevisionEvent>(revisionEventKey(branch, revision));
+          const receipt = [...receipts.values()].find(item => item.revision === revision &&
+            item.idempotencyKey.startsWith(`revision-restore-${restoreDigest}-`) && item.status === "published");
+          if (!event || !receipt || event.publicationId !== receipt.id) throw new Error("workspace_revision_restore_progress_unverified");
+        }
+      }
+      const restored = await this.importLegacyBranch(scope, branch, desiredEntries, tenantId, {
+        seedFromMain: false, expectedRevision: currentHead.revision, stageNamespace: `revision-restore-${restoreDigest}`,
+      });
+      const verifiedEntries = await this.readManifestEntries(restored);
+      if (JSON.stringify(verifiedEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"])) !==
+          JSON.stringify(desiredEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"]))) {
+        throw new Error("workspace_revision_restore_manifest_mismatch");
+      }
+      const savedHead = { revision: restored.revision, manifestHash: restored.manifestHash };
+      const completedAt = new Date().toISOString();
+      const saved = await this.ctx.storage.transaction(async tx => {
+        const currentRestore = await tx.get<CanonicalRevisionRestore>("canonical_revision_restore");
+        const migration = await tx.get<WorkspaceMigration>("project_migration");
+        const latest = await tx.get<WorkspaceHead>(headKey(branch));
+        if (!currentRestore || currentRestore.restoreId !== restore!.restoreId || currentRestore.status !== "restoring" ||
+            migration?.status !== "restoring" || !latest || latest.revision !== restored.revision || latest.manifestHash !== restored.manifestHash) return false;
+        currentRestore.status = "verified";
+        currentRestore.completedAt = completedAt;
+        currentRestore.restoredHead = savedHead;
+        delete currentRestore.errorCode;
+        if (currentRestore.previousMigration) await tx.put("project_migration", { ...currentRestore.previousMigration, updatedAt: completedAt });
+        else await tx.delete("project_migration");
+        await tx.put("canonical_revision_restore", currentRestore);
+        return true;
+      });
+      if (!saved) throw new Error("workspace_revision_restore_head_changed");
+      return json({ restore: await this.ctx.storage.get<CanonicalRevisionRestore>("canonical_revision_restore"), replay: false });
+    } catch (error) {
+      return this.failCanonicalRevisionRestore(restore, error instanceof Error && error.message.startsWith("workspace_revision_restore_")
+        ? error.message : "workspace_revision_restore_retry_required");
+    }
+  }
+
+  private async failCanonicalRevisionRestore(restore: CanonicalRevisionRestore, errorCode: string): Promise<Response> {
+    const current = await this.ctx.storage.get<CanonicalRevisionRestore>("canonical_revision_restore");
+    if (current?.restoreId === restore.restoreId && current.status === "restoring") {
+      await this.ctx.storage.put("canonical_revision_restore", { ...current, errorCode });
+    }
+    return json({ error_code: "workspace_revision_restore_retry_required",
+      restore: await this.ctx.storage.get<CanonicalRevisionRestore>("canonical_revision_restore") }, 503);
+  }
+
   private async readManifestEntries(head: WorkspaceHead): Promise<WorkspaceEntry[]> {
     const manifest = await this.env.SCRIPTS_R2!.get(manifestKey(head.scope, head.manifestHash));
     if (!manifest) throw new Error("workspace_manifest_unavailable");
@@ -1149,11 +1316,31 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   private async hasCurrentSessionAuthority(session: Session): Promise<boolean> {
     const current = await this.ctx.storage.get<Session>(sessionKey(session.id));
     if (!current || current.status !== "active" || current.runtimeId !== session.runtimeId ||
-        current.allocationGeneration !== session.allocationGeneration || current.fence !== session.fence) return false;
+        current.allocationGeneration !== session.allocationGeneration || current.fence !== session.fence) {
+      this.writeOpsMetric("stale_lease_fence", 1, "warning");
+      return false;
+    }
     if (current.mode !== "live_single_writer") return true;
+    if (this.env.LIVE_WORKSPACE_ENABLED !== "true") {
+      this.writeOpsMetric("stale_lease_fence", 1, "warning");
+      return false;
+    }
     const lease = await this.ctx.storage.get<{ sessionId: string; fence: number; expiresAt: number }>(`writer:${current.branch}`);
-    if (!lease || lease.sessionId !== current.id || lease.fence !== current.fence || lease.expiresAt <= Date.now()) return false;
+    if (!lease || lease.sessionId !== current.id || lease.fence !== current.fence || lease.expiresAt <= Date.now()) {
+      this.writeOpsMetric("stale_lease_fence", 1, "warning");
+      return false;
+    }
     return await this.verifyBoundLiveCapability(current);
+  }
+
+  private writeOpsMetric(signal: "checkpoint_lag_ms" | "stale_lease_fence", value: number, className: "all" | "warning"): void {
+    try {
+      this.env.ANALYTICS?.writeDataPoint({
+        blobs: [`workspace.ops.${signal}`, className, "phase6", "", "", "", "", "", "workspace-ops-v1"],
+        doubles: [Math.max(0, Math.min(value, 9_000_000_000_000))],
+      });
+    } catch { /* telemetry must not change coordinator behavior */ }
+    if (className === "warning") console.warn("workspace_ops_alert", { signal });
   }
 
   private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, evidence: unknown, requireExact = false): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
@@ -2456,6 +2643,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       }
       const head = await this.ctx.storage.get<WorkspaceHead>(headKey(job.branch));
       const elapsedMs = Math.max(0, Date.now() - startedAt);
+      this.writeOpsMetric("checkpoint_lag_ms", Date.now() - job.requestedAt, Date.now() - job.requestedAt > 2_000 ? "warning" : "all");
       await this.callLiveRuntimeControl("/internal/v1/checkpoint/ack", scope, {
         requestId: job.idempotencyKey, sessionId: job.sessionId, runtimeId: job.runtimeId,
         allocationGeneration: job.allocationGeneration, fence: job.fence, revision: head?.revision ?? null,
@@ -2574,6 +2762,20 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return "closed";
     });
     return json({ sessionId: session.id, status: result });
+  }
+
+  private async sessions(url: URL): Promise<Response> {
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const after = url.searchParams.get("after");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (after !== null && !/^session:ws_[0-9a-f-]{36}$/.test(after))) return fail("invalid_session_cursor");
+    const page = await this.ctx.storage.list<Session>({ prefix: "session:", ...(after ? { startAfter: after } : {}), limit: limit + 1 });
+    const selected = [...page.entries()].slice(0, limit);
+    const sessions = selected.map(([, session]) => ({
+      id: session.id, status: session.status, branch: session.branch, mode: session.mode,
+      allocationGeneration: session.allocationGeneration, fence: session.fence, createdAt: session.createdAt,
+    }));
+    const hasMore = page.size > limit;
+    return json({ sessions, hasMore, ...(hasMore && selected.length ? { nextCursor: selected[selected.length - 1]![0] } : {}) });
   }
 
   private async revoke(body: Record<string, unknown>): Promise<Response> {

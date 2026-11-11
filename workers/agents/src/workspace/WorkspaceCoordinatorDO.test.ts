@@ -251,8 +251,27 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(branchReceipt.manifest.tombstoneCount).toBe(0);
     expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(423);
     const expired = new Date(Date.now() - 1000).toISOString();
-    await storage.put("workspace_read_policy", { ...await storage.get("workspace_read_policy") as object, rollbackExpiresAt: expired });
-    await storage.put("legacy_rollback_alias", { ...await storage.get("legacy_rollback_alias") as object, rollbackExpiresAt: expired });
+    const policyBeforeExpiry = await storage.get("workspace_read_policy") as Record<string, unknown>;
+    const receiptBeforeExpiry = policyBeforeExpiry.receipt as Record<string, unknown>;
+    const expiredPolicy = { ...policyBeforeExpiry, rollbackExpiresAt: expired,
+      receipt: { ...receiptBeforeExpiry, verifiedAt: new Date(Date.parse(expired) - 1000).toISOString() } };
+    const expiredAlias = { ...await storage.get("legacy_rollback_alias") as Record<string, unknown>, rollbackExpiresAt: expired };
+    await storage.put("workspace_read_policy", expiredPolicy);
+    await storage.put("legacy_rollback_alias", expiredAlias);
+    const policyWithReadError = { ...expiredPolicy, receipt: { ...(expiredPolicy.receipt as Record<string, unknown>), readErrorCount: 1 } };
+    await storage.put("workspace_read_policy", policyWithReadError);
+    expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(423);
+    await storage.put("workspace_read_policy", expiredPolicy);
+    await storage.put("legacy_rollback_alias", { ...expiredAlias, rollbackExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+    expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(423);
+    await storage.put("legacy_rollback_alias", expiredAlias);
+    const badReceipt = { ...expiredPolicy, receipt: { ...(expiredPolicy.receipt as Record<string, unknown>), branches: {
+      ...((expiredPolicy.receipt as Record<string, unknown>).branches as Record<string, unknown>),
+      main: { ...(((((expiredPolicy.receipt as Record<string, unknown>).branches as Record<string, unknown>).main) as Record<string, unknown>)), manifestHash: "0".repeat(64) },
+    } } };
+    await storage.put("workspace_read_policy", badReceipt);
+    expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-cutover-branch" })).status).toBe(409);
+    await storage.put("workspace_read_policy", expiredPolicy);
     const originalDelete = r2.delete;
     let loseFirstResponse = true;
     r2.delete = async (...args: never[]) => {
@@ -392,6 +411,43 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const branchAfter = await (await call(instance, "/v1/read?branch=workers%2Fworker-a")).json() as { entries: Array<{ path: string; sha256: string }> };
     expect(branchAfter.entries.map(entry => entry.path)).toEqual(["output.md"]);
     expect(branchAfter.entries[0]!.sha256).toBe(await sha256Hex(branchBytes));
+  });
+
+  it("restores a retained canonical revision after the legacy alias has been retired", async () => {
+    const { instance, objects, storage } = setup({ unifiedEnabled: true });
+    const legacyKey = "spaces/space/projects/project/workspace/docs/restore.md";
+    const original = new TextEncoder().encode("retained canonical version");
+    objects.set(legacyKey, original);
+    expect((await call(instance, "/v1/migration/import", { scope, migrationId: "migration-retire-restore" })).status).toBe(201);
+    expect((await call(instance, "/v1/migration/cutover", { scope, migrationId: "migration-retire-restore", rollbackWindowMs: 60 * 60_000 })).status).toBe(200);
+
+    const policy = await storage.get("workspace_read_policy") as Record<string, unknown>;
+    const receipt = policy.receipt as Record<string, unknown>;
+    const expiry = new Date(Date.now() - 2_000).toISOString();
+    await storage.put("workspace_read_policy", { ...policy, rollbackExpiresAt: expiry,
+      receipt: { ...receipt, verifiedAt: new Date(Date.parse(expiry) - 1_000).toISOString() } });
+    const alias = await storage.get("legacy_rollback_alias") as Record<string, unknown>;
+    await storage.put("legacy_rollback_alias", { ...alias, rollbackExpiresAt: expiry });
+    expect((await call(instance, "/v1/migration/retire-alias", { scope, migrationId: "migration-retire-restore" })).status).toBe(200);
+    expect(await storage.get("legacy_rollback_alias")).toBeUndefined();
+
+    const { session } = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "editor", runtimeId: "runtime-restore", allocationGeneration: 1 })).json() as { session: { id: string; fence: number } };
+    const changed = new TextEncoder().encode("new current version");
+    const headBefore = await (await call(instance, "/v1/head?branch=main")).json() as { head: { revision: number; manifestHash: string } };
+    expect((await call(instance, "/v1/checkpoint", { sessionId: session.id, runtimeId: "runtime-restore", allocationGeneration: 1,
+      fence: session.fence, baseRevision: headBefore.head.revision, idempotencyKey: "post-alias-edit",
+      changes: [{ path: "docs/restore.md", expectedHash: await sha256Hex(original), contentBase64: btoa(String.fromCharCode(...changed)) }] })).status).toBe(200);
+    const current = await (await call(instance, "/v1/head?branch=main")).json() as { head: { revision: number; manifestHash: string } };
+    const restored = await call(instance, "/v1/revision-restore", { scope, branch: "main", targetRevision: 1, restoreId: "after-alias-retired",
+      expectedHead: { revision: current.head.revision, manifestHash: current.head.manifestHash }, confirm: true });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ restore: { status: "verified", targetRevision: 1 }, replay: false });
+    const read = await (await call(instance, "/v1/read?branch=main")).json() as { entries: Array<{ path: string; sha256: string }> };
+    expect(read.entries).toMatchObject([{ path: "docs/restore.md", sha256: await sha256Hex(original) }]);
+    expect(await storage.get("legacy_rollback_alias")).toBeUndefined();
+    expect((await call(instance, "/v1/read?branch=main")).status).toBe(200);
+    expect(await (await call(instance, "/v1/revision-restore", { scope, branch: "main", targetRevision: 1,
+      restoreId: "after-alias-retired", confirm: true })).json()).toMatchObject({ replay: true, restore: { status: "verified" } });
   });
 
   it("schedules bounded maintenance and records retryable failures", async () => {
@@ -788,6 +844,20 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(storage.alarmAt).toBeNull();
     expect((await call(instance, "/v1/head?branch=main")).status).toBe(410);
     expect(await (await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).json()).toMatchObject({ error_code: "workspace_erased" });
+  });
+
+  it("exposes bounded operator session inventory and generation-fenced revocation", async () => {
+    const { instance } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await call(instance, "/v1/open", { scope, branch: "main", actorId: "private-user", runtimeId: "runtime-a", allocationGeneration: 7 });
+    const session = (await opened.json() as { session: { id: string; fence: number } }).session;
+    const inventory = await (await call(instance, "/v1/sessions?limit=1")).json() as { sessions: Array<Record<string, unknown>>; hasMore: boolean };
+    expect(inventory).toMatchObject({ hasMore: false, sessions: [{ id: session.id, status: "active", branch: "main", allocationGeneration: 7 }] });
+    expect(inventory.sessions[0]).not.toHaveProperty("actorId");
+    const revoked = await call(instance, "/v1/revoke", { sessionId: session.id, allocationGeneration: 7, fence: session.fence });
+    expect(await revoked.json()).toMatchObject({ status: "revoked" });
+    const after = await (await call(instance, "/v1/sessions?limit=1")).json() as { sessions: Array<Record<string, unknown>> };
+    expect(after.sessions[0]).toMatchObject({ id: session.id, status: "revoked" });
   });
 
   it("removes a content PUT that finishes after the erasure sweep", async () => {

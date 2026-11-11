@@ -43,6 +43,44 @@ describe("Agent37 adapter", () => {
     expect(result).toMatchObject({ workspaceState: "published", publicationId: "pub-1" });
   });
 
+  it("infers MIME for known new-file extensions while preserving canonical and unknown MIME", async () => {
+    const oldBytes = new TextEncoder().encode("old");
+    const next = new TextEncoder().encode("new content");
+    const hash = async (value: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", value))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const provider = new Agent37Provider(
+      { apiKey: "k", instanceKey: "k" },
+      { id: "approved", version: "4", instanceType: "default", region: "us", diskGiB: 20 },
+      vi.fn(async () => Response.json({ path: "/home/node/workspace", entries: [], truncated: false })) as typeof fetch,
+    );
+    vi.spyOn(provider, "writeWorkspaceFile").mockResolvedValue();
+    vi.spyOn(provider, "invoke").mockResolvedValue({ id: "exec-mime", status: "succeeded", exitCode: 0, stdout: "ok", stderr: "", truncated: false, publicationId: null, workspaceState: "unchanged" });
+    vi.spyOn(provider, "listWorkspace").mockResolvedValue([
+      { path: "docs/new.md", size: next.byteLength, modified: 1 },
+      { path: "config.json", size: next.byteLength, modified: 1 },
+      { path: "opaque.unknown", size: next.byteLength, modified: 1 },
+      { path: "canonical.md", size: next.byteLength, modified: 1 },
+    ]);
+    vi.spyOn(provider, "readWorkspaceFile").mockResolvedValue(next);
+    const coordinator: Agent37WorkspaceHandoff = {
+      readCommitted: vi.fn(async () => ({
+        tenantId: "t", spaceId: "s", projectId: "p", branch: "main", sessionId: "ws_12345678-1234-1234-1234-123456789012",
+        revision: 4, fence: 2, allocationGeneration: 1,
+        files: [{ path: "canonical.md", sha256: await hash(oldBytes), executable: false, contentType: "application/x-recorded", bytes: oldBytes }],
+      })),
+      stage: vi.fn(async () => ({ stageId: "stage-mime" })),
+      publish: vi.fn(async () => ({ status: "published" as const, publicationId: "pub-mime" })),
+    };
+    const scopedComputer = { ...computer, scope: { tenantId: "t", ownerId: "u", spaceId: "s", projectId: "p" } };
+    await provider.invokeWithWorkspace({ executionId: "exec-mime", computer: scopedComputer, allocation: { provider: "agent37", externalId: "ab12cd34ef", generation: 1 }, command: "true", args: [], timeoutMs: 1000 }, coordinator);
+    const changes = vi.mocked(coordinator.stage).mock.calls[0]?.[0].changes;
+    expect(changes?.map(({ path, contentType }) => [path, contentType])).toEqual([
+      ["docs/new.md", "text/markdown; charset=utf-8"],
+      ["config.json", "application/json; charset=utf-8"],
+      ["opaque.unknown", "application/octet-stream"],
+      ["canonical.md", "application/x-recorded"],
+    ]);
+  });
+
   it("never stages after an indeterminate dispatch and marks recovery required", async () => {
     const provider = new Agent37Provider({ apiKey: "k", instanceKey: "k" }, { id: "approved", version: "4", instanceType: "default", region: "us", diskGiB: 20 }, vi.fn(async () => Response.json({ path: "/home/node/workspace", entries: [], truncated: false })) as typeof fetch);
     vi.spyOn(provider, "invoke").mockResolvedValue({ id: "exec-unknown", status: "indeterminate", exitCode: null, stdout: "", stderr: "unknown", truncated: false, publicationId: null, workspaceState: "recovery_required" });

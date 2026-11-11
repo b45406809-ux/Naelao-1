@@ -9,12 +9,13 @@ import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
 import { WorkspaceCoordinatorDO } from "./workspace/WorkspaceCoordinatorDO.js";
 export { WorkspaceCoordinatorDO };
-import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
-import { validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
+import { workspaceCoordinatorRequest, workspaceScopeErased, type WorkspaceCoordinatorBindings } from "./workspace/workspace-client.js";
+import { validateWorkspaceBranch, validateWorkspaceContentType, validateWorkspacePath, validateWorkspaceScope } from "./workspace/workspace-contract.js";
 import { handleWorkspaceCompatRead } from "./workspace/workspace-compat-route.js";
 import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-publish-route.js";
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
+import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
 import { publishProjectChatUpload, MAX_COORDINATOR_UPLOAD_BYTES, type ChatUploadManifestSnapshot } from "./channels/workspace-chat-uploads.js";
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
@@ -121,7 +122,7 @@ import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES,
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, queryEmailImage, rasterImageDimensions, reserveEmailOcrAttempt } from "./channels/email-ocr.js";
 import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type ProviderEventReferenceQueueMessage } from "./channels/session-queue.js";
 import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
-import { handleSandboxWorkspaceBridge, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
+import { handleSandboxWorkspaceBridge, reconcilePendingWorkspacePublications, sweepExpiredWorkspaceBlobs } from "./sandboxes/workspace-bridge.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -526,6 +527,72 @@ app.post("/internal/workspaces/erase", async (c) => {
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/erase", { body: { scope: body.scope, confirm: true } });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
+app.post("/internal/workspaces/erasure/replay", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (!c.env.PLATFORM_DB || !c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_erasure_replay_unavailable" }, 503);
+  let body: { receipts?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 512 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_erasure_replay" }, 400); }
+  if (!Array.isArray(body.receipts) || body.receipts.length < 1 || body.receipts.length > 100) return c.json({ error_code: "invalid_workspace_erasure_replay" }, 400);
+  let created = 0;
+  try {
+    for (const candidate of body.receipts) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new Error("invalid_workspace_erasure_ledger_receipt");
+      const row = candidate as Record<string, unknown>;
+      if (row.tenant_id !== tenantId || typeof row.space_id !== "string" || typeof row.project_id !== "string" ||
+          (row.jurisdiction !== "global" && row.jurisdiction !== "eu") || typeof row.tombstone_id !== "string" || typeof row.requested_at !== "string") {
+        throw new Error("invalid_workspace_erasure_ledger_receipt");
+      }
+      created += Number(await replayWorkspaceErasureLedgerReceipt(c.env.PLATFORM_DB, c.env.SCRIPTS_R2, {
+        tenant_id: row.tenant_id, space_id: row.space_id, project_id: row.project_id, jurisdiction: row.jurisdiction,
+        tombstone_id: row.tombstone_id, requested_at: row.requested_at,
+      } as WorkspaceErasureLedgerReceipt));
+    }
+  } catch (error) {
+    const code = error instanceof Error && error.message === "workspace_erasure_tombstone_conflict"
+      ? "workspace_erasure_tombstone_conflict" : "invalid_workspace_erasure_ledger_receipt";
+    return c.json({ error_code: code, receiptsReplayed: created }, code === "workspace_erasure_tombstone_conflict" ? 409 : 400);
+  }
+  return c.json({ receiptsReplayed: body.receipts.length, tombstonesCreated: created, cleanupResumesOnSchedule: true }, 200,
+    { "cache-control": "no-store" });
+});
+app.post("/internal/workspaces/erasure-check", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ scope?: unknown }>().catch(() => ({} as { scope?: unknown }));
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return c.json({ error_code: "invalid_erasure_scope" }, 400);
+  const erased = await workspaceScopeErased(c.env as unknown as WorkspaceCoordinatorBindings, body.scope);
+  return c.json({ erased }, 200, { "cache-control": "no-store" });
+});
+app.post("/internal/workspaces/sessions", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; cursor?: unknown; limit?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_sessions_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId ||
+      (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 128)) ||
+      (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100))) return c.json({ error_code: "invalid_workspace_sessions_request" }, 400);
+  const query = new URLSearchParams({ limit: String(body.limit ?? 50) });
+  if (typeof body.cursor === "string") query.set("after", body.cursor);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, `/v1/sessions?${query}`, {});
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/session/revoke", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; sessionId?: unknown; allocationGeneration?: unknown; fence?: unknown; confirm?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_session_revoke_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || body.confirm !== true ||
+      typeof body.sessionId !== "string" || !/^ws_[0-9a-f-]{36}$/.test(body.sessionId) ||
+      !Number.isSafeInteger(body.allocationGeneration) || !Number.isSafeInteger(body.fence)) return c.json({ error_code: "invalid_workspace_session_revoke_request" }, 400);
+  const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, body.scope, "/v1/revoke", {
+    body: { sessionId: body.sessionId, allocationGeneration: body.allocationGeneration, fence: body.fence },
+  });
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
 app.post("/internal/workspaces/delete-project", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -535,7 +602,7 @@ app.post("/internal/workspaces/delete-project", async c => {
   if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || body.confirm !== true ||
       (body.cursor !== undefined && (typeof body.cursor !== "string" || body.cursor.length > 1024))) return c.json({ error_code: "invalid_workspace_cleanup_request" }, 400);
   return withWorkspaceMigrationLease(c.env, body.scope, `delete-project:${body.scope.projectId.slice(-72)}`, signal =>
-    handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; SCRIPTS_R2?: R2Bucket }, signal));
+    handleWorkspaceProjectCleanup(c.req.raw, c.env as unknown as WorkspaceCoordinatorBindings & { PLATFORM_SECRET?: string; PLATFORM_DB?: D1Database; SCRIPTS_R2?: R2Bucket }, signal));
 });
 async function withWorkspaceMigrationLease(
   env: AgentsEnv,
@@ -639,6 +706,26 @@ app.post("/internal/workspaces/migration-restore", async c => {
   const response = await withWorkspaceMigrationLease(c.env, scope, `rollback:${body.restoreId.slice(-72)}`, signal =>
     workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/migration/restore", {
       body: { scope, restoreId: body.restoreId, confirm: true, ...(body.expectedHeads !== undefined ? { expectedHeads: body.expectedHeads } : {}) }, signal,
+    }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/revision-restore", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: { scope?: unknown; branch?: unknown; targetRevision?: unknown; restoreId?: unknown; expectedHead?: unknown; confirm?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "invalid_workspace_revision_restore_request" }, 400); }
+  if (!validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId || typeof body.branch !== "string" ||
+      !validateWorkspaceBranch(body.branch) || !Number.isSafeInteger(body.targetRevision) || Number(body.targetRevision) < 1 ||
+      typeof body.restoreId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.restoreId) || body.confirm !== true ||
+      (body.expectedHead !== undefined && (!body.expectedHead || typeof body.expectedHead !== "object" || Array.isArray(body.expectedHead)))) {
+    return c.json({ error_code: "invalid_workspace_revision_restore_request" }, 400);
+  }
+  const scope = body.scope;
+  const response = await withWorkspaceMigrationLease(c.env, scope, `revision-restore:${body.restoreId.slice(-64)}`, signal =>
+    workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/revision-restore", {
+      body: { scope, branch: body.branch, targetRevision: body.targetRevision, restoreId: body.restoreId, confirm: true,
+        ...(body.expectedHead !== undefined ? { expectedHead: body.expectedHead } : {}) }, signal,
     }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 });
@@ -9392,6 +9479,21 @@ async function sweepPendingProviderEventRuns(env:AgentsEnv){
 export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, handleWorkerQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, resolveWakeContext, wakeAgentGoal };
 export type { AgentTickMessage };
 
+async function resumePendingWorkspaceErasures(env: AgentsEnv, ctx: ExecutionContext, limit = 10): Promise<void> {
+  const { results } = await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,jurisdiction
+    FROM workspace_erasure_tombstones WHERE status!='complete' ORDER BY updated_at LIMIT ?`)
+    .bind(Math.min(25, Math.max(1, limit))).all<{ tenant_id: string; space_id: string; project_id: string; jurisdiction: "global" | "eu" }>();
+  for (const row of results ?? []) {
+    const scope = { tenantId: row.tenant_id, spaceId: row.space_id, projectId: row.project_id, jurisdiction: row.jurisdiction };
+    const response = await fetchAgentsRequest(new Request("https://agents.internal/internal/workspaces/delete-project", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": row.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, row.tenant_id) },
+      body: JSON.stringify({ scope, confirm: true }),
+    }), env, ctx).catch(() => null);
+    if (!response?.ok) console.warn("workspace_erasure_reconciliation_attention", { status: response?.status ?? 0 });
+  }
+}
+
 export default {
   fetch: fetchAgentsRequest,
   async email(message: ForwardableEmailMessage, env: AgentsEnv): Promise<void> {
@@ -9399,8 +9501,14 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
     if (controller.cron === "*/5 * * * *") {
+      await resumePendingWorkspaceErasures(env, _ctx).catch(() => { console.warn("Workspace erasure reconciliation postponed"); });
       if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
       await sweepExpiredWorkspaceBlobs(env).catch(() => { console.warn("Sandbox workspace blob cleanup postponed"); });
+      await reconcilePendingWorkspacePublications(env).then(result => {
+        if (result.indeterminate || result.deferred) console.warn("sandbox_workspace_publication_reconciliation_attention", {
+          indeterminate: result.indeterminate, deferred: result.deferred,
+        });
+      }).catch(() => { console.warn("Sandbox workspace publication reconciliation postponed"); });
       await expireEmailIngressData(env);
       _ctx.waitUntil(sweepPendingProviderEventRuns(env).catch(()=>{console.warn("Pending provider event wake sweep postponed");}));
       _ctx.waitUntil((await import("./communications/agentmail.js")).sweepManagedAgentMailRentals(env).catch(()=>{console.warn("AgentMail rental billing sweep postponed");}));

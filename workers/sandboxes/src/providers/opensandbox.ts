@@ -50,12 +50,13 @@ export class OpenSandboxProvider implements SandboxProvider {
     };
   }
   async inspect(allocation: ProviderAllocation) {
-    const value = object(
-      await this.call(
-        `/sandboxes/${encodeURIComponent(allocation.externalId)}`,
-        { method: "GET" }
-      )
-    );
+    let value: Record<string, unknown>;
+    try {
+      value = object(await this.call(`/sandboxes/${encodeURIComponent(allocation.externalId)}`, { method: "GET" }));
+    } catch (error) {
+      if (error instanceof Error && error.message === "opensandbox_http_404") return { state: "deleted" as const, healthy: false };
+      throw error;
+    }
     const state = String(value.status ?? value.state);
     return {
       state:

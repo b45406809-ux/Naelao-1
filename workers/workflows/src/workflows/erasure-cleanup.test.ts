@@ -187,24 +187,41 @@ describe("space knowledge resource erasure", () => {
 });
 
 describe("space D1 erasure", () => {
-  it("removes chunk records, session shadows, and parent thread summaries atomically", async () => {
+  it("queues provider deletion before FK-safe cleanup and preserves the tombstone/outbox", async () => {
     const statements: string[] = [];
+    const batches: string[][] = [];
     const db = {
       prepare(sql: string) {
         statements.push(sql);
-        return { bind: () => ({ sql }) };
+        let values: unknown[] = [];
+        const statement = {
+          sql,
+          bind: (...next: unknown[]) => { values = next; return statement; },
+          all: async () => sql.includes("FROM sandbox_allocations a JOIN sandbox_computers") ? { results: [{
+            allocation_id: "alloc-a", connection_id: "connection-a", provider: "agent37", external_id: "instance-a",
+            generation: 1, computer_id: "computer-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a",
+          }] } : { results: [] },
+          run: async () => ({ success: true, meta: { changes: 1 }, values }),
+        };
+        return statement;
       },
-      batch: vi.fn(async () => []),
+      batch: vi.fn(async (entries: Array<{ sql: string; run(): Promise<unknown> }>) => {
+        batches.push(entries.map(entry => entry.sql));
+        for (const entry of entries) await entry.run();
+        return entries.map(() => ({ success: true, meta: { changes: 1 } }));
+      }),
     };
     await eraseSpaceD1Records(db as never, "space-a");
     expect(db.batch).toHaveBeenCalledTimes(2);
-    expect(statements.slice(0, 5)).toEqual([
-      "DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
-      "DELETE FROM sandbox_executions WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
-      "DELETE FROM sandbox_operations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)",
-      "DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))",
-      "DELETE FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)",
-    ]);
+    const outboxInsert = statements.findIndex(sql => sql.includes("INSERT OR IGNORE INTO sandbox_provider_deletion_operations"));
+    const allocationDelete = statements.findIndex(sql => sql.includes("DELETE FROM sandbox_allocations"));
+    expect(outboxInsert).toBeGreaterThanOrEqual(0);
+    expect(allocationDelete).toBeGreaterThan(outboxInsert);
+    expect(statements[allocationDelete]).toContain("id NOT IN (SELECT allocation_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))");
+    expect(statements).not.toContain("DELETE FROM sandbox_provider_deletion_operations WHERE space_id = ?");
+    expect(statements).not.toContain("DELETE FROM workspace_erasure_tombstones WHERE space_id = ?");
+    expect(batches[0]).toContain("UPDATE sandbox_usage_events SET computer_id=NULL,execution_id=NULL,connection_id=NULL WHERE tenant_id IN (SELECT tenant_id FROM sandbox_computers WHERE space_id=?) AND computer_id IN (SELECT id FROM sandbox_computers WHERE space_id=?)");
+    expect(SPACE_ERASURE_TABLES).not.toContain("sandbox_filesystems" as never);
     expect(statements).toContain("DELETE FROM space_credentials WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM mcp_servers WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM webhook_subscriptions WHERE space_id = ?");

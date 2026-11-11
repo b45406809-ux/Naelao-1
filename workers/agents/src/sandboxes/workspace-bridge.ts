@@ -1,6 +1,7 @@
 import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "../workspace/workspace-client.js";
+import { restoreWorkspaceErasureTombstone } from "../workspace/phase6-erasure.js";
 import { validateWorkspaceContentType, type WorkspaceEntry, type WorkspaceHead, type WorkspaceScope } from "../workspace/workspace-contract.js";
 import type { Env as AgentsEnv } from "../env.js";
 import type { WorkspaceCoordinatorDO } from "../workspace/WorkspaceCoordinatorDO.js";
@@ -79,8 +80,39 @@ async function authorize(request: Request, env: BridgeEnv): Promise<{ tenantId: 
 
 async function filesystem(env: BridgeEnv, filesystemId: unknown, tenantId: string, ownerId: string): Promise<FilesystemRow | null> {
   if (typeof filesystemId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(filesystemId)) return null;
-  return env.PLATFORM_DB.prepare("SELECT id,tenant_id,owner_id,space_id,project_id,branch,mode,consistency,status FROM sandbox_filesystems WHERE id=? AND tenant_id=? AND owner_id=? AND status='active' AND mode='snapshot_diff'")
+  const row = await env.PLATFORM_DB.prepare(`SELECT f.id,f.tenant_id,f.owner_id,f.space_id,f.project_id,f.branch,f.mode,f.consistency,f.status
+    FROM sandbox_filesystems f WHERE f.id=? AND f.tenant_id=? AND f.owner_id=? AND f.status='active' AND f.mode='snapshot_diff'
+      AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=f.tenant_id AND t.space_id=f.space_id AND t.project_id=f.project_id)`)
     .bind(filesystemId, tenantId, ownerId).first<FilesystemRow>();
+  if (!row || await workspaceErased(env, row)) return null;
+  return row;
+}
+
+async function workspaceErased(env: BridgeEnv, fs: Pick<FilesystemRow, "tenant_id" | "space_id" | "project_id">): Promise<boolean> {
+  if (!fs.space_id || !fs.project_id) return false;
+  const row = await env.PLATFORM_DB.prepare("SELECT 1 AS erased FROM workspace_erasure_tombstones WHERE tenant_id=? AND space_id=? AND project_id=? LIMIT 1")
+    .bind(fs.tenant_id, fs.space_id, fs.project_id).first<{ erased: number }>();
+  if (row) return true;
+  return restoreWorkspaceErasureTombstone(env.PLATFORM_DB, env.SCRIPTS_R2, {
+    tenantId: fs.tenant_id, spaceId: fs.space_id, projectId: fs.project_id,
+    jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global",
+  });
+}
+
+function conditionalBlobInsert(env: BridgeEnv, input: {
+  id: string; tenantId: string; filesystemId: string; snapshotId: string; objectKey: string;
+  sha256: string; size: number; executable: boolean; createdAt: string; expiresAt: string;
+}) {
+  return env.PLATFORM_DB.prepare(`INSERT INTO sandbox_workspace_blobs
+    (id,tenant_id,filesystem_id,snapshot_id,object_key,sha256,size_bytes,executable,created_at,expires_at)
+    SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS
+      (SELECT 1 FROM sandbox_filesystems f WHERE f.id=? AND f.tenant_id=? AND f.status='active')
+      AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=?
+        AND t.space_id=(SELECT space_id FROM sandbox_filesystems WHERE id=?)
+        AND t.project_id=(SELECT project_id FROM sandbox_filesystems WHERE id=?))`)
+    .bind(input.id, input.tenantId, input.filesystemId, input.snapshotId, input.objectKey, input.sha256, input.size,
+      input.executable ? 1 : 0, input.createdAt, input.expiresAt,
+      input.filesystemId, input.tenantId, input.tenantId, input.filesystemId, input.filesystemId);
 }
 
 async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: string; userId: string }): Promise<Response> {
@@ -145,7 +177,11 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
         if (mismatches.length >= 20) break;
       }
       if (mismatches.length) {
-        console.warn("workspace_dual_read", { client: "sandbox-workspace-bridge", tenantId: actor.tenantId, spaceId: fs.space_id, projectId: fs.project_id, branch: fs.branch, revision: coordinatorRevision, mismatchCount: mismatches.length, mismatches: mismatches.slice(0, 20) });
+        console.warn("workspace_dual_read_drift", {
+          client: "sandbox-workspace-bridge",
+          mismatchCount: mismatches.length,
+          classes: [...new Set(mismatches.map(item => item.mismatchClass))].slice(0, 4),
+        });
         if (staged.length) await env.SCRIPTS_R2.delete(staged).catch(() => undefined);
         return fail("workspace_dual_read_drift", 409);
       }
@@ -171,18 +207,38 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
       cursor = page.truncated ? page.cursor : undefined;
       } while (cursor);
     }
-    await env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_snapshots (id,tenant_id,filesystem_id,computer_id,branch,status,created_at,expires_at,coordinator_revision) VALUES (?,?,?,?,?,'active',?,?,?)")
-      .bind(snapshotId, actor.tenantId, fs.id, input.computerId, fs.branch, createdAt, expiresAt, coordinatorRevision).run();
+    const snapshotInsert = fs.project_id && fs.space_id
+      ? await env.PLATFORM_DB.prepare(`INSERT INTO sandbox_workspace_snapshots
+        (id,tenant_id,filesystem_id,computer_id,branch,status,created_at,expires_at,coordinator_revision)
+        SELECT ?,?,?,?,?, 'active',?,?,? WHERE NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones
+          WHERE tenant_id=? AND space_id=? AND project_id=?)`)
+        .bind(snapshotId, actor.tenantId, fs.id, input.computerId, fs.branch, createdAt, expiresAt, coordinatorRevision,
+          actor.tenantId, fs.space_id, fs.project_id).run()
+      : await env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_snapshots (id,tenant_id,filesystem_id,computer_id,branch,status,created_at,expires_at,coordinator_revision) VALUES (?,?,?,?,?,'active',?,?,?)")
+        .bind(snapshotId, actor.tenantId, fs.id, input.computerId, fs.branch, createdAt, expiresAt, coordinatorRevision).run();
+    if (snapshotInsert.meta.changes !== 1) {
+      if (staged.length) await env.SCRIPTS_R2.delete(staged).catch(() => undefined);
+      return fail("workspace_erased", 410);
+    }
     for (let offset = 0; offset < entries.length; offset += 50) {
       const statements: D1PreparedStatement[] = [];
       for (const entry of entries.slice(offset, offset + 50)) {
         const key = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${entry.blobId}`;
         statements.push(
-          env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_blobs (id,tenant_id,filesystem_id,snapshot_id,object_key,sha256,size_bytes,executable,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(entry.blobId, actor.tenantId, fs.id, snapshotId, key, entry.sha256, entry.size, entry.executable ? 1 : 0, createdAt, expiresAt),
+          conditionalBlobInsert(env, { id: entry.blobId, tenantId: actor.tenantId, filesystemId: fs.id, snapshotId, objectKey: key, sha256: entry.sha256, size: entry.size, executable: entry.executable, createdAt, expiresAt }),
           env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_snapshot_entries (snapshot_id,path,blob_id,sha256,size_bytes,executable) VALUES (?,?,?,?,?,?)").bind(snapshotId, entry.path, entry.blobId, entry.sha256, entry.size, entry.executable ? 1 : 0),
         );
       }
       await env.PLATFORM_DB.batch(statements);
+    }
+    if (await workspaceErased(env, fs)) {
+      await env.SCRIPTS_R2.delete(staged).catch(() => undefined);
+      await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare("DELETE FROM sandbox_workspace_snapshot_entries WHERE snapshot_id=?").bind(snapshotId),
+        env.PLATFORM_DB.prepare("DELETE FROM sandbox_workspace_blobs WHERE snapshot_id=?").bind(snapshotId),
+        env.PLATFORM_DB.prepare("DELETE FROM sandbox_workspace_snapshots WHERE id=?").bind(snapshotId),
+      ]).catch(() => undefined);
+      return fail("workspace_erased", 410);
     }
   } catch (error) {
     if (staged.length) await env.SCRIPTS_R2.delete(staged).catch(() => undefined);
@@ -199,13 +255,16 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
 
 async function blob(request: Request, env: BridgeEnv, actor: { tenantId: string; userId: string }, blobId: string): Promise<Response> {
   if (!env.SCRIPTS_R2 || !/^swb_[0-9a-f-]{36}$/.test(blobId)) return fail("blob_not_found", 404);
-  const row = await env.PLATFORM_DB.prepare("SELECT b.object_key,b.sha256,b.size_bytes,f.project_id FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE b.id=? AND b.tenant_id=? AND f.owner_id=? AND f.status='active' AND b.expires_at>? ")
-    .bind(blobId, actor.tenantId, actor.userId, new Date().toISOString()).first<{ object_key: string; sha256: string; size_bytes: number; project_id: string | null }>();
+  const row = await env.PLATFORM_DB.prepare(`SELECT b.object_key,b.sha256,b.size_bytes,f.project_id,f.space_id FROM sandbox_workspace_blobs b
+    JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE b.id=? AND b.tenant_id=? AND f.owner_id=? AND f.status='active' AND b.expires_at>?
+      AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=f.tenant_id AND t.space_id=f.space_id AND t.project_id=f.project_id)`)
+    .bind(blobId, actor.tenantId, actor.userId, new Date().toISOString()).first<{ object_key: string; sha256: string; size_bytes: number; project_id: string | null; space_id: string | null }>();
   if (!row) return fail("blob_not_found", 404);
   // These blobs are immutable, short-lived transfer data, never canonical workspace files.
   if (request.method === "GET") {
     const object = await readBytesWithHash(env.SCRIPTS_R2, row.object_key, MAX_FILE_BYTES);
     if (!object || object.bytes.byteLength !== row.size_bytes || object.hash !== row.sha256) return fail("blob_unavailable", 404);
+    if (row.project_id && row.space_id && await workspaceErased(env, { tenant_id: actor.tenantId, space_id: row.space_id, project_id: row.project_id })) return fail("workspace_erased", 410);
     return new Response(object.bytes, { headers: { "content-type": object.contentType ?? "application/octet-stream", "content-length": String(row.size_bytes), "x-content-sha256": row.sha256, "cache-control": "no-store" } });
   }
   return fail("method_not_allowed", 405);
@@ -234,8 +293,16 @@ async function stage(request: Request, env: BridgeEnv, actor: { tenantId: string
   const executable = input.executable === true;
   await env.SCRIPTS_R2.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: input.sha256, filesystemId: fs.id, executable: String(executable) }, ...(typeof input.contentType === "string" ? { httpMetadata: { contentType: input.contentType } } : {}) });
   try {
-    await env.PLATFORM_DB.prepare("INSERT INTO sandbox_workspace_blobs (id,tenant_id,filesystem_id,snapshot_id,object_key,sha256,size_bytes,executable,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .bind(blobId, actor.tenantId, fs.id, input.snapshotId, objectKey, input.sha256, bytes.byteLength, executable ? 1 : 0, createdAt, expiresAt).run();
+    const inserted = await conditionalBlobInsert(env, { id: blobId, tenantId: actor.tenantId, filesystemId: fs.id, snapshotId: input.snapshotId, objectKey, sha256: input.sha256, size: bytes.byteLength, executable, createdAt, expiresAt }).run();
+    if (inserted.meta.changes !== 1) {
+      await env.SCRIPTS_R2.delete(objectKey).catch(() => undefined);
+      return fail("workspace_erased", 410);
+    }
+    if (await workspaceErased(env, fs)) {
+      await env.SCRIPTS_R2.delete(objectKey).catch(() => undefined);
+      await env.PLATFORM_DB.prepare("DELETE FROM sandbox_workspace_blobs WHERE id=?").bind(blobId).run().catch(() => undefined);
+      return fail("workspace_erased", 410);
+    }
   } catch {
     await env.SCRIPTS_R2.delete(objectKey).catch(() => undefined);
     return fail("workspace_blob_persistence_failed", 503);
@@ -254,10 +321,11 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
   const seen = new Set<string>();
   for (const change of changes) if (!change || !portablePath(change.path) || seen.has(change.path) || (change.executable !== undefined && typeof change.executable !== "boolean") || !(change.expectedHash === null || (typeof change.expectedHash === "string" && HASH.test(change.expectedHash))) || !(change.blobId === null || (typeof change.blobId === "string" && /^swb_[0-9a-f-]{36}$/.test(change.blobId)))) return fail("invalid_publication", 400); else seen.add(change.path);
   const encodedChanges = JSON.stringify({ snapshotId: input.snapshotId, changes });
-  const replay = await env.PLATFORM_DB.prepare("SELECT id,status,changes_json,applied_paths_json,conflicts_json FROM sandbox_publications WHERE tenant_id=? AND filesystem_id=? AND idempotency_key=?")
-    .bind(actor.tenantId, fs.id, input.idempotencyKey).first<{ id: string; status: string; changes_json: string; applied_paths_json: string; conflicts_json: string }>();
+  const replay = await env.PLATFORM_DB.prepare("SELECT id,status,changes_json,applied_paths_json,conflicts_json,publication_mode FROM sandbox_publications WHERE tenant_id=? AND filesystem_id=? AND idempotency_key=?")
+    .bind(actor.tenantId, fs.id, input.idempotencyKey).first<{ id: string; status: string; changes_json: string; applied_paths_json: string; conflicts_json: string; publication_mode?: string }>();
   if (replay && replay.changes_json !== encodedChanges) return fail("idempotency_conflict", 409);
   if (replay && replay.status !== "pending") return response({ publication: { id: replay.id, status: replay.status, appliedPaths: JSON.parse(replay.applied_paths_json), conflicts: JSON.parse(replay.conflicts_json) } }, replay.status === "published" ? 200 : 409);
+  if (replay && replay.status === "pending" && replay.publication_mode !== (unified ? "coordinator" : "legacy")) return fail("publication_recovery_mode_changed", 503);
   const snapshot = await env.PLATFORM_DB.prepare(replay
     ? "SELECT id,coordinator_revision FROM sandbox_workspace_snapshots WHERE id=? AND tenant_id=? AND filesystem_id=? AND computer_id=? AND status IN ('active','published')"
     : "SELECT id,coordinator_revision FROM sandbox_workspace_snapshots WHERE id=? AND tenant_id=? AND filesystem_id=? AND computer_id=? AND status IN ('active','published') AND expires_at>?")
@@ -283,13 +351,14 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
   const now = new Date().toISOString();
   if (!replay) {
     try {
-      await env.PLATFORM_DB.prepare("INSERT INTO sandbox_publications (id,tenant_id,filesystem_id,computer_id,branch,status,changes_json,applied_paths_json,conflicts_json,created_at,updated_at,idempotency_key,snapshot_id) VALUES (?,?,?,?,?,'pending',?,'[]','[]',?,?,?,?)")
-        .bind(id, actor.tenantId, fs.id, input.computerId, fs.branch, encodedChanges, now, now, input.idempotencyKey, input.snapshotId).run();
+      await env.PLATFORM_DB.prepare("INSERT INTO sandbox_publications (id,tenant_id,filesystem_id,computer_id,branch,status,changes_json,applied_paths_json,conflicts_json,created_at,updated_at,idempotency_key,snapshot_id,publication_mode) VALUES (?,?,?,?,?,'pending',?,'[]','[]',?,?,?,?,?)")
+        .bind(id, actor.tenantId, fs.id, input.computerId, fs.branch, encodedChanges, now, now, input.idempotencyKey, input.snapshotId, unified ? "coordinator" : "legacy").run();
     } catch {
-      const raced = await env.PLATFORM_DB.prepare("SELECT id,status,changes_json,applied_paths_json,conflicts_json FROM sandbox_publications WHERE tenant_id=? AND filesystem_id=? AND idempotency_key=?")
-        .bind(actor.tenantId, fs.id, input.idempotencyKey).first<{ id: string; status: string; changes_json: string; applied_paths_json: string; conflicts_json: string }>();
+      const raced = await env.PLATFORM_DB.prepare("SELECT id,status,changes_json,applied_paths_json,conflicts_json,publication_mode FROM sandbox_publications WHERE tenant_id=? AND filesystem_id=? AND idempotency_key=?")
+        .bind(actor.tenantId, fs.id, input.idempotencyKey).first<{ id: string; status: string; changes_json: string; applied_paths_json: string; conflicts_json: string; publication_mode?: string }>();
       if (!raced) return fail("publication_journal_unavailable", 503);
       if (raced.changes_json !== encodedChanges) return fail("idempotency_conflict", 409);
+      if (raced.status === "pending" && raced.publication_mode !== (unified ? "coordinator" : "legacy")) return fail("publication_recovery_mode_changed", 503);
       return response({ publication: { id: raced.id, status: raced.status, appliedPaths: JSON.parse(raced.applied_paths_json), conflicts: JSON.parse(raced.conflicts_json) } }, raced.status === "published" ? 200 : 409);
     }
   }
@@ -413,6 +482,57 @@ export async function handleSandboxWorkspaceBridge(request: Request, env: Bridge
   if (request.method === "GET" && match) return blob(request, env, actor, match[1] ?? "");
   if (request.method === "POST" && path === "/internal/sandbox-workspaces/publish") return publish(request, env, actor);
   return fail("not_found", 404);
+}
+
+/** Reconcile bounded pending canonical publications by replaying only their stable coordinator
+ * checkpoint idempotency key. Legacy publications can include R2 side effects, so they are never
+ * automatically replayed after an indeterminate response. */
+export async function reconcilePendingWorkspacePublications(
+  env: BridgeEnv,
+  limit = 20,
+): Promise<{ scanned: number; resolved: number; indeterminate: number; deferred: number }> {
+  const boundedLimit = Number.isInteger(limit) ? Math.min(100, Math.max(1, limit)) : 20;
+  if (env.UNIFIED_WORKSPACE_ENABLED !== "true" || !env.WORKSPACE_COORDINATOR || !env.SCRIPTS_R2) {
+    return { scanned: 0, resolved: 0, indeterminate: 0, deferred: 0 };
+  }
+  const { results } = await env.PLATFORM_DB.prepare(`SELECT p.id,p.tenant_id,p.filesystem_id,p.computer_id,p.snapshot_id,
+      p.idempotency_key,p.changes_json,c.owner_id,f.project_id,f.space_id
+    FROM sandbox_publications p JOIN sandbox_filesystems f ON f.id=p.filesystem_id
+    JOIN sandbox_computers c ON c.id=p.computer_id
+    WHERE p.status='pending' AND p.publication_mode='coordinator' AND f.status='active' AND f.project_id IS NOT NULL
+      AND c.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=f.tenant_id AND t.space_id=f.space_id AND t.project_id=f.project_id)
+    ORDER BY p.created_at,p.id LIMIT ?`).bind(boundedLimit).all<{
+      id: string; tenant_id: string; filesystem_id: string; computer_id: string; snapshot_id: string;
+      idempotency_key: string; changes_json: string; owner_id: string; project_id: string; space_id: string;
+    }>();
+  const result = { scanned: 0, resolved: 0, indeterminate: 0, deferred: 0 };
+  for (const row of results ?? []) {
+    result.scanned++;
+    let encoded: { snapshotId?: unknown; changes?: unknown };
+    try { encoded = JSON.parse(row.changes_json) as typeof encoded; }
+    catch { result.deferred++; continue; }
+    if (typeof encoded.snapshotId !== "string" || !Array.isArray(encoded.changes) || !row.idempotency_key) {
+      result.deferred++;
+      continue;
+    }
+    const scope: WorkspaceScope = {
+      tenantId: row.tenant_id, spaceId: row.space_id, projectId: row.project_id,
+      jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global",
+    };
+    const replay = await publish(new Request("https://agents/internal/sandbox-workspaces/publish", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filesystemId: row.filesystem_id, computerId: row.computer_id,
+        snapshotId: encoded.snapshotId, idempotencyKey: row.idempotency_key, changes: encoded.changes }),
+    }), env, { tenantId: row.tenant_id, userId: row.owner_id }).catch(() => null);
+    if (!replay) { result.indeterminate++; continue; }
+    const body = await parseJson(replay, {} as { publication?: { status?: string } });
+    if (replay.ok && ["published", "conflicted"].includes(body.publication?.status ?? "")) result.resolved++;
+    else if (replay.status >= 500 || replay.status === 409) result.indeterminate++;
+    else result.deferred++;
+  }
+  return result;
 }
 
 export async function sweepExpiredWorkspaceBlobs(env: BridgeEnv): Promise<number> {

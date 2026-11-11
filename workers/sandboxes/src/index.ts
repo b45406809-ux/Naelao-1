@@ -10,11 +10,16 @@ import {
 } from "@naelao/sandboxes-core";
 import { Hono } from "hono";
 import { sealConnection } from "./connection-crypto.js";
+import { queueSandboxComputerDeletion, recordManualProviderDeletionEvidence, runProviderDeletionReconciliation, runSandboxAllocationReconciliation } from "./provider-deletion-reconciliation.js";
+import { collectSandboxOpsMetrics, sandboxOpsAlerts } from "./ops-metrics.js";
+import { recordSandboxBillingReconciliation, type SandboxBillingProvider } from "./billing-reconciliation.js";
 
 interface Env {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
+  DATA_JURISDICTION?: "eu";
   AGENTS_WORKER?: Fetcher;
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 type Vars = { tenantId: string; userId: string; role: string };
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
@@ -29,6 +34,22 @@ const json = (value: unknown, status = 200) =>
 const fail = (error_code: string, status: number, message = error_code) =>
   json({ error_code, message }, status);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+
+async function projectErased(env: Env, tenantId: string, spaceId: string | undefined, projectId: string | undefined): Promise<boolean> {
+  if (!spaceId || !projectId) return false;
+  const row = await env.PLATFORM_DB.prepare("SELECT 1 AS erased FROM workspace_erasure_tombstones WHERE tenant_id=? AND space_id=? AND project_id=? LIMIT 1")
+    .bind(tenantId, spaceId, projectId).first<{ erased: number }>();
+  if (row) return true;
+  if (!env.AGENTS_WORKER) throw new Error("workspace_erasure_check_unavailable");
+  const scope = { tenantId, spaceId, projectId, jurisdiction: env.DATA_JURISDICTION === "eu" ? "eu" : "global" };
+  const response = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/workspaces/erasure-check", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ scope }),
+  }));
+  if (!response.ok) throw new Error("workspace_erasure_check_unavailable");
+  const result = await response.json<{ erased?: unknown }>().catch((): { erased?: unknown } => ({}));
+  return result.erased === true;
+}
 
 app.use("*", async (c, next) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -315,6 +336,50 @@ app.get("/usage", async (c) => {
     note: "Only persisted measured events are included; estimates are not billed usage.",
   });
 });
+app.post("/billing/reconcile", async c => {
+  if (!["owner", "admin"].includes(c.get("role"))) return fail("forbidden", 403);
+  let input: {
+    provider?: unknown; periodStart?: unknown; periodEnd?: unknown; statementRef?: unknown;
+    measuredMicros?: unknown; providerMicros?: unknown;
+  };
+  try { input = JSON.parse(await readBoundedRequestText(c.req.raw, 8192)) as typeof input; }
+  catch { return fail("invalid_billing_reconciliation", 400); }
+  try {
+    const result = await recordSandboxBillingReconciliation(c.env.PLATFORM_DB, {
+      tenantId: c.get("tenantId"),
+      provider: input.provider as SandboxBillingProvider,
+      periodStart: input.periodStart as string,
+      periodEnd: input.periodEnd as string,
+      statementRef: input.statementRef as string,
+      measuredMicros: input.measuredMicros as number,
+      providerMicros: input.providerMicros as number,
+    });
+    return json({ ...result, requiresManualReview: result.status === "variance", autoSettlement: false });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "sandbox_billing_reconciliation_invalid";
+    return fail(code === "sandbox_billing_statement_conflict" ? code : "sandbox_billing_reconciliation_invalid", code === "sandbox_billing_statement_conflict" ? 409 : 400);
+  }
+});
+app.post("/provider-deletions/:id/receipt", async c => {
+  if (!["owner", "admin"].includes(c.get("role"))) return fail("forbidden", 403);
+  const operationId = c.req.param("id");
+  if (!/^spdel_[a-f0-9]{64}$/.test(operationId)) return fail("sandbox_provider_deletion_operation_unavailable", 404);
+  let input: { evidenceRef?: unknown; observedAt?: unknown; confirm?: unknown };
+  try { input = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as typeof input; }
+  catch { return fail("invalid_provider_deletion_receipt", 400); }
+  if (input.confirm !== true || typeof input.evidenceRef !== "string" || typeof input.observedAt !== "string") return fail("invalid_provider_deletion_receipt", 400);
+  try {
+    const result = await recordManualProviderDeletionEvidence(c.env.PLATFORM_DB, {
+      tenantId: c.get("tenantId"), operationId, operatorId: c.get("userId"), evidenceRef: input.evidenceRef, observedAt: input.observedAt,
+    });
+    return json({ operationId, status: result.status, replay: result.replay, evidenceRecorded: true });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "sandbox_provider_deletion_evidence_invalid";
+    if (code === "sandbox_provider_deletion_evidence_conflict") return fail(code, 409);
+    if (code === "sandbox_provider_deletion_operation_unavailable") return fail(code, 409);
+    return fail("sandbox_provider_deletion_evidence_invalid", 400);
+  }
+});
 app.post("/estimates", async (c) => {
   let body: {
     provider?: string;
@@ -390,6 +455,9 @@ app.post("/computers", async (c) => {
       error instanceof Error ? error.message : "invalid_scope"
     );
   }
+  try {
+    if (await projectErased(c.env, tenantId, scope.spaceId, scope.projectId)) return fail("workspace_erased", 410);
+  } catch { return fail("workspace_erasure_check_unavailable", 503); }
   if (!["owner", "admin", "editor", "product_end_user"].includes(c.get("role")))
     return fail(
       "forbidden",
@@ -599,7 +667,10 @@ app.post("/computers", async (c) => {
 
 app.get("/computers", async (c) => {
   const rows = await c.env.PLATFORM_DB.prepare(
-    "SELECT id,space_id,project_id,branch,template_id,template_version,ownership,filesystem_id,filesystem_mode,provider_preference,state,resources_json,idle_timeout_seconds,allocation_generation FROM sandbox_computers WHERE tenant_id=? AND owner_id=? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 100"
+    `SELECT id,space_id,project_id,branch,template_id,template_version,ownership,filesystem_id,filesystem_mode,provider_preference,state,resources_json,idle_timeout_seconds,allocation_generation
+       FROM sandbox_computers c WHERE tenant_id=? AND owner_id=? AND deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)
+       ORDER BY created_at DESC LIMIT 100`
   )
     .bind(c.get("tenantId"), c.get("userId"))
     .all<Record<string, unknown>>();
@@ -611,7 +682,10 @@ app.get("/computers", async (c) => {
 });
 app.get("/filesystems", async (c) => {
   const rows = await c.env.PLATFORM_DB.prepare(
-    "SELECT id,space_id,project_id,branch,mode,consistency,status,created_at,updated_at FROM sandbox_filesystems WHERE tenant_id=? AND owner_id=? AND status!='retired' ORDER BY created_at DESC LIMIT 100"
+    `SELECT id,space_id,project_id,branch,mode,consistency,status,created_at,updated_at FROM sandbox_filesystems f
+       WHERE tenant_id=? AND owner_id=? AND status!='retired'
+         AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=f.tenant_id AND t.space_id=f.space_id AND t.project_id=f.project_id)
+       ORDER BY created_at DESC LIMIT 100`
   )
     .bind(c.get("tenantId"), c.get("userId"))
     .all<Record<string, unknown>>();
@@ -622,7 +696,8 @@ app.get("/filesystems", async (c) => {
 });
 app.get("/computers/:id", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT * FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL"
+    `SELECT * FROM sandbox_computers c WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)`
   )
     .bind(c.req.param("id"), c.get("tenantId"), c.get("userId"))
     .first<Record<string, unknown>>();
@@ -636,7 +711,8 @@ app.get("/computers/:id", async (c) => {
 for (const action of ["start", "sleep"] as const)
   app.post(`/computers/:id/${action}`, async (c) => {
     const row = await c.env.PLATFORM_DB.prepare(
-      "SELECT id,state FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL"
+      `SELECT id,state FROM sandbox_computers c WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)`
     )
       .bind(c.req.param("id"), c.get("tenantId"), c.get("userId"))
       .first<{ id: string; state: string }>();
@@ -649,7 +725,8 @@ for (const action of ["start", "sleep"] as const)
   });
 app.post("/computers/:id/executions", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL"
+    `SELECT id FROM sandbox_computers c WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)`
   )
     .bind(c.req.param("id"), c.get("tenantId"), c.get("userId"))
     .first();
@@ -663,11 +740,14 @@ app.post("/computers/:id/executions", async (c) => {
 });
 app.post("/computers/:id/sync", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT id,filesystem_id FROM sandbox_computers WHERE id=? AND tenant_id=? AND owner_id=? AND filesystem_mode='snapshot_diff' AND deleted_at IS NULL"
+    `SELECT id,filesystem_id,state,tenant_id,space_id,project_id FROM sandbox_computers c
+       WHERE id=? AND tenant_id=? AND owner_id=? AND filesystem_mode='snapshot_diff' AND deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)`
   )
     .bind(c.req.param("id"), c.get("tenantId"), c.get("userId"))
     .first();
   if (!row) return fail("computer_not_found", 404);
+  if (["deleting", "recovery_required", "deleted"].includes(String(row.state))) return fail("computer_not_writable", 409);
   if (!c.env.AGENTS_WORKER) return fail("filesystem_bridge_unavailable", 503, "The Agents workspace bridge is not bound.");
   let input: Record<string, unknown> = {};
   if (c.req.raw.body) {
@@ -712,15 +792,20 @@ app.get("/sandbox-workspace-blobs/:blobId", async (c) => {
   } });
 });
 app.delete("/computers/:id", async (c) => {
-  const now = new Date().toISOString();
-  const result = await c.env.PLATFORM_DB.prepare(
-    "UPDATE sandbox_computers SET state='deleted',deleted_at=?,updated_at=? WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL"
-  )
-    .bind(now, now, c.req.param("id"), c.get("tenantId"), c.get("userId"))
-    .run();
-  return result.meta.changes
-    ? json({ deleted: true })
-    : fail("computer_not_found", 404);
+  const computerId = c.req.param("id");
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT id FROM sandbox_computers c WHERE id=? AND tenant_id=? AND owner_id=? AND deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM workspace_erasure_tombstones t WHERE t.tenant_id=c.tenant_id AND t.space_id=c.space_id AND t.project_id=c.project_id)`,
+  ).bind(computerId, c.get("tenantId"), c.get("userId")).first();
+  if (!row) return fail("computer_not_found", 404);
+  try {
+    const deletion = await queueSandboxComputerDeletion(c.env.PLATFORM_DB, c.get("tenantId"), computerId);
+    if (deletion.pending) return json({ deleted: false, state: "deleting", providerDeletion: deletion }, 202);
+    if (deletion.unresolved) return json({ deleted: false, state: "recovery_required", providerDeletion: deletion }, 202);
+    return json({ deleted: true, providerDeletion: deletion });
+  } catch {
+    return fail("computer_deletion_retry_required", 503);
+  }
 });
 
 async function sha256(text: string): Promise<string> {
@@ -758,4 +843,22 @@ function formatComputer(
     allocationGeneration: row.allocation_generation,
   };
 }
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runProviderDeletionReconciliation(env).then(async result => {
+      if (result.indeterminate || result.retained) console.warn("sandbox_provider_deletion_reconciliation_attention", {
+        indeterminate: result.indeterminate, retained: result.retained,
+      });
+      const allocations = await runSandboxAllocationReconciliation(env);
+      if (allocations.indeterminate) console.warn("sandbox_allocation_reconciliation_attention", {
+        indeterminate: allocations.indeterminate,
+      });
+    }).then(() => collectSandboxOpsMetrics(env)).then(snapshot => {
+      for (const alert of sandboxOpsAlerts(snapshot)) console.warn("sandbox_ops_alert", alert);
+    }).catch(() => {
+      // Do not log provider response bodies, credentials, allocation IDs, or customer scope.
+      console.error("sandbox_provider_deletion_reconciliation_failed");
+    }));
+  },
+};

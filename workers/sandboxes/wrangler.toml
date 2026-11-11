@@ -3,6 +3,16 @@ main = "src/index.ts"
 compatibility_date = "2026-09-29"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+DATA_JURISDICTION = "global"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -16,6 +26,9 @@ service = "naelao-agents"
 [env.staging]
 name = "naelao-sandboxes-staging"
 
+[env.staging.vars]
+DATA_JURISDICTION = "global"
+
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -26,8 +39,18 @@ migrations_dir = "../../infra/migrations"
 binding = "AGENTS_WORKER"
 service = "naelao-agents-staging"
 
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
 [env.production]
 name = "naelao-sandboxes-production"
+
+[env.production.vars]
+DATA_JURISDICTION = "global"
 
 [[env.production.d1_databases]]
 binding = "PLATFORM_DB"
@@ -38,3 +61,10 @@ migrations_dir = "../../infra/migrations"
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents-production"
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"

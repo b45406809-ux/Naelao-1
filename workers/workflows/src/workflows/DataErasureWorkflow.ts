@@ -77,7 +77,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         )
         .run();
 
-      console.log(`[DataErasure] Erasure request recorded: org=${params.orgId}, auditId=${auditId}`);
+      console.log("data_erasure_request_recorded");
       return { auditId };
     });
 
@@ -120,7 +120,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         return false;
       }
 
-      console.log(`[DataErasure] Org ${params.orgId} and its spaces suspended.`);
+      console.log("data_erasure_suspension_complete");
       return true;
     });
     if (!holdPlaced) return;
@@ -236,12 +236,12 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           } },
         ));
         if (!businessServiceErasure.ok) throw new Error(`Space-domain erasure failed with status ${businessServiceErasure.status}`);
-        await eraseSpaceD1Records(this.env.PLATFORM_DB, spaceId, this.env.SCRIPTS_R2);
+        await eraseSpaceD1Records(this.env.PLATFORM_DB, spaceId, this.env.SCRIPTS_R2, params.orgId);
 
-        console.log(`[DataErasure] Cleaned space=${spaceId} for org=${params.orgId}`);
+        console.log("data_erasure_space_cleanup_complete");
       },
     );
-    console.log(`[DataErasure] Deleted data for ${spacesProcessed} space(s) in org=${params.orgId}`);
+    console.log("data_erasure_workspace_cleanup_complete", { spacesProcessed });
 
     await step.do("erase-tenant-blueprint-artifacts", async () => {
       // New certified templates are tenant-namespaced. Keep marketplace fork receipts in D1 for
@@ -257,7 +257,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       await anonymizeOrgUsers(this.env.PLATFORM_DB, params.orgId);
       await eraseOrgOperationalRecords(this.env.PLATFORM_DB, params.orgId, this.env.SCRIPTS_R2);
 
-      console.log(`[DataErasure] PII anonymized for users in org=${params.orgId}`);
+      console.log("data_erasure_identity_anonymization_complete");
       return { piiErased: true };
     });
 
@@ -267,7 +267,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     await step.do("clear-kv-cache", async () => {
       const deleted = await deleteKvPrefix(this.env.QUOTA_CACHE, `${params.orgId}:`);
 
-      console.log(`[DataErasure] Cleared ${deleted} KV cache entries for org=${params.orgId}`);
+      console.log("data_erasure_cache_cleanup_complete", { deleted });
       return { kvKeysDeleted: deleted };
     });
 
@@ -281,7 +281,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         .bind(params.orgId)
         .run();
 
-      console.log(`[DataErasure] Subscription cancelled for org=${params.orgId}`);
+      console.log("data_erasure_subscription_cancelled");
       return { subscriptionCancelled: true };
     });
 
@@ -326,9 +326,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         metadata: { erasedAt: completedAt, reason: params.reason.slice(0, 500) },
       });
 
-      console.log(
-        `[DataErasure] Erasure completed for org=${params.orgId}, auditId=${completionAuditId}`,
-      );
+      console.log("data_erasure_completed");
       return { completionAuditId, emitted: true };
     });
   }

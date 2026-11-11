@@ -19,7 +19,6 @@ export const SPACE_ERASURE_TABLES = [
   "project_access", "project_agent_email_addresses", "project_steward_decisions", "project_steward_runs",
   "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
   "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
-  "sandbox_computers", "sandbox_filesystems",
   "webhook_subscriptions", "workflow_budget_reservations", "workflow_executions_v2",
   // Assistant communication and provisioning D1 rows contain identity and message metadata.
   // Their external profiles/callbacks are purged before this final scoped database cleanup.
@@ -148,11 +147,101 @@ export interface ErasureDocument {
   chunk_count: number | null;
 }
 
+/** Queue provider deletion before erasure removes local allocation records. Uncertain provider
+ * results stay in the outbox for read-only inspection; they never replay create, execution or
+ * deletion side effects. */
+export async function queueSandboxProviderDeletions(
+  db: D1Database,
+  scope: { tenantId?: string; spaceId?: string },
+  now = new Date().toISOString(),
+): Promise<{ queued: number; unresolved: number }> {
+  if (!scope.tenantId && !scope.spaceId) throw new Error("sandbox_deletion_scope_required");
+  const query = scope.spaceId && scope.tenantId
+    ? db.prepare(`SELECT a.id AS allocation_id,a.connection_id,a.provider,a.external_id,a.generation,
+                         c.id AS computer_id,c.tenant_id,c.space_id,c.project_id
+                    FROM sandbox_allocations a JOIN sandbox_computers c ON c.id=a.computer_id
+                   WHERE c.tenant_id=? AND c.space_id=? AND a.status!='destroyed' ORDER BY c.id,a.generation`).bind(scope.tenantId, scope.spaceId)
+    : scope.spaceId
+    ? db.prepare(`SELECT a.id AS allocation_id,a.connection_id,a.provider,a.external_id,a.generation,
+                         c.id AS computer_id,c.tenant_id,c.space_id,c.project_id
+                    FROM sandbox_allocations a JOIN sandbox_computers c ON c.id=a.computer_id
+                   WHERE c.space_id=? AND a.status!='destroyed' ORDER BY c.id,a.generation`).bind(scope.spaceId)
+    : db.prepare(`SELECT a.id AS allocation_id,a.connection_id,a.provider,a.external_id,a.generation,
+                         c.id AS computer_id,c.tenant_id,c.space_id,c.project_id
+                    FROM sandbox_allocations a JOIN sandbox_computers c ON c.id=a.computer_id
+                   WHERE c.tenant_id=? AND a.status!='destroyed' ORDER BY c.id,a.generation`).bind(scope.tenantId);
+  const { results } = await query.all<{
+    allocation_id: string; connection_id: string; provider: string; external_id: string | null;
+    generation: number; computer_id: string; tenant_id: string; space_id: string | null; project_id: string | null;
+  }>();
+  let queued = 0;
+  let unresolved = 0;
+  for (const allocation of results ?? []) {
+    const operationKey = `delete:${await sha256Text(`${allocation.tenant_id}\0${allocation.allocation_id}\0${allocation.generation}`)}`;
+    const id = `spdel_${operationKey.slice("delete:".length)}`;
+    const missingIdentity = !allocation.external_id;
+    const result = await db.prepare(
+      `INSERT OR IGNORE INTO sandbox_provider_deletion_operations
+        (id,tenant_id,space_id,project_id,computer_id,allocation_id,connection_id,provider,external_id,generation,
+         operation_key,status,reason_code,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(id, allocation.tenant_id, allocation.space_id, allocation.project_id, allocation.computer_id,
+      allocation.allocation_id, allocation.connection_id, allocation.provider, allocation.external_id,
+      allocation.generation, operationKey, missingIdentity ? "retained" : "pending",
+      missingIdentity ? "allocation_identity_unknown" : null, now, now).run();
+    queued += result.meta.changes;
+    if (missingIdentity) unresolved++;
+  }
+
+  if (scope.spaceId && scope.tenantId) {
+    await db.prepare(`UPDATE sandbox_grants SET revoked_at=COALESCE(revoked_at,?) WHERE tenant_id=? AND computer_id IN
+      (SELECT id FROM sandbox_computers WHERE tenant_id=? AND space_id=?)`).bind(now, scope.tenantId, scope.tenantId, scope.spaceId).run();
+    await db.prepare(`UPDATE sandbox_computers SET state=CASE
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed' AND a.external_id IS NULL) THEN 'recovery_required'
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN 'deleting'
+        ELSE 'deleted' END,
+        deleted_at=CASE WHEN NOT EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN COALESCE(deleted_at,?) ELSE deleted_at END,
+        updated_at=? WHERE tenant_id=? AND space_id=? AND deleted_at IS NULL`).bind(now, now, scope.tenantId, scope.spaceId).run();
+  } else if (scope.spaceId) {
+    await db.prepare(`UPDATE sandbox_grants SET revoked_at=COALESCE(revoked_at,?) WHERE tenant_id IN
+      (SELECT tenant_id FROM sandbox_computers WHERE space_id=?) AND computer_id IN
+      (SELECT id FROM sandbox_computers WHERE space_id=?)`).bind(now, scope.spaceId, scope.spaceId).run();
+    await db.prepare(`UPDATE sandbox_computers SET state=CASE
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed' AND a.external_id IS NULL) THEN 'recovery_required'
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN 'deleting'
+        ELSE 'deleted' END,
+        deleted_at=CASE WHEN NOT EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN COALESCE(deleted_at,?) ELSE deleted_at END,
+        updated_at=? WHERE space_id=? AND deleted_at IS NULL`).bind(now, now, scope.spaceId).run();
+  } else {
+    await db.prepare("UPDATE sandbox_grants SET revoked_at=COALESCE(revoked_at,?) WHERE tenant_id=?").bind(now, scope.tenantId).run();
+    await db.prepare(`UPDATE sandbox_computers SET state=CASE
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed' AND a.external_id IS NULL) THEN 'recovery_required'
+        WHEN EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN 'deleting'
+        ELSE 'deleted' END,
+        deleted_at=CASE WHEN NOT EXISTS (SELECT 1 FROM sandbox_allocations a WHERE a.computer_id=sandbox_computers.id AND a.status!='destroyed') THEN COALESCE(deleted_at,?) ELSE deleted_at END,
+        updated_at=? WHERE tenant_id=? AND deleted_at IS NULL`).bind(now, now, scope.tenantId).run();
+    await db.prepare("UPDATE sandbox_connections SET status='revoked',updated_at=? WHERE tenant_id=?").bind(now, scope.tenantId).run();
+  }
+  await db.prepare(scope.spaceId && scope.tenantId
+    ? "UPDATE sandbox_filesystems SET status='retired',updated_at=? WHERE tenant_id=? AND space_id=?"
+    : scope.spaceId ? "UPDATE sandbox_filesystems SET status='retired',updated_at=? WHERE space_id=?"
+    : "UPDATE sandbox_filesystems SET status='retired',updated_at=? WHERE tenant_id=?")
+    .bind(...(scope.spaceId && scope.tenantId ? [now, scope.tenantId, scope.spaceId] : [now, scope.spaceId ?? scope.tenantId])).run();
+  return { queued, unresolved };
+}
+
+async function sha256Text(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function eraseSandboxWorkspaceBlobs(db: D1Database, bucket: R2Bucket | undefined, scope: { spaceId?: string; tenantId?: string }): Promise<void> {
   if (!bucket) return;
   let afterKey = "";
   for (;;) {
-    const query = scope.spaceId
+    const query = scope.spaceId && scope.tenantId
+      ? db.prepare("SELECT b.object_key FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE f.tenant_id=? AND f.space_id=? AND b.object_key>? ORDER BY b.object_key LIMIT 1000").bind(scope.tenantId, scope.spaceId, afterKey)
+      : scope.spaceId
       ? db.prepare("SELECT b.object_key FROM sandbox_workspace_blobs b JOIN sandbox_filesystems f ON f.id=b.filesystem_id WHERE f.space_id=? AND b.object_key>? ORDER BY b.object_key LIMIT 1000").bind(scope.spaceId, afterKey)
       : db.prepare("SELECT object_key FROM sandbox_workspace_blobs WHERE tenant_id=? AND object_key>? ORDER BY object_key LIMIT 1000").bind(scope.tenantId, afterKey);
     const { results } = await query.all<{ object_key: string }>();
@@ -164,11 +253,13 @@ async function eraseSandboxWorkspaceBlobs(db: D1Database, bucket: R2Bucket | und
   }
 }
 
-export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucket?: R2Bucket): Promise<void> {
-  await eraseSandboxWorkspaceBlobs(db, bucket, { spaceId });
+export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucket?: R2Bucket, tenantId?: string): Promise<void> {
+  await eraseSandboxWorkspaceBlobs(db, bucket, { spaceId, ...(tenantId ? { tenantId } : {}) });
+  await queueSandboxProviderDeletions(db, { spaceId, ...(tenantId ? { tenantId } : {}) });
   // Children precede parents where the migrations declare foreign keys.
   await db.batch([
-    db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
+    db.prepare(`DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)
+      AND id NOT IN (SELECT allocation_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))`).bind(spaceId),
     db.prepare("DELETE FROM sandbox_executions WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_operations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId),
@@ -177,6 +268,7 @@ export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucke
     db.prepare("DELETE FROM sandbox_workspace_blobs WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_workspace_snapshots WHERE filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM sandbox_grants WHERE tenant_id IN (SELECT tenant_id FROM sandbox_computers WHERE space_id = ?) AND (computer_id IN (SELECT id FROM sandbox_computers WHERE space_id = ?) OR filesystem_id IN (SELECT id FROM sandbox_filesystems WHERE space_id = ?))").bind(spaceId, spaceId, spaceId),
+    db.prepare("UPDATE sandbox_usage_events SET computer_id=NULL,execution_id=NULL,connection_id=NULL WHERE tenant_id IN (SELECT tenant_id FROM sandbox_computers WHERE space_id=?) AND computer_id IN (SELECT id FROM sandbox_computers WHERE space_id=?)").bind(spaceId, spaceId),
     db.prepare("DELETE FROM assistant_agentmail_event_receipts WHERE account_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM assistant_agentmail_sends WHERE connection_id IN (SELECT id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
     db.prepare("DELETE FROM assistant_agentport_event_receipts WHERE account_id IN (SELECT agentport_account_id FROM assistant_agentmail_accounts WHERE space_id = ?)").bind(spaceId),
@@ -184,11 +276,16 @@ export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucke
   await db.batch(SPACE_ERASURE_TABLES.map((table) =>
     db.prepare(`DELETE FROM ${table} WHERE space_id = ?`).bind(spaceId)
   ));
+  await db.prepare(`DELETE FROM sandbox_computers WHERE space_id=?
+    AND id NOT IN (SELECT computer_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))`).bind(spaceId).run();
+  await db.prepare(`DELETE FROM sandbox_filesystems WHERE space_id=?
+    AND NOT EXISTS (SELECT 1 FROM sandbox_computers c WHERE c.filesystem_id=sandbox_filesystems.id)`).bind(spaceId).run();
 }
 
 /** Retain financial/audit records, but remove tenant login, notification, API, and registry state. */
 export async function eraseOrgOperationalRecords(db: D1Database, orgId: string, bucket?: R2Bucket): Promise<void> {
   await eraseSandboxWorkspaceBlobs(db, bucket, { tenantId: orgId });
+  await queueSandboxProviderDeletions(db, { tenantId: orgId });
   await db.batch([
     db.prepare("DELETE FROM org_members WHERE org_id = ?").bind(orgId),
     db.prepare("DELETE FROM api_keys WHERE org_id = ?").bind(orgId),
@@ -217,7 +314,8 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string, 
     db.prepare("DELETE FROM assistant_agentmail_pods WHERE tenant_id = ?").bind(orgId),
     // Sandbox credentials and execution history are tenant-owned. Child records are removed
     // before computers/filesystems so foreign keys remain valid even when cascades are off.
-    db.prepare("DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE tenant_id = ?)").bind(orgId),
+    db.prepare(`DELETE FROM sandbox_allocations WHERE computer_id IN (SELECT id FROM sandbox_computers WHERE tenant_id = ?)
+      AND id NOT IN (SELECT allocation_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))`).bind(orgId),
     db.prepare("DELETE FROM sandbox_executions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_operations WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_workspace_publication_blobs WHERE publication_id IN (SELECT id FROM sandbox_publications WHERE tenant_id = ?)").bind(orgId),
@@ -226,10 +324,12 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string, 
     db.prepare("DELETE FROM sandbox_workspace_blobs WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_workspace_snapshots WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM sandbox_grants WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM sandbox_usage_events WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM sandbox_computers WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM sandbox_filesystems WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM sandbox_connections WHERE tenant_id = ?").bind(orgId),
+    // Retain the minimal financial meter ledger, but remove computer/execution/connection joins.
+    // Its final retention period remains a legal/product decision; do not discard it implicitly.
+    db.prepare("UPDATE sandbox_usage_events SET computer_id=NULL,execution_id=NULL,connection_id=NULL WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM sandbox_computers WHERE tenant_id = ? AND id NOT IN (SELECT computer_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))").bind(orgId),
+    db.prepare("UPDATE sandbox_connections SET credential_ciphertext=NULL,credential_iv=NULL WHERE tenant_id=? AND id NOT IN (SELECT connection_id FROM sandbox_provider_deletion_operations WHERE status!='confirmed_deleted')").bind(orgId),
+    db.prepare("DELETE FROM sandbox_connections WHERE tenant_id = ? AND id NOT IN (SELECT connection_id FROM sandbox_provider_deletion_operations WHERE status!='confirmed_deleted')").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
     // OAuth grants must be removed before AgentPort developer and organization identity rows.
@@ -290,6 +390,8 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string, 
     db.prepare("UPDATE users SET org_id = NULL WHERE org_id = ?").bind(orgId),
     db.prepare("UPDATE orgs SET name = 'Erased organization', owner_id = 'system-erasure', status = 'erased' WHERE id = ?").bind(orgId),
   ]);
+  await db.prepare(`DELETE FROM sandbox_filesystems WHERE tenant_id=?
+    AND NOT EXISTS (SELECT 1 FROM sandbox_computers c WHERE c.filesystem_id=sandbox_filesystems.id)`).bind(orgId).run();
 }
 
 /** Claim the post-delay deletion exactly once; cancellation and duplicate workflows lose this CAS. */
