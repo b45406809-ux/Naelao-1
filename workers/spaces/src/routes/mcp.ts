@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import { readBytesWithHash, sha256Bytes } from "../../../agents/src/script-engine/r2-cas.js";
 import { readWorkspaceCompat } from "../workspace-compat.js";
 import { mintInternalToken } from "@naelao/http";
+import { inferWorkspaceContentType } from "@naelao/types";
 
 type RpcId = string | number | null;
 type RpcRequest = { jsonrpc?: string; id?: RpcId; method?: string; params?: Record<string, unknown> };
@@ -101,6 +102,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
         const object = await readBytesWithHash(c.env.SCRIPTS_R2, entry?.objectKey ?? key);
         if (!object) throw new Error("file not found");
         if (entry && (object.hash !== entry.sha256 || object.bytes.byteLength !== entry.size)) throw new Error("canonical workspace content integrity check failed");
+        const contentType = entry?.contentType ?? object.contentType ?? inferWorkspaceContentType(path);
         const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(object.bytes);
         const first = source.indexOf(oldText);
         if (first < 0) throw new Error("patch target not found");
@@ -120,7 +122,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
               "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
             body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
               branch: "main", actorId: c.req.header("x-naelao-user-id") || "spaces-project-mcp", path,
-              expectedHash: object.hash, contentBase64, contentType: "text/plain; charset=utf-8", idempotencyKey }),
+              expectedHash: object.hash, contentBase64, contentType, idempotencyKey }),
           }));
           if (!published.ok) throw new Error(`checked coordinator publication failed:${published.status}`);
           const publication = await published.json<{ publication?: { revision?: number; status?: string } }>();
@@ -135,7 +137,7 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket; AG
               "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
             body: JSON.stringify({ scope: { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" : "global" },
               actorId: c.req.header("x-naelao-user-id") || "spaces-project-mcp", path, expectedHash: object.hash,
-              contentBase64: btoa(binary), idempotencyKey, contentType: "text/plain; charset=utf-8" }),
+              contentBase64: btoa(binary), idempotencyKey, contentType }),
           }));
           if (!written.ok) throw new Error(`legacy workspace mutation rejected:${written.status}`);
           value = { patched: true, path, hash: (await written.json<{ hash?: string }>()).hash };

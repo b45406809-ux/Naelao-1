@@ -16,6 +16,29 @@ export function asUserId(s: string): UserId { return s as UserId; }
 export function asOrgId(s: string): OrgId { return s as OrgId; }
 export function asDocId(s: string): DocId { return s as DocId; }
 
+const WORKSPACE_CONTENT_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  md: "text/markdown; charset=utf-8", markdown: "text/markdown; charset=utf-8",
+  txt: "text/plain; charset=utf-8", log: "text/plain; charset=utf-8",
+  json: "application/json; charset=utf-8", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", cjs: "text/javascript; charset=utf-8",
+  xml: "application/xml; charset=utf-8", csv: "text/csv; charset=utf-8", tsv: "text/tab-separated-values; charset=utf-8",
+  yaml: "application/yaml; charset=utf-8", yml: "application/yaml; charset=utf-8", toml: "application/toml; charset=utf-8",
+  sh: "text/x-shellscript; charset=utf-8", py: "text/x-python; charset=utf-8", sql: "text/plain; charset=utf-8",
+  ts: "text/plain; charset=utf-8", tsx: "text/plain; charset=utf-8", jsx: "text/plain; charset=utf-8",
+  go: "text/plain; charset=utf-8", rs: "text/plain; charset=utf-8", java: "text/plain; charset=utf-8",
+  c: "text/plain; charset=utf-8", h: "text/plain; charset=utf-8", cpp: "text/plain; charset=utf-8", hpp: "text/plain; charset=utf-8",
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+  pdf: "application/pdf", zip: "application/zip", gz: "application/gzip", wasm: "application/wasm",
+};
+
+/** Infer only a known workspace extension; unknown or extensionless files remain opaque. */
+export function inferWorkspaceContentType(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "application/octet-stream";
+  return WORKSPACE_CONTENT_TYPE_BY_EXTENSION[name.slice(dot + 1)] ?? "application/octet-stream";
+}
+
 /** Normalize a saved BCP-47 language preference. */
 export function normalizePreferredLanguage(value: unknown): string | null {
   if (typeof value !== "string" || value.length > 35) return null;

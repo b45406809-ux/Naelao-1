@@ -4,9 +4,10 @@ import { registerProjectMcpRoutes } from "./mcp.js";
 
 class MemoryBucket {
   data = new Map<string, string>();
+  contentTypes = new Map<string, string>();
   private async hash(value: string) { const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)); return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
   async head(key: string) { const value = this.data.get(key); return value === undefined ? null : { key, etag: "etag", size: value.length, customMetadata: { sha256: await this.hash(value) } }; }
-  async get(key: string) { const value = this.data.get(key); return value === undefined ? null : { text: async () => value, arrayBuffer: async () => new TextEncoder().encode(value).buffer, httpEtag: "etag", customMetadata: { sha256: await this.hash(value) } }; }
+  async get(key: string) { const value = this.data.get(key); return value === undefined ? null : { text: async () => value, arrayBuffer: async () => new TextEncoder().encode(value).buffer, httpEtag: "etag", customMetadata: { sha256: await this.hash(value) }, httpMetadata: { contentType: this.contentTypes.get(key) } }; }
   async put(key: string, value: string | Uint8Array, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) {
     const previous = this.data.get(key);
     if (options?.onlyIf?.etagMatches && previous === undefined) return null;
@@ -23,7 +24,9 @@ describe("project MCP Streamable HTTP endpoint", () => {
     registerProjectMcpRoutes(app, async () => null);
     const bucket = new MemoryBucket();
     bucket.data.set("spaces/s/projects/p/workspace/readme.md", "hello");
-    const rpc = (body: unknown) => app.request("/spaces/s/projects/p/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, { SCRIPTS_R2: bucket as unknown as R2Bucket });
+    const agentsWorker = { fetch: async () => Response.json({ canonical: false }) } as unknown as Fetcher;
+    const rpc = (body: unknown) => app.request("/spaces/s/projects/p/mcp", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" }, body: JSON.stringify(body) },
+      { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret" });
     const listed = await (await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })).json() as any;
     expect(listed.result.tools.map((tool: any) => tool.name)).toContain("readWorkspaceFile");
     const called = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "readWorkspaceFile", arguments: { path: "readme.md" } } })).json() as any;
@@ -42,10 +45,13 @@ describe("project MCP Streamable HTTP endpoint", () => {
     registerProjectMcpRoutes(app, async () => null);
     const bucket = new MemoryBucket();
     bucket.data.set("spaces/s/projects/p/workspace/readme.md", "before");
-    let legacyBody: Record<string, unknown> | null = null;
+    bucket.contentTypes.set("spaces/s/projects/p/workspace/readme.md", "application/x-recorded");
+    bucket.data.set("spaces/s/projects/p/workspace/settings.json", "before");
+    const legacyBodies: Record<string, unknown>[] = [];
     const agentsWorker = { fetch: async (request: Request) => {
+      if (new URL(request.url).pathname.endsWith("/compat-read")) return Response.json({ canonical: false });
       if (new URL(request.url).pathname.endsWith("/legacy-write")) {
-        legacyBody = await request.json() as Record<string, unknown>;
+        legacyBodies.push(await request.json() as Record<string, unknown>);
         return Response.json({ written: true, hash: "a".repeat(64) });
       }
       return Response.json({ error_code: "unexpected_route" }, { status: 404 });
@@ -55,8 +61,14 @@ describe("project MCP Streamable HTTP endpoint", () => {
       { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret", UNIFIED_WORKSPACE_ENABLED: "false" });
     const result = await response.json() as any;
     expect(result.result.content[0].text).toContain('"hash"');
-    expect(legacyBody).toMatchObject({ scope: { tenantId: "tenant", spaceId: "s", projectId: "p" }, actorId: "user", path: "readme.md", expectedHash: expect.stringMatching(/^[a-f0-9]{64}$/), idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
-    const encoded = (legacyBody as Record<string, unknown>).contentBase64 as string;
+    const jsonResponse = await app.request("/spaces/s/projects/p/mcp", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "user" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "runAstPatch", arguments: { path: "settings.json", oldText: "before", newText: "after" } } }) },
+      { SCRIPTS_R2: bucket as unknown as R2Bucket, AGENTS_WORKER: agentsWorker, PLATFORM_SECRET: "test-secret", UNIFIED_WORKSPACE_ENABLED: "false" });
+    expect((await jsonResponse.json() as any).result.content[0].text).toContain('"hash"');
+    expect(legacyBodies).toHaveLength(2);
+    expect(legacyBodies[0]).toMatchObject({ scope: { tenantId: "tenant", spaceId: "s", projectId: "p" }, actorId: "user", path: "readme.md", expectedHash: expect.stringMatching(/^[a-f0-9]{64}$/), idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/), contentType: "application/x-recorded" });
+    expect(legacyBodies[1]).toMatchObject({ path: "settings.json", contentType: "application/json; charset=utf-8" });
+    const encoded = legacyBodies[0]!.contentBase64 as string;
     expect(new TextDecoder().decode(Uint8Array.from(atob(encoded), character => character.charCodeAt(0)))).toBe("after");
     expect(bucket.data.get("spaces/s/projects/p/workspace/readme.md")).toBe("before");
   });
@@ -70,7 +82,7 @@ describe("project MCP Streamable HTTP endpoint", () => {
     const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const objectKey = `workspace-v1/tenant/s/p/global/content/${sha256}`;
     bucket.data.set(objectKey, "canonical text");
-    const entry = { path: "readme.md", sha256, size: 14, executable: false, objectKey };
+    const entry = { path: "readme.md", sha256, size: 14, executable: false, contentType: "text/markdown; charset=utf-8", objectKey };
     let checkedBody: Record<string, unknown> | null = null;
     const agentsWorker = { fetch: async (request: Request) => {
       if (new URL(request.url).pathname.endsWith("/checked-publish")) {
@@ -91,7 +103,7 @@ describe("project MCP Streamable HTTP endpoint", () => {
     expect(list.result.content[0].text).toContain("readme.md");
     const patched = await (await rpc("runAstPatch", { path: "readme.md", oldText: "canonical", newText: "changed" })).json() as any;
     expect(patched.result.content[0].text).toContain('"revision":2');
-    expect(checkedBody).toMatchObject({ branch: "main", path: "readme.md", expectedHash: sha256, idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(checkedBody).toMatchObject({ branch: "main", path: "readme.md", expectedHash: sha256, contentType: "text/markdown; charset=utf-8", idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
     const encoded = (checkedBody as Record<string, unknown>).contentBase64 as string;
     expect(new TextDecoder().decode(Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0)))).toBe("changed text");
     expect(bucket.data.get("spaces/s/projects/p/workspace/readme.md")).toBe("stale legacy text");

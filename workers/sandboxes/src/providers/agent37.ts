@@ -5,6 +5,7 @@ import type {
   RuntimeRequest,
   SandboxProvider,
 } from "@naelao/sandboxes-core";
+import { inferWorkspaceContentType } from "@naelao/types";
 
 const API = "https://api.agent37.com";
 const EXEC_API = "https://sandbox.agent37.app";
@@ -13,28 +14,10 @@ const MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_WORKSPACE_TREE_FILES = 200;
 const MAX_WORKSPACE_TREE_BYTES = 64 * 1024 * 1024;
 const WORKSPACE_ROOT = "/home/node/workspace";
-const AGENT37_CONTENT_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
-  md: "text/markdown; charset=utf-8", markdown: "text/markdown; charset=utf-8",
-  txt: "text/plain; charset=utf-8", log: "text/plain; charset=utf-8",
-  json: "application/json; charset=utf-8", html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8",
-  css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", mjs: "text/javascript; charset=utf-8", cjs: "text/javascript; charset=utf-8",
-  xml: "application/xml; charset=utf-8", csv: "text/csv; charset=utf-8", tsv: "text/tab-separated-values; charset=utf-8",
-  yaml: "application/yaml; charset=utf-8", yml: "application/yaml; charset=utf-8", toml: "application/toml; charset=utf-8",
-  sh: "text/x-shellscript; charset=utf-8", py: "text/x-python; charset=utf-8", sql: "text/plain; charset=utf-8",
-  ts: "text/plain; charset=utf-8", tsx: "text/plain; charset=utf-8", jsx: "text/plain; charset=utf-8",
-  go: "text/plain; charset=utf-8", rs: "text/plain; charset=utf-8", java: "text/plain; charset=utf-8",
-  c: "text/plain; charset=utf-8", h: "text/plain; charset=utf-8", cpp: "text/plain; charset=utf-8", hpp: "text/plain; charset=utf-8",
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
-  pdf: "application/pdf", zip: "application/zip", gz: "application/gzip", wasm: "application/wasm",
-};
-
 /** Agent37 directory entries do not provide reliable MIME metadata. Infer only from a known
  * filename extension; unknown names stay opaque, while an existing canonical MIME always wins. */
 export function inferAgent37ContentType(path: string): string {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return "application/octet-stream";
-  return AGENT37_CONTENT_TYPE_BY_EXTENSION[name.slice(dot + 1)] ?? "application/octet-stream";
+  return inferWorkspaceContentType(path);
 }
 
 interface Agent37FileEntry { name: string; path: string; type: "file" | "directory" | "symlink" | "other"; size: number | null; modified: number; }
