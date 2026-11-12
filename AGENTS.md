@@ -23,10 +23,10 @@ PARTIAL because the available GraphQL source has interval totals only; current q
 oldest age need a supported live inspector. P20 refund evidence is durably reviewable, but the
 license-access, author-clawback and operator-resolution policy is undecided. P18/P21 implementation
 is present in current source: reset atomically advances the account security generation and queues
-session cleanup; encrypted auth-email operations retry and expose scoped diagnostics. Next exact
-task: record this verified slice, then reconcile P04/P22 archive, restore, object, index and tombstone
-callers against current code, closing independent recovery gaps before moving to assistant quality
-and guided templates. P01/P02 remain partial: staging and production share `PLATFORM_DB` and 11
+session cleanup; encrypted auth-email operations retry and expose scoped diagnostics. The progress
+record is pushed as `def77078`. Next exact task: reconcile P04/P22 archive, restore, object, index and
+tombstone callers against current code, closing independent recovery gaps before moving to assistant
+quality and guided templates. P01/P02 remain partial: staging and production share `PLATFORM_DB` and 11
 mutable KV IDs, `naelao-calls` has no named Worker owner, resource receipts and operator-attested D1
 baselines are absent, and deployed bindings were not inspected. Keep rollout disabled. Fetch before
 every push and safely integrate remote advances; never reset, clean, switch away, overwrite history,

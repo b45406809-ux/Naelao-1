@@ -10,7 +10,7 @@ services progress record; reuse its U01–U12 and S1–S9 ledgers rather than du
 The P01 deployment manifest, staging dependency gate, tests and runbook are pushed to
 `origin/Mcbt5s-Backup-2` as `749f9c95`. P03/P11–P13 code, tests, schema updates and this source
 reconciliation are pushed in code commit `2625ea3426d5ee1bc7d7dce3776553073843640d`; the current
-active branch and recovery ref point to that commit before this docs-only status refresh.
+progress refresh is pushed as docs commit `def77078` immediately after that code checkpoint.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
