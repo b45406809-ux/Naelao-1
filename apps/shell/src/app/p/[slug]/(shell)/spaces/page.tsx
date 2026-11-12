@@ -400,8 +400,8 @@ export default function SpacesPage() {
                     </select>
                   </label>)}
           {selectedTemplate&&<label style={{fontSize:12}}>Assistant email setup<FormSelect aria-label="Template assistant email setup" value={assistantEmailMode} onChange={event=>setAssistantEmailMode(event.target.value as typeof assistantEmailMode)}>
-            <option value="">Use the template default</option><option value="none">No automatic inbox</option><option value="naelao_managed">Naelao managed · $3/month per inbox</option><option value="user_connected">I’ll connect my AgentMail account</option>
-          </FormSelect><small style={{display:"block",color:"var(--text3)"}}>You can choose before installation. Managed inboxes cost 300 credits each month. Connecting your own AgentMail inbox has no Naelao inbox rental charge.</small></label>}
+            <option value="">Use the template default</option><option value="none">No automatic inbox</option><option value="naelao_managed">Naelao managed · quote required</option><option value="user_connected">I’ll connect my AgentMail account</option>
+          </FormSelect><small style={{display:"block",color:"var(--text3)"}}>You can choose before installation. A managed inbox is not created or charged during install; an owner must review and confirm its current exact quote afterward. Connecting your own AgentMail inbox has no Naelao inbox rental charge.</small></label>}
                 </div>}
                 {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation}; ${role.primitive_ids.join(", ") || "no primitives"}${role.gadget_actions.length ? `; ${role.gadget_actions.map(action => `${action.gadget_id} ${action.operations.join("/")} on ${action.tables.join(",")}`).join("; ")}` : ""})`).join("; ")}</div>}
               </div>}

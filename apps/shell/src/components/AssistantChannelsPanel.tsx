@@ -212,11 +212,11 @@ export function AssistantChannelsPanel({
             {template?"Template email setup default":"This assistant’s email setup"}
             <FormSelect aria-label="Assistant email provisioning" disabled={busy||(!template&&!canManage)} value={emailProvisioning.defaultMode} onChange={event=>void saveEmailProvisioning(event.target.value as AssistantEmailProvisioning["defaultMode"])}>
               <option value="none">No automatic inbox</option>
-              <option value="naelao_managed">Naelao managed · $3/month</option>
+              <option value="naelao_managed">Naelao managed · quote required</option>
               <option value="user_connected">Installer connects their AgentMail inbox</option>
             </FormSelect>
           </label>
-          <p>{template?"Managed provisioning starts on install when selected. Installers can change the default to their own AgentMail inbox or no inbox.":emailProvisioning.defaultMode==="naelao_managed"?"This managed inbox costs 300 credits ($3) each month.":"Connect your own AgentMail inbox from the Channels tab; Naelao does not charge an inbox rental."}</p>
+          <p>{template?"Selecting managed email makes it available for a separate exact quote and owner confirmation after setup; the inbox is not created or charged automatically during install. Installers can also connect their own AgentMail inbox or choose no inbox.":emailProvisioning.defaultMode==="naelao_managed"?"A managed inbox is created only after an owner reviews and confirms its current exact quote. No fixed price is assumed.":"Connect your own AgentMail inbox from the Channels tab; Naelao does not charge an inbox rental."}</p>
           <Button
             disabled={busy}
             variant="secondary"

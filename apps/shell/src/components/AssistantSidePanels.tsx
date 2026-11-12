@@ -1008,6 +1008,9 @@ function ChannelsPanel({
   const [agentMailKey,setAgentMailKey]=React.useState("");
   const [agentMailBusy,setAgentMailBusy]=React.useState(false);
   const [agentMailProvisionBusy,setAgentMailProvisionBusy]=React.useState(false);
+  const [agentMailQuote,setAgentMailQuote]=React.useState<{quoteId:string;region:string;credits:number;priceVersion:string;
+    maxCreditsPerOperation:number;renewalCredits:number|null;renewalPriceVersion:string|null;renewalMaxCreditsPerOperation:number|null;
+    maxCreditsPerPeriod:number;autoRenewAvailable:boolean;expiresAt:string}|null>(null);
   const [agentMailError,setAgentMailError]=React.useState<string|null>(null);
   const [agentMailLoadError,setAgentMailLoadError]=React.useState<string|null>(null);
 
@@ -1017,7 +1020,7 @@ function ChannelsPanel({
   React.useEffect(() => { setChannels(null); load(); }, [load]);
   const loadAgentMail=React.useCallback(()=>assistantMailApi<{connections:Array<{id:string;mode:string;address:string;status:string;receivedMessages:number;sentMessages:number;activity30d:"active"|"idle";lastActivityAt:string|null}>;lastProvisioningFailure?:{errorCode:string|null;occurredAt:string}}>(spaceId,session,{action:"agentmail-status",...(projectId?{projectId}:{})})
     .then(value=>{setAgentMail(value);setAgentMailLoadError(null);}).catch(error=>{setAgentMail(null);setAgentMailLoadError(error instanceof Error?error.message:"AgentMail status is unavailable.");}),[spaceId,session,projectId]);
-  React.useEffect(()=>{setAgentMail(null);loadAgentMail();},[loadAgentMail]);
+  React.useEffect(()=>{setAgentMail(null);setAgentMailQuote(null);loadAgentMail();},[loadAgentMail]);
   const connectAgentMail=async()=>{
     if(!agentMailInbox.trim()||!agentMailKey.trim())return;
     setAgentMailBusy(true);setAgentMailError(null);
@@ -1027,10 +1030,29 @@ function ChannelsPanel({
     }catch(error){setAgentMailError(error instanceof Error?error.message:"Unable to connect AgentMail inbox");}
     finally{setAgentMailBusy(false);}
   };
+  const quoteAgentMail=async()=>{
+    setAgentMailProvisionBusy(true);setAgentMailError(null);setAgentMailQuote(null);
+    try{
+      const quote=await assistantMailApi<NonNullable<typeof agentMailQuote>>(spaceId,session,
+        {action:"agentmail-quote",...(projectId?{projectId}:{})},true);
+      setAgentMailQuote(quote);
+    }catch(error){setAgentMailError(error instanceof Error?error.message:"Unable to get a managed inbox quote");}
+    finally{setAgentMailProvisionBusy(false);}
+  };
   const provisionAgentMail=async()=>{
+    if(!agentMailQuote||Date.parse(agentMailQuote.expiresAt)<=Date.now()){
+      setAgentMailError("This managed inbox quote has expired. Get a new quote before provisioning.");
+      setAgentMailQuote(null);
+      return;
+    }
+    const renewal=agentMailQuote.autoRenewAvailable
+      ? ` Scheduled renewal is ${agentMailQuote.renewalCredits!.toLocaleString()} Naelao credits (${agentMailQuote.renewalPriceVersion}); its maximum reservation is ${agentMailQuote.renewalMaxCreditsPerOperation!.toLocaleString()} credits within a ${agentMailQuote.maxCreditsPerPeriod.toLocaleString()} credit 30 day mandate.`
+      : " No exact renewal price is active, so the mailbox will not auto-renew and will enter retirement review at the paid-period boundary.";
+    if(!window.confirm(`Provision a managed AgentMail inbox for exactly ${agentMailQuote.credits.toLocaleString()} Naelao credits (${agentMailQuote.priceVersion}) in ${agentMailQuote.region.toUpperCase()}? It will use this Space's organization credit quota. Maximum reservation is ${agentMailQuote.maxCreditsPerOperation.toLocaleString()} credits.${renewal}`))return;
     setAgentMailProvisionBusy(true);setAgentMailError(null);
     try{
-      await assistantMailApi(spaceId,session,{action:"agentmail-provision",...(projectId?{projectId}:{})},true);
+      await assistantMailApi(spaceId,session,{action:"agentmail-provision",...(projectId?{projectId}:{}),quote_id:agentMailQuote.quoteId},true);
+      setAgentMailQuote(null);
       await loadAgentMail();
     }catch(error){setAgentMailError(error instanceof Error?error.message:"Unable to provision a managed inbox");}
     finally{setAgentMailProvisionBusy(false);}
@@ -1097,8 +1119,19 @@ function ChannelsPanel({
           {agentMail?.lastProvisioningFailure&&<div role="alert" style={{fontSize:11,color:"var(--danger,#b42318)"}}>Last managed inbox setup failed ({agentMail.lastProvisioningFailure.errorCode??"unknown error"}). Try again or connect your own inbox.</div>}
           {(agentMail?.connections??[]).map(connection=><div className="tp-tool-row" key={connection.id}><div className="tp-tool-name">{connection.address}<small style={{display:"block",color:"var(--text3)"}}>{connection.mode==="user_connected"?"Your AgentMail account":"Naelao managed"} · {connection.receivedMessages+connection.sentMessages} messages · {connection.activity30d} in 30 days</small></div><div className="tp-tool-badge">{connection.status}</div></div>)}
           {canManage&&<div style={{display:"grid",gap:7,padding:"8px 2px 12px"}}>
-            <button type="button" className="btn btn-primary btn-sm" disabled={agentMailProvisionBusy||agentMailBusy} onClick={()=>void provisionAgentMail()}>{agentMailProvisionBusy?"Provisioning…":"Add Naelao managed inbox · $3/month"}</button>
-            <div style={{fontSize:10,color:"var(--text3)"}}>300 credits monthly. A managed inbox is charged after successful provisioning. If you connect your own AgentMail inbox below, Naelao does not charge the inbox rental.</div>
+            <button type="button" className="btn btn-primary btn-sm" disabled={agentMailProvisionBusy||agentMailBusy} onClick={()=>void quoteAgentMail()}>{agentMailProvisionBusy?"Getting quote…":"Get managed inbox quote"}</button>
+            {agentMailQuote&&<div role="group" aria-label="Managed AgentMail quote" style={{display:"grid",gap:5,fontSize:11,color:"var(--text2,#444)"}}>
+              <div>Exact price: {agentMailQuote.credits.toLocaleString()} Naelao credits ({agentMailQuote.priceVersion}) in {agentMailQuote.region.toUpperCase()}. Maximum reservation: {agentMailQuote.maxCreditsPerOperation.toLocaleString()} credits.</div>
+              <div>{agentMailQuote.autoRenewAvailable
+                ? `Scheduled renewal: ${agentMailQuote.renewalCredits!.toLocaleString()} credits (${agentMailQuote.renewalPriceVersion}); maximum ${agentMailQuote.renewalMaxCreditsPerOperation!.toLocaleString()} credits, within a ${agentMailQuote.maxCreditsPerPeriod.toLocaleString()} credit 30 day mandate.`
+                : "No exact renewal price is active. This mailbox will not auto-renew and will enter retirement review at the paid-period boundary."}</div>
+              <div>This quote uses this Space's organization credit quota and expires {new Date(agentMailQuote.expiresAt).toLocaleString()}.</div>
+              <div style={{display:"flex",gap:6}}>
+                <button type="button" className="btn btn-primary btn-sm" disabled={agentMailProvisionBusy||Date.parse(agentMailQuote.expiresAt)<=Date.now()} onClick={()=>void provisionAgentMail()}>{agentMailProvisionBusy?"Provisioning…":"Confirm and provision"}</button>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={agentMailProvisionBusy} onClick={()=>setAgentMailQuote(null)}>Cancel quote</button>
+              </div>
+            </div>}
+            <div style={{fontSize:10,color:"var(--text3)"}}>Provisioning requires a current exact quote and separate confirmation. A managed inbox is charged after successful provisioning. If you connect your own AgentMail inbox, Naelao does not charge the inbox rental.</div>
             <div style={{fontSize:11,color:"var(--text3)"}}>Connect an AgentMail inbox with an inbox scoped API key. The key is encrypted for this assistant and never shown to its tools.</div>
             <input aria-label="AgentMail inbox ID" placeholder="AgentMail inbox ID" value={agentMailInbox} onChange={event=>setAgentMailInbox(event.target.value)} />
             <input aria-label="AgentMail scoped API key" placeholder="Inbox scoped API key" type="password" autoComplete="off" value={agentMailKey} onChange={event=>setAgentMailKey(event.target.value)} />
