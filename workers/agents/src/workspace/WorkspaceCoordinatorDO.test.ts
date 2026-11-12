@@ -28,7 +28,7 @@ class Storage {
   }
 }
 
-function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure";
+function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure" | "oversized";
   candidateSelection?: { runtimeId: string; allocationGeneration: number };
   authorityMissing?: string[];
   runtimeControlNamespace?: { idFromName(name: string): unknown; get(id: unknown): Fetcher } } = {}) {
@@ -36,6 +36,7 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
   const objects = new Map<string, Uint8Array>();
   const metadata = new Map<string, { contentType?: string }>();
   const customMetadata = new Map<string, Record<string, string>>();
+  let runtimeResponseCancelled = false;
   const verificationState = { authorized: true };
   const r2: Record<string, (...args: never[]) => unknown> = {
     async get(key: string) {
@@ -80,6 +81,10 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
   const runtimeControl = options.runtimeControl ? { async fetch(request: Request) {
     const body = await request.json() as Record<string, unknown>;
     const path = new URL(request.url).pathname;
+    if (path.endsWith("/checkpoint/sync") && options.runtimeControl === "oversized") return new Response(
+      new ReadableStream<Uint8Array>({ cancel() { runtimeResponseCancelled = true; } }),
+      { headers: { "content-type": "application/json", "content-length": String(30 * 1024 * 1024 + 1) } },
+    );
     if (path.endsWith("/checkpoint/sync")) return Response.json({ synced: true, nonce: body.nonce, requestId: body.requestId,
       sessionId: body.sessionId, runtimeId: body.runtimeId, allocationGeneration: body.allocationGeneration, fence: body.fence,
       changes: [{ path: "live.txt", expectedHash: null, contentBase64: btoa("live checkpoint") }], cursor: "runtime-cursor-1" });
@@ -106,7 +111,8 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
     ...(options.runtimeControlNamespace ? { LIVE_RUNTIME_CONTROL_DO: options.runtimeControlNamespace } : {}),
     UNIFIED_WORKSPACE_ENABLED: options.unifiedEnabled ? "true" : "false" };
   const instance = new WorkspaceCoordinatorDO({ storage } as never, env as never);
-  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState };
+  return { instance, restart: () => new WorkspaceCoordinatorDO({ storage } as never, env as never), storage, objects, metadata, customMetadata, r2, verificationState,
+    runtimeResponseWasCancelled: () => runtimeResponseCancelled };
 }
 
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" as const };
@@ -1226,6 +1232,25 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 2 } });
       expect(await (await call(instance, "/v1/read?branch=main")).json()).toMatchObject({ entries: [{ path: "live.txt" }] });
       expect(storage.values.has("live-checkpoint:main")).toBe(false);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("cancels oversized runtime-control responses before buffering or publishing them", async () => {
+    const { instance, storage, runtimeResponseWasCancelled } = setup({ liveEnabled: true, runtimeControl: "oversized" });
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const opened = await (await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime-live", allocationGeneration: 2,
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(2, { runtimeId: "runtime-live" }) })).json() as { session: { id: string; fence: number } };
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const request = { sessionId: opened.session.id, allocationGeneration: 2, fence: opened.session.fence };
+      expect((await call(instance, "/v1/live-checkpoint/request", request)).status).toBe(200);
+      now += 2_001;
+      await instance.alarm();
+
+      expect(runtimeResponseWasCancelled()).toBe(true);
+      expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 1 } });
+      expect(storage.values.get("live-checkpoint:main")).toMatchObject({ failure: "runtime_sync_unverified", processing: false });
     } finally { vi.restoreAllMocks(); }
   });
 

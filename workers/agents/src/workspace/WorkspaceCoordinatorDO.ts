@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { mintInternalToken, readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestText, readBoundedResponseJson, verifyInternalToken } from "@naelao/http";
 import { inferWorkspaceContentType } from "@naelao/types";
 import type { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import {
@@ -159,6 +159,7 @@ const MAX_MIGRATION_BYTES = 64 * 1024 * 1024;
 const MAX_MIGRATION_BRANCHES = 200;
 const MAX_MIGRATION_ALL_BRANCH_BYTES = 512 * 1024 * 1024;
 const LIVE_CHECKPOINT_BATCH_SIZE = 20;
+const MAX_LIVE_RUNTIME_CONTROL_RESPONSE_BYTES = 30 * 1024 * 1024;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2621,7 +2622,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     }
     if (!response.ok) return null;
     try {
-      const value: unknown = await response.json();
+      // The direct service binding is a trusted control-plane route, but its output still crosses
+      // a Worker boundary and must not be buffered without a hard ceiling. Keep it aligned with
+      // LiveRuntimeControlDO's bounded adapter response limit.
+      const value: unknown = await readBoundedResponseJson<unknown>(response, MAX_LIVE_RUNTIME_CONTROL_RESPONSE_BYTES);
       return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
     } catch {
       return null;
