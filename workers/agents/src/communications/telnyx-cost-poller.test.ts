@@ -32,12 +32,13 @@ describe("Telnyx cost collection", () => {
     const billing = vi.fn(async () => Response.json({ settled: true }));
     f.env.BILLING_WORKER = { fetch: billing } as unknown as Fetcher;
     await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,
-      provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'assistant','managed','telnyx','managed-account','12345','+14155550100',?,'active')`)
+      provider_number_sid,phone_number,policy_json,status,managed_price_version,managed_rental_credits_per_month,
+      managed_sms_credits_per_segment,managed_call_credits_per_minute) VALUES(?,?,'assistant','managed','telnyx','managed-account','12345','+14155550100',?,'active','retail-v1',100,10,20)`)
       .bind("managed-binding", identity.id, JSON.stringify(defaultPhonePolicy)).run();
     const now = Math.floor(Date.now() / 1000);
     await f.db.prepare(`INSERT INTO assistant_managed_telnyx_message_costs(provider_message_id,binding_id,direction,sender,
-      carrier_reservation_id,reserved_credits,status,created_at,next_at,updated_at)
-      VALUES('inbound-message','managed-binding','inbound','+14155550101','reservation-inbound',10,'pending',?,?,?)`)
+      carrier_reservation_id,reserved_credits,price_version,status,created_at,next_at,updated_at)
+      VALUES('inbound-message','managed-binding','inbound','+14155550101','reservation-inbound',10,'retail-v1','pending',?,?,?)`)
       .bind(now, now, now).run();
     const provider = vi.fn(async () => Response.json({ data: { id: "inbound-message", direction: "inbound",
       from: { phone_number: "+14155550101" }, to: [{ phone_number: "+14155550100" }],

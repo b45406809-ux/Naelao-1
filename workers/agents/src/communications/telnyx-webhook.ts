@@ -9,7 +9,7 @@ import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { claimTelnyxIngress, finishTelnyxIngress } from "./telnyx-ingress-journal.js";
 import { validatePhonePolicy, type AssistantPhoneBinding } from "./phones.js";
 import { dispatchTelnyxVoiceEvent } from "./telnyx-live-calls.js";
-import { managedMessageReservationId, managedSmsCreditsPerSegment, managedSmsSegments, reserveManagedCarrierCredits } from "./managed-carrier-billing.js";
+import { managedCarrierBudgetKey, managedMessageReservationId, managedSmsCreditsPerSegment, managedSmsSegments, reserveManagedCarrierCredits } from "./managed-carrier-billing.js";
 
 type TelnyxEvent = Awaited<ReturnType<typeof authenticatedTelnyxEvent>>;
 type WebhookContext = Context<{ Bindings: AgentsEnv }>;
@@ -66,14 +66,16 @@ async function dispatchEvent(c: WebhookContext, binding: AssistantPhoneBinding, 
       const providerMessageId = payload.id;
       if (typeof providerMessageId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(providerMessageId)) throw new Error("telnyx_message_id_invalid");
       const reservationId = await managedMessageReservationId(binding.id, providerMessageId);
-      const reservedCredits = managedSmsCreditsPerSegment(c.env) * managedSmsSegments(payload.text);
-      await reserveManagedCarrierCredits(c.env, scope, reservationId, reservedCredits, `managed-phone:${binding.id}`);
+      const priceVersion = binding.managed_price_version;
+      const reservedCredits = managedSmsCreditsPerSegment(c.env, binding) * managedSmsSegments(payload.text);
+      await reserveManagedCarrierCredits(c.env, scope, reservationId, reservedCredits, managedCarrierBudgetKey(binding));
       const receivedAt = Math.floor(Date.now() / 1000);
-      await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_managed_telnyx_message_costs(provider_message_id,binding_id,direction,sender,carrier_reservation_id,reserved_credits,status,next_at,created_at,updated_at) VALUES(?,?,'inbound',?,?,?,'pending',?,?,?)")
-        .bind(providerMessageId, binding.id, from, reservationId, reservedCredits, receivedAt, receivedAt, receivedAt).run();
-      const costRow = await c.env.PLATFORM_DB.prepare("SELECT binding_id,sender,carrier_reservation_id,reserved_credits FROM assistant_managed_telnyx_message_costs WHERE provider_message_id=?")
-        .bind(providerMessageId).first<{ binding_id: string; sender: string; carrier_reservation_id: string; reserved_credits: number }>();
-      if (!costRow || costRow.binding_id !== binding.id || costRow.sender !== from || costRow.carrier_reservation_id !== reservationId || costRow.reserved_credits !== reservedCredits)
+      await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_managed_telnyx_message_costs(provider_message_id,binding_id,direction,sender,carrier_reservation_id,reserved_credits,price_version,status,next_at,created_at,updated_at) VALUES(?,?,'inbound',?,?,?,?,'pending',?,?,?)")
+        .bind(providerMessageId, binding.id, from, reservationId, reservedCredits, priceVersion, receivedAt, receivedAt, receivedAt).run();
+      const costRow = await c.env.PLATFORM_DB.prepare("SELECT binding_id,sender,carrier_reservation_id,reserved_credits,price_version FROM assistant_managed_telnyx_message_costs WHERE provider_message_id=?")
+        .bind(providerMessageId).first<{ binding_id: string; sender: string; carrier_reservation_id: string; reserved_credits: number; price_version: string | null }>();
+      if (!costRow || costRow.binding_id !== binding.id || costRow.sender !== from || costRow.carrier_reservation_id !== reservationId
+        || costRow.reserved_credits !== reservedCredits || costRow.price_version !== priceVersion)
         throw new Error("managed_telnyx_message_receipt_conflict");
     }
     const quota = await c.env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,messages) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET messages=messages+1 WHERE messages<?")

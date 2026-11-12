@@ -31,6 +31,8 @@ type Row = {
   provider_sid?: string;
   cost_collection_status?: string | null;
   managed_charge_credits?: number | null;
+  managed_price_version?: string | null;
+  managed_reserved_credits?: number | null;
 };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 export function AssistantPhonePanel({
@@ -46,6 +48,7 @@ export function AssistantPhonePanel({
       telnyx_agentport_operation?: { operation_name: string; status: string | null; error_code: string | null } | null;
       managed_available?: boolean;
       managed_reason?: string;
+      managed_price_version?: string | null;
       managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
       telnyx_webhook_url?: string | null;
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
@@ -90,6 +93,9 @@ export function AssistantPhonePanel({
     expires_at: number;
     session_id: string;
     phone_number: string;
+    max_charge_credits?: number;
+    max_call_seconds?: number;
+    price_version?: string | null;
   } | null>(null);
   const [liveSessionId, setLiveSessionId] = React.useState<
     string | undefined
@@ -113,6 +119,7 @@ export function AssistantPhonePanel({
         enabled: boolean;
         managed_available?: boolean;
         managed_reason?: string;
+        managed_price_version?: string | null;
         managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
         telnyx_webhook_url?: string | null;
         telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
@@ -202,6 +209,8 @@ export function AssistantPhonePanel({
             expires_at: number;
             session_id: string;
             phone_number: string;
+            max_charge_credits?: number;
+            price_version?: string | null;
           }
         );
         setLiveSessionId(String(result.session_id));
@@ -270,7 +279,8 @@ export function AssistantPhonePanel({
         Phone is optional for Space and Project assistants. Enable it in assistant channel settings first.
         {state?.phone?.payer === "managed" ? " Naelao bills rental and usage to the space plan using the configured carrier price schedule." : " Your carrier bills your account directly for rental, calls, SMS/MMS and other carrier charges."}
       </p>
-      {state?.phone?.payer === "managed" && state.managed_rates && <p>Current plan rates: {state.managed_rates.rental_credits_per_month} credits/month, {state.managed_rates.sms_credits_per_segment} credits/SMS segment, {state.managed_rates.call_credits_per_minute} credits/call minute.</p>}
+      {state?.managed_rates && <p>Managed Telnyx rate schedule {state.managed_price_version ?? "unversioned"}: {state.managed_rates.rental_credits_per_month} credits/month, {state.managed_rates.sms_credits_per_segment} credits/SMS segment, {state.managed_rates.call_credits_per_minute} credits/call minute.{state.managed_available ? " Rates are saved when you confirm a managed line." : " Managed Telnyx rollout is unavailable."}</p>}
+      {!state?.managed_available && state?.managed_reason && <p role="status">{state.managed_reason}</p>}
       {error && <p role="alert">{error}</p>}
       <button type="button" disabled={busy} onClick={() => void refresh()}>
         Refresh phone
@@ -288,7 +298,14 @@ export function AssistantPhonePanel({
           {(!state?.phone || ["released", "detached"].includes(state.phone.status)) && <button type="button" onClick={() => { if (window.confirm("Prepare this number for your assistant? Calls and SMS will remain unavailable until its connection is activated.")) void act("phone-telnyx-stage", { confirm: true }); }}>Prepare assistant number</button>}
           {state?.managed_available && (!state.phone || ["released", "detached"].includes(state.phone.status)) && <div>
             <p>Naelao managed inventory is available. Enter a number resource ID already assigned to Naelao’s Telnyx messaging profile and call control application.</p>
-            <button type="button" disabled={!telnyxNumberId} onClick={() => void act("phone-telnyx-managed-stage", { number_id: telnyxNumberId, confirm: true })}>Prepare managed Telnyx number</button>
+            <button type="button" disabled={!telnyxNumberId || !state.managed_price_version || !state.managed_rates} onClick={() => {
+              const rates = state.managed_rates!, version = state.managed_price_version!;
+              if (window.confirm(`Bind managed Telnyx number ${telnyxNumberId} to rate schedule ${version}: ${rates.rental_credits_per_month} credits/month, ${rates.sms_credits_per_segment} credits/SMS segment, and ${rates.call_credits_per_minute} credits/call minute? Future rate changes will not alter this line.`))
+                void act("phone-telnyx-managed-stage", { number_id: telnyxNumberId, confirm: true, confirmed_price_version: version,
+                  confirmed_rental_credits_per_month: rates.rental_credits_per_month,
+                  confirmed_sms_credits_per_segment: rates.sms_credits_per_segment,
+                  confirmed_call_credits_per_minute: rates.call_credits_per_minute });
+            }}>Prepare managed Telnyx number</button>
           </div>}
           {telnyxSetup && <p role="status">{telnyxSetup}</p>}
         </fieldset>
@@ -534,12 +551,19 @@ export function AssistantPhonePanel({
                   </p>
                   <button
                     type="button"
-                    onClick={() =>
-                      void act("phone-live", {
-                        confirm: true,
-                        ...(liveSessionId ? { session_id: liveSessionId } : {}),
-                      })
-                    }
+                    onClick={() => {
+                      const managed = state.phone?.provider === "telnyx" && state.phone.payer === "managed";
+                      const seconds = state.phone?.policy.maxCallSeconds ?? 300;
+                      const version = state.managed_price_version;
+                      const maxCharge = managed && state.managed_rates ? Math.ceil(seconds / 60) * state.managed_rates.call_credits_per_minute : null;
+                      if (managed && (!version || maxCharge === null)) return;
+                      if (!managed || window.confirm(`Create a one-time call code for up to ${seconds} seconds, reserving a maximum of ${maxCharge} credits under managed Telnyx rate schedule ${version}?`))
+                        void act("phone-live", {
+                          confirm: true,
+                          ...(managed ? { confirmed_price_version: version, confirmed_max_charge_credits: maxCharge } : {}),
+                          ...(liveSessionId ? { session_id: liveSessionId } : {}),
+                        });
+                    }}
                   >
                     Get one-time call code
                   </button>
@@ -553,6 +577,7 @@ export function AssistantPhonePanel({
                         ).toLocaleTimeString()}
                         . Keep it private.
                       </p>
+                      {liveCall.max_charge_credits !== undefined && <p>Maximum reserved charge: {liveCall.max_charge_credits} credits under rate schedule {liveCall.price_version} for {liveCall.max_call_seconds} seconds. Final charge uses the connected call duration at that rate.</p>}
                       <button
                         type="button"
                         onClick={() =>
@@ -777,6 +802,7 @@ export function AssistantPhonePanel({
             {actions.map((a) => (
               <li key={a.id}>
                 {a.kind} to {a.recipient}: {a.status}{" "}
+                {a.managed_price_version && a.managed_reserved_credits !== undefined && <span> · maximum charge: {a.managed_reserved_credits} credits under rate schedule {a.managed_price_version}</span>}{" "}
                 {state?.phone?.provider === "telnyx" && a.cost_collection_status && <span> · carrier cost: {a.cost_collection_status}</span>}{" "}
                 {a.managed_charge_credits !== null && a.managed_charge_credits !== undefined && <span> · plan charge: {a.managed_charge_credits} credits</span>}{" "}
                 {state?.phone?.provider === "telnyx" && a.kind === "sms" && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost", { id: a.id, confirm: true })}>Check carrier cost</button>}{" "}
@@ -785,7 +811,16 @@ export function AssistantPhonePanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void act(state?.phone?.provider === "telnyx" ? "phone-telnyx-approve" : "phone-approve", { id: a.id, ...(state?.phone?.provider === "telnyx" ? { confirm: true } : {}) })}
+                    onClick={() => {
+                      const managed = state?.phone?.provider === "telnyx" && state.phone.payer === "managed";
+                      if (managed && (a.managed_reserved_credits === undefined || !a.managed_price_version)) return;
+                      if (!managed || window.confirm(`Approve this SMS with a maximum charge of ${a.managed_reserved_credits} credits under managed Telnyx rate schedule ${a.managed_price_version}?`))
+                        void act(state?.phone?.provider === "telnyx" ? "phone-telnyx-approve" : "phone-approve", {
+                          id: a.id,
+                          ...(state?.phone?.provider === "telnyx" ? { confirm: true } : {}),
+                          ...(managed ? { confirmed_price_version: a.managed_price_version, confirmed_max_charge_credits: a.managed_reserved_credits } : {}),
+                        });
+                    }}
                   >
                     Approve
                   </button>

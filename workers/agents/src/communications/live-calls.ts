@@ -5,7 +5,7 @@ import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AssistantPhoneBinding } from "./phones.js";
 import { verifyVoiceSession } from "../voice/session-scope.js";
 import { mintOwnerVoiceTicket } from "../voice/voice-ticket.js";
-import { managedCallCreditsPerMinute, reserveManagedCarrierCredits, releaseManagedCarrierCredits } from "./managed-carrier-billing.js";
+import { managedTelnyxCallCharge, managedCarrierBudgetKey, reserveManagedCarrierCredits, releaseManagedCarrierCredits, sweepManagedTelnyxCallReservations } from "./managed-carrier-billing.js";
 
 export interface LiveCall {
   id: string;
@@ -22,6 +22,11 @@ export interface LiveCall {
   expires_at: number;
   deadline: number | null;
   reserved_credits: number;
+  managed_price_version: string | null;
+  managed_reservation_status: string;
+  managed_reservation_attempts: number;
+  managed_reservation_last_error: string | null;
+  managed_reservation_updated_at: number | null;
 }
 export async function liveCodeHash(
   bindingId: string,
@@ -72,49 +77,52 @@ export async function armLiveCall(
   } while (bytes[0]! >= 4_200_000_000);
   const code = String(bytes[0]! % 100_000_000).padStart(8, "0");
   const id = crypto.randomUUID();
-  const previouslyArmed = await env.PLATFORM_DB.prepare("SELECT id,reserved_credits FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='armed'")
-    .bind(binding.id, scope.userId).first<{ id: string; reserved_credits: number }>();
   let reservedCredits = 0;
   const isManagedTelnyx = binding.provider === "telnyx" && binding.payer === "managed";
+  const managedCharge = isManagedTelnyx ? managedTelnyxCallCharge(binding) : null;
+  const codeHash = await liveCodeHash(binding.id, code);
   if (isManagedTelnyx) {
-    const policy = JSON.parse(binding.policy_json) as { maxCallSeconds?: unknown };
-    const seconds = Number.isSafeInteger(policy.maxCallSeconds) && Number(policy.maxCallSeconds) >= 30 && Number(policy.maxCallSeconds) <= 900 ? Number(policy.maxCallSeconds) : 300;
-    reservedCredits = Math.ceil(seconds / 60) * managedCallCreditsPerMinute(env);
-    await reserveManagedCarrierCredits(env, scope, id, reservedCredits, `managed-phone:${binding.id}`);
-  }
-  try {
+    reservedCredits = managedCharge!.maxChargeCredits;
+    // Persist the reservation intent before calling Billing. A lost response or process
+    // failure remains discoverable and the reconciler can safely release this idempotent hold.
+    await env.PLATFORM_DB.prepare("INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at,reserved_credits,managed_price_version,managed_reservation_status,managed_reservation_updated_at) VALUES(?,?,?,?,?,?,?,?,?,'revoked',?,?,?,?, 'pending',?)")
+      .bind(id, binding.id, scope.tenantId, scope.spaceId, scope.projectId ?? null, scope.userId, scope.role, actualSessionId,
+        codeHash, now + 180, now, reservedCredits, managedCharge!.priceVersion, now).run();
+    try {
+      await reserveManagedCarrierCredits(env, scope, id, reservedCredits, managedCarrierBudgetKey(binding));
+      const activated = await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked',managed_reservation_status=CASE WHEN reserved_credits>0 THEN 'release_pending' ELSE managed_reservation_status END,managed_reservation_updated_at=? WHERE binding_id=? AND user_id=? AND status='armed'")
+          .bind(now, binding.id, scope.userId),
+        env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='armed',managed_reservation_status='held',managed_reservation_last_error=NULL,managed_reservation_updated_at=? WHERE id=? AND status='revoked' AND managed_reservation_status='pending'")
+          .bind(now, id),
+      ]);
+      if (activated[1]?.meta.changes !== 1) throw new Error("live_call_reservation_activation_failed");
+      await sweepManagedTelnyxCallReservations(env, now).catch(() => undefined);
+    } catch (error) {
+      await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked',managed_reservation_status='release_pending',managed_reservation_last_error='reservation_activation_failed',managed_reservation_updated_at=? WHERE id=? AND status!='ended'")
+        .bind(Math.floor(Date.now() / 1000), id).run().catch(() => undefined);
+      try {
+        await releaseManagedCarrierCredits(env, scope, id);
+        await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_status='released',managed_reservation_last_error=NULL,managed_reservation_updated_at=? WHERE id=? AND managed_reservation_status='release_pending'")
+          .bind(Math.floor(Date.now() / 1000), id).run();
+      } catch { /* the scheduled reconciler retries the durable release intent */ }
+      throw error;
+    }
+  } else {
     await env.PLATFORM_DB.batch([
-    env.PLATFORM_DB.prepare(
-      "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status='armed'"
-    ).bind(binding.id, scope.userId),
-    env.PLATFORM_DB.prepare(
-      "INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at,reserved_credits) VALUES(?,?,?,?,?,?,?,?,?,'armed',?,?,?)"
-    ).bind(
-      id,
-      binding.id,
-      scope.tenantId,
-      scope.spaceId,
-      scope.projectId ?? null,
-      scope.userId,
-      scope.role,
-      actualSessionId,
-      await liveCodeHash(binding.id, code),
-      now + 180,
-      now,
-      reservedCredits
-    ),
-  ]);
-  } catch (error) {
-    if (reservedCredits) await releaseManagedCarrierCredits(env, scope, id).catch(() => undefined);
-    throw error;
+      env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status='armed'")
+        .bind(binding.id, scope.userId),
+      env.PLATFORM_DB.prepare("INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at,reserved_credits,managed_price_version,managed_reservation_status,managed_reservation_updated_at) VALUES(?,?,?,?,?,?,?,?,?,'armed',?,?,0,NULL,'none',?)")
+        .bind(id, binding.id, scope.tenantId, scope.spaceId, scope.projectId ?? null, scope.userId, scope.role, actualSessionId, codeHash, now + 180, now, now),
+    ]);
   }
-  if (previouslyArmed?.reserved_credits) await releaseManagedCarrierCredits(env, scope, previouslyArmed.id).catch(() => undefined);
   return {
     live_call_id: id,
     code,
     expires_at: now + 180,
     session_id: actualSessionId,
     phone_number: binding.phone_number,
+    ...(reservedCredits ? { max_charge_credits: reservedCredits, max_call_seconds: managedCharge!.maxCallSeconds, price_version: managedCharge!.priceVersion } : {}),
   };
 }
 /** Atomic claim makes Twilio callback retries/reconnects reuse this call, never reauthorize another. */

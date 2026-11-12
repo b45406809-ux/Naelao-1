@@ -69,6 +69,106 @@ async function phoneFixture() {
   return { ...f, identity, provider, act, binding };
 }
 afterEach(() => vi.unstubAllGlobals());
+describe("managed Telnyx rate agreements", () => {
+  it("keeps managed number staging disabled even when provider credentials are present", async () => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    f.env.TELNYX_MANAGED_API_KEY = "managed-test-api-key-123456";
+    f.env.TELNYX_MANAGED_PUBLIC_KEY = btoa("x".repeat(32));
+    f.env.TELNYX_MANAGED_PRICE_VERSION = "retail-v1";
+    f.env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH = "100";
+    f.env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT = "10";
+    f.env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE = "20";
+    const identity = await ensureIdentity(f.env, scope);
+    const provider = vi.fn(); vi.stubGlobal("fetch", provider);
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-managed-stage", {
+      confirm: true, number_id: "12345", confirmed_price_version: "retail-v1",
+    }, true, false)).rejects.toThrow("managed_telnyx_rollout_disabled");
+    expect(provider).not.toHaveBeenCalled();
+    expect(await f.db.prepare("SELECT id FROM assistant_phone_bindings").first()).toBeNull();
+  });
+
+  it("requires exact line-stage rate confirmation and persists the accepted schedule", async () => {
+    const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    f.env.TELNYX_MANAGED_ENABLED = "true";
+    f.env.TELNYX_MANAGED_API_KEY = "managed-test-api-key-123456";
+    f.env.TELNYX_MANAGED_PUBLIC_KEY = btoa("x".repeat(32));
+    f.env.TELNYX_MANAGED_MESSAGING_PROFILE_ID = "profile-1";
+    f.env.TELNYX_MANAGED_CALL_CONTROL_ID = "call-app-1";
+    f.env.TELNYX_MANAGED_PRICE_VERSION = "retail-v1";
+    f.env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH = "100";
+    f.env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT = "10";
+    f.env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE = "20";
+    const identity = await ensureIdentity(f.env, scope);
+    const webhook = "https://phone.example.com/assistant-phone/telnyx-managed";
+    const provider = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v2/phone_numbers/12345") return Response.json({ data: { id: "12345", phone_number: number,
+        messaging_profile_id: "profile-1", connection_id: "call-app-1" } });
+      if (url.pathname === "/v2/messaging_profiles/profile-1") return Response.json({ data: { id: "profile-1", enabled: true, webhook_url: webhook, webhook_api_version: "2" } });
+      if (url.pathname === "/v2/call_control_applications/call-app-1") return Response.json({ data: { id: "call-app-1", active: true,
+        webhook_event_url: webhook, webhook_api_version: "2", call_cost_in_webhooks: false } });
+      throw new Error(`unexpected Telnyx request ${url.pathname}`);
+    });
+    vi.stubGlobal("fetch", provider);
+    const act = (confirmedPriceVersion: string, smsCreditsPerSegment = 10) => handlePhoneAction(f.env, scope, identity, "phone-telnyx-managed-stage", {
+      confirm: true, number_id: "12345", confirmed_price_version: confirmedPriceVersion,
+      confirmed_rental_credits_per_month: 100, confirmed_sms_credits_per_segment: smsCreditsPerSegment,
+      confirmed_call_credits_per_minute: 20,
+    }, true, false);
+    await expect(act("retail-v0")).rejects.toThrow("managed_telnyx_rate_schedule_changed");
+    expect(provider).not.toHaveBeenCalled();
+    await expect(act("retail-v1", 9)).rejects.toThrow("managed_telnyx_rate_schedule_changed");
+    expect(provider).not.toHaveBeenCalled();
+    await expect(act("retail-v1")).resolves.toMatchObject({ managed: true, transport_active: false });
+    const binding = await f.db.prepare("SELECT managed_price_version,managed_rental_credits_per_month,managed_sms_credits_per_segment,managed_call_credits_per_minute FROM assistant_phone_bindings")
+      .first();
+    expect(binding).toEqual({ managed_price_version: "retail-v1", managed_rental_credits_per_month: 100,
+      managed_sms_credits_per_segment: 10, managed_call_credits_per_minute: 20 });
+    f.env.TELNYX_MANAGED_PRICE_VERSION = "retail-v2";
+    f.env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT = "99";
+    expect(await f.db.prepare("SELECT managed_price_version,managed_sms_credits_per_segment FROM assistant_phone_bindings").first())
+      .toEqual({ managed_price_version: "retail-v1", managed_sms_credits_per_segment: 10 });
+  });
+
+  it("persists and confirms SMS maximum against the binding price after config changes", async () => {
+    const f = fixture(), identity = await ensureIdentity(f.env, scope);
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    f.env.TELNYX_MANAGED_PRICE_VERSION = "retail-v2";
+    f.env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT = "99";
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,
+      phone_number,capabilities_json,previous_callbacks_json,policy_json,status,managed_price_version,managed_rental_credits_per_month,
+      managed_sms_credits_per_segment,managed_call_credits_per_minute)
+      VALUES('managed-sms-binding',?,'assistant','managed','telnyx','managed-account','12345','+14155550100','{"sms":true,"voice":true}','{}',?,'active','retail-v1',100,7,11)`)
+      .bind(identity.id, JSON.stringify(defaultPhonePolicy)).run();
+    const act = (action: string, body: Record<string, unknown>) => handlePhoneAction(f.env, scope, identity, action, body, true, false);
+    const draft = await act("phone-draft", { kind: "sms", to: "+14155550101", text: "A".repeat(161) }) as { id: string; estimated_credits: number; price_version: string; segments: number };
+    expect(draft).toMatchObject({ estimated_credits: 14, price_version: "retail-v1", segments: 2 });
+    expect(await f.db.prepare("SELECT managed_price_version,managed_reserved_credits FROM assistant_phone_actions WHERE id=?").bind(draft.id).first())
+      .toEqual({ managed_price_version: "retail-v1", managed_reserved_credits: 14 });
+    await expect(act("phone-telnyx-approve", { id: draft.id, confirm: true,
+      confirmed_price_version: "retail-v1", confirmed_max_charge_credits: 13 })).rejects.toThrow("managed_telnyx_sms_confirmation_mismatch");
+    await expect(act("phone-telnyx-approve", { id: draft.id, confirm: true,
+      confirmed_price_version: "retail-v1", confirmed_max_charge_credits: 14 })).resolves.toMatchObject({ status: "approved" });
+  });
+
+  it("requires the owner to confirm the persisted maximum before arming a managed call", async () => {
+    const f = fixture(), identity = await ensureIdentity(f.env, scope);
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,
+      phone_number,capabilities_json,previous_callbacks_json,policy_json,status,managed_price_version,managed_rental_credits_per_month,
+      managed_sms_credits_per_segment,managed_call_credits_per_minute)
+      VALUES('managed-call-binding',?,'assistant','managed','telnyx','managed-account','12345','+14155550100','{"sms":true,"voice":true}','{}',?,'active','retail-v1',100,7,11)`)
+      .bind(identity.id, JSON.stringify(defaultPhonePolicy)).run();
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-live", {
+      confirm: true, confirmed_price_version: "retail-v1", confirmed_max_charge_credits: 54,
+    }, true, false)).rejects.toThrow("managed_telnyx_call_confirmation_mismatch");
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-live", {
+      confirm: true, confirmed_price_version: "retail-v1", confirmed_max_charge_credits: 55,
+    }, true, false)).rejects.toThrow("phone_provider_live_transport_unavailable");
+  });
+});
 describe("assistant telephone safety and lifecycle", () => {
   it("quotes, journals and reconciles a customer-owned Telnyx number order without replay", async () => {
     const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";

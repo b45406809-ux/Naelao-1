@@ -8,6 +8,13 @@ import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { TelnyxTelephony } from "../voice/telnyx-telephony.js";
 import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 
+export interface ManagedTelnyxRateSchedule {
+  priceVersion: string;
+  rentalCreditsPerMonth: number;
+  smsCreditsPerSegment: number;
+  callCreditsPerMinute: number;
+}
+
 function positiveConfig(value: string | undefined, max = 100_000): number | null {
   if (!value || !/^\d{1,6}$/.test(value)) return null;
   const n = Number(value);
@@ -37,6 +44,44 @@ export function carrierUsdToCredits(amount: string): number {
   if (credits > 10_000_000n) throw new Error("managed_carrier_amount_limit");
   return Number(credits);
 }
+export function managedTelnyxRateSchedule(env: AgentsEnv): ManagedTelnyxRateSchedule | null {
+  const priceVersion = env.TELNYX_MANAGED_PRICE_VERSION ?? "";
+  const rentalCreditsPerMonth = positiveConfig(env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH);
+  const smsCreditsPerSegment = positiveConfig(env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT);
+  const callCreditsPerMinute = positiveConfig(env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(priceVersion) || !rentalCreditsPerMonth || !smsCreditsPerSegment || !callCreditsPerMinute) return null;
+  return { priceVersion, rentalCreditsPerMonth, smsCreditsPerSegment, callCreditsPerMinute };
+}
+function acceptedRate(binding: AssistantPhoneBinding): ManagedTelnyxRateSchedule {
+  const schedule = {
+    priceVersion: binding.managed_price_version ?? "",
+    rentalCreditsPerMonth: binding.managed_rental_credits_per_month ?? 0,
+    smsCreditsPerSegment: binding.managed_sms_credits_per_segment ?? 0,
+    callCreditsPerMinute: binding.managed_call_credits_per_minute ?? 0,
+  };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(schedule.priceVersion)
+    || !Number.isSafeInteger(schedule.rentalCreditsPerMonth) || schedule.rentalCreditsPerMonth < 1
+    || !Number.isSafeInteger(schedule.smsCreditsPerSegment) || schedule.smsCreditsPerSegment < 1
+    || !Number.isSafeInteger(schedule.callCreditsPerMinute) || schedule.callCreditsPerMinute < 1) {
+    throw new Error("managed_telnyx_rate_agreement_required");
+  }
+  return schedule;
+}
+export function managedCarrierBudgetKey(binding: AssistantPhoneBinding): string {
+  if (!binding.managed_price_version) throw new Error("managed_telnyx_rate_agreement_required");
+  return `managed-phone:${binding.id}:${binding.managed_price_version}`;
+}
+export function managedTelnyxCallCharge(binding: AssistantPhoneBinding) {
+  const policy = JSON.parse(binding.policy_json) as { maxCallSeconds?: unknown };
+  const maxCallSeconds = Number.isSafeInteger(policy.maxCallSeconds) && Number(policy.maxCallSeconds) >= 30 && Number(policy.maxCallSeconds) <= 900
+    ? Number(policy.maxCallSeconds) : 300;
+  const rate = acceptedRate(binding);
+  return {
+    maxCallSeconds,
+    maxChargeCredits: Math.ceil(maxCallSeconds / 60) * rate.callCreditsPerMinute,
+    priceVersion: rate.priceVersion,
+  };
+}
 async function postBudget(env: AgentsEnv, scope: CommunicationScope, path: "reserve" | "settle" | "release", body: Record<string, unknown>) {
   if (!env.BILLING_WORKER) throw new Error("managed_carrier_billing_unavailable");
   const response = await env.BILLING_WORKER.fetch(new Request(`http://billing-worker/internal/workflows/budget/${path}`, {
@@ -59,8 +104,9 @@ export async function settleManagedCarrierCredits(env: AgentsEnv, scope: Communi
 export async function releaseManagedCarrierCredits(env: AgentsEnv, scope: CommunicationScope, workflowId: string) {
   return postBudget(env, scope, "release", { reservation_id: workflowId });
 }
-export function managedSmsCreditsPerSegment(env: AgentsEnv): number {
-  const value = positiveConfig(env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT);
+export function managedSmsCreditsPerSegment(env: AgentsEnv, binding?: AssistantPhoneBinding): number {
+  if (binding?.payer === "managed" && binding.provider === "telnyx") return acceptedRate(binding).smsCreditsPerSegment;
+  const value = managedTelnyxRateSchedule(env)?.smsCreditsPerSegment;
   if (!value) throw new Error("managed_telnyx_sms_price_unconfigured");
   return value;
 }
@@ -68,28 +114,31 @@ export async function managedMessageReservationId(bindingId: string, providerMes
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${bindingId}:${providerMessageId}`)));
   return `telnyx_sms_${[...digest].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
 }
-export function managedCallCreditsPerMinute(env: AgentsEnv): number {
-  const value = positiveConfig(env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE);
+export function managedCallCreditsPerMinute(env: AgentsEnv, binding?: AssistantPhoneBinding): number {
+  if (binding?.payer === "managed" && binding.provider === "telnyx") return acceptedRate(binding).callCreditsPerMinute;
+  const value = managedTelnyxRateSchedule(env)?.callCreditsPerMinute;
   if (!value) throw new Error("managed_telnyx_call_price_unconfigured");
   return value;
 }
-export function managedRentalCreditsPerMonth(env: AgentsEnv): number {
-  const value = positiveConfig(env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH);
+export function managedRentalCreditsPerMonth(env: AgentsEnv, binding?: AssistantPhoneBinding): number {
+  if (binding?.payer === "managed" && binding.provider === "telnyx") return acceptedRate(binding).rentalCreditsPerMonth;
+  const value = managedTelnyxRateSchedule(env)?.rentalCreditsPerMonth;
   if (!value) throw new Error("managed_telnyx_rental_price_unconfigured");
   return value;
 }
 
 export async function billManagedTelnyxRental(env: AgentsEnv, binding: AssistantPhoneBinding, identity: CommunicationIdentity, now = Math.floor(Date.now() / 1000)) {
   if (binding.payer !== "managed" || binding.provider !== "telnyx" || !binding.phone_number || !binding.provider_number_sid) throw new Error("managed_telnyx_binding_invalid");
-  const credits = managedRentalCreditsPerMonth(env);
+  const schedule = acceptedRate(binding);
+  const credits = schedule.rentalCreditsPerMonth;
   const period = new Date(now * 1000).toISOString().slice(0, 7);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${binding.id}:${period}:rental`)));
   const workflowId = `telnyx_rent_${[...digest].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
-  const inserted = await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_managed_phone_rentals(binding_id,billing_period,workflow_id,credits,status,next_at,updated_at) VALUES(?,?,?,?,'pending',?,?)")
-    .bind(binding.id, period, workflowId, credits, now, now).run();
-  const receipt = await env.PLATFORM_DB.prepare("SELECT workflow_id,credits,status FROM assistant_managed_phone_rentals WHERE binding_id=? AND billing_period=?")
-    .bind(binding.id, period).first<{ workflow_id: string; credits: number; status: string }>();
-  if (!receipt || receipt.workflow_id !== workflowId || receipt.credits !== credits) throw new Error("managed_telnyx_rental_receipt_conflict");
+  await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_managed_phone_rentals(binding_id,billing_period,workflow_id,credits,price_version,status,next_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)")
+    .bind(binding.id, period, workflowId, credits, schedule.priceVersion, now, now).run();
+  const receipt = await env.PLATFORM_DB.prepare("SELECT workflow_id,credits,price_version,status FROM assistant_managed_phone_rentals WHERE binding_id=? AND billing_period=?")
+    .bind(binding.id, period).first<{ workflow_id: string; credits: number; price_version: string | null; status: string }>();
+  if (!receipt || receipt.workflow_id !== workflowId || receipt.credits !== credits || receipt.price_version !== schedule.priceVersion) throw new Error("managed_telnyx_rental_receipt_conflict");
   if (receipt.status === "paid") return { billed: true, deduplicated: true, credits, period };
   const claim = await env.PLATFORM_DB.prepare("UPDATE assistant_managed_phone_rentals SET status='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE binding_id=? AND billing_period=? AND ((status IN ('pending','held') AND next_at<=?) OR (status='running' AND lease_until<=?))")
     .bind(now + 120, now, binding.id, period, now, now).run();
@@ -97,7 +146,7 @@ export async function billManagedTelnyxRental(env: AgentsEnv, binding: Assistant
   const scope: CommunicationScope = { tenantId: identity.tenant_id, spaceId: identity.space_id, userId: identity.owner_user_id,
     role: "product_end_user", ...(identity.project_id ? { projectId: identity.project_id } : {}) };
   try {
-    await reserveManagedCarrierCredits(env, scope, workflowId, credits, `managed-phone:${binding.id}`);
+    await reserveManagedCarrierCredits(env, scope, workflowId, credits, managedCarrierBudgetKey(binding));
     await settleManagedCarrierCredits(env, scope, workflowId, credits);
     await env.PLATFORM_DB.prepare("UPDATE assistant_managed_phone_rentals SET status='paid',lease_until=NULL,last_error=NULL,updated_at=? WHERE binding_id=? AND billing_period=? AND status='running' AND lease_until=?")
       .bind(now, binding.id, period, now + 120).run();
@@ -111,7 +160,7 @@ export async function billManagedTelnyxRental(env: AgentsEnv, binding: Assistant
 }
 
 export async function sweepManagedTelnyxRentals(env: AgentsEnv, now = Math.floor(Date.now() / 1000)) {
-  if (!env.TELNYX_MANAGED_API_KEY || !env.TELNYX_MANAGED_PUBLIC_KEY || !env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH) return { checked: 0, billed: 0, held: 0 };
+  if (!env.TELNYX_MANAGED_API_KEY || !env.TELNYX_MANAGED_PUBLIC_KEY || !env.BILLING_WORKER) return { checked: 0, billed: 0, held: 0 };
   const bindings = await env.PLATFORM_DB.prepare("SELECT b.*,i.tenant_id,i.space_id,i.project_id,i.owner_user_id,i.status AS identity_status FROM assistant_phone_bindings b JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE b.provider='telnyx' AND b.payer='managed' AND b.purpose='assistant' AND b.status IN ('active','billing_hold','indeterminate') AND i.status='active' ORDER BY b.id LIMIT 100")
     .all<AssistantPhoneBinding & Pick<CommunicationIdentity, "tenant_id" | "space_id" | "project_id" | "owner_user_id"> & { identity_status: string }>();
   let billed = 0, held = 0;
@@ -138,18 +187,71 @@ export async function settleManagedTelnyxCall(env: AgentsEnv, binding: Assistant
   const live = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_live_calls WHERE id=? AND binding_id=?")
     .bind(liveCallId, binding.id).first<LiveCall>();
   if (!live) throw new Error("managed_telnyx_call_not_found");
-  const credits = Math.ceil(durationSeconds / 60) * managedCallCreditsPerMinute(env);
+  if (live.managed_price_version !== binding.managed_price_version) throw new Error("managed_telnyx_call_price_version_conflict");
+  const credits = Math.ceil(durationSeconds / 60) * managedCallCreditsPerMinute(env, binding);
   if (credits > live.reserved_credits) throw new Error("managed_telnyx_call_exceeds_reservation");
   const scope: CommunicationScope = { tenantId: live.tenant_id, spaceId: live.space_id, userId: live.user_id, role: live.caller_role,
     ...(live.project_id ? { projectId: live.project_id } : {}) };
   await settleManagedCarrierCredits(env, scope, liveCallId, credits);
   await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_live_calls SET settled_credits=? WHERE live_call_id=? AND binding_id=? AND settled_credits IS NULL")
     .bind(credits, liveCallId, binding.id).run();
+  await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_status='settled',managed_reservation_last_error=NULL,managed_reservation_updated_at=? WHERE id=? AND binding_id=? AND reserved_credits>0")
+    .bind(Math.floor(Date.now() / 1000), liveCallId, binding.id).run();
   return { settled: true, credits, duration_seconds: durationSeconds };
 }
 
+/** Release maximum-call holds whose code was never used, including durable retry after a lost
+ * Billing acknowledgement. Connected calls keep their hold until exact provider usage settles. */
+export async function sweepManagedTelnyxCallReservations(env: AgentsEnv, now = Math.floor(Date.now() / 1000)) {
+  await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(`UPDATE assistant_live_calls SET status='revoked',managed_reservation_status='release_pending',
+        managed_reservation_last_error='call_code_expired',managed_reservation_updated_at=?
+      WHERE status='armed' AND expires_at<=? AND reserved_credits>0
+        AND EXISTS(SELECT 1 FROM assistant_phone_bindings b WHERE b.id=assistant_live_calls.binding_id AND b.provider='telnyx' AND b.payer='managed')`)
+      .bind(now, now),
+    env.PLATFORM_DB.prepare(`UPDATE assistant_live_calls SET managed_reservation_status='release_pending',
+        managed_reservation_last_error=CASE WHEN managed_reservation_status='pending' THEN 'reservation_outcome_unknown' ELSE 'unused_call_code_revoked' END,
+        managed_reservation_updated_at=?
+      WHERE status='revoked' AND reserved_credits>0 AND (
+        managed_reservation_status='pending'
+        OR (managed_reservation_status='none' AND call_sid IS NULL))
+        AND EXISTS(SELECT 1 FROM assistant_phone_bindings b WHERE b.id=assistant_live_calls.binding_id AND b.provider='telnyx' AND b.payer='managed')`)
+      .bind(now),
+  ]);
+  const due = await env.PLATFORM_DB.prepare(`SELECT c.id,c.tenant_id,c.space_id,c.project_id,c.user_id,c.caller_role,c.managed_reservation_attempts
+    FROM assistant_live_calls c JOIN assistant_phone_bindings b ON b.id=c.binding_id
+    WHERE b.provider='telnyx' AND b.payer='managed' AND c.status='revoked' AND c.reserved_credits>0
+      AND c.managed_reservation_status='release_pending'
+    ORDER BY c.managed_reservation_updated_at,c.id LIMIT 100`)
+    .all<{ id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string; caller_role: string; managed_reservation_attempts: number }>();
+  if (!env.BILLING_WORKER) {
+    await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_last_error='managed_carrier_billing_unavailable',managed_reservation_updated_at=? WHERE managed_reservation_status='release_pending'")
+      .bind(now).run();
+    return { checked: due.results.length, released: 0, held: due.results.length };
+  }
+  let released = 0, held = 0;
+  await Promise.all(due.results.map(async row => {
+    const scope: CommunicationScope = { tenantId: row.tenant_id, spaceId: row.space_id, userId: row.user_id,
+      role: row.caller_role, ...(row.project_id ? { projectId: row.project_id } : {}) };
+    await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_attempts=managed_reservation_attempts+1,managed_reservation_updated_at=? WHERE id=? AND status='revoked' AND managed_reservation_status='release_pending'")
+      .bind(now, row.id).run();
+    try {
+      await releaseManagedCarrierCredits(env, scope, row.id);
+      await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_status='released',managed_reservation_last_error=NULL,managed_reservation_updated_at=? WHERE id=? AND status='revoked' AND managed_reservation_status='release_pending'")
+        .bind(now, row.id).run();
+      released++;
+    } catch (error) {
+      const code = error instanceof Error && /^[a-z0-9_:-]{1,100}$/.test(error.message) ? error.message : "managed_telnyx_call_release_failed";
+      await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET managed_reservation_last_error=?,managed_reservation_updated_at=? WHERE id=? AND status='revoked' AND managed_reservation_status='release_pending'")
+        .bind(code, now, row.id).run();
+      held++;
+    }
+  }));
+  return { checked: due.results.length, released, held };
+}
+
 export async function sweepManagedTelnyxCallCharges(env: AgentsEnv) {
-  if (!env.TELNYX_MANAGED_API_KEY || !env.BILLING_WORKER || !env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE) return { checked: 0, settled: 0, held: 0 };
+  if (!env.TELNYX_MANAGED_API_KEY || !env.BILLING_WORKER) return { checked: 0, settled: 0, held: 0 };
   const rows = await env.PLATFORM_DB.prepare("SELECT tc.live_call_id,tc.binding_id,tc.duration_seconds FROM assistant_telnyx_live_calls tc JOIN assistant_phone_bindings b ON b.id=tc.binding_id WHERE b.provider='telnyx' AND b.payer='managed' AND tc.state='ended' AND tc.duration_seconds IS NOT NULL AND tc.settled_credits IS NULL ORDER BY tc.updated_at,tc.live_call_id LIMIT 100")
     .all<{ live_call_id: string; binding_id: string; duration_seconds: number }>();
   let settled = 0, held = 0;
@@ -171,11 +273,17 @@ export async function sweepManagedTelnyxInboundSmsCosts(env: AgentsEnv, now = Ma
     const claim = await env.PLATFORM_DB.prepare("UPDATE assistant_managed_telnyx_message_costs SET status='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE provider_message_id=? AND ((status='pending' AND next_at<=?) OR (status='running' AND lease_until<=?))")
       .bind(now + 120, now, provider_message_id, now, now).run();
     if (!claim.meta.changes) return;
-    const row = await env.PLATFORM_DB.prepare("SELECT r.*,b.identity_id,b.provider_number_sid,b.phone_number FROM assistant_managed_telnyx_message_costs r JOIN assistant_phone_bindings b ON b.id=r.binding_id WHERE r.provider_message_id=? AND b.provider='telnyx' AND b.payer='managed'")
-      .bind(provider_message_id).first<{ provider_message_id: string; binding_id: string; identity_id: string; sender: string; carrier_reservation_id: string; reserved_credits: number; attempts: number; created_at: number; provider_number_sid: string; phone_number: string }>();
+    const row = await env.PLATFORM_DB.prepare("SELECT r.*,b.identity_id,b.provider_number_sid,b.phone_number,b.managed_price_version FROM assistant_managed_telnyx_message_costs r JOIN assistant_phone_bindings b ON b.id=r.binding_id WHERE r.provider_message_id=? AND b.provider='telnyx' AND b.payer='managed'")
+      .bind(provider_message_id).first<{ provider_message_id: string; binding_id: string; identity_id: string; sender: string; carrier_reservation_id: string; reserved_credits: number; price_version: string | null; managed_price_version: string | null; attempts: number; created_at: number; provider_number_sid: string; phone_number: string }>();
     const identity = row && await env.PLATFORM_DB.prepare("SELECT * FROM assistant_communication_identities WHERE id=?")
       .bind(row.identity_id).first<CommunicationIdentity>();
-    if (!row || !identity) { held++; return; }
+    if (!row || !identity || !row.price_version || row.price_version !== row.managed_price_version) {
+      const reason = !row || !identity ? "managed_telnyx_binding_unavailable" : "managed_telnyx_price_version_conflict";
+      await env.PLATFORM_DB.prepare("UPDATE assistant_managed_telnyx_message_costs SET status='held',lease_until=NULL,last_error=?,updated_at=? WHERE provider_message_id=? AND lease_until=?")
+        .bind(reason, now, provider_message_id, now + 120).run();
+      held++;
+      return;
+    }
     try {
       const account = await resolveTelnyxAccount(env, identity, { payer: "managed", provider_number_sid: row.provider_number_sid, phone_number: row.phone_number });
       if (!account) throw new Error("managed_telnyx_credentials_unavailable");

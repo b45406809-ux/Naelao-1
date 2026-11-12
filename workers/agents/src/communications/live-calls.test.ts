@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   fixture,
   scope,
@@ -51,6 +51,25 @@ describe("app-authorized live telephone sessions", () => {
       status: "armed",
     });
     expect(JSON.stringify(row)).not.toContain('"' + armed.code + '"');
+  });
+  it("reserves managed Telnyx call maximums from the binding's accepted rate version", async () => {
+    const f = await setup();
+    await f.db.prepare(`UPDATE assistant_phone_bindings SET provider='telnyx',payer='managed',managed_price_version='retail-v1',
+      managed_rental_credits_per_month=100,managed_sms_credits_per_segment=7,managed_call_credits_per_minute=11 WHERE id='binding'`).run();
+    const binding = (await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='binding'").first<AssistantPhoneBinding>())!;
+    f.env.TELNYX_MANAGED_PRICE_VERSION = "retail-v2";
+    f.env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE = "99";
+    const bodies: Record<string, unknown>[] = [];
+    f.env.BILLING_WORKER = { fetch: vi.fn(async (request: Request) => {
+      bodies.push(await request.json() as Record<string, unknown>);
+      return Response.json({ reserved: true });
+    }) } as unknown as Fetcher;
+
+    const armed = await armLiveCall(f.env, scope, binding, "session");
+    expect(armed).toMatchObject({ max_charge_credits: 55, max_call_seconds: 300, price_version: "retail-v1" });
+    expect(bodies[0]).toMatchObject({ credits: 55, budget_key: "managed-phone:binding:retail-v1" });
+    expect(await f.db.prepare("SELECT reserved_credits,managed_price_version FROM assistant_live_calls WHERE id=?").bind(armed.live_call_id).first())
+      .toEqual({ reserved_credits: 55, managed_price_version: "retail-v1" });
   });
   it("claims exactly one call and never extends its deadline on callback retries", async () => {
     const f = await setup();

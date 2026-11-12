@@ -474,6 +474,9 @@ export interface AgentsEnv extends Cloudflare.Env {
   TWILIO_WHATSAPP_JOIN_CODE?: string;
   /** Naelao-owned Telnyx carrier account. Configure only after the managed-carrier contract,
    * regulatory registration, and customer price schedule are approved. */
+  TELNYX_MANAGED_ENABLED?: string;
+  /** Immutable owner-confirmed retail rate schedule identifier for managed Telnyx service. */
+  TELNYX_MANAGED_PRICE_VERSION?: string;
   TELNYX_MANAGED_API_KEY?: string;
   TELNYX_MANAGED_PUBLIC_KEY?: string;
   TELNYX_MANAGED_MESSAGING_PROFILE_ID?: string;
@@ -9862,6 +9865,7 @@ export default {
     _ctx.waitUntil((await import("./communications/erasure.js")).sweepAssistantCommunications(env).catch(()=>{console.warn("Assistant communication retention deferred; retry on next sweep");}));
     _ctx.waitUntil((await import("./communications/telnyx-cost-poller.js")).sweepTelnyxSmsCosts(env).catch(()=>{console.warn("Telnyx cost collection postponed");}));
     _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxRentals(env).catch(()=>{console.warn("Managed Telnyx rental billing postponed");}));
+    _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxCallReservations(env).catch(()=>{console.warn("Managed Telnyx call reservation release postponed");}));
     _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxCallCharges(env).catch(()=>{console.warn("Managed Telnyx call usage settlement postponed");}));
     _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxInboundSmsCosts(env).catch(()=>{console.warn("Managed Telnyx inbound usage collection postponed");}));
     await enqueueAgentTicks(env);
