@@ -24,10 +24,13 @@ three. No product caller creates a trusted runtime allocation/reservation or emi
 observations, so U05 remains PARTIAL. U06's coordinator journal is implemented, but
 `LIVE_RUNTIME_AGENT` has no configured binding and the pinned experimental Container/daemon contract
 does not promise authenticated writer admission, drain/flush receipts, generation-fenced reconnect or
-handoff receipts. That is an unsupported platform contract, not a credential blocker. Exact next
-task: continue U07's scheduler/recovery source-to-caller audit for any independent safe code gap, then
-continue U08–U12 and the managed-services S4–S9 audit. Preserve `infra/scripts/__pycache__/`; keep all
-rollouts disabled.
+handoff receipts. That is an unsupported platform contract, not a credential blocker. U07's persisted
+checkpoint scheduler passes **58/58** coordinator tests; no UI, SDK, template or provider-ingress
+caller requests live checkpoints, and rollout/adapter gates keep that path unavailable. U08's pinned
+source build, SBOM and signed provenance exist in CI, but it deliberately publishes no image and no
+runtime adapter can be accepted against the unsupported contract. Exact next task: continue U09–U12
+and the remaining S4–S9 caller audit, then start platform completion at P01 release/environment
+safety. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code
