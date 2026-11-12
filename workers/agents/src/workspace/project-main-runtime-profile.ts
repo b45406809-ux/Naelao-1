@@ -3,6 +3,15 @@ import { DYNAMIC_PROFILES, isDynamicProfile, type DynamicProfile, assertDynamicP
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 type Scope = { tenantId: string; spaceId: string; projectId: string };
 type ProfileRow = { profile: string; version: number; updated_by: string; updated_at: string };
+type MainRuntimeRegistryRow = { state: string; allocation_generation: number; last_seen_at: string };
+
+export type ProjectMainRuntimeStatus = {
+  state: "registered" | "active" | "sleeping" | "recovery_required" | "erased" | "unknown";
+  allocationGeneration: number;
+  lastSeenAt: string | null;
+  source: "control_plane_registry";
+  liveHealthVerified: false;
+} | null;
 
 function allowedProfiles(planTier: string): DynamicProfile[] {
   return (Object.keys(DYNAMIC_PROFILES) as DynamicProfile[]).filter((profile) => {
@@ -27,6 +36,25 @@ export async function readProjectMainRuntimeProfile(
     updatedBy: row?.updated_by ?? null,
     updatedAt: row?.updated_at ?? null,
     allowedProfiles: allowedProfiles(planTier),
+  };
+}
+
+/** Return only the persisted host-side state; this is not a provider health probe. */
+export async function readProjectMainRuntimeStatus(db: D1Database, scope: Scope): Promise<ProjectMainRuntimeStatus> {
+  const row = await db.prepare(`SELECT state,allocation_generation,last_seen_at FROM project_main_runtime_registry
+    WHERE tenant_id=? AND space_id=? AND project_id=?`)
+    .bind(scope.tenantId,scope.spaceId,scope.projectId).first<MainRuntimeRegistryRow>();
+  if (!row) return null;
+  const knownStates = ["registered", "active", "sleeping", "recovery_required", "erased"] as const;
+  return {
+    state: (knownStates as readonly string[]).includes(row.state)
+      ? row.state as Exclude<ProjectMainRuntimeStatus, null>["state"]
+      : "unknown",
+    allocationGeneration: Number.isSafeInteger(row.allocation_generation) && row.allocation_generation >= 0
+      ? row.allocation_generation : 0,
+    lastSeenAt: typeof row.last_seen_at === "string" ? row.last_seen_at : null,
+    source: "control_plane_registry",
+    liveHealthVerified: false,
   };
 }
 

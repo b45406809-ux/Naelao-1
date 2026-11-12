@@ -28,9 +28,11 @@ handoff receipts. That is an unsupported platform contract, not a credential blo
 checkpoint scheduler passes **58/58** coordinator tests; no UI, SDK, template or provider-ingress
 caller requests live checkpoints, and rollout/adapter gates keep that path unavailable. U08's pinned
 source build, SBOM and signed provenance exist in CI, but it deliberately publishes no image and no
-runtime adapter can be accepted against the unsupported contract. Exact next task: continue U09–U12
-and the remaining S4–S9 caller audit, then start platform completion at P01 release/environment
-safety. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+runtime adapter can be accepted against the unsupported contract. U09 now exposes the project-main
+registry's last recorded state in the owner settings API; it explicitly does not claim provider
+health. Exact next task: continue U10 by tracing erasure inventories and cleanup acknowledgements
+across runtimes, Browser, sidecar artifacts and caches; close the next independent gap, then continue
+U11–U12 and the S4–S9 audit. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code

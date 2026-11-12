@@ -18,7 +18,7 @@ import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-pub
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
 import { recordLiveRuntimeObservation, searchAndVerifyLiveRuntime } from "./workspace/live-capability-verifier.js";
-import { readProjectMainRuntimeProfile, saveProjectMainRuntimeProfile } from "./workspace/project-main-runtime-profile.js";
+import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRuntimeProfile } from "./workspace/project-main-runtime-profile.js";
 import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
 import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage } from "./workspace/erasure-backup.js";
 import { readLatestRuntimeSnapshotRetention, sweepRuntimeSnapshotRetention } from "./workspace/runtime-snapshot-retention.js";
@@ -5137,8 +5137,9 @@ app.get("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
   const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
   const planTier = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(tenantId);
   const profile = await readProjectMainRuntimeProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId }, planTier, c.env.DYNAMIC_CONTAINER_BASE_PROFILE);
+  const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
   const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
-  return c.json({ ...profile, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
+  return c.json({ ...profile, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
 });
 
 app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => {
@@ -5151,8 +5152,9 @@ app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
   try {
     const result = await saveProjectMainRuntimeProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId }, planTier,
       { profile: body.profile, expectedVersion: body.expected_version, actorId: userId });
+    const runtimeStatus = await readProjectMainRuntimeStatus(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
     const snapshotRetention = await readLatestRuntimeSnapshotRetention(c.env.PLATFORM_DB,{tenantId,spaceId,projectId});
-    return c.json({ ...result, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
+    return c.json({ ...result, runtimeStatus, snapshotRetention, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true", provider: "cloudflare" });
   } catch (error) {
     const code = error instanceof Error ? error.message : "project_main_runtime_profile_failed";
     if (code === "project_main_runtime_profile_version_conflict") return c.json({ error_code: code }, 409);

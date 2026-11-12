@@ -1,9 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFakeD1 } from "../../../../tests/stubs/d1-sqlite.js";
-import { readProjectMainRuntimeProfile, saveProjectMainRuntimeProfile } from "./project-main-runtime-profile.js";
+import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRuntimeProfile } from "./project-main-runtime-profile.js";
 
-const db = () => createFakeD1([readFileSync(new URL("../../../../infra/migrations/0198_project_main_runtime_profiles.sql", import.meta.url), "utf8")]);
+const db = () => createFakeD1([
+  readFileSync(new URL("../../../../infra/migrations/0189_project_main_runtime_registry.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../infra/migrations/0198_project_main_runtime_profiles.sql", import.meta.url), "utf8"),
+]);
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project" };
 
 describe("project main runtime profile preference", () => {
@@ -45,5 +48,20 @@ describe("project main runtime profile preference", () => {
     })).resolves.toEqual({ profile: "standard-1", version: 1, changed: false });
     expect(await fixture.prepare("SELECT COUNT(*) AS count FROM project_main_runtime_profile_audit").first())
       .toEqual({ count: 1 });
+  });
+
+  it("returns only the scoped persisted runtime state and labels it as non-live health evidence", async () => {
+    const fixture = db();
+    expect(await readProjectMainRuntimeStatus(fixture, scope)).toBeNull();
+    await fixture.prepare(`INSERT INTO project_main_runtime_registry
+      (tenant_id,space_id,project_id,runtime_kind,runtime_object_name,allocation_generation,fencing_token,active_branch,state,last_seen_at)
+      VALUES(?, ?, ?, 'dynamic_sandbox', ?, ?, ?, ?, ?, ?)`)
+      .bind("tenant", "space", "project", "sandbox:space:project", 4, 2, "main", "recovery_required", "2026-11-12T12:00:00.000Z").run();
+
+    await expect(readProjectMainRuntimeStatus(fixture, scope)).resolves.toEqual({
+      state: "recovery_required", allocationGeneration: 4, lastSeenAt: "2026-11-12T12:00:00.000Z",
+      source: "control_plane_registry", liveHealthVerified: false,
+    });
+    await expect(readProjectMainRuntimeStatus(fixture, { ...scope, projectId: "other-project" })).resolves.toBeNull();
   });
 });

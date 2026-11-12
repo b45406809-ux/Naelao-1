@@ -215,6 +215,14 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       <span style={{ color: "var(--text3)", fontSize: 12 }}>{mainProfile.runtimeEnabled ? "Applies to new allocations." : "Saved preference; runtime allocation is disabled here."}</span>
     </div> : mainProfileError ? <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{mainProfileError}</p>
       : <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading project profile…</p>}
+    {mainProfile && <div role="status" aria-live="polite" style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 12px" }}>
+      <strong>Last recorded main-runtime state: </strong>
+      {mainProfile.runtimeStatus === undefined ? "unavailable from this server."
+        : !mainProfile.runtimeStatus ? "no allocation is recorded in the control-plane registry."
+          : <>{mainProfile.runtimeStatus.state.replaceAll("_", " ")} · generation {mainProfile.runtimeStatus.allocationGeneration}
+            {mainProfile.runtimeStatus.lastSeenAt ? ` · last seen ${new Date(mainProfile.runtimeStatus.lastSeenAt).toLocaleString()}` : ""}.
+            {" "}{mainProfile.runtimeStatus.liveHealthVerified ? "Provider health verified." : "This control-plane record does not verify provider health or snapshot contents."}</>}
+    </div>}
     {mainProfile && <p style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 12px" }}>
       {!mainProfile.snapshotRetention ? "No provider snapshot receipt is recorded. This does not establish whether older provider snapshots exist."
         : mainProfile.snapshotRetention.state === "ttl_elapsed_unverified"

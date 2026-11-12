@@ -1477,6 +1477,13 @@ export interface ProjectMainRuntimeProfile {
   allowedProfiles: Array<ProjectMainRuntimeProfile["profile"]>;
   runtimeEnabled: boolean;
   provider: "cloudflare";
+  runtimeStatus?: {
+    state: "registered" | "active" | "sleeping" | "recovery_required" | "erased" | "unknown";
+    allocationGeneration: number;
+    lastSeenAt: string | null;
+    source: "control_plane_registry";
+    liveHealthVerified: false;
+  } | null;
   snapshotRetention: {
     state: "retained" | "reference_dropped" | "erasure_notified" | "ttl_elapsed_unverified";
     createdAt: string;
