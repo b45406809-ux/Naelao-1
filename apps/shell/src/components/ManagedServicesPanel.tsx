@@ -122,6 +122,7 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
   const [agentMailUsageError, setAgentMailUsageError] = React.useState("");
   const [managedModelId, setManagedModelId] = React.useState("");
   const [managedModelPrompt, setManagedModelPrompt] = React.useState("");
+  const [managedModelQuote, setManagedModelQuote] = React.useState<{quoteId:string;credits:number;creditUnit:string;priceVersion:string;maxOutputTokens:number;expiresAt:string}|null>(null);
   const [managedModelResult, setManagedModelResult] = React.useState<{ operationId:string;status:string;output?:string;errorCode?:string;credits:number;priceVersion:string } | null>(null);
   const [managedModelBusy, setManagedModelBusy] = React.useState(false);
   const [managedModelError, setManagedModelError] = React.useState("");
@@ -231,18 +232,33 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
     }
   }
 
-  async function runManagedModel() {
+  async function quoteManagedModel() {
     const model = dashboard?.managedModels.find((candidate) => candidate.modelId === managedModelId);
     if (!model || !managedModelPrompt.trim()) return;
-    if (!window.confirm(`Send this prompt to Cloudflare Workers AI? The organization will be charged exactly ${model.creditsPerOperation.toLocaleString()} credits (${model.priceVersion}); output is capped at ${model.maxOutputTokens.toLocaleString()} tokens. The provider charge is billed to Naelao's Cloudflare account.`)) return;
+    setManagedModelBusy(true); setManagedModelError(""); setManagedModelResult(null); setManagedModelQuote(null);
+    try {
+      const quote = await assistantMailApi<{quoteId:string;credits:number;creditUnit:string;priceVersion:string;maxOutputTokens:number;expiresAt:string}>(spaceId, session,
+        { action:"managed-model-quote", model_id:model.modelId, prompt:managedModelPrompt }, true);
+      setManagedModelQuote(quote);
+      setManagedModelIdempotencyKey("");
+    } catch (failure) {
+      setManagedModelError(failure instanceof Error ? failure.message : "Managed model quote failed");
+    } finally { setManagedModelBusy(false); }
+  }
+
+  async function runManagedModel() {
+    const model = dashboard?.managedModels.find((candidate) => candidate.modelId === managedModelId);
+    if (!model || !managedModelPrompt.trim() || !managedModelQuote) return;
+    if (!window.confirm(`Send this prompt to Cloudflare Workers AI? The organization will be charged exactly ${managedModelQuote.credits.toLocaleString()} Naelao credits (${managedModelQuote.priceVersion}); output is capped at ${managedModelQuote.maxOutputTokens.toLocaleString()} tokens. The provider charge is billed separately to Naelao's Cloudflare account.`)) return;
     const idempotencyKey = managedModelIdempotencyKey || crypto.randomUUID().replaceAll("-", "");
     setManagedModelIdempotencyKey(idempotencyKey);
     setManagedModelBusy(true); setManagedModelError(""); setManagedModelResult(null);
     try {
       const result = await assistantMailApi<{ operationId:string;status:string;output?:string;errorCode?:string;credits:number;priceVersion:string }>(spaceId, session,
-        { action:"managed-model-run", model_id:model.modelId, prompt:managedModelPrompt, idempotency_key:idempotencyKey, confirmed:true }, true);
+        { action:"managed-model-run", model_id:model.modelId, prompt:managedModelPrompt, quote_id:managedModelQuote.quoteId,
+          idempotency_key:idempotencyKey, confirmed:true }, true);
       setManagedModelResult(result);
-      if (result.status === "complete") setManagedModelIdempotencyKey("");
+      if (result.status === "complete") { setManagedModelIdempotencyKey(""); setManagedModelQuote(null); }
     } catch (failure) {
       setManagedModelError(failure instanceof Error ? failure.message : "Managed model request failed");
     } finally { setManagedModelBusy(false); }
@@ -468,16 +484,21 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
             ) : (
               <div style={{ display:"grid",gap:8,maxWidth:720 }}>
                 <label htmlFor="managed-model-choice">Model</label>
-                <select id="managed-model-choice" value={managedModelId} onChange={(event) => { setManagedModelId(event.target.value); setManagedModelIdempotencyKey(""); setManagedModelResult(null); }}>
+                <select id="managed-model-choice" value={managedModelId} onChange={(event) => { setManagedModelId(event.target.value); setManagedModelIdempotencyKey(""); setManagedModelQuote(null); setManagedModelResult(null); }}>
                   {dashboard.managedModels.map((model) => <option key={`${model.modelId}:${model.region}`} value={model.modelId}>
                     {model.modelId} · {model.region} · {model.creditsPerOperation.toLocaleString()} credits
                   </option>)}
                 </select>
                 <label htmlFor="managed-model-prompt">Prompt</label>
                 <textarea id="managed-model-prompt" maxLength={8000} rows={5} value={managedModelPrompt}
-                  onChange={(event) => { setManagedModelPrompt(event.target.value); setManagedModelIdempotencyKey(""); setManagedModelResult(null); }} />
-                <div><Button size="sm" disabled={managedModelBusy || !managedModelPrompt.trim() || !managedModelId}
-                  onClick={() => void runManagedModel()}>{managedModelBusy ? "Running…" : "Run managed model"}</Button></div>
+                  onChange={(event) => { setManagedModelPrompt(event.target.value); setManagedModelIdempotencyKey(""); setManagedModelQuote(null); setManagedModelResult(null); }} />
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <Button size="sm" disabled={managedModelBusy || !managedModelPrompt.trim() || !managedModelId}
+                    onClick={() => void quoteManagedModel()}>{managedModelBusy ? "Checking quote…" : "Get operation quote"}</Button>
+                  <Button size="sm" disabled={managedModelBusy || !managedModelQuote || Date.parse(managedModelQuote.expiresAt) <= Date.now()}
+                    onClick={() => void runManagedModel()}>{managedModelBusy ? "Running…" : "Confirm and run"}</Button>
+                </div>
+                {managedModelQuote && <p className="settings-row-sub">Quote: {managedModelQuote.credits.toLocaleString()} Naelao credits · {managedModelQuote.priceVersion} · up to {managedModelQuote.maxOutputTokens.toLocaleString()} tokens · expires {new Date(managedModelQuote.expiresAt).toLocaleTimeString()}.</p>}
                 {managedModelError && <p role="status">{managedModelError} {managedModelIdempotencyKey ? "Retrying with the same request key will not run it twice." : ""}</p>}
                 {managedModelResult && <div className="settings-row-sub">
                   Request {title(managedModelResult.status)} · {managedModelResult.credits.toLocaleString()} credits · {managedModelResult.priceVersion}

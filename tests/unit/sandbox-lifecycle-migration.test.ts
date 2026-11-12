@@ -11,11 +11,13 @@ describe("durable Agent37 sandbox lifecycle migration", () => {
     db.sql.exec(migration("0172_assistant_agentmail_accounts.sql"));
     db.sql.exec(migration("0173_sandboxes_platform.sql"));
     db.sql.exec(migration("0179_managed_services_control_plane.sql"));
+    db.sql.exec(migration("0180_managed_service_credit_reservations.sql"));
     db.sql.exec(migration("0181_managed_service_ownership_and_audit.sql"));
     db.sql.exec(migration("0184_sandbox_connection_verification.sql"));
     db.sql.exec(migration("0185_sandbox_agent37_lifecycle.sql"));
     db.sql.exec(migration("0186_workspace_live_runtime_authority.sql"));
     db.sql.exec(migration("0187_workspace_runtime_erasure_registry.sql"));
+    db.sql.exec(migration("0188_managed_service_model_entitlements.sql"));
     db.sql.exec(migration("0189_project_main_runtime_registry.sql"));
     db.sql.exec(migration("0197_project_main_runtime_allocation_tokens.sql"));
     db.sql.exec(migration("0191_sandbox_provider_cost_receipts.sql"));
@@ -26,6 +28,9 @@ describe("durable Agent37 sandbox lifecycle migration", () => {
     db.sql.exec(migration("0207_managed_service_provider_cost_observations.sql"));
     db.sql.exec(migration("0192_managed_service_provider_cost_receipts.sql"));
     db.sql.exec(migration("0211_managed_service_cost_budgets.sql"));
+    db.sql.exec(migration("0209_managed_service_model_price_contract.sql"));
+    db.sql.exec(migration("0210_managed_model_operation_results.sql"));
+    db.sql.exec(migration("0220_managed_service_operation_quotes.sql"));
     db.sql.exec(migration("0212_userport_agentport_connector_sync.sql"));
     db.sql.exec(migration("0213_sandbox_agentport_computer_shares.sql"));
     db.sql.exec(migration("0214_agent37_provider_usage_snapshots.sql"));
@@ -61,6 +66,13 @@ describe("durable Agent37 sandbox lifecycle migration", () => {
     expect(columns("assistant_agentmail_accounts")).toContain("provider_region");
     expect(columns("managed_service_provider_cost_observations")).toContain("evidence_sha256");
     expect(columns("managed_service_cost_budgets")).toContain("limit_provider_cost_micros");
+    expect(columns("managed_service_operation_quotes")).toContain("price_version");
+    expect(columns("managed_service_operations")).toContain("quote_id");
+    expect(columns("managed_service_credit_reservations")).toContain("quote_id");
+    expect(columns("managed_service_operation_quotes")).toContain("price_version");
+    expect(columns("managed_service_operation_quotes")).toContain("operation_id");
+    expect(columns("managed_service_operations")).toContain("quote_id");
+    expect(columns("managed_service_credit_reservations")).toContain("quote_id");
     expect(columns("agentport_userport_connector_bindings")).toContain("provider_connection_sha256");
     expect(columns("agentport_userport_connector_bindings")).toContain("tool_actions_json");
     expect(columns("sidecar_runtime_execution_profiles")).toContain("max_execution_seconds");

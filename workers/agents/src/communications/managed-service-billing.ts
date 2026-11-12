@@ -12,6 +12,7 @@ type ManagedServiceCreditRequest = {
   region: string;
   credits: number;
   priceVersion: string;
+  quoteId?: string;
   payerMandateId?:string;
   agentPortAgentId?:string;
 };
@@ -56,6 +57,8 @@ export function reserveManagedServiceCredits(
   if (!/^[A-Za-z0-9._:-]{1,200}$/.test(request.reservationId)
     || !/^[A-Za-z0-9._:-]{1,200}$/.test(request.operationId)
     || (request.modelId!==undefined&&!/^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(request.modelId))
+    || (request.quoteId!==undefined&&!/^msq_[A-Fa-f0-9]{32}$/.test(request.quoteId))
+    || (request.modelId!==undefined&&request.quoteId===undefined)
     || (request.payerMandateId!==undefined&&!/^[A-Za-z0-9._:-]{1,200}$/.test(request.payerMandateId))
     || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(request.region)
     || (request.agentPortAgentId!==undefined&&!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.agentPortAgentId))
@@ -79,6 +82,8 @@ export function reserveManagedServiceCredits(
     ...(request.agentPortAgentId?{agentport_agent_id:request.agentPortAgentId}:{}),
     credits: request.credits,
     price_version: request.priceVersion,
+    ...(request.quoteId ? { quote_id: request.quoteId } : {}),
+    ...(request.quoteId ? { requester_user_id: scope.userId } : {}),
     ...(request.payerMandateId?{payer_mandate_id:request.payerMandateId}:{}),
     expires_in_seconds: 172_800,
   });

@@ -23,6 +23,7 @@ function harness(planTier = "free") {
     readFileSync(join(__dirname, "../../../infra/migrations/0188_managed_service_model_entitlements.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0209_managed_service_model_price_contract.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0210_managed_model_operation_results.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../../infra/migrations/0220_managed_service_operation_quotes.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0192_managed_service_provider_cost_receipts.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0194_agentport_scoped_managed_service_spend.sql"), "utf8"),
     readFileSync(join(__dirname, "../../../infra/migrations/0201_managed_service_meter_outbox.sql"), "utf8"),
@@ -409,6 +410,48 @@ describe("managed service credit reservations", () => {
     const response=await h.operator("/internal/managed-services/model-entitlements/verify",entitlement);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({verified:true,provider:"cloudflare",modelId:entitlement.model_id,region:"global"});
+  });
+
+  it("requires the exact consumed operation quote at the Cloudflare model credit boundary", async () => {
+    const h=harness();
+    const at=new Date().toISOString(),validUntil=new Date(Date.now()+60*86_400_000).toISOString();
+    h.db.db.prepare(`UPDATE managed_service_capability_versions SET status='verified',verified_by='operator-1',verified_at=?,valid_until=?,
+      regions_json='["global"]',operations_json='["generate-text"]',account_modes_json='["naelao_managed"]'
+      WHERE provider='cloudflare' AND service_id='workers-ai' AND version=1`).run(at,validUntil);
+    h.db.db.prepare(`INSERT INTO managed_service_model_entitlements(
+      plan_tier,provider,service_id,capability_version,operation_name,model_id,region,price_version,max_credits_per_operation,
+      max_operations_per_period,evidence_json,evidence_sha256,status,verified_by,verified_at,valid_until,created_at,updated_at,
+      credits_per_operation,max_output_tokens)
+      VALUES('free','cloudflare','workers-ai',1,'generate-text','@cf/meta/llama-3.1-8b-instruct-fp8','global','cf-llama-fixed-v1',100,5,
+        '[]',?,'active','operator-1',?,?,?, ?,55,768)`)
+      .run("a".repeat(64),at,validUntil,at,at);
+    h.db.db.prepare(`INSERT INTO managed_service_payer_mandates(id,tenant_id,payer_type,payer_id,mandate_key,authorized_by_user_id,
+      operation_scopes_json,max_credits_per_operation,auto_renew,status,created_at,updated_at,max_credits_per_period,period_days)
+      VALUES('mandate-model','org-a','organization','org-a','model-op','owner','["cloudflare:workers-ai:generate-text"]',55,0,'active',datetime('now'),datetime('now'),55,30)`).run();
+    const quoteId=`msq_${"a".repeat(32)}`,operationId="model-operation-with-quote";
+    h.db.db.prepare(`INSERT INTO managed_service_operations(operation_id,tenant_id,space_id,provider,service_id,operation_name,model_id,region,
+      capability_version,idempotency_key,request_sha256,status,price_version,quote_id,created_at,updated_at)
+      VALUES(?,'org-a','space-a','cloudflare','workers-ai','generate-text','@cf/meta/llama-3.1-8b-instruct-fp8','global',1,?,?,'running','cf-llama-fixed-v1',?,datetime('now'),datetime('now'))`)
+      .run(operationId,operationId,"c".repeat(64),quoteId);
+    h.db.db.prepare(`INSERT INTO managed_service_operation_quotes(quote_id,tenant_id,space_id,requester_user_id,plan_tier,provider,service_id,
+      operation_name,model_id,region,capability_version,price_version,credits,max_output_tokens,status,operation_id,expires_at,consumed_at,created_at)
+      VALUES(?,'org-a','space-a','owner','free','cloudflare','workers-ai','generate-text','@cf/meta/llama-3.1-8b-instruct-fp8','global',1,
+        'cf-llama-fixed-v1',55,768,'consumed',?,'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))`).run(quoteId,operationId);
+    const request={reservation_id:"model-reservation",operation_id:operationId,space_id:"space-a",provider:"cloudflare",service_id:"workers-ai",
+      operation_name:"generate-text",model_id:"@cf/meta/llama-3.1-8b-instruct-fp8",region:"global",payer_type:"organization",payer_id:"org-a",
+      payer_mandate_id:"mandate-model",requester_user_id:"owner",credits:55,price_version:"cf-llama-fixed-v1"};
+    const noQuote=await h.post("/internal/managed-services/credits/reserve",request);
+    expect(noQuote.status).toBe(400);
+    const wrongQuote=await h.post("/internal/managed-services/credits/reserve",{...request,quote_id:`msq_${"b".repeat(32)}`});
+    expect(wrongQuote.status).toBe(409);
+    expect(await wrongQuote.json()).toMatchObject({error_code:"managed_service_operation_not_admitted"});
+    const wrongOwner=await h.post("/internal/managed-services/credits/reserve",{...request,requester_user_id:"other",quote_id:quoteId});
+    expect(wrongOwner.status).toBe(409);
+    expect(await wrongOwner.json()).toMatchObject({error_code:"managed_service_operation_quote_required"});
+    const admitted=await h.post("/internal/managed-services/credits/reserve",{...request,quote_id:quoteId});
+    expect(admitted.status).toBe(201);
+    expect(h.db.db.prepare("SELECT quote_id,credits,price_version FROM managed_service_credit_reservations WHERE id='model-reservation'").get())
+      .toEqual({quote_id:quoteId,credits:55,price_version:"cf-llama-fixed-v1"});
   });
 
   it("imports provider-cost evidence with hashed references, idempotent reconciliation, and separate credit accounting", async () => {

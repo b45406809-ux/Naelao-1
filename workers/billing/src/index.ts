@@ -1002,18 +1002,22 @@ app.post("/internal/managed-services/model-entitlements/disable",async c=>{
 app.post("/internal/managed-services/credits/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{
-    reservation_id?: string; operation_id?: string; space_id?: string; project_id?: string | null;
-    provider?: string; service_id?: string; operation_name?: string; model_id?: string; region?: string; payer_type?: string; payer_id?: string; agentport_agent_id?: string; payer_mandate_id?:string;
+    reservation_id?: string; operation_id?: string; space_id?: string; project_id?: string | null; requester_user_id?: string;
+    provider?: string; service_id?: string; operation_name?: string; model_id?: string; quote_id?: string; region?: string; payer_type?: string; payer_id?: string; agentport_agent_id?: string; payer_mandate_id?:string;
     credits?: number; price_version?: string; expires_in_seconds?: number;
   }>().catch(() => null);
   const reservationId = body?.reservation_id ?? "", operationId = body?.operation_id ?? "";
   const credits = body?.credits ?? 0, expiresIn = body?.expires_in_seconds ?? 172800;
+  const modelOperationRequiresQuote = body?.provider === "cloudflare" && body?.service_id === "workers-ai";
   if (!orgId || !/^[A-Za-z0-9._:-]{1,200}$/.test(reservationId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(operationId)
     || typeof body?.space_id !== "string" || body.space_id.length < 1 || body.space_id.length > 160
     || (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || body.project_id.length > 128))
     || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.provider ?? "") || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(body.service_id ?? "")
     || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name ?? "")
     || (body.model_id !== undefined && !/^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(body.model_id))
+    || (body.quote_id !== undefined && !/^msq_[A-Fa-f0-9]{32}$/.test(body.quote_id))
+    || (modelOperationRequiresQuote && body.quote_id === undefined)
+    || (modelOperationRequiresQuote && (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.requester_user_id ?? "")))
     || (body.agentport_agent_id !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.agentport_agent_id))
     || (body.payer_mandate_id !== undefined && !/^[A-Za-z0-9._:-]{1,200}$/.test(body.payer_mandate_id))
     || body.payer_type !== "organization" || body.payer_id !== orgId
@@ -1021,9 +1025,9 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     || !Number.isSafeInteger(credits) || credits < 1 || credits > 10_000_000
     || !/^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version ?? "")
     || !Number.isSafeInteger(expiresIn) || expiresIn < 60 || expiresIn > 91 * 86400) return c.json({ error_code: "bad_request" }, 400);
-  const existing = await c.env.PLATFORM_DB.prepare(`SELECT id,space_id,project_id,provider,service_id,operation_name,model_id,region,payer_type,payer_id,agentport_agent_id,payer_mandate_id,credits,price_version,status,expires_at
+  const existing = await c.env.PLATFORM_DB.prepare(`SELECT id,space_id,project_id,provider,service_id,operation_name,model_id,quote_id,region,payer_type,payer_id,agentport_agent_id,payer_mandate_id,credits,price_version,status,expires_at
     FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`).bind(orgId, operationId)
-    .first<{ id:string;space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;region:string;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;credits:number;price_version:string;status:string;expires_at:string|null }>();
+    .first<{ id:string;space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;quote_id:string|null;region:string;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;credits:number;price_version:string;status:string;expires_at:string|null }>();
   let existingHeld = false;
   if (existing) {
     const priorMandate = existing.payer_mandate_id
@@ -1035,6 +1039,7 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     const same = existing.id === reservationId && existing.space_id === body.space_id && existing.project_id === (body.project_id ?? null)
       && existing.provider === body.provider && existing.service_id === body.service_id && existing.operation_name === body.operation_name
       && existing.model_id === (body.model_id ?? null)
+      && existing.quote_id === (body.quote_id ?? null)
       && existing.region === body.region
       && existing.payer_type === body.payer_type && existing.payer_id === body.payer_id
       && existing.agentport_agent_id === (body.agentport_agent_id ?? null)
@@ -1110,12 +1115,28 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       .bind(orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,body.region,operationId).first<{count:number}>();
     if((count?.count??0)>=entitlement.max_operations_per_period)return c.json({error_code:"managed_service_entitlement_period_limit"},402);
   }
-  const operation=await c.env.PLATFORM_DB.prepare(`SELECT provider,service_id,operation_name,model_id,capability_version,region,status
+  const operation=await c.env.PLATFORM_DB.prepare(`SELECT space_id,project_id,provider,service_id,operation_name,model_id,quote_id,capability_version,region,status
     FROM managed_service_operations WHERE operation_id=? AND tenant_id=? LIMIT 1`)
-    .bind(operationId,orgId).first<{provider:string;service_id:string;operation_name:string;model_id:string|null;capability_version:number|null;region:string|null;status:string}>();
-  if(!operation||operation.provider!==body.provider||operation.service_id!==body.service_id||operation.operation_name!==body.operation_name
-    ||operation.model_id!==(body.model_id??null)||operation.region!==body.region||operation.capability_version!==entitlement.capability_version||operation.status!=="running")
+    .bind(operationId,orgId).first<{space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;quote_id:string|null;capability_version:number|null;region:string|null;status:string}>();
+  if(!operation||operation.space_id!==body.space_id||operation.project_id!==(body.project_id??null)
+    ||operation.provider!==body.provider||operation.service_id!==body.service_id||operation.operation_name!==body.operation_name
+    ||operation.model_id!==(body.model_id??null)||operation.quote_id!==(body.quote_id??null)
+    ||operation.region!==body.region||operation.capability_version!==entitlement.capability_version||operation.status!=="running")
     return c.json({error_code:"managed_service_operation_not_admitted"},409);
+  if (modelOperationRequiresQuote) {
+    const quote = await c.env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,
+        service_id,operation_name,model_id,region,capability_version,price_version,credits,status,operation_id
+      FROM managed_service_operation_quotes WHERE quote_id=? LIMIT 1`)
+      .bind(body.quote_id).first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;
+        provider:string;service_id:string;operation_name:string;model_id:string;region:string;capability_version:number;
+        price_version:string;credits:number;status:string;operation_id:string|null}>();
+    if (!quote || quote.status!=="consumed" || quote.operation_id!==operationId || quote.tenant_id!==orgId
+      || quote.space_id!==body.space_id || quote.project_id!==(body.project_id??null) || quote.requester_user_id!==body.requester_user_id || quote.plan_tier!==planTier
+      || quote.provider!==body.provider || quote.service_id!==body.service_id || quote.operation_name!==body.operation_name
+      || quote.model_id!==body.model_id || quote.region!==body.region || quote.capability_version!==entitlement.capability_version
+      || quote.price_version!==body.price_version || quote.credits!==credits)
+      return c.json({error_code:"managed_service_operation_quote_required"},409);
+  }
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
   if (existingHeld) {
@@ -1153,8 +1174,8 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     return c.json({error_code:"infra_quota_exceeded",message:"Managed service credit allowance is unavailable",limit:quota.limit},402);
   }
   const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_credit_reservations
-    (id,org_id,space_id,project_id,region,operation_id,provider,service_id,operation_name,model_id,payer_type,payer_id,credits,price_version,agentport_agent_id,payer_mandate_id,status,expires_at,created_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?,?,?
+    (id,org_id,space_id,project_id,region,operation_id,provider,service_id,operation_name,model_id,payer_type,payer_id,credits,price_version,agentport_agent_id,payer_mandate_id,quote_id,status,expires_at,created_at,updated_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'held',?,?,?
     WHERE (? IS NULL OR COALESCE((SELECT SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END)
       FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=?
         AND created_at>=datetime('now','-' || ? || ' days')
@@ -1167,21 +1188,21 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) +
       (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?`)
     .bind(reservationId,orgId,body.space_id,body.project_id??null,body.region,operationId,body.provider,body.service_id,body.operation_name,body.model_id??null,
-      body.payer_type,body.payer_id,credits,body.price_version,body.agentport_agent_id??null,mandate.id,expiresAt,new Date().toISOString(),new Date().toISOString(),
+      body.payer_type,body.payer_id,credits,body.price_version,body.agentport_agent_id??null,mandate.id,body.quote_id??null,expiresAt,new Date().toISOString(),new Date().toISOString(),
       mandate.max_credits_per_period,orgId,body.agentport_agent_id??null,mandate.id,mandate.period_days,credits,mandate.max_credits_per_period,
       entitlement.max_operations_per_period,orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,
       body.region,operationId,entitlement.max_operations_per_period,
       credits,orgId,orgId,orgId,quota.limit).run();
   if (!inserted.meta.changes) {
-    const raced = await c.env.PLATFORM_DB.prepare(`SELECT id,status,credits,space_id,project_id,region,provider,service_id,operation_name,model_id,payer_type,payer_id,agentport_agent_id,payer_mandate_id,price_version
+    const raced = await c.env.PLATFORM_DB.prepare(`SELECT id,status,credits,space_id,project_id,region,provider,service_id,operation_name,model_id,payer_type,payer_id,agentport_agent_id,payer_mandate_id,price_version,quote_id
       FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`)
-      .bind(orgId,operationId).first<{id:string;status:string;credits:number;space_id:string;project_id:string|null;region:string;provider:string;service_id:string;operation_name:string;model_id:string|null;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;price_version:string}>();
+      .bind(orgId,operationId).first<{id:string;status:string;credits:number;space_id:string;project_id:string|null;region:string;provider:string;service_id:string;operation_name:string;model_id:string|null;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;price_version:string;quote_id:string|null}>();
     if (raced) {
       const same=raced.id===reservationId&&raced.space_id===body.space_id&&raced.project_id===(body.project_id??null)&&raced.region===body.region
         &&raced.provider===body.provider&&raced.service_id===body.service_id&&raced.operation_name===body.operation_name&&raced.model_id===(body.model_id??null)
         &&raced.payer_type===body.payer_type&&raced.payer_id===body.payer_id
         &&raced.agentport_agent_id===(body.agentport_agent_id??null)&&raced.payer_mandate_id===mandate.id
-        &&raced.credits===credits&&raced.price_version===body.price_version;
+        &&raced.credits===credits&&raced.price_version===body.price_version&&raced.quote_id===(body.quote_id??null);
       return same&&["held","uncertain","settled"].includes(raced.status)
         ? c.json({reserved:true,reservation_id:raced.id,status:raced.status,credits,deduplicated:true})
         : c.json({error_code:"reservation_identity_conflict"},409);

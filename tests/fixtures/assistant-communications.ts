@@ -89,6 +89,7 @@ export function fixture() {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0217_managed_service_cost_budget_alerts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0218_telnyx_voice_call_cost_receipts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0219_managed_service_cost_budget_alert_delivery.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0220_managed_service_operation_quotes.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0212_userport_agentport_connector_sync.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0215_agentmail_usage_snapshots.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0216_agentmail_connection_region.sql", import.meta.url), "utf8"));

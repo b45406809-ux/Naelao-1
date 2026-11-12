@@ -41,6 +41,9 @@ AgentPort signed-webhook and poll/claim
 event paths carry the bounded thread session reference only to the matching consumer group. The
 AgentPort SDK now includes a sequential poll/claim/handler/ack helper that expects durable consumer
 acceptance; provider-content fetch and consumer session storage remain in the external adapter. S2
+also has migration 0220 for durable fixed-price model quotes. An owner-only Shell caller previews the
+exact active entitlement, confirms separately, and passes a one-use quote through the managed model
+operation and Billing reservation; no active model price is currently configured. The milestone also
 includes provider-neutral UserPort connector discovery/sync, owner-selected Agent37 computer actions,
 customer-owned Higgsfield generation actions and Telnyx BYO SMS grants through AgentPort. UserPort
 revocation has a durable uncertain-outcome journal; held sync operations can be cleaned after
@@ -99,13 +102,15 @@ Agents/Spaces/Artifact/shared types/AgentPort API/SDK and Shell typechecks passe
 worktree audit found 120 tracked modifications plus 121 untracked paths, with no deletions. The
 reflog records a reset to the same `02a0cf78` HEAD; it cannot establish whether earlier uncommitted
 content was lost. The remote task branch was absent. The user selected `origin/Mcbt5s-Backup-2` as
-the recovery destination. Commit `df8074a0119489f9077fa064a89d6d2f3bf956e5` containing the 249-path
-catch-up checkpoint was pushed there as a fast-forward from `02a0cf78`; the working branch remains
-`autonomous-managed-services-20261111`. Exact next task: continue S2/MS10c with durable operation
-quotes only for provider actions backed by an exact quote or approved active rate, wire supported
-callers, and enforce quote/mandate/fee validity before dispatch. Keep managed Telnyx number ordering
-gated pending approved price, entitlement and recurring payer terms; then continue remaining S2–S9
-and U01–U12 gaps. Record subsequent checkpoints and their exact pushed SHAs in the progress source.
+the recovery destination. Catch-up commit `df8074a0119489f9077fa064a89d6d2f3bf956e5` and docs
+follow-up `02a2617e` are pushed there as fast-forwards; the working branch remains
+`autonomous-managed-services-20261111`. The current S2 quote slice passed managed-model tests 6/6,
+Billing reservation tests 16/16, migration tests 8/8, Agents/Billing/Shell typechecks, and
+`git diff --check`. Exact next task: extend durable quotes to managed AgentMail `provision` and
+`renew`, adding an operator-approved exact credit price distinct from the existing maximum and
+requiring the quote at Billing admission. Keep provisioning unavailable without an exact configured
+rate; do not infer one from the current 300-credit reservation. Then continue remaining S2–S9 and
+U01–U12 gaps. Record subsequent checkpoints and exact pushed SHAs in the progress source.
 Keep every rollout flag disabled. Do not deploy or purchase services.
 
 Migration 0209 adds exact fixed model prices and output-token caps; migration 0210 adds a draft

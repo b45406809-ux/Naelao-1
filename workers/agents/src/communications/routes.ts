@@ -11,7 +11,7 @@ import { connectUserAgentMail, callAgentMailTool, getAssistantAgentMailStatus, g
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
-import { runManagedModelOperation } from "./managed-models.js";
+import { createManagedModelQuote, runManagedModelOperation } from "./managed-models.js";
 import { discoverUserPortAgentPortConnector, revokeUserPortAgentPortConnector, revokeUserPortAgentPortOwnerLink, syncUserPortAgentPortConnector } from "./userport-agentport-sync.js";
 import { authorizeHiggsfieldAgentOperation, revokeHiggsfieldAgentPortShare, shareHiggsfieldWithAgentPort } from "./higgsfield-agentport.js";
 import { cancelHiggsfieldRequest, connectHiggsfieldAccount, createHiggsfieldEstimate, deleteHiggsfieldRequest, listHiggsfieldRequests, refreshHiggsfieldRequest, revokeHiggsfieldAccount, submitHiggsfieldGeneration } from "./higgsfield.js";
@@ -284,9 +284,10 @@ async function handle(c: C, agent: boolean) {
     catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_cost_alert_ack_failed";
       return c.json({error_code:code},code.includes("not_found")?404:400);}
   }
-  if(action==="managed-model-run"){
-    if(c.req.method!=="POST"||body.confirmed!==true||typeof body.model_id!=="string"
-      ||typeof body.prompt!=="string"||typeof body.idempotency_key!=="string")return c.json({error_code:"managed_model_confirmation_required"},400);
+  if(action==="managed-model-quote"||action==="managed-model-run"){
+    if(c.req.method!=="POST"||typeof body.model_id!=="string"||typeof body.prompt!=="string"
+      ||(action==="managed-model-run"&&(body.confirmed!==true||typeof body.idempotency_key!=="string"||typeof body.quote_id!=="string")))
+      return c.json({error_code:action==="managed-model-quote"?"managed_model_quote_invalid":"managed_model_confirmation_required"},400);
     let identity:CommunicationIdentity;
     try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
     if(scope.projectId){
@@ -297,10 +298,14 @@ async function handle(c: C, agent: boolean) {
       const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
       if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
     }
-    try{return c.json(await runManagedModelOperation(c.env,scope,{modelId:body.model_id,prompt:body.prompt,idempotencyKey:body.idempotency_key}));}
+    try{
+      if(action==="managed-model-quote")return c.json(await createManagedModelQuote(c.env,scope,{modelId:body.model_id,prompt:body.prompt}));
+      return c.json(await runManagedModelOperation(c.env,scope,{modelId:body.model_id,prompt:body.prompt,
+        idempotencyKey:body.idempotency_key as string,quoteId:body.quote_id as string}));
+    }
     catch(error){
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_model_operation_failed";
-      const status=code.includes("not_entitled")?403:code.includes("not_found")?404:code.includes("conflict")||code.includes("expired")?409
+      const status=code.includes("not_entitled")?403:code.includes("not_found")?404:code.includes("conflict")||code.includes("expired")||code.includes("quote_already_used")||code.includes("quote_terms")?409
         :code.includes("quota")||code.includes("limit")?402:code.includes("unavailable")?503:400;
       return c.json({error_code:code},status);
     }
