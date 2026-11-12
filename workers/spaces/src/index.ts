@@ -174,7 +174,7 @@ app.get("/internal/spaces/:spaceId/workspace-projects", async (c) => {
 });
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
-app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
+app.get("/health", (c) => c.json({ status: "ok", ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
 app.post("/builder/erasure", async (c) => {
   const identity = getCallerIdentity(c);
   if (!identity.tenantId || !identity.userId || !c.env.EVENTS_QUEUE) return c.json({ error_code: "erasure_unavailable" }, 503);

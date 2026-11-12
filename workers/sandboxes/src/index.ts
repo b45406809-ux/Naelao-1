@@ -35,6 +35,7 @@ import {
 } from "./agent37-agentport.js";
 
 interface Env {
+  ENVIRONMENT: string;
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
   SANDBOX_RUNTIME_OPERATOR_SECRET?: string;
@@ -75,6 +76,12 @@ async function projectErased(env: Env, tenantId: string, spaceId: string | undef
   return result.erased === true;
 }
 
+// Health is intentionally unauthenticated and contains no customer or provider details so the
+// deployment router can verify the service binding without minting a tenant-scoped token.
+app.get("/health", (c) =>
+  json({ status: "ok", service: "sandboxes", env: c.env.ENVIRONMENT, providers: "configured_only" })
+);
+
 app.use("*", async (c, next) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
@@ -96,9 +103,6 @@ app.use("*", async (c, next) => {
   return;
 });
 
-app.get("/health", (_c) =>
-  json({ status: "ok", providers: "configured_only" })
-);
 app.post("/ops/provider-cost-receipts", async c => {
   if(!c.env.SANDBOX_BILLING_OPERATOR_SECRET)return fail("provider_cost_import_unavailable",503);
   if(!await verifyOperatorSecret(c.env.SANDBOX_BILLING_OPERATOR_SECRET,c.req.header("x-sandbox-billing-operator-key")??""))return fail("forbidden",403);

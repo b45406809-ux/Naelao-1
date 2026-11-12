@@ -406,6 +406,7 @@ async function runAgentForCase(
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", c => c.json({ status: "ok", service: "eval", env: c.env.ENVIRONMENT }));
 
 // Generate reviewable synthetic cases. This route never saves, runs, or certifies the output;
 // generated prose cannot stand in for trace checks or state-delta conformance.

@@ -50,6 +50,7 @@ app.use("*", async (c, next) => {
   validateEnv(c.env);
   await next();
 });
+app.get("/health", c => c.json({ status: "ok", service: "portal-router", env: c.env.ENVIRONMENT }));
 
 // These management routes are internal APIs, not end-user ingress. The worker's identity
 // headers are otherwise caller-controlled when it is reached through a custom host.

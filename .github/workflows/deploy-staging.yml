@@ -206,6 +206,11 @@ jobs:
           fi
           echo "### ✅ Staging deploy: all secondary workers deployed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Probe deployed staging Workers before frontend publication
+        env:
+          API_BASE_URL: ${{ vars.API_URL_STAGING }}
+        run: python3 infra/scripts/probe_deployment_health.py --environment staging
+
   deploy-dashboard-staging:
     name: Deploy dashboard to staging (CF Pages)
     runs-on: ubuntu-latest

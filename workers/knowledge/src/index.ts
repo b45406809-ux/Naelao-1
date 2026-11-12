@@ -133,6 +133,7 @@ function preserveHttpStatus(err: unknown): never {
 const app = new Hono<{ Bindings: KnowledgeEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", c => c.json({ status: "ok", service: "knowledge", env: c.env.ENVIRONMENT }));
 
 // Register trust-boundary middleware before route handlers. Hono executes handlers in
 // registration order, so adding these guards below a route leaves that earlier route ungated.

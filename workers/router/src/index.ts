@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken, readDeskSession } from "@naelao/http";
+import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken, readDeskSession, readBoundedResponseJson } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { loadSavedLanguagePreference } from "./preferred-language";
@@ -244,26 +244,39 @@ app.get("/health", (c) =>
 );
 
 // A service-level canary complements the router's own health check. Keep this bounded to
-// fixed internal health paths and return only service names/status codes, never response bodies.
+// fixed internal health paths and return only aggregate counts, never service names or bodies.
 app.get("/health/dependencies", async (c) => {
   const checks = [
     ["auth", c.env.AUTH_WORKER],
     ["spaces", c.env.SPACES_WORKER],
+    ["knowledge", c.env.KNOWLEDGE_WORKER],
+    ["eval", c.env.EVAL_WORKER],
+    ["agents", c.env.AGENTS_WORKER],
+    ["credentials", c.env.CREDENTIALS_WORKER],
+    ["analytics", c.env.ANALYTICS_WORKER],
+    ["billing", c.env.BILLING_WORKER],
+    ["marketplace", c.env.MARKETPLACE_WORKER],
+    ["portal-router", c.env.PORTAL_ROUTER],
+    ["sandboxes", c.env.SANDBOXES_WORKER],
   ] as const;
   const results = await Promise.all(checks.map(async ([service, worker]) => {
+    if (!worker) return { service, status: 0, latency_ms: 0, ok: false };
     const startedAt = Date.now();
     try {
       const response = await worker.fetch(new Request("http://internal/health", {
         method: "GET",
         signal: AbortSignal.timeout(2_500),
       }));
-      return { service, status: response.status, latency_ms: Date.now() - startedAt, ok: response.ok };
+      if (!response.ok) return { service, status: response.status, latency_ms: Date.now() - startedAt, ok: false };
+      const health = await readBoundedResponseJson<{ status?: unknown; service?: unknown; env?: unknown }>(response, 4_096);
+      const ok = health.status === "ok" && health.service === service && health.env === c.env.ENVIRONMENT;
+      return { service, status: response.status, latency_ms: Date.now() - startedAt, ok };
     } catch {
       return { service, status: 0, latency_ms: Date.now() - startedAt, ok: false };
     }
   }));
   const ok = results.every((result) => result.ok);
-  return c.json({ ok, services: results }, ok ? 200 : 503);
+  return c.json({ ok, checked: results.length, failed: results.filter(result => !result.ok).length }, ok ? 200 : 503);
 });
 for (const path of ["/v1/marketplace", "/v1/marketplace/:id", "/v1/marketplace/:id/reviews"]) app.get(path, async c => {
   if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);

@@ -109,7 +109,7 @@ function requiredScope(method: string, path: string): string {
 }
 function hasScope(granted: string[], required: string) { return granted.includes("agentport:admin") || granted.includes(required); }
 
-app.get("/health", c => c.json({ service: "AgentPort", status: "ok", api: "v1", mcp: "streamable-http" }));
+app.get("/health", c => c.json({ service: "AgentPort", status: "ok", env: c.env.ENVIRONMENT, api: "v1", mcp: "streamable-http" }));
 app.get("/.well-known/agentport/agents/:agentId/jwks.json", async c => {
   const agent = await c.env.PLATFORM_DB.prepare("SELECT id,status FROM agentport_agents WHERE id=? AND status='active'").bind(c.req.param("agentId")).first<{ id: string; status: string }>();
   if (!agent) return c.json({ error_code: "agent_unavailable" }, 404);

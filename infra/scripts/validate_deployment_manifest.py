@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "infra" / "release" / "deployment-manifest.json"
 SCHEMA_MANIFEST_PATH = ROOT / "infra" / "release" / "schema-manifest.json"
+HEALTH_PROBE_SCRIPT = "infra/scripts/probe_deployment_health.py"
 WORKER_DIR = ROOT / "workers"
+ROUTER_HEALTH_DEPENDENCIES = [
+    "auth", "spaces", "knowledge", "eval", "agents", "credentials",
+    "analytics", "billing", "marketplace", "portal-router", "sandboxes",
+]
 ENVIRONMENTS = {
     "staging": ROOT / ".github" / "workflows" / "deploy-staging.yml",
     "production": ROOT / ".github" / "workflows" / "deploy-prod.yml",
@@ -150,8 +156,26 @@ def validate_data(
         health = env_manifest.get("healthEvidence")
         if not isinstance(health, dict) or not all(isinstance(health.get(key), str) and health[key].strip() for key in ("preflight", "postMigration", "postWorker")):
             errors.append(f"{environment} manifest must distinguish preflight, schema, and worker health evidence")
-        elif not re.search(r"healthcheck|health check|smoke test|\bcurl\b", workflow, re.IGNORECASE) and "No deployed worker health probe" not in health["postWorker"]:
-            errors.append(f"{environment} manifest must disclose that deployed worker probes are not configured")
+        elif "before dependent frontend publication" not in health["postWorker"].lower():
+            errors.append(f"{environment} manifest must describe the post-worker health gate before frontend publication")
+        probes = env_manifest.get("healthProbes")
+        if not isinstance(probes, dict):
+            errors.append(f"{environment} manifest requires configured post-worker health probes")
+        else:
+            for key in ("apiBaseUrl", "agentPortBaseUrl"):
+                if not isinstance(probes.get(key), str) or not probes[key].strip():
+                    errors.append(f"{environment} healthProbes requires {key}")
+            if probes.get("routerPaths") != ["/health", "/health/dependencies"]:
+                errors.append(f"{environment} health probe paths must cover router and dependency health")
+            if probes.get("routerDependencies") != ROUTER_HEALTH_DEPENDENCIES:
+                errors.append(f"{environment} health probe dependencies do not match router health inventory")
+        phase_ids = [phase.get("id") for phase in phases if isinstance(phase, dict)]
+        worker_phase = "workers" if environment == "production" else "remaining_workers"
+        if "worker_health" not in phase_ids or worker_phase not in phase_ids or phase_ids.index("worker_health") != phase_ids.index(worker_phase) + 1:
+            errors.append(f"{environment} worker_health phase must immediately follow the final Worker deploy phase")
+        expected_api_variable = "API_URL_PROD" if environment == "production" else "API_URL_STAGING"
+        if HEALTH_PROBE_SCRIPT not in workflow or f"API_BASE_URL: ${{{{ vars.{expected_api_variable} }}}}" not in workflow or f"--environment {environment}" not in workflow:
+            errors.append(f"{environment} deployment workflow must run the post-worker health probe with its API URL")
 
     return errors
 
@@ -195,7 +219,65 @@ def validate(root: Path = ROOT) -> list[str]:
         worker_names = {path.parent.name for path in (root / "workers").glob("*/wrangler.toml")}
     except (OSError, json.JSONDecodeError) as error:
         return [f"cannot read deployment release inputs: {error}"]
-    return validate_data(manifest, schema_manifest, workflows, worker_names)
+    errors = validate_data(manifest, schema_manifest, workflows, worker_names)
+    errors.extend(validate_health_probe_sources(manifest, root))
+    return errors
+
+
+def validate_health_probe_sources(manifest: object, root: Path = ROOT) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("environments"), dict):
+        return ["deployment manifest has no environment health probe inventory"]
+    try:
+        router = tomllib.loads((root / "workers/router/wrangler.toml").read_text(encoding="utf-8"))
+        synthetics = tomllib.loads((root / "workers/synthetics/wrangler.toml").read_text(encoding="utf-8"))
+        agentport = tomllib.loads((root / "workers/agentport/wrangler.toml").read_text(encoding="utf-8"))
+        router_source = (root / "workers/router/src/index.ts").read_text(encoding="utf-8")
+        agentport_source = (root / "workers/agentport/src/index.ts").read_text(encoding="utf-8")
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"cannot read health probe source configuration: {error}"]
+
+    expected_router_bindings = {
+        "auth": "AUTH_WORKER", "spaces": "SPACES_WORKER", "knowledge": "KNOWLEDGE_WORKER",
+        "eval": "EVAL_WORKER", "agents": "AGENTS_WORKER", "credentials": "CREDENTIALS_WORKER",
+        "analytics": "ANALYTICS_WORKER", "billing": "BILLING_WORKER", "marketplace": "MARKETPLACE_WORKER",
+        "portal-router": "PORTAL_ROUTER", "sandboxes": "SANDBOXES_WORKER",
+    }
+    if not re.search(r'app\.get\(["\']\/health["\']', router_source):
+        errors.append("router has no local /health route")
+    if not all(fragment in agentport_source for fragment in ('app.get("/health"', 'service: "AgentPort"', 'status: "ok"', 'env: c.env.ENVIRONMENT')):
+        errors.append("AgentPort /health route must identify its service, environment, and ready status")
+    top_services = router.get("services", [])
+    for environment in ("staging", "production"):
+        env_config = router.get("env", {}).get(environment, {})
+        env_services = env_config.get("services", [])
+        binding_names = {service.get("binding") for service in top_services + env_services if isinstance(service, dict)}
+        if binding_names != set(expected_router_bindings.values()):
+            errors.append(f"{environment} router service binding inventory differs from the health check inventory")
+        for service, binding in expected_router_bindings.items():
+            if f'["{service}", c.env.{binding}]' not in router_source:
+                errors.append(f"router dependency health route does not check {service}")
+            worker_entry = root / "workers" / service / "src" / "index.ts"
+            worker_source = worker_entry.read_text(encoding="utf-8") if worker_entry.is_file() else ""
+            if not re.search(r'app\.get\(["\']\/health["\']', worker_source):
+                errors.append(f"{environment} health dependency {service} has no local /health route")
+            if not all(fragment in worker_source for fragment in (f'service: "{service}"', 'status: "ok"', "ENVIRONMENT")):
+                errors.append(f"{environment} health dependency {service} does not expose the release health contract")
+
+        probes = manifest["environments"].get(environment, {}).get("healthProbes", {})
+        if not isinstance(probes, dict):
+            continue
+        api_url = synthetics.get("env", {}).get(environment, {}).get("vars", {}).get("PLATFORM_API_URL")
+        agentport_url = agentport.get("env", {}).get(environment, {}).get("vars", {}).get("AGENTPORT_ISSUER")
+        if probes.get("apiBaseUrl") != api_url:
+            errors.append(f"{environment} API health URL differs from the synthetic monitor configuration")
+        if probes.get("agentPortBaseUrl") != agentport_url:
+            errors.append(f"{environment} AgentPort health URL differs from its configured issuer")
+        if not isinstance(probes.get("apiBaseUrl"), str) or not isinstance(probes.get("agentPortBaseUrl"), str):
+            continue
+        if not probes["apiBaseUrl"].startswith("https://") or not probes["agentPortBaseUrl"].startswith("https://"):
+            errors.append(f"{environment} health probe targets must use HTTPS")
+    return errors
 
 
 def main() -> int:
@@ -205,7 +287,7 @@ def main() -> int:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
-    print("deployment manifest matches staging and production workflow order; deployed health evidence remains separate")
+    print("deployment manifest matches both workflows and health probe sources; live probes remain unrun")
     return 0
 
 

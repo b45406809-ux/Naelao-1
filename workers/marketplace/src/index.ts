@@ -121,6 +121,7 @@ app.use("*", async (c, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
   return requireSignedMutation(c, next);
 });
+app.get("/health", c => c.json({ status: "ok", service: "marketplace", env: c.env.ENVIRONMENT }));
 
 // D1 is authoritative. Search remains useful without an embedding provider; no fabricated vectors.
 app.get("/v1/marketplace", async (c) => {

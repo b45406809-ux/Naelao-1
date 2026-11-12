@@ -2,7 +2,10 @@ import copy
 import json
 import unittest
 
-from validate_deployment_manifest import MANIFEST_PATH, ROOT, SCHEMA_MANIFEST_PATH, validate, validate_data
+from validate_deployment_manifest import (
+    MANIFEST_PATH, ROOT, SCHEMA_MANIFEST_PATH, validate, validate_data,
+    validate_health_probe_sources,
+)
 
 
 class DeploymentManifestTests(unittest.TestCase):
@@ -62,6 +65,28 @@ class DeploymentManifestTests(unittest.TestCase):
         )
         errors = validate_data(manifest, schema, workflows, workers)
         self.assertIn("staging phase dashboard workflow job does not depend on deploy-workers-staging", errors)
+
+    def test_rejects_missing_post_worker_probe_step(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows["production"] = workflows["production"].replace(
+            "python3 infra/scripts/probe_deployment_health.py --environment production",
+            "echo worker deploy complete",
+        )
+        errors = validate_data(manifest, schema, workflows, workers)
+        self.assertTrue(any("production deployment workflow must run the post-worker health probe" in error for error in errors))
+
+    def test_health_probe_domains_must_match_current_worker_configuration(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        changed = copy.deepcopy(manifest)
+        changed["environments"]["staging"]["healthProbes"]["agentPortBaseUrl"] = "https://other.example.test"
+        errors = validate_health_probe_sources(changed)
+        self.assertIn("staging AgentPort health URL differs from its configured issuer", errors)
 
 
 if __name__ == "__main__":

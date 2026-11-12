@@ -178,6 +178,11 @@ jobs:
           fi
           echo "### ✅ Production deploy: all workers deployed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Probe deployed production Workers before frontend publication
+        env:
+          API_BASE_URL: ${{ vars.API_URL_PROD }}
+        run: python3 infra/scripts/probe_deployment_health.py --environment production
+
   deploy-frontends-prod:
     name: Deploy frontends to production
     runs-on: ubuntu-latest

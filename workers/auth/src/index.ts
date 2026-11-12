@@ -201,7 +201,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, service: "auth", env: c.env.ENVIRONMENT }));
+app.get("/health", (c) => c.json({ status: "ok", ok: true, service: "auth", env: c.env.ENVIRONMENT }));
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 app.post("/login", async (c) => {

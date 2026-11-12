@@ -129,6 +129,7 @@ function isOrgBillingAdmin(role: string | undefined): boolean {
 const app = new Hono<{ Bindings: BillingEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", c => c.json({ status: "ok", service: "billing", env: c.env.ENVIRONMENT }));
 registerMarketplaceLicenseRoutes(app);
 registerPartnerPortalRoutes(app);
 

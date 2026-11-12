@@ -563,6 +563,7 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", c => c.json({ status: "ok", service: "agents", env: c.env.ENVIRONMENT }));
 app.post("/internal/workspaces/live-capability/search-and-verify", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);

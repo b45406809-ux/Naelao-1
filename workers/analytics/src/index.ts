@@ -111,6 +111,7 @@ function validateEnv(env: AnalyticsEnv): void {
 const app = new Hono<{ Bindings: AnalyticsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", c => c.json({ status: "ok", service: "analytics", env: c.env.ENVIRONMENT }));
 
 // ── POST /events ──────────────────────────────────────────────────────────────
 // Internal ingest endpoint — no JWT auth required.

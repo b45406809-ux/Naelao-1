@@ -769,6 +769,7 @@ app.use("*", async (c, next) => {
   validateEnv(c.env);
   await next();
 });
+app.get("/health", c => c.json({ status: "ok", service: "credentials", env: c.env.ENVIRONMENT }));
 
 // B1/B3 fix: the three public CRUD routes only ever trust x-naelao-tenant-id/-user-id/-role
 // as-is — with workers_dev disabled the router is the only path in, but this is the

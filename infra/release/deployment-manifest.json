@@ -77,10 +77,18 @@
           ]
         },
         {
+          "id": "worker_health",
+          "job": "deploy-workers-staging",
+          "dependsOn": [
+            "remaining_workers"
+          ],
+          "purpose": "Probe the staging router, all router-bound service health checks, and AgentPort before publishing dependent frontends."
+        },
+        {
           "id": "dashboard",
           "job": "deploy-dashboard-staging",
           "dependsOn": [
-            "remaining_workers"
+            "worker_health"
           ],
           "components": [
             "dashboard"
@@ -90,7 +98,7 @@
           "id": "portal",
           "job": "deploy-portal-staging",
           "dependsOn": [
-            "remaining_workers"
+            "worker_health"
           ],
           "components": [
             "portal"
@@ -100,7 +108,7 @@
           "id": "marketplace",
           "job": "deploy-marketplace-staging",
           "dependsOn": [
-            "remaining_workers"
+            "worker_health"
           ],
           "components": [
             "marketplace-web"
@@ -110,7 +118,7 @@
           "id": "widget",
           "job": "deploy-widget-staging",
           "dependsOn": [
-            "remaining_workers"
+            "worker_health"
           ],
           "components": [
             "widget"
@@ -120,7 +128,13 @@
       "healthEvidence": {
         "preflight": "Required CI tests, typechecks and static environment/migration validation.",
         "postMigration": "Required-schema zero-row D1 probes in the deployment job.",
-        "postWorker": "No deployed worker health probe is configured in this workflow."
+        "postWorker": "Before dependent frontend publication, retry HTTPS health probes for the router, all eleven router-bound services via /health/dependencies, and the separately routed AgentPort /health endpoint; validate the release environment identity and response shape."
+      },
+      "healthProbes": {
+        "apiBaseUrl": "https://api.staging.naelao.com",
+        "agentPortBaseUrl": "https://agentport-staging.naelao.com",
+        "routerPaths": ["/health", "/health/dependencies"],
+        "routerDependencies": ["auth", "spaces", "knowledge", "eval", "agents", "credentials", "analytics", "billing", "marketplace", "portal-router", "sandboxes"]
       }
     },
     "production": {
@@ -178,10 +192,18 @@
           ]
         },
         {
+          "id": "worker_health",
+          "job": "deploy-workers-prod",
+          "dependsOn": [
+            "workers"
+          ],
+          "purpose": "Probe the production router, all router-bound service health checks, and AgentPort before publishing dependent frontends."
+        },
+        {
           "id": "frontends_and_widget",
           "job": "deploy-frontends-prod",
           "dependsOn": [
-            "workers"
+            "worker_health"
           ],
           "components": [
             "dashboard",
@@ -205,7 +227,13 @@
       "healthEvidence": {
         "preflight": "Required CI tests, typechecks and static environment/migration validation.",
         "postMigration": "Required-schema zero-row D1 probes in the deployment job.",
-        "postWorker": "No deployed worker health probe is configured in this workflow."
+        "postWorker": "Before dependent frontend publication, retry HTTPS health probes for the router, all eleven router-bound services via /health/dependencies, and the separately routed AgentPort /health endpoint; validate the release environment identity and response shape."
+      },
+      "healthProbes": {
+        "apiBaseUrl": "https://api.naelao.com",
+        "agentPortBaseUrl": "https://agentport.naelao.com",
+        "routerPaths": ["/health", "/health/dependencies"],
+        "routerDependencies": ["auth", "spaces", "knowledge", "eval", "agents", "credentials", "analytics", "billing", "marketplace", "portal-router", "sandboxes"]
       }
     }
   },
