@@ -95,9 +95,11 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         ?? (await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate") ? "dynamic_snapshot_restore_incomplete" : undefined);
       const saveError = await this.ctx.storage.get<string>("dynamic_snapshot_save_error");
       const snapshotExpiresAt = snapshot ? (snapshot.expiresAt ?? snapshot.createdAt + SNAPSHOT_RECOVERY_TTL_MS) : undefined;
+      const localGeneration = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
       const selectedImageDigest = selection ? await digest(selection.image) : undefined;
       const snapshotStatusError = snapshot
         ? !snapshot.id || !snapshot.fingerprint || !Number.isFinite(snapshot.createdAt) || snapshotMetadataInvalid(snapshot) ? "dynamic_snapshot_record_invalid"
+          : selection?.projectMain && snapshot.allocationGeneration !== undefined && snapshot.allocationGeneration > localGeneration ? "dynamic_snapshot_generation_ahead"
           : this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED !== "true" ? "dynamic_snapshot_restore_disabled"
             : selection?.fingerprint !== snapshot.fingerprint ? "dynamic_snapshot_incompatible"
               : snapshot.ownerFingerprint !== undefined && snapshot.ownerFingerprint !== selection?.owner ? "dynamic_snapshot_incompatible"
@@ -273,6 +275,13 @@ export class DynamicSandboxDO extends ToolSandboxDO {
           snapshot.profile !== undefined && JSON.stringify(snapshot.profile) !== JSON.stringify(selected.profile)) {
         await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_incompatible");
         throw new Error("dynamic_snapshot_incompatible");
+      }
+      if (selected.projectMain && snapshot.allocationGeneration !== undefined) {
+        const allocationGeneration = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+        if (snapshot.allocationGeneration >= allocationGeneration) {
+          await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_generation_not_prior");
+          throw new Error("dynamic_snapshot_generation_not_prior");
+        }
       }
       const expiresAt = snapshot.expiresAt ?? snapshot.createdAt + SNAPSHOT_RECOVERY_TTL_MS;
       if (!Number.isFinite(expiresAt)) {

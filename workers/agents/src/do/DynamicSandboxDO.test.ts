@@ -411,6 +411,25 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.transport.start).not.toHaveBeenCalled();
     expect(r.records.has("dynamic_snapshot_registry_pending")).toBe(true);
   });
+  it("rejects a project-main snapshot whose generation is not prior to the restoring allocation", async () => {
+    let now = 2_900_000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    now += 60_001;
+    await r.alarm();
+    const saved = r.records.get("dynamic_snapshot");
+    expect(saved?.allocationGeneration).toBe(1);
+    r.records.set("dynamic_snapshot", { ...saved, id: "future-generation-snapshot", allocationGeneration: 2 });
+    r.restart();
+
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", can_restore: false,
+      recovery_error: "dynamic_snapshot_generation_ahead" });
+    const response = await r.invoke("/prewarm", { mainComputer: true, executionId: "future-generation-restore" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "Error: dynamic_snapshot_generation_not_prior" });
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.records.get("dynamic_snapshot_restore_error")).toBe("dynamic_snapshot_generation_not_prior");
+  });
   it("rejects a different tenant before restoring a saved snapshot", async () => {
     let now = 3000000; vi.spyOn(Date, "now").mockImplementation(() => now);
     const r = runtime({ snapshots: true }); await r.invoke();
