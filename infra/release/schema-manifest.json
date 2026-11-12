@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0228_kb_document_deletion_tombstones",
+  "requiredSchemaVersion": "0229_agentport_sender_principal_refs",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -915,6 +915,10 @@
     {
       "filename": "0228_kb_document_deletion_tombstones.sql",
       "sha256": "a2498cb29b90555b9ebb4fbb1998195ac431738f7cb792c2bc5b9a3204c2df3b"
+    },
+    {
+      "filename": "0229_agentport_sender_principal_refs.sql",
+      "sha256": "7aff30f401afa455c7578fe2452ecf0819c480cbece04a1bc5439fc1ed99dbd1"
     }
   ]
 }

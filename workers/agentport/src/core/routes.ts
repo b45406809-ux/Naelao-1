@@ -934,10 +934,11 @@ routes.get("/threads/:threadId/message-references", async (c) => {
   if(!await actorOwnsThread(c,threadId))return c.json({error_code:"thread_unavailable"},404);
   if(agentId&&!await actorOwnsAgent(c,agentId))return c.json({error_code:"agent_unavailable"},404);
   if (agentId && !await channelGrant(c.env.PLATFORM_DB, tenantId, thread.channel_id, agentId, "messages.read")) return channelPermissionDenied(c, "The agent does not have message-read access to this thread.");
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT provider_message_id,direction,sender_id,sender_principal_id,sender_role,trust_level,status,occurred_at
     FROM agentport_channel_message_refs WHERE tenant_id=? AND thread_id=? ORDER BY occurred_at DESC LIMIT 100`).bind(tenantId, threadId).all();
   return c.json({ messageReferences: (rows.results ?? []).reverse().map(row => ({ providerMessageId: row.provider_message_id,
-    direction: row.direction, senderId: row.sender_id, senderRole: row.sender_role, trustLevel: row.trust_level, status: row.status, occurredAt: row.occurred_at })), contentLocation: "channel_provider" });
+    direction: row.direction, senderId: row.sender_id, senderPrincipalId: row.sender_principal_id,
+    senderRole: row.sender_role, trustLevel: row.trust_level, status: row.status, occurredAt: row.occurred_at })), contentLocation: "channel_provider" });
 });
 
 // Provider adapters post references and trust metadata only. Message text, attachments and
@@ -958,10 +959,10 @@ routes.post("/channels/:channelId/message-events/inbound", async (c) => {
   await db.prepare(`INSERT OR IGNORE INTO agentport_threads(id,tenant_id,channel_id,provider_thread_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`).bind(threadId, tenantId, channelId, providerThreadId, at, at).run();
   const thread = await db.prepare("SELECT id FROM agentport_threads WHERE tenant_id=? AND channel_id=? AND provider_thread_id=?").bind(tenantId, channelId, providerThreadId).first<{ id: string }>();
   if (!thread) return c.json({ error_code: "thread_store_unavailable" }, 503);
-  const sender = await db.prepare("SELECT role FROM agentport_trusted_senders WHERE tenant_id=? AND channel_id=? AND provider_sender_id=? AND status='active'").bind(tenantId, channelId, senderId).first<{ role: "owner" | "delegate" }>();
+  const sender = await db.prepare("SELECT role,principal_id FROM agentport_trusted_senders WHERE tenant_id=? AND channel_id=? AND provider_sender_id=? AND status='active'").bind(tenantId, channelId, senderId).first<{ role: "owner" | "delegate"; principal_id: string }>();
   const senderRole = sender?.role ?? "external"; const trustLevel = sender ? "verified" : "unverified"; const messageRefId = id("mref");
-  const inserted = await db.prepare(`INSERT OR IGNORE INTO agentport_channel_message_refs(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_role,trust_level,status,occurred_at,created_at)
-    VALUES(?,?,?,?,?,'inbound',?,?,?,'received',?,?)`).bind(messageRefId, tenantId, channelId, thread.id, providerMessageId, senderId, senderRole, trustLevel, messageAt, at).run();
+  const inserted = await db.prepare(`INSERT OR IGNORE INTO agentport_channel_message_refs(id,tenant_id,channel_id,thread_id,provider_message_id,direction,sender_id,sender_principal_id,sender_role,trust_level,status,occurred_at,created_at)
+    VALUES(?,?,?,?,?,'inbound',?,?,?,?, 'received',?,?)`).bind(messageRefId, tenantId, channelId, thread.id, providerMessageId, senderId, sender?.principal_id ?? null, senderRole, trustLevel, messageAt, at).run();
   const storedRef = await db.prepare("SELECT thread_id,sender_id FROM agentport_channel_message_refs WHERE tenant_id=? AND channel_id=? AND provider_message_id=?")
     .bind(tenantId, channelId, providerMessageId).first<{ thread_id: string; sender_id: string }>();
   if (!storedRef || storedRef.thread_id !== thread.id || storedRef.sender_id !== senderId) return c.json({ error_code: "event_idempotency_conflict" }, 409);

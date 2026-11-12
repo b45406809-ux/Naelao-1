@@ -20,6 +20,7 @@ function fixture() {
   db.exec(readFileSync(new URL("../../../../infra/migrations/0162_agentport_signed_identity.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0163_agentport_provider_auth.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("../../../../infra/migrations/0229_agentport_sender_principal_refs.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0167_agentport_apps_capabilities.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0168_agentport_client_neutral_host_resources.sql", import.meta.url), "utf8"));
   db.exec(readFileSync(new URL("../../../../infra/migrations/0169_agentport_email_accounts.sql", import.meta.url), "utf8"));
@@ -374,7 +375,10 @@ describe("AgentPort internal registry API", () => {
     expect(await externalInbound.json()).toMatchObject({ messageReference: { providerMessageId: "provider-msg-2", senderRole: "external", trustLevel: "unverified" }, contentLocation: "channel_provider" });
     const refs = await call(`/threads/${threadRows[0]!.id}/message-references?agentId=${agent.id}`, "GET");
     expect(refs.status).toBe(200);
-    expect(await refs.json()).toMatchObject({ contentLocation: "channel_provider", messageReferences: expect.arrayContaining([expect.objectContaining({ providerMessageId: "provider-msg-1" })]) });
+    expect(await refs.json()).toMatchObject({ contentLocation: "channel_provider", messageReferences: expect.arrayContaining([
+      expect.objectContaining({ providerMessageId: "provider-msg-1", senderPrincipalId: "owner-1", trustLevel: "verified" }),
+      expect.objectContaining({ providerMessageId: "provider-msg-2", senderRole: "external", trustLevel: "unverified", senderPrincipalId: null }),
+    ]) });
     const authorized = await call(`/threads/${threadRows[0]!.id}/actions/authorize`, "POST", { agentId: agent.id, action: "messages.send", idempotencyKey: "send-1" });
     expect(authorized.status).toBe(200);
     expect(await authorized.json()).toMatchObject({ decision: "allow", providerChannelId: "external-channel-1", providerThreadId: "customer-1", contentLocation: "channel_provider" });
@@ -389,7 +393,7 @@ describe("AgentPort internal registry API", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_channel_message_refs WHERE provider_message_id IS NOT NULL").get()).toMatchObject({ n: 4 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_events WHERE event_type='message.received'").get()).toMatchObject({ n: 2 });
     expect(db.prepare("SELECT payload_ref FROM agentport_events WHERE event_type='message.received' AND provider_event_id='provider-msg-1'").get()).toMatchObject({ payload_ref: "provider-msg-1" });
-    expect(db.prepare("SELECT sender_role,trust_level FROM agentport_channel_message_refs WHERE provider_message_id='provider-msg-1'").get()).toMatchObject({ sender_role: "owner", trust_level: "verified" });
+    expect(db.prepare("SELECT sender_role,sender_principal_id,trust_level FROM agentport_channel_message_refs WHERE provider_message_id='provider-msg-1'").get()).toMatchObject({ sender_role: "owner", sender_principal_id: "owner-1", trust_level: "verified" });
   });
 
   it("blocks provider models the manifest did not declare and unresolved provisioning cycles", async () => {
