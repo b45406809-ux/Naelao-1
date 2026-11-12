@@ -8,8 +8,9 @@ integrated in this branch. Findings in that plan were researched against an olde
 statuses below reflect the current source where inspected. This file is additive to the managed
 services progress record; reuse its U01–U12 and S1–S9 ledgers rather than duplicating their evidence.
 The P01 deployment manifest, staging dependency gate, tests and runbook are pushed to
-`origin/Mcbt5s-Backup-2` as `749f9c95`. The current P03/P11–P13 implementation and evidence below
-are locally verified and will be tied to their recovery-branch checkpoint after push.
+`origin/Mcbt5s-Backup-2` as `749f9c95`. P03/P11–P13 code, tests, schema updates and this source
+reconciliation are pushed in code commit `2625ea3426d5ee1bc7d7dce3776553073843640d`; the current
+active branch and recovery ref point to that commit before this docs-only status refresh.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 

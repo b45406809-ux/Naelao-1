@@ -2,8 +2,8 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12; P03/P11–P13 code is locally verified and awaiting its
-checkpoint push): the active branch remains `autonomous-managed-services-20261111` in
+Current continuation checkpoint (2026-11-12; P03/P11–P13 code is pushed as `2625ea34`): the active
+branch remains `autonomous-managed-services-20261111` in
 `/workspace/Naelao-1-managed-services`; preserve its dirty work and `infra/scripts/__pycache__/`.
 P03's Billing event handling, durable dunning outbox, versioned shared event contract and recovery
 notification workflow are reachable. P11 checkout simulation is already limited to explicit
