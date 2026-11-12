@@ -30,9 +30,12 @@ caller requests live checkpoints, and rollout/adapter gates keep that path unava
 source build, SBOM and signed provenance exist in CI, but it deliberately publishes no image and no
 runtime adapter can be accepted against the unsupported contract. U09 now exposes the project-main
 registry's last recorded state in the owner settings API; it explicitly does not claim provider
-health. Exact next task: continue U10 by tracing erasure inventories and cleanup acknowledgements
-across runtimes, Browser, sidecar artifacts and caches; close the next independent gap, then continue
-U11–U12 and the S4–S9 audit. Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+health. U10 now atomically marks the project-main registry erased alongside its runtime erasure
+receipt, and only after the exact main DynamicSandbox confirms local state purge. Cleanup tests pass
+**15/15**, the profile/status test passes **3/3**, and Agents typecheck passes. Exact next task:
+continue U11 by tracing metering, cost alerts, notification delivery and missing provider feeds into
+their owner/operator callers; close independent code gaps, then finish U12 and the S4–S9 audit.
+Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code

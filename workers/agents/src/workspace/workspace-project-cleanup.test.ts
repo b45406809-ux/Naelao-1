@@ -17,6 +17,7 @@ class FakeErasureDb {
   filesystems = ["fs-project"];
   backupExports = new Map<string, Record<string, unknown>>();
   runtimeRows: Array<Record<string, unknown>> = [];
+  mainRuntimeRegistry: Record<string, unknown> | null = null;
   browserProfileRows: Array<Record<string, unknown>> = [];
   browserSessionRows: Array<Record<string, unknown>> = [];
   prepare(sql: string) {
@@ -72,6 +73,15 @@ class FakeErasureDb {
           const row = this.runtimeRows.find(item => item.tenant_id === values[1] && item.space_id === values[2] && item.project_id === values[3]
             && item.runtime_kind === values[4] && item.object_name === values[5]);
           if (row) { row.erasure_attempts = Number(row.erasure_attempts ?? 0) + 1; row.last_erasure_error = values[0]; }
+        }
+        if (sql.includes("UPDATE project_main_runtime_registry SET state='erased'")) {
+          const [lastSeenAt, tenantId, spaceId, projectId, objectName] = values;
+          const row = this.mainRuntimeRegistry;
+          if (row && row.tenant_id === tenantId && row.space_id === spaceId && row.project_id === projectId
+            && row.runtime_kind === "dynamic_sandbox" && row.runtime_object_name === objectName) {
+            row.state = "erased";
+            row.last_seen_at = lastSeenAt;
+          }
         }
         if (sql.includes("UPDATE workspace_browser_profile_registry SET erasure_notified_at")) {
           const row = this.browserProfileRows.find(item => item.profile_id === values[1] && item.tenant_id === values[2] && item.space_id === values[3] && item.project_id === values[4]);
@@ -199,6 +209,34 @@ describe("retryable project workspace cleanup", () => {
     }));
     expect(runtimeNotifications).toHaveLength(1);
     expect(await runtimeNotifications[0]!.clone().json()).toMatchObject({ scope, confirm: true });
+  });
+
+  it("marks the project-main registry erased only after its exact dynamic runtime confirms local purge", async () => {
+    const { env, db } = fixture();
+    db.mainRuntimeRegistry = { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId,
+      runtime_kind: "dynamic_sandbox", runtime_object_name: `sandbox:${scope.spaceId}:${scope.projectId}`,
+      state: "active", allocation_generation: 4, last_seen_at: "2026-11-11T00:00:00.000Z" };
+    const mutableEnv = env as unknown as Record<string, unknown>;
+    mutableEnv.DYNAMIC_SANDBOX = mutableEnv.TOOL_SANDBOX;
+
+    const response = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(response.status).toBe(200);
+    expect(db.mainRuntimeRegistry).toMatchObject({ state: "erased", allocation_generation: 4 });
+  });
+
+  it("leaves project-main state unchanged when dynamic runtime erasure lacks a purge receipt", async () => {
+    const { env, db } = fixture();
+    db.mainRuntimeRegistry = { tenant_id: scope.tenantId, space_id: scope.spaceId, project_id: scope.projectId,
+      runtime_kind: "dynamic_sandbox", runtime_object_name: `sandbox:${scope.spaceId}:${scope.projectId}`,
+      state: "active", allocation_generation: 4, last_seen_at: "2026-11-11T00:00:00.000Z" };
+    const mutableEnv = env as unknown as Record<string, unknown>;
+    mutableEnv.DYNAMIC_SANDBOX = { idFromName: (name: string) => name, get: () => ({ fetch: async () =>
+      Response.json({ erased: true, localStatePurged: false, providerSnapshotPurge: "not_supported" }) }) };
+
+    const response = await handleWorkspaceProjectCleanup(await request(), env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_runtime_erasure_pending", pending: 1 });
+    expect(db.mainRuntimeRegistry).toMatchObject({ state: "active", allocation_generation: 4 });
   });
 
   it("revokes only registered browser profiles for the deleted project before coordinator erasure", async () => {

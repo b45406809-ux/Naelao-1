@@ -178,9 +178,15 @@ async function notifyWorkspaceRuntimes(env: CleanupEnv, scope: WorkspaceScope): 
         }));
         const result = await readBoundedResponseJson<{ erased?: boolean; localStatePurged?: boolean }>(response, 8 * 1024).catch(() => null);
         if (response.ok && result?.erased === true && result.localStatePurged === true) {
-          await db.prepare(`UPDATE workspace_runtime_registry SET erasure_notified_at=?,erasure_attempts=erasure_attempts+1,last_erasure_error=NULL
+          const statements = [db.prepare(`UPDATE workspace_runtime_registry SET erasure_notified_at=?,erasure_attempts=erasure_attempts+1,last_erasure_error=NULL
             WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_kind=? AND object_name=? AND erasure_notified_at IS NULL`)
-            .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId, row.runtime_kind, row.object_name).run();
+            .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId, row.runtime_kind, row.object_name)];
+          if (row.runtime_kind === "dynamic_sandbox" && row.object_name === `sandbox:${scope.spaceId}:${scope.projectId}`) {
+            statements.push(db.prepare(`UPDATE project_main_runtime_registry SET state='erased',last_seen_at=?
+              WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_kind='dynamic_sandbox' AND runtime_object_name=?`)
+              .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId, row.object_name));
+          }
+          await db.batch(statements);
           notified++;
           continue;
         }
