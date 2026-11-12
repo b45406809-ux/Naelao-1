@@ -2,18 +2,16 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12): code checkpoint `2d4bde5a` is pushed to
+Current continuation checkpoint (2026-11-12): code checkpoint `f676408a` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. It adds a post-worker health gate before staging/production
-frontend publication. The router checks each of its eleven configured service bindings under a
-bounded timeout and validates each service/environment response; the public result exposes only
-aggregate counts. AgentPort has a matching readiness/environment response. The workflow probes the
-configured API router, dependency aggregate and AgentPort with bounded retries. Focused tests pass
-**15/15 across 13 Workers**, all 13 Worker typechecks pass, Python probe tests **5/5**, deployment
-manifest tests **7/7**, the deployment manifest validator, workflow YAML parsing and `git diff --check`
-pass. These are local mocks/static checks; the deployment probe was not run and establishes no
-Cloudflare route, binding, D1, or live acceptance. Preserve the unrelated untracked
-`infra/scripts/__pycache__/`.
+`/workspace/Naelao-1-managed-services`. It adds stable signed webhook event IDs, returns bounded
+Resend acceptance receipts, persists those receipts on the existing Product auth-email outbox, and
+gates releases on migration 0231's receipt column. Local evidence: Notifications **33/33**, Product
+auth recovery **17/17**, release migration tests **9/9**, release manifest tests **5/5**, both release
+validators, Notifications/Spaces typechecks and `git diff --check`. The checked-in schema manifest
+had a stale SHA for migration 0230; it now matches the checked-in SQL. These are mocked/static
+checks only; no D1, provider, deployment or live acceptance was run. Resend acceptance does not mean
+inbox delivery. Preserve the unrelated untracked `infra/scripts/__pycache__/`.
 
 P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
 object references; workspace object bytes are references, restore merges missing rows, and no
@@ -29,14 +27,16 @@ unsupported U05/U06 runtime contracts and other gaps kept open. P20 now has a lo
 API, but independent identity, operator UI, refund/dispute policy and author payout handling remain
 open. P01/P02 protections fail closed on the recorded unconfigured IDs/receipts; no D1/KV ownership
 or credentials will be guessed. P01 now has a source-validated post-worker health gate, but no live
-probe has run. P02 resource IDs/ownership/receipts and P01 legacy baseline attestations remain
-external evidence gates. Exact next task: continue Section 2 at P03/P23 by tracing the durable
-dunning outbox and notification providers through recipient-visible payment and delivery states;
-implement an independent state/receipt/caller gap using existing journals and queues, without
-changing grace, access restriction, refund or payout policy. Then continue commercial integrity and
-recovery (P11–P13/P18/P20/P21/P04/P22), followed by guided templates, voice dashboards and shared-
-Space coordination. Keep rollouts disabled. Fetch before every push and safely integrate remote
-advances; never reset, clean, switch away, overwrite history, deploy or purchase.
+probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legacy baseline
+attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
+policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
+and receipt coverage outside the Product auth outbox; see
+`docs/operations/notification-delivery-contract.md`. Exact next task: continue recovery at P04/P22
+by tracing semantic cache entry purge and whole-Space cleanup status through current Knowledge,
+Vectorize/KV and erasure callers; implement durable entry cleanup/status using existing deletion and
+erasure ledgers. Then continue the platform requirement queue into guided templates, voice dashboards
+and shared-Space coordination. Keep rollouts disabled. Fetch before every push and safely integrate
+remote advances; never reset, clean, switch away, overwrite history, deploy or purchase.
 
 Historical checkpoint (2026-11-12, code `4b5990b6`, superseded by the current checkpoint above): S2 is IMPLEMENTED_LOCAL for currently supported
 provider lanes; account-specific provider enablement, approved commercial terms and unsupported

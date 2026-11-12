@@ -11,17 +11,25 @@ The P01 deployment manifest, staging dependency gate, tests and runbook are push
 `origin/Mcbt5s-Backup-2` as `749f9c95`. P03/P11–P13 code, tests, schema updates and this source
 reconciliation are pushed in code commit `2625ea3426d5ee1bc7d7dce3776553073843640d`; the current
 progress refresh is pushed as docs commit `def77078` immediately after that code checkpoint.
+Latest code checkpoint `f676408a` is pushed: stable signed webhook event identifiers, explicit
+Resend acceptance receipts persisted on the existing Product auth-email outbox, migration 0231,
+and a release schema probe for the receipt column. Local evidence: Notifications **33/33**, Product
+auth recovery **17/17**, release runner **9/9**, manifest tests **5/5**, affected typechecks, both
+release validators and `git diff --check`. No live provider or D1 was exercised. P23 remains partial
+on general channel exhaustion and audited operator replay.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
-Current code already provides an ordered 230-file migration SHA-256 manifest, a Python release
+Current code already provides an ordered 231-file migration SHA-256 manifest, a Python release
 runner with an atomic D1 migration ledger and concurrency lock, checksum drift checks, a resumable
 execution owner after interruption, fail-closed handling for non-idempotent legacy migration 0164,
 pre-deploy required-schema probes, and staging/production workflows that run migrations before
-consumers. Source tests passed locally: resource receipt validator **6/6**, Wrangler environment
-isolation **6/6**, migration runner **8/8**, release manifest **5/5**; the manifest now reports
-required schema `0230_queue_health_observations`. These are local tests. No D1 database was
-inspected.
+consumers. Migration 0231 adds the Product auth-email provider receipt column; the release runner
+probes for it before recording the schema version. Current-source validation exposed a stale
+checked-in SHA for migration 0230, which is now corrected to match its source. New-slice tests pass:
+migration runner **9/9**, release manifest tests **5/5**, required schema
+`0231_product_auth_email_provider_receipt`, and the deployment-manifest validator. These are local
+tests. No D1 database was inspected.
 
 Added `infra/release/deployment-manifest.json`, a validator wired into both preflights, and
 `docs/operations/release-and-environment-safety.md`. The validator checks tag/commit versioning,
@@ -54,7 +62,7 @@ The distinct D1/KV IDs, actual Cloudflare resource existence/account, service ow
 substitute guessed IDs, account names, timestamps, or ownership. Deployment preflight remains
 blocked until source configuration and operator-observed receipts satisfy the validators.
 
-### Verification recorded for this checkpoint
+### Verification recorded at the initial P01/P02 source reconciliation
 
 - `python3 -m unittest discover -s infra/scripts -p 'test_validate_environment_resources.py'`: **6/6**.
 - `python3 -m unittest discover -s infra/scripts -p 'test_validate_wrangler_env_isolation.py'`: **6/6**.
@@ -112,6 +120,19 @@ constraints **3/3**, release runner **8/8**, both manifests validate. No Cloudfl
 queried. Current depth/age/DLQ and live telemetry acceptance still need a supported provider API or
 operator inspector.
 
+### P23 — notification outcomes and retry safety: PARTIAL
+
+The current email path preserves a stable caller idempotency key and now returns Resend's bounded
+request receipt with an explicit `provider_accepted` outcome. Product reset and verification
+operations persist that receipt on their existing outbox row and expose it through the existing
+HMAC-scoped status route. Queued webhooks now carry a stable event ID, idempotency key, timestamp,
+and versioned HMAC over timestamp/event ID/body; the legacy body-only signature remains for
+consumers during migration. `docs/operations/notification-delivery-contract.md` documents at-least-
+once delivery and receiver deduplication. Local evidence: Notifications **33/33**, Product auth
+recovery **17/17**, release runner **9/9**, 231-file manifest, affected typechecks and release
+validators. These are local mocks/SQLite. Generic provider receipts, terminal exhaustion visibility,
+and scoped/audited operator replay remain code gaps; no inbox or live-provider delivery is claimed.
+
 ### P18/P20/P21 — current-source reconciliation
 
 P18 reset consumes a one-time token and atomically applies the password, advances account
@@ -122,6 +143,10 @@ bounded outbox, keeps public responses neutral, retries using a stable notificat
 superseded reset tokens, and exposes HMAC-scoped tenant diagnostics. Signup currently issues a
 session before verification; access policy for unverified users and real email delivery remain open.
 Current local verification: Spaces auth/reset/security/email suites **24/24** and Spaces typecheck.
+The follow-on `f676408a` slice parses Resend's accepted-request receipt, persists it to the same
+Product auth-email outbox operation, and exposes it only through the existing HMAC-protected
+operation list. This is a provider acceptance receipt, not inbox delivery. Product auth recovery
+tests pass **17/17**; live email acceptance remains unverified.
 
 P20 handles signed Lemon Squeezy marketplace refund events in a durable idempotent review journal,
 matches them against observed purchases, validates currency/amount/tenant, reconciles late-arriving
@@ -132,15 +157,16 @@ sandbox or live transaction was used.
 
 ## Requirement queue
 
-The platform plan's P01–P03, P11–P13 and P18/P20/P21 have now been reconciled against current source.
+The platform plan's P01–P03, P11–P13, P18/P20/P21 and P23 have now been reconciled against current source.
 P02 remains fail-closed as recorded above. Continue in dependency order:
 
 1. Preserve the P01/P02 preflight gates until distinct Cloudflare resources, service ownership,
    read-only resource receipts, and per-database baselines are verified. Do not invent them.
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
-3. Reconcile P04 and P22 recovery/data lifecycle against current archive, object, index, tombstone,
-   and erasure callers; preserve the U01/U10 retention limits.
+3. Continue P04/P22 recovery: trace semantic cache entry purge and whole-Space cleanup status
+   through Knowledge, Vectorize/KV and erasure callers; implement durable entry cleanup/status using
+   the existing deletion/erasure ledgers, while preserving U01/U10 retention limits.
 4. Reconcile P14–P19 and P23–P24 against current sessions, queues, notifications and package
    lifecycle, then continue P05–P10 and guided template authoring, voice dashboards, and Shared-Space
    requirements in their dependency order. Maintain one owner/evidence record for overlapping S/U
