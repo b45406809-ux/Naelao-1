@@ -1,21 +1,24 @@
 name: Pinned Cloudflare Computer build evidence
 
 on:
+  push:
+    branches:
+      - Mcbt5s-Backup-2
+    paths:
+      - .github/workflows/cloudflare-computer-pinned.yml
   workflow_dispatch:
   pull_request:
     paths:
       - .github/workflows/cloudflare-computer-pinned.yml
-      - docs/research/managed-services-and-sidecar-runtime-plan.md
-      - docs/research/managed-services-and-sidecar-implementation-progress.md
-      - work/research/pinned-cloudflare-computer/**
-
-permissions:
-  contents: read
 
 jobs:
   build-pinned-computerd:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     steps:
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -48,6 +51,24 @@ jobs:
             -t js --no-recurse --no-install-deps \
             --project-name cloudflare-computer-monorepo --project-version 0.10.0 \
             --output "$RUNNER_TEMP/cloudflare-computer/computerd-0.10.0.cdx.json" .
+
+      - name: Attest the built daemon and dependency SBOM
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/cloudflare-computer/source/artifacts/computerd/computerd-linux-x64
+            ${{ runner.temp }}/cloudflare-computer/computerd-0.10.0.cdx.json
+
+      - name: Retain the daemon and SBOM build outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloudflare-computer-0.10.0-build
+          path: |
+            ${{ runner.temp }}/cloudflare-computer/source/artifacts/computerd/computerd-linux-x64
+            ${{ runner.temp }}/cloudflare-computer/computerd-0.10.0.cdx.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Record build hashes without publishing the image
         shell: bash

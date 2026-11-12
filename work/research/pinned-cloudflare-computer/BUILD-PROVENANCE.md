@@ -28,8 +28,13 @@ output is recorded as observed provenance, not claimed as bit-for-bit reproducib
 
 The pinned upstream README marks the Container backend, workspace push/pull sync, daemon/container
 image and RPC wire protocol experimental. The image is an image-only distribution layer based on
-`scratch`; its README says it is intended for downstream `COPY`, not as a runnable service. No
-Naelao adapter, readiness probe, authentication binding, ignore-policy verification, signed
-provenance, CI run, registry publication, FUSE mount/flush test, or Cloudflare deployment was
-performed. Rollout remains disabled. U08 stays partial until the integration contract is stable
-and the remaining acceptance evidence exists.
+`scratch`; its README says it is intended for downstream `COPY`, not as a runnable service. The
+checked-in workflow now builds the exact pin, generates its dependency SBOM, emits GitHub build
+provenance attestations for the daemon binary and SBOM when GitHub Actions runs, and retains those
+outputs for 30 days. The attestation action is pinned to
+`e8998f949152b193b063cb0ec769d69d929409be`; the upload action is pinned to
+`ea165f8d65b6e75b540449e92b4886f43607fa02`. No matching GitHub run or attestation receipt is
+recorded yet. No Naelao adapter, readiness probe, authentication binding, ignore-policy verification,
+registry publication, FUSE mount/flush test, or Cloudflare deployment was performed. The local
+image still has no registry digest. Rollout remains disabled. U08 stays partial until the
+attestation run is verified and the runtime integration contract and acceptance evidence exist.
