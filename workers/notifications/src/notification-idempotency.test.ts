@@ -37,7 +37,7 @@ describe("stable notification retry identities", () => {
     const { writes, db } = setup();
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("dunning-abc123");
-      return Response.json({ id: "email-1" });
+      return Response.json({ id: "email_123" });
     });
     vi.stubGlobal("fetch", fetchMock);
     const message = {

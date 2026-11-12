@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0230_queue_health_observations",
+  "requiredSchemaVersion": "0231_product_auth_email_provider_receipt",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -922,7 +922,11 @@
     },
     {
       "filename": "0230_queue_health_observations.sql",
-      "sha256": "ac46adb99a43ee3ce912bd807d57024d624570743bcc1304d0fc1f2c11f76400"
+      "sha256": "92bcbbc17d58bbd42f688dcf2848a64f888d0abc8dd25914a54bd88a6a3ff418"
+    },
+    {
+      "filename": "0231_product_auth_email_provider_receipt.sql",
+      "sha256": "0fd5e271a38bb6315b931631ab76f98d335224f3083362a175617cdf58e51aea"
     }
   ]
 }

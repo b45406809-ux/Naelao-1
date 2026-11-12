@@ -24,6 +24,7 @@ async function sha256Hex(value: string): Promise<string> {
 function authHarness(config = '{"productConfig":{"authProvider":{"provider":"naelao-native"},"pricingConfig":{"model":"subscription"}}}') {
   const fakeDb = createFakeD1(AUTH_SCHEMA);
   fakeDb.db.exec(readFileSync(new URL("../../../infra/migrations/0227_product_account_recovery_generation_and_email_outbox.sql", import.meta.url), "utf8"));
+  fakeDb.db.exec(readFileSync(new URL("../../../infra/migrations/0231_product_auth_email_provider_receipt.sql", import.meta.url), "utf8"));
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, config_json) VALUES ('product', 'tenant', '${config}')`);
   fakeDb.db.exec(`INSERT INTO products (id, tenant_id, spacetype_id, status, config_json, product_slug) VALUES ('product', 'tenant', 'launchpad', 'active', '${config}', 'launchpad')`);
   fakeDb.db.exec("INSERT INTO product_end_users (product_space_id, end_user_id, email) VALUES ('product', 'user', 'user@example.com')");
@@ -173,7 +174,7 @@ describe("product end-user recovery token replay boundary", () => {
       const payload = await (input as Request).json() as { notification_id: string; body: string };
       attempts.push(payload);
       if (attempts.length === 1) throw new Error("connection_timeout");
-      return Response.json({ delivered: true });
+      return Response.json({ delivered: true, accepted: true, outcome: "provider_accepted", provider_receipt_id: "email_receipt_123" });
     });
     env.NOTIFICATIONS_WORKER = { fetch } as unknown as Fetcher;
     const response = await app.request("/spaces/product/end-users/request-password-reset", {
@@ -187,7 +188,7 @@ describe("product end-user recovery token replay boundary", () => {
     expect(attempts).toHaveLength(2);
     expect(attempts[0]?.notification_id).toBe(`product-auth:${operationId.operation_id}`);
     expect(attempts[1]?.notification_id).toBe(attempts[0]?.notification_id);
-    expect(fakeDb.db.prepare("SELECT status, attempt_count, last_error_code FROM product_auth_email_outbox WHERE operation_id = ?").get(operationId.operation_id)).toEqual({ status: "accepted", attempt_count: 2, last_error_code: null });
+    expect(fakeDb.db.prepare("SELECT status, attempt_count, last_error_code, provider_receipt_id FROM product_auth_email_outbox WHERE operation_id = ?").get(operationId.operation_id)).toEqual({ status: "accepted", attempt_count: 2, last_error_code: null, provider_receipt_id: "email_receipt_123" });
   });
 
   it("does not expose email-operation diagnostics without an internal HMAC", async () => {

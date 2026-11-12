@@ -125,13 +125,16 @@ async function dispatchOne(db: Db, env: ProductAuthEmailDispatcherEnv, operation
       }),
     }));
     if (response.ok) {
-      const result = await response.json<{ delivered?: boolean }>().catch(() => ({ delivered: false }));
+      const result = await response.json<{ delivered?: boolean; provider_receipt_id?: unknown }>().catch(() => ({ delivered: false, provider_receipt_id: undefined }));
       if (result.delivered === true) {
+        const receiptId = typeof result.provider_receipt_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(result.provider_receipt_id)
+          ? result.provider_receipt_id
+          : null;
         await db.prepare(
-          `UPDATE product_auth_email_outbox SET status = 'accepted', accepted_at = datetime('now'),
+          `UPDATE product_auth_email_outbox SET status = 'accepted', accepted_at = datetime('now'), provider_receipt_id = ?,
              updated_at = datetime('now'), lease_token = NULL, lease_until = NULL, last_error_code = NULL
            WHERE operation_id = ? AND status = 'sending' AND lease_token = ?`
-        ).bind(operationId, leaseToken).run();
+        ).bind(receiptId, operationId, leaseToken).run();
         return true;
       }
       errorCode = `notification_rejected_${response.status}`;

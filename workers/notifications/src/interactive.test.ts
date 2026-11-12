@@ -27,6 +27,27 @@ function env(): NotificationsEnv {
 }
 describe("interactive mobile approval delivery", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("returns a Resend acceptance receipt without claiming inbox delivery", async () => {
+    const outbound = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("product-auth:operation-1");
+      return Response.json({ id: "email_receipt_123" });
+    });
+    vi.stubGlobal("fetch", outbound);
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "email", to: "customer@example.net", body: "Your message", notification_id: "product-auth:operation-1" }),
+    }), env(), {} as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      delivered: true,
+      accepted: true,
+      outcome: "provider_accepted",
+      provider_receipt_id: "email_receipt_123",
+    });
+  });
+
   it("rejects oversized and malformed synchronous notify payloads before provider egress", async () => {
     const outbound = vi.fn();
     vi.stubGlobal("fetch", outbound);

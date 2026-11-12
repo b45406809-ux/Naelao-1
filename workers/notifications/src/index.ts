@@ -514,7 +514,7 @@ async function sendEmailNow(
   env: NotificationsEnv,
   msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo">,
   notificationId?: string
-): Promise<{ ok: boolean; status?: number; from?: string }> {
+): Promise<{ ok: boolean; status?: number; from?: string; providerReceiptId?: string }> {
   let subject = msg.subject ?? "(no subject)";
   let html = msg.html ?? "";
 
@@ -554,6 +554,14 @@ async function sendEmailNow(
     return { ok: false, status: res.status };
   }
 
+  // Resend's HTTP 2xx means the provider accepted the send request, not that the message reached
+  // an inbox. Preserve its request receipt when present; callers must keep the outcome labeled as
+  // provider acceptance rather than delivery.
+  const providerResponse = await readProviderJson<{ id?: unknown }>(res);
+  const providerReceiptId = typeof providerResponse?.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(providerResponse.id)
+    ? providerResponse.id
+    : undefined;
+
   // Audit row in the `notifications` table (migration 0010: id, tenant_id, user_id NOT NULL,
   // type, title, body, ...) — this previously used columns (`status`, `subject`) that don't
   // exist on that schema and would have failed on every real insert, silently caught by this
@@ -570,7 +578,7 @@ async function sendEmailNow(
       .run();
   }
 
-  return { ok: true, from };
+  return { ok: true, from, ...(providerReceiptId ? { providerReceiptId } : {}) };
 }
 
 // ── Queue consumer ────────────────────────────────────────────────────────────
@@ -619,7 +627,7 @@ export async function queue(
           const result = await sendEmailNow(env, msg, notificationId ?? `email:${message.id}`);
           if (!result.ok) {
             console.error(
-              `[notifications/queue] Resend API error ${result.status ?? "unknown"} for email=${msg.email}`
+              `[notifications/queue] Resend API error ${result.status ?? "unknown"} notification=${notificationId ?? message.id}`
             );
             message.retry();
             break;
@@ -668,13 +676,21 @@ export async function queue(
           }
 
           const body = JSON.stringify(msg.data ?? {});
+          const eventId = notificationId ?? `webhook:${message.id}`;
+          const sentAt = new Date().toISOString();
           const signature = await hmacSha256Hex(body, env.WEBHOOK_SIGNING_SECRET);
+          const signedEnvelope = await hmacSha256Hex(`${sentAt}.${eventId}.${body}`, env.WEBHOOK_SIGNING_SECRET);
 
           const res = await fetch(msg.webhookUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "X-Naelao-Signature": signature,
+              "X-Naelao-Signature-Version": "2",
+              "X-Naelao-Signature-V2": `v1=${signedEnvelope}`,
+              "X-Naelao-Event-Id": eventId,
+              "X-Naelao-Sent-At": sentAt,
+              "Idempotency-Key": eventId,
             },
             body,
             redirect: "error",
@@ -827,7 +843,14 @@ app.post("/internal/notify", async (c) => {
     if (!result.ok) {
       return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
     }
-    return c.json({ delivered: true, channel: "email", from: result.from });
+    return c.json({
+      delivered: true,
+      accepted: true,
+      outcome: "provider_accepted",
+      channel: "email",
+      from: result.from,
+      ...(result.providerReceiptId ? { provider_receipt_id: result.providerReceiptId } : {}),
+    });
   }
 
   if (body.channel === "web_push") {

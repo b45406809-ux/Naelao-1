@@ -625,7 +625,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       return c.json({ error_code: "invalid_status" }, 400);
     }
     const rows = await env.PLATFORM_DB.prepare(
-      `SELECT operation_id, message_kind, status, attempt_count, next_attempt_at,
+      `SELECT operation_id, message_kind, status, attempt_count, next_attempt_at, provider_receipt_id,
               last_error_code, created_at, updated_at, accepted_at
          FROM product_auth_email_outbox
         WHERE tenant_id = ? AND (? IS NULL OR status = ?)
@@ -636,6 +636,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       status: string;
       attempt_count: number;
       next_attempt_at: string;
+      provider_receipt_id: string | null;
       last_error_code: string | null;
       created_at: string;
       updated_at: string;
