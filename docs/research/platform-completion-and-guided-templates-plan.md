@@ -1,8 +1,8 @@
 # Platform completion and guided templates plan
 
-Status: proposed; no implementation claimed. Prepared against `Mcbt5s-Backup-2` at `02a0cf78` on 2026-11-11. The separate autonomous managed-services worktree was unavailable during this review. Reconcile this plan against its final source, requirement matrix, and commits before implementing; do not repeat completed work.
+Status: active implementation plan. The plan arrived on `Mcbt5s-Backup-2` in commit `9e1281ce` and is integrated into `autonomous-managed-services-20261111`. Implementation and evidence are tracked in [managed-services progress](managed-services-and-sidecar-implementation-progress.md); the rows below reconcile historical findings against current source and must not be read as live acceptance.
 
-This document is intended to be integrated onto the remote branch **after the currently running implementation session finishes**. Until then preserve it as local work; do not commit, push, or disturb that session unless the user directs otherwise. When integrating, fetch the latest branch, preserve both sets of changes, and resolve any conflicts against the finished implementation.
+The original review used `02a0cf78` on 2026-11-11. Its findings and later design sections are research inputs, not current-code claims. Before changing a row, compare its actual caller, persistence, configuration and tests with the current branch; reuse the existing S1–S9/U01–U12 ledgers and implementations. Push authorized coherent checkpoints to `Mcbt5s-Backup-2` after fetching and safely integrating remote advances.
 
 ## Outcome
 
@@ -12,7 +12,7 @@ Do not assume that every capability below is required for the first launch. Rele
 
 ## Evidence and reconciliation
 
-The following observations were made on the stated checkout and must be rechecked after the other session:
+The following observations were made on the stated older checkout. Current implementation status, local evidence, named blockers and the next action are recorded in the progress ledger:
 
 | ID | Finding | Evidence and limit |
 | --- | --- | --- |

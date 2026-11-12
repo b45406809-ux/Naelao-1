@@ -2,35 +2,33 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12; P03/P11–P13 code is pushed as `2625ea34`): the active
-branch remains `autonomous-managed-services-20261111` in
-`/workspace/Naelao-1-managed-services`; preserve its dirty work and `infra/scripts/__pycache__/`.
-P03's Billing event handling, durable dunning outbox, versioned shared event contract and recovery
-notification workflow are reachable. P11 checkout simulation is already limited to explicit
-development/local/test configuration. P12 now has one strict v1 contract shared by Billing and
-Workflows while retaining pending legacy v1 outbox compatibility. P13 no longer treats interval
-analytics as current backlog/age/DLQ or reports false healthy state: observations persist as
-unknown/incomplete/degraded and alert through the existing operator failure inbox. Migration 0230
-is now the required schema. Focused dunning/checkout/queue suites pass **31/31**; queue migration
-tests **3/3**; release runner **8/8**; release/deployment manifest tests **5/5** each; validators
-accept the 230-migration source inventory. Billing, Workflows and shared-types typechecks pass.
-Product reset/security/email outbox suites pass **24/24**, and marketplace refund review tests pass
-**6/6**. No provider delivery, deployed D1, or live acceptance is claimed.
+Current continuation checkpoint (2026-11-12): code checkpoint `7bf3cd0f` is pushed to
+`origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
+`/workspace/Naelao-1-managed-services`. It adds a claimed-request-gated whole-organization SpaceDO
+purge: D1 marks the Space deleted, migration 109 atomically purges application rows with a durable
+tombstone, all later DO reads/writes/restores fail with 410, and the retryable Workflow removes the
+encrypted archive prefix after tombstoning. Focused local tests pass Spaces **16/16** and Workflows
+erasure **19/19**; Spaces and Workflows typechecks and `git diff --check` pass. No deployed D1/DO/R2,
+provider, isolated restore or live acceptance is claimed. Preserve the unrelated untracked
+`infra/scripts/__pycache__/`.
 
-P03 remains PARTIAL because there is no approved grace-period, activity restriction, or manual
-intervention policy; provider retry/real notification acceptance is also unverified. P13 remains
-PARTIAL because the available GraphQL source has interval totals only; current queue/DLQ depth and
-oldest age need a supported live inspector. P20 refund evidence is durably reviewable, but the
-license-access, author-clawback and operator-resolution policy is undecided. P18/P21 implementation
-is present in current source: reset atomically advances the account security generation and queues
-session cleanup; encrypted auth-email operations retry and expose scoped diagnostics. The progress
-record is pushed as `def77078`. Next exact task: reconcile P04/P22 archive, restore, object, index and
-tombstone callers against current code, closing independent recovery gaps before moving to assistant
-quality and guided templates. P01/P02 remain partial: staging and production share `PLATFORM_DB` and 11
-mutable KV IDs, `naelao-calls` has no named Worker owner, resource receipts and operator-attested D1
-baselines are absent, and deployed bindings were not inspected. Keep rollout disabled. Fetch before
-every push and safely integrate remote advances; never reset, clean, switch away, overwrite history,
-deploy or purchase.
+P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
+object references; workspace object bytes are references, restore merges missing rows, and no
+isolated restore/RPO/RTO drill or live store verification exists. The newly integrated plan commit
+`9e1281ce` is in branch history. Current P01/P02 preflights still fail closed on one shared D1, 11
+shared KV namespaces, unresolved `naelao-calls` ownership and 62 missing read-only resource receipts;
+the D1 release runner requires absent operator-attested migration baselines before any remote
+mutation. P03/P12/P13, P20, P18/P21 and P22 status plus exact evidence/gaps are in the managed
+progress matrix. The S2–S9/U01–U12 source/caller audit is reconciled there; PARTIAL rows remain
+partial for their specific missing implementation, unsupported contract, product decision or live
+evidence, and no row is accepted live. Exact next task: close P20's independent operator-review
+surface gap by adding scoped read-only refund-case triage using the existing durable cases; do not
+change license access or author earnings while policy is undecided. Then continue P23 and the P22
+semantic-cache cleanup gap before guided templates, voice dashboards and shared-Space coordination.
+P01/P02 source controls are already coded and currently fail closed on the recorded unconfigured
+IDs/receipts; no D1/KV resource ownership or credentials will be guessed. Keep rollouts disabled.
+Fetch before every push and safely integrate remote advances; never reset, clean, switch away,
+overwrite history, deploy or purchase.
 
 Historical checkpoint (2026-11-12, code `4b5990b6`, superseded by the current checkpoint above): S2 is IMPLEMENTED_LOCAL for currently supported
 provider lanes; account-specific provider enablement, approved commercial terms and unsupported
