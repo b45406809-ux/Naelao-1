@@ -102,8 +102,8 @@ Agents/Spaces/Artifact/shared types/AgentPort API/SDK and Shell typechecks passe
 worktree audit found 120 tracked modifications plus 121 untracked paths, with no deletions. The
 reflog records a reset to the same `02a0cf78` HEAD; it cannot establish whether earlier uncommitted
 content was lost. The remote task branch was absent. The user selected `origin/Mcbt5s-Backup-2` as
-the recovery destination. Catch-up commit `df8074a0119489f9077fa064a89d6d2f3bf956e5` and docs
-follow-up `02a2617e` are pushed there as fast-forwards; the working branch remains
+the recovery destination. Catch-up commit `df8074a0119489f9077fa064a89d6d2f3bf956e5`, docs follow-up `02a2617e`, and
+S2 quote checkpoint `0d40fb05` are pushed there as fast-forwards; the working branch remains
 `autonomous-managed-services-20261111`. The current S2 quote slice passed managed-model tests 6/6,
 Billing reservation tests 16/16, migration tests 8/8, Agents/Billing/Shell typechecks, and
 `git diff --check`. Exact next task: extend durable quotes to managed AgentMail `provision` and
