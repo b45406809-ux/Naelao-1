@@ -2,7 +2,7 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12, latest code pushed as `3e0391a2`): S2 is
+Current continuation checkpoint (2026-11-12, P01 code pushed as `749f9c95`): S2 is
 IMPLEMENTED_LOCAL for currently supported provider lanes. U11's source-to-caller audit confirms
 durable metering, scoped 30-day cost thresholds, owner dashboard alerts, browser-push retry and
 revocation handling, and visible delivery status. Supported OpenRouter, Agent37, Telnyx and Twilio

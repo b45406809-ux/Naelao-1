@@ -7,6 +7,8 @@ Updated 2026-11-12 on `autonomous-managed-services-20261111`. The platform plan 
 integrated in this branch. Findings in that plan were researched against an older checkout; the
 statuses below reflect the current source where inspected. This file is additive to the managed
 services progress record; reuse its U01–U12 and S1–S9 ledgers rather than duplicating their evidence.
+The P01 deployment manifest, staging dependency gate, tests and runbook are pushed to
+`origin/Mcbt5s-Backup-2` as `749f9c95`.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
