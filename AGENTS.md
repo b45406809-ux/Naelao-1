@@ -21,10 +21,9 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
 remains separate and must not be switched or merged with the recovery branch. Code checkpoint
-`46ff858f` and the remote recovery branch both contain the initial AgentMail quote slice. The current
-worktree adds repricing-safe provision recovery and updated durable progress/bootstrap instructions;
-the exact local changes and fresh checks are recorded in the progress source and are being prepared
-for the next coherent push.
+`171a3471` and `origin/Mcbt5s-Backup-2` contain the repricing-safe AgentMail provision recovery fix,
+its regression test, and updated durable progress/bootstrap instructions. The exact push and fresh
+checks are recorded in the progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
