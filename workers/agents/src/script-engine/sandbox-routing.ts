@@ -7,5 +7,9 @@ export function workspaceBranchScope(branch?: string): string {
   return `:branch:${normalized}`;
 }
 export function sandboxInstanceName(spaceId: string, projectId?: string, branch?: string): string {
-  return `sandbox:${spaceId}:${projectId ?? "_assistant"}${workspaceBranchScope(branch)}`;
+  // A project has one main computer. Normal project branches are materialized from their
+  // checked coordinator revision into this serialized Durable Object. Speculative model-race
+  // branches remain isolated so concurrent candidates cannot share a writable filesystem.
+  const isolatedRace = Boolean(projectId && branch?.startsWith("race/"));
+  return `sandbox:${spaceId}:${projectId ?? "_assistant"}${isolatedRace ? workspaceBranchScope(branch) : ""}`;
 }

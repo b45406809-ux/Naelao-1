@@ -14,7 +14,8 @@ function fixture() {
       const etag = String(++sequence); entries.set(key, { bytes, etag, customMetadata: options.customMetadata ?? {}, ...(options.httpMetadata ? { httpMetadata: options.httpMetadata } : {}) }); return { etag };
     },
   } as unknown as R2Bucket;
-  const env = { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "worker", scriptsBucket: bucket } as ScriptEngineEnv;
+  const env = { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "worker", scriptsBucket: bucket,
+    withProjectWorkspaceMutation: async <T>(operation: () => Promise<T>) => operation() } as ScriptEngineEnv;
   const prefix = workspacePrefix(env);
   entries.set(prefix + "source.txt", { bytes: new TextEncoder().encode("input"), etag: "original", customMetadata: {} });
   return { env, entries, prefix };
@@ -95,5 +96,19 @@ describe("immutable environment handoffs", () => {
     };
     await restoreEnvironmentArtifact(f.env, artifact.digest, "restored.pdf", null);
     expect(checkedPublication).toMatchObject({ expectedHash: null, contentType: "application/pdf", bytes: new TextEncoder().encode("input") });
+  });
+
+  it("exports the committed coordinator manifest object instead of a stale legacy R2 projection", async () => {
+    const f = fixture();
+    const canonicalBytes = new TextEncoder().encode("committed coordinator revision");
+    const canonicalDigest = await sha256Bytes(canonicalBytes);
+    const canonicalKey = `workspace-v1/tenant/space/project/global/content/${canonicalDigest}`;
+    f.entries.set(canonicalKey, { bytes: canonicalBytes, etag: "canonical", customMetadata: { sha256: canonicalDigest } });
+    f.entries.set(f.prefix + "source.txt", { bytes: new TextEncoder().encode("stale legacy file"), etag: "legacy", customMetadata: {} });
+    f.env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 9, updatedAt: "2026-11-11T00:00:00.000Z" },
+      entries: [{ path: "source.txt", sha256: canonicalDigest, size: canonicalBytes.byteLength, executable: false, objectKey: canonicalKey, contentType: "application/pdf" }] });
+
+    const artifact = await publishEnvironmentArtifact(f.env, "source.txt");
+    await expect(readEnvironmentArtifact(f.env, artifact.digest)).resolves.toMatchObject({ bytes: canonicalBytes, hash: canonicalDigest, contentType: "application/pdf" });
   });
 });

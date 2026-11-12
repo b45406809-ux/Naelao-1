@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS assistant_agentport_event_runs (
   updated_at TEXT NOT NULL
 );
 
+
 CREATE TABLE IF NOT EXISTS assistant_agentmail_operations (
   operation_id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,

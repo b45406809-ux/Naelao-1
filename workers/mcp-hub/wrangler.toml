@@ -43,6 +43,10 @@ service = "naelao-agents"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+[[services]]
+binding = "AGENTPORT_WORKER"
+service = "naelao-agentport"
+
 [vars]
 ENVIRONMENT = "development"
 # Remember the wrangler vars-replacement trap (item 41): repeated per env block below, not merged.
@@ -67,6 +71,10 @@ service = "naelao-agents"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+[[env.staging.services]]
+binding = "AGENTPORT_WORKER"
+service = "naelao-agentport"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
@@ -86,3 +94,7 @@ service = "naelao-agents"
 [[env.production.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[[env.production.services]]
+binding = "AGENTPORT_WORKER"
+service = "naelao-agentport"

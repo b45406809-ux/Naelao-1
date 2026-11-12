@@ -114,12 +114,7 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
       - name: Prepare sandbox dependencies
-        run: |
-          node --input-type=module <<'NODE'
-          import { createRequire } from 'node:module'; import { dirname, join, resolve } from 'node:path'; import { cpSync, mkdirSync } from 'node:fs';
-          const root=process.cwd(), req=createRequire(join(root,'workers/agents/package.json')), target=join(root,'workers/agents/container/.vendor/node_modules'), platform=`@esbuild/${process.platform}-${process.arch}`;
-          mkdirSync(join(target,'@esbuild'),{recursive:true}); cpSync(dirname(req.resolve('esbuild/package.json')),join(target,'esbuild'),{recursive:true,dereference:true}); cpSync(resolve(root,'node_modules/.pnpm/node_modules',platform),join(target,platform),{recursive:true,dereference:true});
-          NODE
+        run: node scripts/stage-agent-container-deps.mjs
       - name: Verify unauthorized agent requests are rejected
         shell: bash
         run: |

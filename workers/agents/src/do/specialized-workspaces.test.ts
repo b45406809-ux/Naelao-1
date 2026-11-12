@@ -6,9 +6,11 @@ import { ConcurrencyDO } from "./ConcurrencyDO.js";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
 import { validateContainerScope } from "../script-engine/container-policy.js";
 import { readBytesWithHash, sha256Bytes } from "../script-engine/r2-cas.js";
+import { environmentArtifactObjectKey } from "../script-engine/environment-artifacts.js";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 const prefix = "spaces/space/projects/project/workspace/";
+const projectExtensionPrefix = "spaces/space/projects/project/extensions/media-one/workspace/";
 const extensionPrefix = "spaces/space/space-workspace/extensions/media-one/workspace/";
 
 // R2 and the native process transport are doubles. Publication uses the real ConcurrencyDO
@@ -42,7 +44,7 @@ function workspace() {
   return { data, bucket, namespace, seed };
 }
 
-function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
+function runtime(store: ReturnType<typeof workspace>, deployedImage = image, unifiedWorkspace = false) {
   const files = new Map<string, string>(), records = new Map<string, unknown>(), calls: string[] = [];
   let running = false;
   let afterExec: (() => Promise<void>) | undefined;
@@ -77,12 +79,17 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
     delete: async (key: string) => records.delete(key), setAlarm: async () => undefined,
   } };
   const env = { PLATFORM_SECRET: "test-secret", SCRIPTS_R2: store.bucket, CONCURRENCY_DO: store.namespace,
+    UNIFIED_WORKSPACE_ENABLED: unifiedWorkspace ? "true" : "false",
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (..._values: unknown[]) => ({
+      first: async () => sql.includes("workspace_erasure_tombstones") ? null : { id: "space" },
+      run: async () => ({ meta: { changes: 1 } }),
+    }) }) },
     BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) } };
   const make = () => new ToolSandboxDO(ctx as never, env as never);
   let sandbox = make();
   const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED",
     sharedFilesystemGrants?: Array<{ path: string; access: "READ" | "READ_WRITE" }>) => {
-    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
+    const scope = { tenantId: "tenant", spaceId: "space", ...(sidecar && installationScope === "SPACE_SHARED" ? {} : { projectId: "project" }), actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
       ...(sidecar ? { image, dynamicImage: false, installationId: "media-one", ...(installationScope ? { installationScope } : {}), ...(sharedFilesystemGrants ? { sharedFilesystemGrants } : {}) } : {}) };
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
@@ -102,7 +109,14 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
       "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) },
       body: JSON.stringify({ status, tenantId: "tenant", spaceId: "space", projectId: "project", ...(bodyBranch ? { workspaceBranch: bodyBranch } : {}) }) }));
   };
-  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
+  const artifactTransfer = async (body: Record<string, unknown>, signed = true) => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
+      executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
+      installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
+    return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST", headers: { "content-type": "application/json",
+      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
+  };
+  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, artifactTransfer, store, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
 }
 
 describe("specialized project workspaces", () => {
@@ -113,15 +127,48 @@ describe("specialized project workspaces", () => {
     expect(() => validateContainerScope({ ...base, projectId: "project", installationId: "install", installationScope: "PROJECT_SHARED", image, sharedFilesystemGrants: grant })).toThrow("container_shared_filesystem_scope_invalid");
     expect(() => validateContainerScope({ ...base, installationId: "install", installationScope: "SPACE_SHARED", image, sharedFilesystemGrants: [{ path: "/space/shared/../assistant/", access: "READ" }] })).toThrow("container_shared_filesystem_grant_invalid");
   });
-  it("routes assistant, project, and Space-shared runtimes to distinct workspace roots", () => {
+  it("routes the assistant, main project, and each installed runtime to distinct workspace roots", () => {
     expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "assistant-one", installationScope: "SPACE_ASSISTANT" }))
-      .toBe("spaces/space/workspace/");
+      .toBe("spaces/space/space-workspace/extensions/assistant-one/workspace/");
     expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "project-one", installationScope: "PROJECT_SHARED" }))
-      .toBe(prefix);
-    expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "media-one", installationScope: "SPACE_SHARED" }))
+      .toBe("spaces/space/projects/project/extensions/project-one/workspace/");
+    expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "media-one", installationScope: "SPACE_SHARED" }))
       .toBe(extensionPrefix);
     expect(() => sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "bad", installationScope: "SPACE_ASSISTANT" }))
       .toThrow("assistant_runtime_project_scope_mismatch");
+    expect(() => sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "bad", installationScope: "SPACE_SHARED" }))
+      .toThrow("space_runtime_project_scope_mismatch");
+  });
+
+  it("moves only explicit immutable artifacts into and out of an installation-owned workspace", async () => {
+    const store = workspace(), r = runtime(store);
+    const inputBytes = new TextEncoder().encode("selected source");
+    const inputDigest = await sha256Bytes(inputBytes);
+    const inputKey = environmentArtifactObjectKey({ tenantId: "tenant", spaceId: "space", projectId: "project" }, inputDigest);
+    await store.seed(inputKey, inputBytes);
+
+    const imported = await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-1", digest: inputDigest, expectedHash: null });
+    expect(imported.status).toBe(200);
+    expect(await readBytesWithHash(store.bucket as unknown as R2Bucket, projectExtensionPrefix + "inputs/source.txt")).toMatchObject({ hash: inputDigest, bytes: inputBytes });
+    expect(store.data.has(prefix + "inputs/source.txt")).toBe(false);
+    const replay = await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-1", digest: inputDigest, expectedHash: null });
+    expect(await replay.json()).toMatchObject({ status: "complete", request_id: "sidecar-import-1", digest: inputDigest });
+
+    const exported = await r.artifactTransfer({ direction: "export", path: "inputs/source.txt", requestId: "sidecar-export-1" });
+    expect(await exported.json()).toMatchObject({ status: "complete", digest: inputDigest, bytes: inputBytes.byteLength });
+    expect(await readBytesWithHash(store.bucket as unknown as R2Bucket, inputKey)).toMatchObject({ hash: inputDigest, bytes: inputBytes });
+
+    const otherBytes = new TextEncoder().encode("unapproved overwrite");
+    const otherDigest = await sha256Bytes(otherBytes);
+    await store.seed(environmentArtifactObjectKey({ tenantId: "tenant", spaceId: "space", projectId: "project" }, otherDigest), otherBytes);
+    const conflict = await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-2", digest: otherDigest, expectedHash: null });
+    expect(conflict.status).toBe(409);
+    expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
+  it("rejects a sidecar transfer without an internal host token", async () => {
+    const r = runtime(workspace());
+    expect((await r.artifactTransfer({ direction: "export", path: "output.txt", requestId: "unsigned-transfer" }, false)).status).toBe(403);
   });
 
   it("refreshes warm readers across specialized executions, including binary updates and deletions", async () => {
@@ -133,14 +180,16 @@ describe("specialized project workspaces", () => {
     expect(specialized.transport.start).toHaveBeenCalledWith({ enableInternet: false });
     expect(specialized.transport.destroy).not.toHaveBeenCalled();
     const read = await general.exec();
-    expect(await read.json()).toMatchObject({ result: { files: { "clip.bin": binary } } });
+    expect(await read.json()).toMatchObject({ result: { files: {} } });
     expect(general.transport.start).toHaveBeenCalledOnce();
+    expect(store.data.has(projectExtensionPrefix + "clip.bin")).toBe(true);
+    expect(store.data.has(prefix + "clip.bin")).toBe(false);
     expect((await specialized.exec({ remove: ["clip.bin"] }, true)).ok).toBe(true);
     expect(specialized.transport.start).toHaveBeenCalledOnce();
     general.restart();
     expect(await (await general.exec()).json()).toMatchObject({ result: { files: {} } });
     expect(general.files.size).toBe(0);
-    expect(general.calls).toContain("/workspace/delete");
+    expect(general.calls).not.toContain("/workspace/delete");
     expect(store.data.get("spaces/space/projects/other/workspace/private.txt")).toBeDefined();
     expect(store.bucket.get.mock.calls.some(([key]) => key.includes("/other/"))).toBe(false);
   });
@@ -151,7 +200,7 @@ describe("specialized project workspaces", () => {
     await store.seed("spaces/space/workspace/assistant-private.txt", new TextEncoder().encode("assistant-only"));
     await store.seed(extensionPrefix + "shared-state.json", new TextEncoder().encode("extension-state"));
 
-    const response = await worker.exec({}, true, { spaceId: "space", projectId: "project" }, "SPACE_SHARED");
+    const response = await worker.exec({}, true, { spaceId: "space" }, "SPACE_SHARED");
     expect(await response.json()).toMatchObject({ result: { files: { "shared-state.json": expect.any(String) } } });
     expect(worker.files.has("project-private.txt")).toBe(false);
     expect(worker.files.has("assistant-private.txt")).toBe(false);
@@ -167,13 +216,26 @@ describe("specialized project workspaces", () => {
     await store.seed(extensionPrefix + "local.txt", new TextEncoder().encode("private extension file"));
     const grants = [{ path: "/space/shared/dropzones/audio/", access: "READ_WRITE" as const }];
     const response = await worker.exec({ write: { "shared/dropzones/audio/out.txt": Buffer.from("result").toString("base64") } }, true,
-      { spaceId: "space", projectId: "project" }, "SPACE_SHARED", grants);
+      { spaceId: "space" }, "SPACE_SHARED", grants);
     expect(response.ok).toBe(true);
     expect(worker.files.has("shared/dropzones/audio/in.txt")).toBe(true);
     expect(worker.files.has("shared/private/hidden.txt")).toBe(false);
     expect(worker.files.has("local.txt")).toBe(true);
     expect(new TextDecoder().decode(store.data.get(sharedPrefix + "dropzones/audio/out.txt"))).toBe("result");
     expect(store.data.has(extensionPrefix + "shared/dropzones/audio/out.txt")).toBe(false);
+  });
+
+  it("keeps project sidecars in installation storage when unified project sync is enabled", async () => {
+    const store = workspace();
+    await store.seed(prefix + "main-private.txt", new TextEncoder().encode("main-only"));
+    await store.seed(projectExtensionPrefix + "sidecar-private.txt", new TextEncoder().encode("sidecar-only"));
+    const sidecar = runtime(store, image, true);
+    const response = await sidecar.exec({}, true, { spaceId: "space", projectId: "project" }, "PROJECT_SHARED");
+    expect(response.ok).toBe(true);
+    expect([...sidecar.files.keys()]).toContain("sidecar-private.txt");
+    expect([...sidecar.files.keys()]).not.toContain("main-private.txt");
+    expect(store.bucket.get.mock.calls.some(([key]) => key === projectExtensionPrefix + "sidecar-private.txt")).toBe(true);
+    expect(store.bucket.get.mock.calls.some(([key]) => key === prefix + "main-private.txt")).toBe(false);
   });
 
   it("rejects a deployed digest mismatch before exposing project files", async () => {
@@ -230,7 +292,9 @@ describe("signed workspace gateway through real ToolSandboxDO and ConcurrencyDO"
     const r = runtime(store), gateway = r.gateway("task/worker-one");
     expect(await gateway.list()).toMatchObject({ files: [] });
     await gateway.write({ "worker.txt": "branch" }, { "worker.txt": null });
-    expect(r.addresses.every(key => key === "sandbox:space:project:branch:task/worker-one")).toBe(true);
+    // Ordinary project branches are staged on the single stable project-main runtime; only
+    // race branches receive isolated Durable Objects.
+    expect(r.addresses.every(key => key === "sandbox:space:project")).toBe(true);
     const branchPrefix = sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", branch: "task/worker-one" });
     expect(new TextDecoder().decode(store.data.get(branchPrefix + "worker.txt"))).toBe("branch");
     expect(new TextDecoder().decode(store.data.get(prefix + "root.txt"))).toBe("root");

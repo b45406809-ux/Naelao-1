@@ -5,6 +5,22 @@ import { ExecutionSessions, type SessionStorage } from "../../tunnels/execution-
 import { publishEnvironmentArtifactBytes } from "../environment-artifacts.js";
 import { workspacePrefix } from "../types.js";
 import type { PrebuiltOpContext } from "./index.js";
+function memoryBucket() {
+  const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; contentType?: string }>();
+  let revision = 0;
+  const bucket = {
+    head: async (key: string) => { const value = objects.get(key); return value ? { size: value.bytes.length, etag: value.etag, customMetadata: value.customMetadata } : null; },
+    get: async (key: string) => { const value = objects.get(key); return value ? { size: value.bytes.length, customMetadata: value.customMetadata,
+      httpMetadata: value.contentType ? { contentType: value.contentType } : undefined, arrayBuffer: async () => value.bytes.slice().buffer } : null; },
+    put: async (key: string, value: Uint8Array, options: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }) => {
+      const prior = objects.get(key);
+      if (options.onlyIf?.etagDoesNotMatch === "*" && prior || options.onlyIf?.etagMatches && prior?.etag !== options.onlyIf.etagMatches) return null;
+      const etag = String(++revision); objects.set(key, { bytes: value.slice(), etag, customMetadata: options.customMetadata ?? {}, contentType: options.httpMetadata?.contentType });
+      return { etag };
+    },
+  } as unknown as R2Bucket;
+  return { bucket, objects };
+}
 function fixture() {
   const data = new Map<string, unknown>();
   let queue = Promise.resolve();
@@ -71,6 +87,29 @@ describe("environment tool host integration", () => {
     ctx.env.localTunnel!.exec = vi.fn(async () => ({ ok: true, status: "succeeded", request_id: "write-1", result: { written: true, bytes: bytes.length } }));
     expect(await environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: artifact.digest, path: "/home/owner/new.bin" }, ctx)).toMatchObject({ exported: true, bytes: bytes.length });
     expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "write_file", params: expect.objectContaining({ path: "/home/owner/new.bin", encoding: "base64", create_only: true }) }));
+  });
+  it("imports and exports selected Cloudflare sidecar artifacts through scoped calls", async () => {
+    const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.scriptsBucket = storage.bucket;
+    ctx.env.withProjectWorkspaceMutation = async operation => operation();
+    const sourcePath = workspacePrefix(ctx.env) + "src/input.txt";
+    await storage.bucket.put(sourcePath, new TextEncoder().encode("project input"), { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: {} });
+    ctx.env.transferContainerArtifact = vi.fn(async input => ({ request_id: input.requestId, direction: input.direction, path: input.path,
+      digest: input.digest ?? "b".repeat(64), bytes: 13, status: "complete" as const }));
+
+    const imported = await environments.operations["environment.sidecar_artifact_import"]!({ installation_id: "runtime", source_path: "src/input.txt",
+      destination_path: "inputs/input.txt", expected_hash: null, request_id: "sidecar-import" }, ctx);
+    expect(imported).toMatchObject({ request_id: "sidecar-import", direction: "import", path: "inputs/input.txt" });
+    expect(ctx.env.transferContainerArtifact).toHaveBeenCalledWith(expect.objectContaining({ installationId: "runtime", direction: "import", expectedHash: null }));
+
+    const output = await publishEnvironmentArtifactBytes(ctx.env, new TextEncoder().encode("sidecar output"), "sidecar:runtime:output.txt");
+    ctx.env.transferContainerArtifact = vi.fn(async input => ({ request_id: input.requestId, direction: input.direction, path: input.path,
+      digest: output.digest, bytes: output.bytes, status: "complete" as const }));
+    const exported = await environments.operations["environment.sidecar_artifact_export"]!({ installation_id: "runtime", source_path: "out/result.txt",
+      destination_path: "out/result.txt", expected_hash: null, request_id: "sidecar-export" }, ctx);
+    expect(exported).toMatchObject({ restored: true, digest: output.digest, path: "out/result.txt", request_id: "sidecar-export" });
+    expect(storage.objects.has(sourcePath)).toBe(true);
+    expect(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes).toEqual(new TextEncoder().encode("sidecar output"));
   });
   it("exports larger artifacts as bounded chunks and finalizes only the last chunk", async () => {
     const { ctx } = fixture(), bytes = new Uint8Array(Array.from({ length: 20_000 }, (_, index) => index % 251));

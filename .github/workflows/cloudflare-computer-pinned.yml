@@ -1,0 +1,63 @@
+name: Pinned Cloudflare Computer build evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/cloudflare-computer-pinned.yml
+      - docs/research/managed-services-and-sidecar-runtime-plan.md
+      - docs/research/managed-services-and-sidecar-implementation-progress.md
+      - work/research/pinned-cloudflare-computer/**
+
+permissions:
+  contents: read
+
+jobs:
+  build-pinned-computerd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Download and verify the pinned source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cloudflare-computer/source"
+          curl --fail --location --retry 3 \
+            https://github.com/cloudflare/computer/archive/bb0a5db4b7e8c8a79625d63e0e272602f909640e.tar.gz \
+            --output "$RUNNER_TEMP/cloudflare-computer/source.tar.gz"
+          echo 'b5ae608fd845af5762187793e0d823c414e37d5d98eb1e62ea406b1eabb326c6  '"$RUNNER_TEMP/cloudflare-computer/source.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cloudflare-computer/source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/cloudflare-computer/source"
+
+      - name: Build only the daemon dependency workspaces
+        working-directory: ${{ runner.temp }}/cloudflare-computer/source
+        run: |
+          npm ci --ignore-scripts --strict-ssl=true
+          npm run build --workspace=@cloudflare/dofs --workspace=@cloudflare/computer-rpc --workspace=@cloudflare/computer --workspace=@cloudflare/computerd
+          npm run build:bin --workspace=@cloudflare/computerd
+          npm run build:docker --workspace=@cloudflare/computerd
+
+      - name: Generate the pinned source dependency SBOM
+        working-directory: ${{ runner.temp }}/cloudflare-computer/source
+        run: |
+          npm exec --yes --package=@cyclonedx/cdxgen@12.9.1 -- cdxgen \
+            -t js --no-recurse --no-install-deps \
+            --project-name cloudflare-computer-monorepo --project-version 0.10.0 \
+            --output "$RUNNER_TEMP/cloudflare-computer/computerd-0.10.0.cdx.json" .
+
+      - name: Record build hashes without publishing the image
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum "$RUNNER_TEMP/cloudflare-computer/source.tar.gz"
+          sha256sum "$RUNNER_TEMP/cloudflare-computer/source/artifacts/computerd/computerd-linux-x64"
+          sha256sum "$RUNNER_TEMP/cloudflare-computer/computerd-0.10.0.cdx.json"
+          docker image inspect cloudflare/computer-computerd-linux-x64:0.10.0 --format '{{.Id}} {{json .RepoDigests}}'
+          {
+            echo 'The pinned daemon build and SBOM completed locally in this runner; no image was pushed.'
+            echo 'This workflow verifies source/build provenance only. It does not certify FUSE, mount, flush, auth, or production runtime behavior.'
+          } >> "$GITHUB_STEP_SUMMARY"

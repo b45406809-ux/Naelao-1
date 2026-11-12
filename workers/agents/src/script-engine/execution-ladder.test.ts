@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCodeRunner } from "./code-runner.js";
+import { codeExec } from "./prebuilt/code-exec.js";
 import {
   classifyExecutionRoute,
   classifyExecutionRouteWithSentry,
@@ -59,6 +60,67 @@ describe("Execution Ladder & Code Runner", () => {
     expect(classifyExecutionRoute('python3 -c "import torch"')).toMatchObject({
       tier: 6,
     });
+  });
+
+  it("admits the whole shell command at the strongest required tier and reports unsupported unions", async () => {
+    expect(classifyExecutionRoute("cargo build && custom-tool compile")).toMatchObject({
+      tier: 6,
+      engine: "container",
+      reason: "command_capability_discovery_required",
+    });
+
+    const bucket = { get: vi.fn(async () => null) };
+    const context = {
+      env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: bucket, workspaceBucket: bucket, maxTier: 6 },
+      commands: new Map(),
+      authorizeShell: vi.fn(async () => true),
+      run: vi.fn(async () => undefined),
+    } as never;
+    await expect(codeExec.operations.Bash!({ commands: "cargo build && custom-tool compile" }, context)).rejects.toMatchObject({
+      capability_error: { code: "shell_capability_union_unsupported", capability: "custom-tool", required_tier: 6 },
+    });
+
+    await expect(codeExec.operations.Bash!({ commands: "custom-tool compile" }, context)).rejects.toMatchObject({
+      capability_error: { code: "shell_capability_unavailable", capability: "custom-tool", required_tier: 6 },
+    });
+
+    expect(classifyExecutionRoute("echo $(custom-tool compile)")).toMatchObject({
+      tier: 6, engine: "container", reason: "dynamic_execution_admission_required",
+    });
+    await expect(codeExec.operations.Bash!({ commands: "echo $(custom-tool compile)" }, context)).rejects.toMatchObject({
+      capability_error: { code: "shell_capability_dynamic_execution_unsupported", required_tier: 6 },
+    });
+  });
+
+  it("runs a declared pipeline only inside one exact installed image", async () => {
+    const bucket = { get: vi.fn(async () => null) };
+    const installation = { installationId: "install-1", contract: { id: "media", image: "media@sha256:abc", exportedBinaries: ["ffmpeg", "ffprobe"] } };
+    const run = vi.fn(async () => ({ ok: true, output: { stdout: "ok" }, actual_tier: 6, engine: "container" }));
+    const resolveContainerCommand = vi.fn(async (command: string) => ["ffmpeg", "ffprobe"].includes(command) ? installation : undefined);
+    const authorizeShell = vi.fn(async () => true);
+    const context = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: bucket,
+      workspaceBucket: bucket, maxTier: 6, codeRunner: { run }, resolveContainerCommand }, commands: new Map(), authorizeShell,
+      run: vi.fn(async () => undefined) } as never;
+
+    await expect(codeExec.operations.Bash!({ commands: "ffmpeg -i 'a file.mp4' | ffprobe -v quiet" }, context)).resolves.toMatchObject({ stdout: "ok", actual_tier: 6, engine: "container" });
+    expect(resolveContainerCommand.mock.calls.map(([command]) => command)).toEqual(["ffmpeg", "ffprobe"]);
+    expect(authorizeShell.mock.calls.map(([call]) => call.name)).toEqual(["ffmpeg", "ffprobe"]);
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ name: "container.extension_binary", tier: 6,
+      args: { commands: "'ffmpeg' '-i' 'a file.mp4' | 'ffprobe' '-v' 'quiet'" }, installationId: "install-1", containerImage: "media@sha256:abc" }));
+  });
+
+  it("rejects pipelines whose binaries resolve to different installations", async () => {
+    const bucket = { get: vi.fn(async () => null) };
+    const resolveContainerCommand = vi.fn(async (command: string) => ({ installationId: command, contract: { id: command, image: `${command}@sha256:abc`, exportedBinaries: [command] } }));
+    const run = vi.fn();
+    const context = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", scriptsBucket: bucket,
+      workspaceBucket: bucket, maxTier: 6, codeRunner: { run }, resolveContainerCommand }, commands: new Map(),
+      authorizeShell: vi.fn(async () => true), run: vi.fn(async () => undefined) } as never;
+
+    await expect(codeExec.operations.Bash!({ commands: "ffmpeg -i input | ffprobe" }, context)).rejects.toMatchObject({
+      capability_error: { code: "shell_capability_union_unsupported", capability: "ffmpeg", required_tier: 6 },
+    });
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("keeps browse screenshots out of context until see is requested", () => {

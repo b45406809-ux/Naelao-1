@@ -1,4 +1,5 @@
 import type { DownloadedChannelAttachment } from "../launchpad/whatsapp-media.js";
+import { inferWorkspaceContentType } from "@naelao/types";
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -62,6 +63,7 @@ export async function storeChannelAttachments(input: {
     const file = input.files[index]!;
     const recordIndex = (input.indexOffset ?? 0) + index;
     const safeFilename = file.filename.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").slice(0, 120) || "attachment";
+    const mimeType = file.mimeType === "application/octet-stream" ? inferWorkspaceContentType(safeFilename) : file.mimeType;
     const idDigest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey,
       new TextEncoder().encode(`${input.channel}\0${scope}\0${recordIndex}`)));
     const id = `ca_${[...idDigest.slice(0, 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -70,14 +72,14 @@ export async function storeChannelAttachments(input: {
     ).bind(id, input.tenantId, input.spaceId, input.taskId, createdAt).first<{ id: string }>();
     if (!existing) {
       const key = `spaces/${input.spaceId}/channel-inbound/${taskSegment}/${scopeHash}/${recordIndex}-${safeFilename}`;
-      await input.bucket.put(key, file.bytes, { httpMetadata: { contentType: file.mimeType } });
+      await input.bucket.put(key, file.bytes, { httpMetadata: { contentType: mimeType } });
       await input.db.prepare(
         `INSERT OR IGNORE INTO channel_attachments
          (id, tenant_id, space_id, task_id, channel, object_key, filename, mime_type, size_bytes, created_at, expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(id, input.tenantId, input.spaceId, input.taskId, input.channel, key, safeFilename, file.mimeType, file.bytes.byteLength, createdAt, expiresAt).run();
+      ).bind(id, input.tenantId, input.spaceId, input.taskId, input.channel, key, safeFilename, mimeType, file.bytes.byteLength, createdAt, expiresAt).run();
     }
-    stored.push({ id, filename: safeFilename, mimeType: file.mimeType, sizeBytes: file.bytes.byteLength });
+    stored.push({ id, filename: safeFilename, mimeType, sizeBytes: file.bytes.byteLength });
   }
   return stored;
 }

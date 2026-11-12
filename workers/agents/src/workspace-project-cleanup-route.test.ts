@@ -26,8 +26,9 @@ describe("per-project workspace cleanup route", () => {
       delete: vi.fn(async (items: string | string[]) => { for (const key of Array.isArray(items) ? items : [items]) keys.delete(key); }),
     };
     const workspaceCoordinator = { fetch: vi.fn(async (request: Request) => {
-      coordinatorRequests.push({ path: new URL(request.url).pathname, body: await request.json() });
-      return Response.json({ erased: true });
+      const path = new URL(request.url).pathname;
+      coordinatorRequests.push({ path, body: await request.json() });
+      return path === "/v1/erase/admission" ? Response.json({ admitted: true }) : Response.json({ erased: true });
     }) };
     let tombstone: Record<string, unknown> | null = null;
     let exportRecord: Record<string, unknown> | null = null;
@@ -96,13 +97,23 @@ describe("per-project workspace cleanup route", () => {
     expect(firstResult.hasMore).toBe(true);
     const response = await deleteRequest(firstResult.nextCursor);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ erased: true, hasMore: false, providerConnectionsDeleted: false });
-    expect(lockEvents.map(event => event.path)).toEqual(["/locks/acquire", "/locks/release", "/locks/acquire", "/locks/release"]);
+    const secondResult = await response.json() as { hasMore: boolean; nextCursor?: string };
+    expect(secondResult.hasMore).toBe(true);
+    const thirdResponse = await deleteRequest(secondResult.nextCursor);
+    expect(thirdResponse.status).toBe(200);
+    const thirdResult = await thirdResponse.json() as { hasMore: boolean; nextCursor?: string };
+    expect(thirdResult.hasMore).toBe(true);
+    const finalResponse = await deleteRequest(thirdResult.nextCursor);
+    expect(finalResponse.status).toBe(200);
+    expect(await finalResponse.json()).toMatchObject({ erased: true, hasMore: false, providerConnectionsDeleted: false });
+    expect(lockEvents.map(event => event.path)).toEqual(["/locks/acquire", "/locks/release", "/locks/acquire", "/locks/release",
+      "/locks/acquire", "/locks/release", "/locks/acquire", "/locks/release"]);
     expect(lockEvents[0]!.body).toMatchObject({ key: "lock:space-a:project-a:workspace-migration-barrier", ttlMs: 600_000 });
-    expect(coordinatorRequests).toHaveLength(2);
-    expect(coordinatorRequests.every(request => request.path === "/v1/erase")).toBe(true);
+    expect(coordinatorRequests).toHaveLength(8);
+    expect(coordinatorRequests.filter(request => request.path === "/v1/erase/admission")).toHaveLength(4);
+    expect(coordinatorRequests.filter(request => request.path === "/v1/erase")).toHaveLength(4);
     expect(bucket.delete).toHaveBeenCalledWith(["spaces/space-a/projects/project-a/workspace/branches/worker-a/file.txt"]);
-    expect(backupBucket.put).toHaveBeenCalledTimes(2);
+    expect(backupBucket.put).toHaveBeenCalledTimes(4);
     expect(backups.size).toBe(1);
     expect([...keys]).toEqual([]);
   });

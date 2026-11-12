@@ -31,6 +31,7 @@ class FakeD1 {
   computers = new Map<string, Record<string, unknown>>();
   deletionOperation: Record<string, unknown> | null = null;
   manualDeletionReceipt: Record<string, unknown> | null = null;
+  writes: Array<{ sql: string; values: unknown[] }> = [];
   prepare(sql: string) {
     return new FakeD1Statement(sql, this);
   }
@@ -56,6 +57,7 @@ class FakeD1 {
     return { results: [] as T[], success: true, meta: { changes: 0 } };
   }
   async run(sql: string, values: unknown[]) {
+    this.writes.push({ sql, values });
     if (sql.includes("INSERT OR IGNORE INTO sandbox_provider_deletion_manual_receipts")) {
       if (!this.manualDeletionReceipt) {
         this.manualDeletionReceipt = {
@@ -178,5 +180,23 @@ describe("sandbox control plane boundary", () => {
     });
     expect(JSON.stringify(db.manualDeletionReceipt)).not.toContain("provider-ticket-9031");
     expect(JSON.stringify(db.manualDeletionReceipt)).not.toContain("operator_1");
+  });
+
+  it("requires the separate operator secret to admit an evidence-pinned Agent37 template", async () => {
+    const secret = "sandbox-test-platform-secret", operatorSecret = "separate-runtime-operator-secret";
+    const token = await mintInternalToken(secret, "tenant_1"), db = new FakeD1();
+    const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: secret, SANDBOX_RUNTIME_OPERATOR_SECRET: operatorSecret };
+    const body = JSON.stringify({ digest: `sha256:${"a".repeat(64)}`, constraints: { provider: "agent37", region: "us", instanceType: "default",
+      capabilities: ["exec", "files"], resources: [{ cpu: 2, memoryMiB: 4096, minDiskGiB: 2, maxDiskGiB: 12 }] },
+      evidenceUrls: ["https://www.agent37.com/docs/agents-api/instances/create"], validUntil: new Date(Date.now()+24*60*60_000).toISOString(), reason: "Reviewed current provider contract." });
+    const send = (operator: string) => app.fetch(new Request("http://sandbox/operator/templates/node/2026-11/verify", { method: "POST", headers: {
+      "content-type":"application/json", "x-naelao-tenant-id":"tenant_1", "x-naelao-user-id":"operator_1", "x-naelao-role":"member",
+      "x-naelao-internal-token":token, "x-runtime-operator-secret":operator, "x-runtime-operator-id":"ops_1",
+    }, body }), env);
+    expect((await send("wrong-secret")).status).toBe(403);
+    const accepted = await send(operatorSecret);
+    expect(accepted.status).toBe(201);
+    expect(await accepted.json()).toMatchObject({ templateId:"node", version:"2026-11", status:"verified" });
+    expect(db.writes.some(write => write.sql.includes("INSERT INTO sandbox_template_audit"))).toBe(true);
   });
 });

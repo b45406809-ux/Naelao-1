@@ -40,7 +40,7 @@ function testEnv() {
               if (sql.includes("SELECT id, tenant_id FROM products")) {
                 const rootId = String(values[0]);
                 const root = spaces.get(rootId);
-                return root && root.parent_space_id === null ? { id: rootId, tenant_id: root.tenant_id } : null;
+                return root && root.product_id === null ? { id: rootId, tenant_id: root.tenant_id } : null;
               }
               if (sql.includes("FROM users WHERE id")) return members.has(String(values[0])) ? { preferred_language: members.get(String(values[0])) } : null;
               if (sql.includes("FROM product_end_users")) {

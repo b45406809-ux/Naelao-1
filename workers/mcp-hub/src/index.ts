@@ -6,6 +6,8 @@ import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
 import { createHostedOAuthLink, executeComposioAction } from "./composio";
 import { pipedreamConnected, pipedreamListTools, pipedreamToolCall } from "./pipedream";
+import { authorizeUserPortConnectorTool } from "./agentport-connector-gate.js";
+import { revokeUserPortAliasBinding } from "./userport-revocation.js";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -34,6 +36,8 @@ export interface Env {
    *  credential) so it bills the builder's org rather than being an open, unattributed platform
    *  cost sink. Optional/best-effort — degrades to unmetered (not unblocked) when unwired. */
   BILLING_WORKER?: Fetcher;
+  /** AgentPort authorization receipts for explicitly synchronized UserPort connector aliases. */
+  AGENTPORT_WORKER?: Fetcher;
 }
 
 /** Built-in connector shims are reachable through MCP Hub only. User-owned MCP servers never
@@ -102,6 +106,19 @@ async function generateCredentialToken(platformSecret: string, tenantId: string,
 type ConnectorProvider = "direct" | "composio" | "pipedream";
 const MAX_PROVIDER_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_TOOL_CALL_REQUEST_BYTES = 1024 * 1024;
+
+async function revokeUserPortConnectorBindings(env: Env, tenantId: string, spaceId: string, serverId: string) {
+  const pendingSync=await env.PLATFORM_DB.prepare(`SELECT operation_id FROM managed_service_operations
+    WHERE tenant_id=? AND space_id=? AND operation_name='agentport_connector_sync'
+      AND status IN ('pending','running','uncertain','held') AND json_extract(request_json,'$.serverId')=? LIMIT 1`)
+    .bind(tenantId,spaceId,serverId).first<{operation_id:string}>();
+  if (pendingSync) throw new Error("userport_agentport_sync_pending");
+  const rows = await env.PLATFORM_DB.prepare(`SELECT alias_id FROM agentport_userport_connector_bindings
+    WHERE tenant_id=? AND space_id=? AND server_id=? AND (status IN ('active','pending','sync_required')
+      OR (status='revoked' AND previous_account_id IS NOT NULL))`)
+    .bind(tenantId, spaceId, serverId).all<{alias_id:string}>();
+  for (const row of rows.results ?? []) await revokeUserPortAliasBinding(env, tenantId, spaceId, row.alias_id);
+}
 
 async function parseBoundedJson<T>(request: Request, maximumBytes: number): Promise<
   | { ok: true; value: T }
@@ -586,6 +603,13 @@ app.patch("/v1/spaces/:spaceId/mcp-servers/:serverId", async (c) => {
   }
 
   const now = new Date().toISOString();
+  if (!body.enabled) {
+    try { await revokeUserPortConnectorBindings(c.env, tenantId, spaceId, serverId); }
+    catch (error) {
+      const cleanupPending=error instanceof Error&&error.message==="userport_agentport_sync_cleanup_pending";
+      return c.json({ error_code: cleanupPending?error.message:"agentport_connector_revocation_pending" }, cleanupPending?409:503);
+    }
+  }
   const result = await c.env.PLATFORM_DB.prepare(
     "UPDATE mcp_servers SET enabled = ?, updated_at = ? WHERE id = ? AND space_id = ? AND tenant_id = ?"
   )
@@ -605,6 +629,13 @@ app.delete("/v1/spaces/:spaceId/mcp-servers/:serverId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const serverId = c.req.param("serverId");
 
+  try { await revokeUserPortConnectorBindings(c.env, tenantId, spaceId, serverId); }
+  catch (error) {
+    const cleanupPending=error instanceof Error&&error.message==="userport_agentport_sync_cleanup_pending";
+    return c.json({ error_code: cleanupPending?error.message:"agentport_connector_revocation_pending" }, cleanupPending?409:503);
+  }
+  await c.env.PLATFORM_DB.prepare("DELETE FROM connector_aliases WHERE server_id=? AND space_id=? AND tenant_id=?")
+    .bind(serverId, spaceId, tenantId).run();
   const result = await c.env.PLATFORM_DB.prepare(
     "DELETE FROM mcp_servers WHERE id = ? AND space_id = ? AND tenant_id = ?"
   )
@@ -728,10 +759,23 @@ app.get("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, alias, scope, project_id, user_id, server_id, granted_scopes_json, updated_at
-     FROM connector_aliases WHERE tenant_id=? AND space_id=? ORDER BY alias, scope`
+    `SELECT a.id,a.alias,a.scope,a.project_id,a.user_id,a.server_id,a.granted_scopes_json,a.updated_at,
+       b.status AS agentport_status,b.owner_link_id AS agentport_owner_link_id,l.status AS agentport_owner_link_status,
+       b.tool_actions_json AS agentport_tool_actions_json
+     FROM connector_aliases a LEFT JOIN agentport_userport_connector_bindings b
+       ON b.tenant_id=a.tenant_id AND b.space_id=a.space_id AND b.alias_id=a.id
+     LEFT JOIN managed_service_owner_links l ON l.id=b.owner_link_id AND l.tenant_id=b.tenant_id
+     WHERE a.tenant_id=? AND a.space_id=? ORDER BY a.alias,a.scope`
   ).bind(tenantId, c.req.param("spaceId")).all();
-  return c.json({ data: results });
+  return c.json({ data: (results ?? []).map((row) => {
+    let operations: string[] = [];
+    try {
+      const parsed = JSON.parse(String(row.agentport_tool_actions_json ?? "[]")) as unknown;
+      if (Array.isArray(parsed)) operations = parsed.flatMap((entry) => entry && typeof entry === "object"
+        && typeof (entry as Record<string, unknown>).toolName === "string" ? [(entry as Record<string, string>).toolName!] : []);
+    } catch { /* malformed mapping is displayed as no selected operations; provider calls fail closed */ }
+    return { ...row, agentport_operations: operations, agentport_tool_actions_json: undefined };
+  }) });
 });
 
 app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
@@ -759,11 +803,15 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   if (!server) return c.json({ error_code: "not_found", message: "Connector not found" }, 404);
   const scopes = [...new Set((body.granted_scopes ?? []).filter((s) => /^[a-z0-9:._-]{1,128}$/i.test(s)))];
   const existing = await c.env.PLATFORM_DB.prepare(
-    `SELECT id FROM connector_aliases WHERE tenant_id=? AND space_id=? AND alias=? AND scope=?
+    `SELECT id,server_id FROM connector_aliases WHERE tenant_id=? AND space_id=? AND alias=? AND scope=?
       AND ifnull(project_id,'')=ifnull(?,'') AND ifnull(user_id,'')=ifnull(?,'')`
-  ).bind(tenantId, spaceId, body.alias, storedScope, projectId, userId).first<{ id: string }>();
+  ).bind(tenantId, spaceId, body.alias, storedScope, projectId, userId).first<{ id: string; server_id: string }>();
   const id = existing?.id ?? crypto.randomUUID();
   if (existing) {
+    if (existing.server_id !== body.server_id) {
+      try { await revokeUserPortAliasBinding(c.env, tenantId, spaceId, id); }
+      catch { return c.json({ error_code: "agentport_connector_revocation_pending" }, 503); }
+    }
     await c.env.PLATFORM_DB.prepare(
       `UPDATE connector_aliases SET server_id=?, granted_scopes_json=?, updated_at=datetime('now')
        WHERE id=? AND tenant_id=? AND space_id=?`
@@ -785,6 +833,11 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
 app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  try { await revokeUserPortAliasBinding(c.env, tenantId, c.req.param("spaceId"), c.req.param("aliasId")); }
+  catch (error) {
+    const cleanupPending=error instanceof Error&&error.message==="userport_agentport_sync_cleanup_pending";
+    return c.json({ error_code: cleanupPending?error.message:"agentport_connector_revocation_pending" }, cleanupPending?409:503);
+  }
   const result = await c.env.PLATFORM_DB.prepare(
     "DELETE FROM connector_aliases WHERE id=? AND tenant_id=? AND space_id=?"
   ).bind(c.req.param("aliasId"), tenantId, c.req.param("spaceId")).run();
@@ -853,6 +906,7 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
   ).bind(crypto.randomUUID(), tenantId, spaceId, row.id, c.req.param("alias"), userId || "system", projectId || null).run();
   const headers = new Headers(c.req.raw.headers);
   headers.set("x-naelao-connector-scope", row.scope === "user" ? "personal" : row.scope === "project" ? "project" : "business");
+  headers.set("x-naelao-connector-alias-id", row.id);
   return app.fetch(new Request(
     `https://mcp-hub.internal/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers/${encodeURIComponent(row.server_id)}/tools/call`,
     { method: "POST", headers, body: rawBody }
@@ -904,6 +958,17 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     const findings = dlp.findings.map(({ rule }) => rule);
     console.warn("[mcp-hub] outbound DLP blocked", { tenantId, spaceId, serverId, toolName: body.tool_name, findings, timestamp: new Date().toISOString() });
     return c.json({ error_code: "egress_dlp_blocked", message: "Connector payload contains protected data and was not sent", findings }, 422);
+  }
+
+  const connectorAuthorization = await authorizeUserPortConnectorTool({
+    env: c.env, tenantId, spaceId, serverId, provider: server.connector_provider, aliasId: c.req.header("x-naelao-connector-alias-id") ?? null,
+    toolName: body.tool_name, userId: c.req.header("x-naelao-user-id") ?? "",
+    projectId: c.req.header("x-naelao-project-id") ?? "", runId: c.req.header("x-naelao-run-id") ?? "",
+    requestBody: { tool_name: body.tool_name, input: body.input },
+  });
+  if (!connectorAuthorization.allowed) {
+    return c.json({ error_code: connectorAuthorization.errorCode ?? "agentport_connector_action_denied" },
+      (connectorAuthorization.status ?? 403) as 403 | 409 | 503);
   }
 
   // Provider-routed connectors skip SSRF/credential checks — route through provider API.

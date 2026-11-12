@@ -6,6 +6,7 @@ import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import { TelnyxTelephony } from "../voice/telnyx-telephony.js";
 import { resolveTelnyxAccount } from "./telnyx-account.js";
+import { observeTelnyxVoiceCallCost } from "./telnyx-voice-cost.js";
 import { claimLiveCall, liveCallAllowed, liveCallTicket, liveCodeHash, type LiveCall } from "./live-calls.js";
 import { phonePublicOrigin } from "./phone-provider.js";
 
@@ -29,12 +30,13 @@ function scopeFor(identity: CommunicationIdentity): CommunicationScope {
 /** Dispatch only owner-armed internal assistant calls. Public callers never establish authority;
  * they must enter the one-time code shown to the authenticated owner in the dashboard. */
 export async function dispatchTelnyxVoiceEvent(env: AgentsEnv, binding: AssistantPhoneBinding, identity: CommunicationIdentity,
-  event: { eventId: string; eventType: string; payload: Record<string, unknown> }) {
+  event: { eventId: string; eventType: string; occurredAt: string; payload: Record<string, unknown> }) {
   const payload = event.payload;
   const callControlId = payload.call_control_id;
   if (typeof callControlId !== "string" || !callIdPattern.test(callControlId)) throw new Error("telnyx_call_control_id_invalid");
   const account = await resolveTelnyxAccount(env, identity, binding);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
+  if (event.eventType === "call.cost") return observeTelnyxVoiceCallCost(env, binding, identity, account.callControlId, event);
   const telnyx = new TelnyxTelephony(account);
   if (binding.purpose === "extension") return dispatchTelnyxExtensionVoiceEvent(env, binding, identity, event, telnyx);
   const now = Math.floor(Date.now() / 1000);

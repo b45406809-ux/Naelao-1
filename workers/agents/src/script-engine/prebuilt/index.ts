@@ -39,6 +39,7 @@ import { workspaceAdmin } from "./workspace-admin.js";
 import { projectCoordination } from "./project-coordination.js";
 import { skillManager } from "./skill-manager.js";
 import { environments } from "./environments.js";
+import { agent37 } from "./agent37.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { schedule } from "./schedule.js";
@@ -158,6 +159,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
   [localMachine.name]: localMachine,
   [environments.name]: environments,
+  [agent37.name]: agent37,
   // Explicit R2 <-> container copy/move/list (§A1.17 Phase R) — replaces the old implicit
   // full-sync-every-/exec-call behavior; see workspace.ts.
   [workspace.name]: workspace,

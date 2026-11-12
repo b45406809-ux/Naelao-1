@@ -38,6 +38,34 @@ function fixture() {
 }
 
 describe("AgentPort internal registry API", () => {
+  it("revokes account grants and event subscriptions, and reactivates only the account resource", async () => {
+    const { db, platformDb } = fixture(); const secret="test-platform-secret";
+    const headers={"content-type":"application/json","x-agentport-tenant-id":"tenant-a","x-agentport-internal-token":await mintInternalToken(secret,"tenant-a"),"x-agentport-actor-role":"client_system"};
+    const env={PLATFORM_SECRET:secret,PLATFORM_DB:platformDb} as never;
+    const call=(path:string,method:string,body?:unknown)=>agentPortRoutes.fetch(new Request(`https://agentport.test${path}`,{method,headers,...(body===undefined?{}:{body:JSON.stringify(body)})}),env);
+    await call("/services","POST",{id:"managed-mail",name:"Managed Mail",type:"managed",accountModels:["agent_native"],capabilities:["email.read"],events:["message.received"],connectionPurpose:"agent_resource"});
+    const agentResponse=await call("/agents","POST",{principalId:"org-a",principalType:"organization",createdBy:"tenant-a",hostPlatform:"naelao",hostResourceId:"space-assistant:space-a"});
+    const {agent}=await agentResponse.json() as {agent:{id:string}};
+    const identityResponse=await call(`/agents/${agent.id}/identity`,"GET");
+    const principalId=(db.prepare("SELECT principal_id FROM agentport_agents WHERE id=?").get(agent.id) as {principal_id:string}).principal_id;
+    expect(await identityResponse.json()).toMatchObject({identity:{id:agent.id,principal:{id:principalId,type:"organization"}}});
+    const created=await call("/accounts","POST",{serviceId:"managed-mail",accountModel:"agent_native",ownerType:"individual",ownerId:"user-a",externalAccountId:"provider-inbox-a"});
+    const {account}=await created.json() as {account:{id:string}};
+    await call(`/accounts/${account.id}/activate`,"POST",{});
+    await call(`/accounts/${account.id}/grants`,"POST",{agentId:agent.id,grantedBy:"user-a",permissions:["email.read"]});
+    const subscription=await call("/events/subscriptions","POST",{agentId:agent.id,serviceId:"managed-mail",accountId:account.id,eventType:"message.received",deliveryMode:"poll",consumerGroup:"test"});
+    const {subscription:createdSubscription}=await subscription.json() as {subscription:{id:string}};
+    expect((await call(`/accounts/${account.id}/revoke`,"POST",{})).status).toBe(200);
+    expect(db.prepare("SELECT status FROM agentport_accounts WHERE id=?").get(account.id)).toMatchObject({status:"revoked"});
+    expect(db.prepare("SELECT status FROM agentport_account_grants WHERE account_id=?").get(account.id)).toMatchObject({status:"revoked"});
+    expect(db.prepare("SELECT status FROM agentport_event_subscriptions WHERE id=?").get(createdSubscription.id)).toMatchObject({status:"revoked"});
+    expect((await call(`/accounts/${account.id}/reactivate`,"POST",{})).status).toBe(200);
+    expect(db.prepare("SELECT status FROM agentport_accounts WHERE id=?").get(account.id)).toMatchObject({status:"active"});
+    expect(db.prepare("SELECT status FROM agentport_account_grants WHERE account_id=?").get(account.id)).toMatchObject({status:"revoked"});
+    expect(db.prepare("SELECT status FROM agentport_event_subscriptions WHERE id=?").get(createdSubscription.id)).toMatchObject({status:"revoked"});
+    db.close();
+  });
+
   it("persists distinct owner-bound identities idempotently and never revives suspended identities", async () => {
     const { db, platformDb } = fixture(); const secret="platform-secret";
     const headers={"content-type":"application/json","x-agentport-tenant-id":"tenant-a","x-agentport-internal-token":await mintInternalToken(secret,"tenant-a"),"x-agentport-actor-role":"agentport_api","x-agentport-owner-id":"owner-a","x-agentport-owner-type":"individual"};
@@ -76,6 +104,41 @@ describe("AgentPort internal registry API", () => {
     expect((await call(`/accounts/${account.id}/activate`,"POST",{},other)).status).toBe(404);
     expect((await call(`/accounts/${account.id}/grants`,"POST",{agentId:agent.id,grantedBy:"owner-a",permissions:["read"]},other)).status).toBe(404);
     expect((await call(`/accounts/${account.id}/activate`,"POST")).status).toBe(200);
+    db.close();
+  });
+
+  it("authorizes declared provider actions from current scoped grants and persists idempotent receipts", async () => {
+    const { db, platformDb } = fixture(); const secret = "provider-action-secret";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a",
+      "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a"), "x-agentport-actor-role": "client_system" };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, {
+      method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }), env);
+    await call("/services", "POST", { id: "mail-provider", name: "Mail", type: "api", accountModels: ["agent_native"],
+      capabilities: ["email.read"], events: [], connectionPurpose: "user_delegation" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "owner", hostPlatform: "external" }))
+      .json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "mail-provider", accountModel: "agent_native", ownerType: "individual", ownerId: "owner", externalAccountId: "inbox-1" }))
+      .json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "owner", permissions: ["messages.read", "email.search"] });
+    const action = { agentId: agent.id, action: "messages.read", resourceRef: "inbox-1:message-1", idempotencyKey: "read-action-1" };
+    const first = await call(`/accounts/${account.id}/actions/authorize`, "POST", action);
+    expect(first.status).toBe(201);
+    const firstResult = await first.json() as { decision: string; authorizationId: string };
+    expect(firstResult).toMatchObject({ decision: "allow", authorizationId: expect.any(String) });
+    const retry = await call(`/accounts/${account.id}/actions/authorize`, "POST", action);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ decision: "allow", authorizationId: firstResult.authorizationId, contentStored: false });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agentport_action_receipts WHERE tenant_id=? AND agent_id=? AND authorization_ref=?")
+      .get("tenant-a", agent.id, "read-action-1")).toMatchObject({ count: 1 });
+    expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { agentId: agent.id, action: "email.search",
+      resourceRef: "inbox-1", idempotencyKey: "search-action-1" })).status).toBe(422);
+    expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, resourceRef: "inbox-1:message-2" })).status).toBe(409);
+    expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, action: "messages.send", idempotencyKey: "send-action-1" })).status).toBe(422);
+    await call(`/grants/${(db.prepare("SELECT id FROM agentport_account_grants WHERE account_id=?").get(account.id) as { id: string }).id}`, "DELETE");
+    expect((await call(`/accounts/${account.id}/actions/authorize`, "POST", { ...action, idempotencyKey: "revoked-action" })).status).toBe(403);
     db.close();
   });
 
@@ -142,6 +205,58 @@ describe("AgentPort internal registry API", () => {
     expect(await (await call(`/events/subscriptions/${sub.subscription.id}`, "DELETE")).json()).toMatchObject({ revoked: true });
     const reactivated = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "provider", eventType: "item.changed", deliveryMode: "webhook", routing: { webhookUrl: "https://hooks.builder.com/new" } });
     expect(await reactivated.json()).toMatchObject({ subscription: { id: sub.subscription.id }, webhookSecret: sub.webhookSecret });
+    db.close();
+  });
+
+  it("delivers a thread session reference only to its matching subscribed consumer", async () => {
+    const { db, platformDb } = fixture(); const secret = "platform-secret"; const master = "session-notification-secret-long-enough";
+    const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const env = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: master, PLATFORM_DB: platformDb } as never;
+    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+
+    await call("/services", "POST", { id: "session-provider", name: "Session Provider", type: "channel", accountModels: ["agent_native"],
+      capabilities: ["channels", "messages.read"], events: ["message.received"], connectionPurpose: "agent_resource" });
+    const { agent } = await (await call("/agents", "POST", { principalId: "owner", principalType: "individual", createdBy: "owner", hostPlatform: "external" })).json() as { agent: { id: string } };
+    const { account } = await (await call("/accounts", "POST", { serviceId: "session-provider", accountModel: "agent_native", ownerType: "individual", ownerId: "owner" })).json() as { account: { id: string } };
+    await call(`/accounts/${account.id}/activate`, "POST", {});
+    await call(`/accounts/${account.id}/grants`, "POST", { agentId: agent.id, grantedBy: "owner", permissions: ["channels.manage", "messages.read"] });
+    const { channel } = await (await call("/channels", "POST", { serviceId: "session-provider", accountId: account.id, agentId: agent.id,
+      providerChannelId: "provider-channel", displayName: "Consumer Session Channel" })).json() as { channel: { id: string } };
+    const binding = { version: 1, consumerId: "consumer-a", sessionRef: "private-session-1", conversationRef: "conversation-1" };
+    const thread = await call(`/channels/${channel.id}/threads`, "POST", { providerThreadId: "provider-thread-1", sessionBinding: binding });
+    expect(await thread.json()).toMatchObject({ thread: { sessionBinding: binding } });
+    const matching = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "session-provider", accountId: account.id,
+      eventType: "message.received", deliveryMode: "webhook", consumerGroup: "consumer-a", routing: { webhookUrl: "https://hooks.builder.com/a" } });
+    const other = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "session-provider", accountId: account.id,
+      eventType: "message.received", deliveryMode: "webhook", consumerGroup: "consumer-b", routing: { webhookUrl: "https://hooks.builder.com/b" } });
+    const { subscription: matchingSubscription } = await matching.json() as { subscription: { id: string } };
+    const { subscription: otherSubscription } = await other.json() as { subscription: { id: string } };
+    const eventResponse = await call("/events", "POST", { serviceId: "session-provider", accountId: account.id,
+      providerEventId: "provider-event-1", eventType: "message.received", threadRef: "provider-thread-1", dataRef: "provider-message-1" });
+    const { id: eventId } = await eventResponse.json() as { id: string };
+
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    await deliverEventNotifications({ PLATFORM_DB: platformDb as never, AGENTPORT_JWT_SECRET: master }, fetcher);
+    const deliveries = new Map<string, string>();
+    for (const [index, subscriptionId] of [matchingSubscription.id, otherSubscription.id].entries()) {
+      const payload = JSON.parse(String((fetcher.mock.calls[index]![1] as RequestInit).body)) as Record<string, unknown>;
+      expect(payload.subscriptionId).toBe(subscriptionId);
+      deliveries.set(subscriptionId, String(payload.deliveryId));
+      if (subscriptionId === matchingSubscription.id) expect(payload.sessionBinding).toEqual(binding);
+      else expect(payload).not.toHaveProperty("sessionBinding");
+    }
+
+    const pending = await call(`/events/pending?agentId=${agent.id}`, "GET");
+    const pendingEvents = (await pending.json() as { events: Array<Record<string, unknown>> }).events;
+    expect(pendingEvents.find(event => event.delivery_id === deliveries.get(matchingSubscription.id))?.sessionBinding).toEqual(binding);
+    expect(pendingEvents.find(event => event.delivery_id === deliveries.get(otherSubscription.id))).not.toHaveProperty("sessionBinding");
+
+    const matchingClaim = await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: "consumer-a", deliveryId: deliveries.get(matchingSubscription.id) });
+    expect(await matchingClaim.json()).toMatchObject({ claimed: true, event: { sessionBinding: binding, dataRef: "provider-message-1" } });
+    const otherClaim = await call(`/events/${eventId}/claim`, "POST", { agentId: agent.id, consumerId: "consumer-b", deliveryId: deliveries.get(otherSubscription.id) });
+    const otherClaimBody = await otherClaim.json();
+    expect(otherClaimBody).toMatchObject({ claimed: true, event: { dataRef: "provider-message-1" } });
+    expect(otherClaimBody).not.toHaveProperty("event.sessionBinding");
     db.close();
   });
   it("creates an idempotent platform-managed AgentPort principal only for a trusted host system", async () => {
@@ -231,6 +346,19 @@ describe("AgentPort internal registry API", () => {
     const threadRows = db.prepare("SELECT id,session_binding_json FROM agentport_threads WHERE channel_id=?").all(channel.id) as Array<{ id: string; session_binding_json: string | null }>;
     expect(threadRows).toHaveLength(1);
     expect(threadRows[0]?.session_binding_json).toBeNull();
+    expect((await call(`/channels/${channel.id}/threads`, "POST", { providerThreadId: "customer-session-2", sessionBinding: {
+      version: 1, consumerId: "external-worker-a", sessionRef: "session-opaque-27", conversationRef: "conversation-opaque-2",
+    } })).status).toBe(201);
+    const mappedThreads = await call(`/channels/${channel.id}/threads`, "GET");
+    expect(await mappedThreads.json()).toMatchObject({ threads: expect.arrayContaining([expect.objectContaining({
+      provider_thread_id: "customer-session-2", sessionBinding: { version: 1, consumerId: "external-worker-a", sessionRef: "session-opaque-27", conversationRef: "conversation-opaque-2" },
+    })]) });
+    expect((await call(`/channels/${channel.id}/threads`, "POST", { providerThreadId: "customer-session-secret", sessionBinding: {
+      version: 1, consumerId: "external-worker-a", sessionRef: "session-opaque-28", accessToken: "must-not-persist",
+    } })).status).toBe(400);
+    expect((await call(`/channels/${channel.id}/threads`, "POST", { providerThreadId: "customer-session-large", sessionBinding: {
+      version: 1, consumerId: "external-worker-a", sessionRef: "s".repeat(513),
+    } })).status).toBe(400);
     const externalInbound = await call(`/channels/${channel.id}/message-events/inbound`, "POST", { providerMessageId: "provider-msg-2", providerThreadId: "customer-1", senderId: "untrusted-user" });
     expect(externalInbound.status).toBe(202);
     expect(await externalInbound.json()).toMatchObject({ messageReference: { providerMessageId: "provider-msg-2", senderRole: "external", trustLevel: "unverified" }, contentLocation: "channel_provider" });
@@ -260,6 +388,7 @@ describe("AgentPort internal registry API", () => {
     const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
     const call = (path: string, body: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method: "POST", headers, body: JSON.stringify(body) }), env);
     await call("/services", { id: "svc", name: "Service", type: "api", accountModels: ["agent_native"], capabilities: [], events: [], connectionPurpose: "agent_resource" });
+    expect((await call("/accounts", { serviceId: "svc", accountModel: "user_parent", ownerType: "individual", ownerId: "owner" })).status).toBe(400);
     expect((await call("/accounts", { serviceId: "svc", accountModel: "user_parent", ownerType: "organization", ownerId: "org", parentAccountId: "parent" })).status).toBe(422);
     const agentResponse = await call("/agents", { principalId: "org", principalType: "organization", createdBy: "user", hostPlatform: "openclaw" });
     const { agent } = await agentResponse.json() as { agent: { id: string } };

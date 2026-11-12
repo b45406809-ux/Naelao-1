@@ -77,6 +77,8 @@ export interface ProviderAllocation {
   generation: number;
   region?: string;
   endpoint?: string;
+  /** Provider reported immutable image/template digest when available. */
+  imageDigest?: string;
 }
 export interface RuntimeRequest {
   executionId: string;

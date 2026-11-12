@@ -33,6 +33,7 @@ import {
 } from "@/lib/connectorActions";
 import { AppCard, type AppCardModel } from "@/components/AppCard";
 import { AssistantMailboxPanel } from "@/components/AssistantMailboxPanel";
+import { ManagedServicesPanel } from "@/components/ManagedServicesPanel";
 import { WebsiteConnections } from "@/components/WebsiteConnections";
 import { ConnectorAliases } from "@/components/ConnectorAliases";
 
@@ -291,6 +292,7 @@ export default function ConnectorsPage() {
         </div>
       </div>
 
+      {creds && <ManagedServicesPanel spaceId={activeSpaceId} session={creds} />}
       {creds && <AssistantMailboxPanel spaceId={activeSpaceId} session={creds} />}
       {creds && <WebsiteConnections spaceId={activeSpaceId} session={creds} />}
 

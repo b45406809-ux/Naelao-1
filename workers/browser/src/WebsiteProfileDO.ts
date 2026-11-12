@@ -8,6 +8,8 @@ import {
 } from "./website-profile.js";
 import type { BrowserEnv } from "./BrowserSessionDO.js";
 import type { BrowserRuntimeScope } from "@naelao/agent-sdk";
+import { websiteProfileId } from "./website-profile.js";
+import { browserErasureScope } from "./browser-session-state.js";
 /** Internal only. Profile plaintext is returned exclusively to the browser host, never the model. */
 export class WebsiteProfileDO extends DurableObject<BrowserEnv> {
   override async alarm(): Promise<void> {
@@ -51,6 +53,22 @@ export class WebsiteProfileDO extends DurableObject<BrowserEnv> {
       }
       if (operation !== "/load" && operation !== "/save")
         return new Response(null, { status: 404 });
+      if (scope.projectId && scope.connectionId) {
+        const profileId = await websiteProfileId(scope);
+        const at = new Date().toISOString();
+        const registered = await this.env.PLATFORM_DB.prepare(`INSERT INTO workspace_browser_profile_registry
+          (profile_id,tenant_id,space_id,project_id,actor_id,connection_id,scope_json,first_seen_at,last_seen_at)
+          VALUES(?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(profile_id) DO UPDATE SET scope_json=excluded.scope_json,last_seen_at=excluded.last_seen_at,last_erasure_error=NULL
+          WHERE workspace_browser_profile_registry.tenant_id=excluded.tenant_id
+            AND workspace_browser_profile_registry.space_id=excluded.space_id
+            AND workspace_browser_profile_registry.project_id=excluded.project_id
+            AND workspace_browser_profile_registry.actor_id=excluded.actor_id
+            AND workspace_browser_profile_registry.connection_id=excluded.connection_id`)
+          .bind(profileId, scope.tenantId, scope.spaceId, scope.projectId, scope.actorId, scope.connectionId,
+            JSON.stringify(browserErasureScope(scope)), at, at).run();
+        if (!registered.meta.changes) throw new Error("browser_profile_registry_conflict");
+      }
       await this.ctx.storage.put("activeScope", scope);
       await this.ctx.storage.put("lease", {
         owner: holder,

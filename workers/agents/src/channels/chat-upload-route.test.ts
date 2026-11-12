@@ -6,7 +6,7 @@ const secret = "chat-upload-route-secret";
 
 function makeEnv(scopeResponses: (request: Request) => Response) {
   const r2Calls: string[] = [];
-  const writes: Array<{ key: string; bytes: Uint8Array }> = [];
+  const writes: Array<{ key: string; bytes: Uint8Array; contentType?: string }> = [];
   const env = {
     PLATFORM_SECRET: secret,
     SPACES_WORKER: {
@@ -19,9 +19,9 @@ function makeEnv(scopeResponses: (request: Request) => Response) {
         r2Calls.push(`get:${key}`);
         return null;
       },
-      async put(key: string, value: Uint8Array) {
+      async put(key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) {
         r2Calls.push(`put:${key}`);
-        writes.push({ key, bytes: value.slice() });
+        writes.push({ key, bytes: value.slice(), ...(options?.httpMetadata?.contentType ? { contentType: options.httpMetadata.contentType } : {}) });
         return { etag: "etag-1" };
       },
       async head(key: string) {
@@ -211,6 +211,17 @@ describe("chat upload route scope enforcement", () => {
     expect(new TextDecoder().decode(state.writes[0]?.bytes)).toBe(
       "safe attachment"
     );
+  });
+
+  it("infers a known MIME type when a browser omits the multipart file type", async () => {
+    const state = makeEnv((request) =>
+      new URL(request.url).pathname.endsWith("compact-scope")
+        ? Response.json({ project_id: null, owned_by_caller: true, private_scratchpad: false })
+        : new Response(null, { status: 404 })
+    );
+    const response = await postUpload(state.env, undefined, true, "", "invoice.pdf");
+    expect(response.status).toBe(201);
+    expect(state.writes[0]).toMatchObject({ contentType: "application/pdf" });
   });
 
   it("rejects more than six files before writing any of them", async () => {

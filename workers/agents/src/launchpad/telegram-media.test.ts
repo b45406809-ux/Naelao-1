@@ -66,6 +66,23 @@ describe("Telegram attachment ingress", () => {
     expect((fetcher.mock.calls[1]?.[1] as RequestInit).redirect).toBe("manual");
   });
 
+  it("infers known document MIME when Telegram omits it and leaves unknown extensions opaque", async () => {
+    const missingMime = structuredClone(update);
+    delete (missingMime.message.document as { mime_type?: string }).mime_type;
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { file_path: "documents/file.pdf", file_size: 1 } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])));
+    await expect(downloadTelegramAttachments(missingMime, { botToken: "token", fetcher }))
+      .resolves.toMatchObject([{ mimeType: "application/pdf" }]);
+    const unknown = structuredClone(missingMime);
+    unknown.message.document.file_name = "invoice.mystery";
+    const unknownFetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { file_path: "documents/file.bin", file_size: 1 } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])));
+    await expect(downloadTelegramAttachments(unknown, { botToken: "token", fetcher: unknownFetcher }))
+      .resolves.toMatchObject([{ mimeType: "application/octet-stream" }]);
+  });
+
   it("rejects provider path traversal, missing credentials, and oversized metadata", async () => {
     const traversal = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({

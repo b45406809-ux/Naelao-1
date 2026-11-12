@@ -11,6 +11,8 @@ import { ensureIdentity, readBody } from "./core.js";
 import {
   handlePhoneAction,
   defaultPhonePolicy,
+  sweepTelnyxNumberOrders,
+  sweepTelnyxNumberReleases,
   validatePhonePolicy,
 } from "./phones.js";
 import { phoneProvider, PhoneProviderError } from "./phone-provider.js";
@@ -68,6 +70,157 @@ async function phoneFixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("assistant telephone safety and lifecycle", () => {
+  it("quotes, journals and reconciles a customer-owned Telnyx number order without replay", async () => {
+    const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    const telnyx = { apiKey: "test-api-key-123456", publicKey: btoa("x".repeat(32)), verifiedNumberId: "12345", verifiedPhoneNumber: number, callControlId: "connection-1" };
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify(telnyx) })) } as unknown as Fetcher;
+    const orderId = "123e4567-e89b-12d3-a456-426614174000", newNumberId = "67890", selectedNumber = "+14155550123";
+    let customerReference = "";
+    const provider = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input), method = init?.method ?? "GET";
+      if (url.includes("available_phone_numbers")) return Response.json({ data: [{ phone_number: selectedNumber, phone_number_type: "local",
+        features: [{ name: "voice" }, { name: "sms" }], region_information: [],
+        cost_information: { upfront_cost: "1.25", monthly_cost: "2.00", currency: "USD" } }] });
+      if (url.endsWith("/phone_numbers/12345")) return Response.json({ data: { id: "12345", phone_number: number, connection_id: "connection-1", messaging_profile_id: "profile-1" } });
+      if (url.endsWith("/phone_numbers/67890")) return Response.json({ data: { id: newNumberId, phone_number: selectedNumber, connection_id: "connection-1", messaging_profile_id: "profile-1" } });
+      if (url.endsWith("/number_orders") && method === "POST") { customerReference = JSON.parse(String(init?.body)).customer_reference; return Response.json({ data: { id: orderId, status: "pending", customer_reference: customerReference } }); }
+      if (url.endsWith(`/number_orders/${orderId}`)) return Response.json({ data: { id: orderId, status: "success", customer_reference: customerReference,
+        phone_numbers: [{ id: newNumberId, phone_number: selectedNumber }] } });
+      throw new Error(`unexpected Telnyx request ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", provider);
+    const act = (action: string, body: Record<string, unknown> = {}, manager = true) => handlePhoneAction(f.env, scope, identity, action, body, manager, false);
+    await act("phone-telnyx-search",{country:"US",number_type:"local"});
+    expect(String(provider.mock.calls[0]?.[0])).toContain("filter%5Bphone_number_type%5D=local");
+    const quote = await act("phone-telnyx-quote", { country: "US", phone_number: selectedNumber }) as { quote_id: string; upfront_cost_minor: number; monthly_cost_minor: number };
+    expect(quote).toMatchObject({ upfront_cost_minor: 125, monthly_cost_minor: 200 });
+    await expect(act("phone-telnyx-order", { quote_id: quote.quote_id, confirm: true,
+      confirm_upfront_cost_minor: quote.upfront_cost_minor, confirm_monthly_cost_minor: quote.monthly_cost_minor }))
+      .resolves.toMatchObject({ status: "pending", phone_number: selectedNumber });
+    const op = await f.db.prepare("SELECT id,status,provider_order_id FROM assistant_telnyx_number_order_operations").first<{ id: string; status: string; provider_order_id: string }>();
+    expect(op).toMatchObject({ status: "pending", provider_order_id: orderId });
+    await expect(act("phone-telnyx-order", { quote_id: quote.quote_id, confirm: true,
+      confirm_upfront_cost_minor: quote.upfront_cost_minor, confirm_monthly_cost_minor: quote.monthly_cost_minor }))
+      .rejects.toThrow("phone_quote_expired_or_price_not_confirmed");
+    expect(provider.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    await f.db.prepare("UPDATE assistant_telnyx_number_order_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE id=?").bind(op!.id).run();
+    await expect(sweepTelnyxNumberOrders(f.env,new Date("2026-11-11T12:00:00.000Z"),10))
+      .resolves.toMatchObject({checked:1,reconciled:1,deferred:0,failed:0});
+    expect(await f.db.prepare("SELECT status,provider_number_id FROM assistant_telnyx_number_order_operations WHERE id=?").bind(op!.id).first())
+      .toMatchObject({ status: "succeeded", provider_number_id: newNumberId });
+    expect(await f.db.prepare("SELECT provider,payer,status,provider_number_sid,phone_number FROM assistant_phone_bindings WHERE identity_id=?").bind(identity.id).first())
+      .toMatchObject({ provider: "telnyx", payer: "byo", status: "configuring", provider_number_sid: newNumberId, phone_number: selectedNumber });
+    expect(provider.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+  it("recovers a lost Telnyx order acknowledgement by customer reference without another purchase",async()=>{
+    const f=fixture();f.env.PUBLIC_AGENTS_URL="https://phone.example.com";
+    f.fetch.mockImplementation(async(request:Request)=>request.url.includes("assistant-access")?Response.json({effective_role:"owner"}):Response.json({preferences:{enabled:{phone:true,email:true}}}));
+    const identity=await ensureIdentity(f.env,scope);
+    const telnyx={apiKey:"test-api-key-123456",publicKey:btoa("x".repeat(32)),verifiedNumberId:"12345",verifiedPhoneNumber:number,callControlId:"connection-1"};
+    f.env.CREDENTIALS_WORKER={fetch:vi.fn(async()=>Response.json({value:JSON.stringify(telnyx)}))} as unknown as Fetcher;
+    const orderId="123e4567-e89b-12d3-a456-426614174000",newNumberId="67890",selectedNumber="+14155550124";
+    let customerReference="";
+    const provider=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const url=new URL(String(input)),method=init?.method??"GET";
+      if(url.pathname.endsWith("/available_phone_numbers"))return Response.json({data:[{phone_number:selectedNumber,phone_number_type:"local",
+        features:[{name:"voice"},{name:"sms"}],region_information:[],cost_information:{upfront_cost:"1.25",monthly_cost:"2.00",currency:"USD"}}]});
+      if(url.pathname.endsWith("/phone_numbers/12345"))return Response.json({data:{id:"12345",phone_number:number,connection_id:"connection-1",messaging_profile_id:"profile-1"}});
+      if(url.pathname.endsWith(`/phone_numbers/${newNumberId}`))return Response.json({data:{id:newNumberId,phone_number:selectedNumber,connection_id:"connection-1",messaging_profile_id:"profile-1"}});
+      if(url.pathname.endsWith("/number_orders")&&method==="POST"){
+        customerReference=String(JSON.parse(String(init?.body)).customer_reference);
+        throw new Error("provider accepted order but acknowledgement was lost");
+      }
+      if(url.pathname.endsWith("/number_orders")&&method==="GET")return Response.json({data:[{id:orderId,status:"success",customer_reference:customerReference,
+        phone_numbers:[{id:newNumberId,phone_number:selectedNumber}]}]});
+      throw new Error(`unexpected Telnyx request ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch",provider);
+    const act=(action:string,body:Record<string,unknown>={})=>handlePhoneAction(f.env,scope,identity,action,body,true,false);
+    const quote=await act("phone-telnyx-quote",{country:"US",phone_number:selectedNumber}) as {quote_id:string;upfront_cost_minor:number;monthly_cost_minor:number};
+    await expect(act("phone-telnyx-order",{quote_id:quote.quote_id,confirm:true,confirm_upfront_cost_minor:quote.upfront_cost_minor,
+      confirm_monthly_cost_minor:quote.monthly_cost_minor})).rejects.toThrow("telnyx_number_order_reconciliation_required");
+    const operation=await f.db.prepare("SELECT id,status,customer_reference,next_reconcile_at FROM assistant_telnyx_number_order_operations")
+      .first<{id:string;status:string;customer_reference:string;next_reconcile_at:string}>();
+    expect(operation).toMatchObject({status:"uncertain",customer_reference:expect.stringMatching(/^naelao_tn_/),next_reconcile_at:expect.any(String)});
+    await f.db.prepare("UPDATE assistant_telnyx_number_order_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE id=?").bind(operation!.id).run();
+    await expect(sweepTelnyxNumberOrders(f.env,new Date("2026-11-11T12:00:00.000Z"),10))
+      .resolves.toMatchObject({checked:1,reconciled:1,deferred:0,failed:0});
+    expect(await f.db.prepare("SELECT status,provider_order_id,provider_number_id FROM assistant_telnyx_number_order_operations WHERE id=?")
+      .bind(operation!.id).first()).toMatchObject({status:"succeeded",provider_order_id:orderId,provider_number_id:newNumberId});
+    expect(provider.mock.calls.filter(([input,init])=>init?.method==="POST"&&new URL(String(input)).pathname.endsWith("/number_orders"))).toHaveLength(1);
+  });
+  it("journals a managed Telnyx release and confirms a lost DELETE by exact read-only inspection",async()=>{
+    const f=fixture();f.env.PUBLIC_AGENTS_URL="https://phone.example.com";
+    f.fetch.mockImplementation(async(request:Request)=>request.url.includes("assistant-access")?Response.json({effective_role:"owner"}):Response.json({preferences:{enabled:{phone:true,email:true}}}));
+    f.env.TELNYX_MANAGED_API_KEY="managed-test-api-key-123456";
+    f.env.TELNYX_MANAGED_PUBLIC_KEY=btoa("x".repeat(32));
+    const identity=await ensureIdentity(f.env,scope),numberId="98765",providerNumber="+14155550987";
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,
+      phone_number,country_code,capabilities_json,previous_callbacks_json,status,policy_json,monthly_cost_minor)
+      VALUES('managed-release-binding',?,'assistant','managed','telnyx','managed-account',? ,?,'US','{"sms":true}', '{}','active',?,100)`)
+      .bind(identity.id,numberId,providerNumber,JSON.stringify(defaultPhonePolicy)).run();
+    let providerNumberExists=true;
+    const provider=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const url=new URL(String(input)),method=init?.method??"GET";
+      if(url.pathname===`/v2/phone_numbers/${numberId}`&&method==="DELETE"){
+        providerNumberExists=false;
+        throw new Error("DELETE accepted but acknowledgement was lost");
+      }
+      if(url.pathname===`/v2/phone_numbers/${numberId}`&&method==="GET"){
+        if(!providerNumberExists)return new Response(null,{status:404});
+        return Response.json({data:{id:numberId,phone_number:providerNumber}});
+      }
+      throw new Error(`unexpected Telnyx request ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch",provider);
+    const release=()=>handlePhoneAction(f.env,scope,identity,"phone-telnyx-detach",{
+      binding_id:"managed-release-binding",confirm:true,provider_checked:true,
+    },true,false);
+    await expect(release()).resolves.toMatchObject({status:"uncertain",released:false,reconciliation_scheduled:true});
+    const operation=await f.db.prepare("SELECT id,status,next_reconcile_at,provider_number_id FROM assistant_telnyx_number_release_operations")
+      .first<{id:string;status:string;next_reconcile_at:string;provider_number_id:string}>();
+    expect(operation).toMatchObject({status:"uncertain",next_reconcile_at:expect.any(String),provider_number_id:numberId});
+    await expect(release()).resolves.toMatchObject({operation_id:operation!.id,status:"uncertain"});
+    expect(provider.mock.calls.filter(([,init])=>init?.method==="DELETE")).toHaveLength(1);
+    await f.db.prepare("UPDATE assistant_telnyx_number_release_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE id=?").bind(operation!.id).run();
+    await expect(sweepTelnyxNumberReleases(f.env,new Date("2026-11-12T12:00:00.000Z"),10))
+      .resolves.toMatchObject({checked:1,released:1,deferred:0,failed:0});
+    expect(await f.db.prepare("SELECT status,last_error FROM assistant_telnyx_number_release_operations WHERE id=?").bind(operation!.id).first())
+      .toEqual({status:"released",last_error:null});
+    expect(await f.db.prepare("SELECT status FROM assistant_phone_bindings WHERE id='managed-release-binding'").first())
+      .toEqual({status:"released"});
+    expect(provider.mock.calls.filter(([,init])=>init?.method==="DELETE")).toHaveLength(1);
+    expect(provider.mock.calls.filter(([,init])=>(init?.method??"GET")==="GET")).toHaveLength(1);
+  });
+  it("does not replay a legacy indeterminate managed Telnyx release",async()=>{
+    const f=fixture();f.env.PUBLIC_AGENTS_URL="https://phone.example.com";
+    f.fetch.mockImplementation(async(request:Request)=>request.url.includes("assistant-access")?Response.json({effective_role:"owner"}):Response.json({preferences:{enabled:{phone:true,email:true}}}));
+    f.env.TELNYX_MANAGED_API_KEY="managed-test-api-key-123456";f.env.TELNYX_MANAGED_PUBLIC_KEY=btoa("x".repeat(32));
+    const identity=await ensureIdentity(f.env,scope),numberId="98766",providerNumber="+14155550988";
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,
+      phone_number,country_code,capabilities_json,previous_callbacks_json,status,policy_json,monthly_cost_minor)
+      VALUES('legacy-indeterminate-binding',?,'assistant','managed','telnyx','managed-account',?,?,'US','{"sms":true}', '{}','indeterminate',?,100)`)
+      .bind(identity.id,numberId,providerNumber,JSON.stringify(defaultPhonePolicy)).run();
+    const provider=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const url=new URL(String(input)),method=init?.method??"GET";
+      if(url.pathname===`/v2/phone_numbers/${numberId}`&&method==="GET")return Response.json({data:{id:numberId,phone_number:providerNumber}});
+      throw new Error(`unexpected Telnyx request ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch",provider);
+    await expect(handlePhoneAction(f.env,scope,identity,"phone-telnyx-detach",{
+      binding_id:"legacy-indeterminate-binding",confirm:true,provider_checked:true,
+    },true,false)).resolves.toMatchObject({status:"uncertain",released:false,reconciliation_scheduled:true});
+    const status=await handlePhoneAction(f.env,scope,identity,"phone-status",{},true,false);
+    expect(status).toMatchObject({telnyx_release:{status:"uncertain",phone_number:providerNumber}});
+    expect(provider.mock.calls.filter(([,init])=>init?.method==="DELETE")).toHaveLength(0);
+    const operation=await f.db.prepare("SELECT id FROM assistant_telnyx_number_release_operations").first<{id:string}>();
+    await f.db.prepare("UPDATE assistant_telnyx_number_release_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE id=?").bind(operation!.id).run();
+    await expect(sweepTelnyxNumberReleases(f.env,new Date("2026-11-12T12:00:00.000Z"),10))
+      .resolves.toMatchObject({checked:1,released:0,deferred:1,failed:0});
+    expect(provider.mock.calls.filter(([,init])=>init?.method==="DELETE")).toHaveLength(0);
+  });
   it("activates Telnyx SMS only after verifying the exact provider webhook", async () => {
     const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";
     f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
@@ -81,6 +234,41 @@ describe("assistant telephone safety and lifecycle", () => {
     webhook = `https://phone.example.com/assistant-phone/telnyx/${staged.phone.id}`;
     await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-activate", { confirm: true }, true, false)).resolves.toMatchObject({ sms_active: true, voice_active: false, phone: { status: "active", capabilities: { sms: true, voice: false } } });
     await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-detach", { confirm: true }, true, false)).resolves.toMatchObject({ detached: true, webhook_unchanged: true });
+  });
+  it("rechecks and persists the Telnyx call-cost webhook setting without changing provider config", async () => {
+    const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({
+      apiKey: "test-api-key-123456", publicKey: btoa("x".repeat(32)), verifiedNumberId: "12345",
+      verifiedPhoneNumber: number, callControlId: "connection-1",
+    }) })) } as unknown as Fetcher;
+    const bindingId = "telnyx-cost-status";
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,
+      provider_number_sid,phone_number,capabilities_json,previous_callbacks_json,policy_json,status)
+      VALUES(?,?,'assistant','byo','telnyx',?,?,?,'{"sms":true,"voice":true}','{}',?,'active')`)
+      .bind(bindingId, identity.id, `identity:${identity.id}`, "12345", number, JSON.stringify(defaultPhonePolicy)).run();
+    let enabled = false;
+    const expected = `https://phone.example.com/assistant-phone/telnyx/${bindingId}`;
+    const provider = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v2/phone_numbers/12345") return Response.json({ data: { id: "12345", phone_number: number, connection_id: "connection-1" } });
+      if (url.pathname === "/v2/call_control_applications/connection-1") return Response.json({ data: {
+        id: "connection-1", active: true, webhook_event_url: expected, webhook_api_version: "2", call_cost_in_webhooks: enabled,
+      } });
+      throw new Error(`unexpected Telnyx request ${url}`);
+    });
+    vi.stubGlobal("fetch", provider);
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-cost-status", {}, true, false))
+      .resolves.toEqual({ call_cost_webhooks_enabled: false });
+    expect(JSON.parse((await f.db.prepare("SELECT capabilities_json FROM assistant_phone_bindings WHERE id=?").bind(bindingId).first<{ capabilities_json: string }>())!.capabilities_json))
+      .toMatchObject({ voice: true, call_cost_webhooks: false });
+    enabled = true;
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-cost-status", {}, true, false))
+      .resolves.toEqual({ call_cost_webhooks_enabled: true });
+    expect(JSON.parse((await f.db.prepare("SELECT capabilities_json FROM assistant_phone_bindings WHERE id=?").bind(bindingId).first<{ capabilities_json: string }>())!.capabilities_json))
+      .toMatchObject({ voice: true, call_cost_webhooks: true });
+    expect(provider.mock.calls.every(([, init]) => init?.method === undefined || init.method === "GET")).toBe(true);
   });
   it("stages only a freshly verified Telnyx number and can cancel without changing the carrier", async () => {
     const f = fixture();

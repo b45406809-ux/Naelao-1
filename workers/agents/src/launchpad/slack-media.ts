@@ -1,5 +1,6 @@
 import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
 import { readBoundedProviderJson } from "./bounded-provider-json.js";
+import { resolveFileContentType } from "@naelao/types";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
@@ -78,8 +79,7 @@ export async function downloadSlackAttachments(raw: JsonObject, input: { botToke
     const bytes = await readBounded(response);
     if (bytes.byteLength !== size) throw new Error("slack_media_size_mismatch");
     const filename = safeFilename(typeof file.name === "string" ? file.name : typeof reference.name === "string" ? reference.name : fileId);
-    const mimeType = typeof file.mimetype === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(file.mimetype)
-      ? file.mimetype.toLowerCase() : "application/octet-stream";
+    const mimeType = resolveFileContentType(filename, file.mimetype);
     results.push({ filename, mimeType, bytes });
     aggregateBytes += bytes.byteLength;
   }

@@ -6,6 +6,7 @@ import { channelPreferences, readBody, scopeAccess, type CommunicationIdentity, 
 import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { validatePhonePolicy, type AssistantPhoneBinding } from "./phones.js";
 import { carrierUsdToCredits, managedSmsCreditsPerSegment, managedSmsSegments, reserveManagedCarrierCredits, releaseManagedCarrierCredits, settleManagedCarrierCredits } from "./managed-carrier-billing.js";
+import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 
 /** Caller must enforce Space/Project membership, owner authority, explicit approval,
  * phone preferences and egress before this function. Never retry an uncertain send. */
@@ -23,6 +24,7 @@ export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: Communicat
   const content = await readBody(env, identity, row.id, row.body_key);
   const text = String(content.text ?? "");
   if (!text.trim() || text.length > 1600) throw new Error("telnyx_sms_content_invalid");
+  await (await import("./telnyx-agentport.js")).authorizeTelnyxSmsViaAgentPort(env, scope, binding.id, row.id);
   const policy = validatePhonePolicy(JSON.parse(binding.policy_json));
   const claim = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status='sending',updated_at=datetime('now') WHERE id=? AND binding_id=? AND status='approved' AND (SELECT COUNT(*) FROM assistant_phone_actions WHERE binding_id=? AND status IN ('sending','indeterminate','sent') AND updated_at>=date('now'))<?")
     .bind(row.id, binding.id, binding.id, policy.maxDailyActions).run();
@@ -104,6 +106,12 @@ export async function observeTelnyxSmsCost(env: AgentsEnv, identity: Communicati
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
   await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_telnyx_usage_receipts(receipt_hash,binding_id,action_id,provider_message_id,amount,currency,provider_completed_at) VALUES(?,?,?,?,?,?,?)")
     .bind(hash, binding.id, actionId, row.provider_sid, cost.amount, cost.currency, receipt.completed_at).run();
+  await recordProviderApiCostObservation(env.PLATFORM_DB, {
+    tenantId: identity.tenant_id, spaceId: identity.space_id, projectId: identity.project_id,
+    provider: "telnyx", serviceId: "phone-number", operationRef: row.provider_sid,
+    accountRef: binding.provider_account_sid, usageKind: "sms", quantityUnit: "message", quantityMicros: 1_000_000,
+    providerCost: cost.amount, currency: cost.currency, periodStart: receipt.completed_at, sourceApi: "telnyx.messages.get",
+  });
   let tenantChargeCredits: number | undefined;
   if (binding.payer === "managed") {
     if (cost.currency !== "USD" || !row.carrier_reservation_id) throw new Error("managed_telnyx_cost_not_billable");

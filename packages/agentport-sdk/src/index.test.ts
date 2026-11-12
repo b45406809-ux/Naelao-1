@@ -19,6 +19,51 @@ describe("AgentPort public SDK", () => {
     expect(await verifyAgentPortEventWebhook({ secret, timestamp, signature, raw, now: 2_000_000 })).toMatchObject({ valid: false });
     expect(await verifyAgentPortEventWebhook({ secret, timestamp, signature, raw: new TextEncoder().encode("{}"), now: 1_000_000 })).toMatchObject({ valid: false });
   });
+  it("dispatches claimed events sequentially and acknowledges only after durable consumer acceptance", async () => {
+    const order: string[] = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/events/pending") return Response.json({ events: [
+        { id: "evt_1", delivery_id: "dlv_1", service_id: "mail", event_type: "message.received", thread_ref: "thread-1", dataRef: "provider-ref-1" },
+        { id: "evt_2", delivery_id: "dlv_2", service_id: "mail", event_type: "message.received", thread_ref: "thread-2", dataRef: "provider-ref-2" },
+      ] });
+      const [, , , eventId, action] = url.pathname.split("/");
+      if (action === "claim") {
+        order.push(`claim:${eventId}`);
+        const base = eventId === "evt_1" ? { id: eventId, delivery_id: "dlv_1", service_id: "mail", event_type: "message.received", thread_ref: "thread-1", dataRef: "provider-ref-1",
+          sessionBinding: { version: 1, consumerId: "support", sessionRef: "session-1" } } : { id: eventId, delivery_id: "dlv_2", service_id: "mail", event_type: "message.received", thread_ref: "thread-2", dataRef: "provider-ref-2" };
+        return Response.json({ claimed: true, event: { ...base, claim_expires_at: "2030-01-01T00:00:00.000Z" } });
+      }
+      if (action === "ack") {
+        const body = JSON.parse(String(init?.body)) as { result: string };
+        order.push(`ack:${eventId}:${body.result}`);
+        return Response.json({ acknowledged: true, status: body.result === "retry" ? "pending" : body.result });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const client = new AgentPortClient({ apiKey: "ap_live_test", baseUrl: "https://agentport.test", fetch: fetcher });
+    const consumed = await client.consumePendingEvents({ agentId: "agent-1", consumerId: "support", handle: async event => {
+      order.push(`handle:${event.id}`);
+      if (event.id === "evt_1") {
+        expect(event.sessionBinding).toEqual({ version: 1, consumerId: "support", sessionRef: "session-1" });
+        expect(event.dataRef).toBe("provider-ref-1");
+        return "delivered";
+      }
+      throw new Error("session store unavailable");
+    } });
+    expect(consumed).toEqual({ polled: 2, claimed: 2, delivered: 1, retried: 1, deadLettered: 0, skipped: 0 });
+    expect(order).toEqual(["claim:evt_1", "handle:evt_1", "ack:evt_1:delivered", "claim:evt_2", "handle:evt_2", "ack:evt_2:retry"]);
+  });
+
+  it("bounds consumer batches and skips deliveries claimed by another worker", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/events/pending")
+      ? Response.json({ events: Array.from({ length: 30 }, (_, index) => ({ id: `evt_${index}`, delivery_id: `dlv_${index}` })) })
+      : Response.json({ claimed: false, event: null }));
+    const client = new AgentPortClient({ apiKey: "ap_live_test", baseUrl: "https://agentport.test", fetch: fetcher as typeof fetch });
+    await expect(client.consumePendingEvents({ agentId: "agent-1", consumerId: "support", limit: 26, handle: async () => undefined })).rejects.toThrow("invalid_event_consumer_limit");
+    const result = await client.consumePendingEvents({ agentId: "agent-1", consumerId: "support", limit: 3, handle: async () => undefined });
+    expect(result).toEqual({ polled: 3, claimed: 0, delivered: 0, retried: 0, deadLettered: 0, skipped: 3 });
+  });
   it("verifies inbound email webhook HMACs over the original bytes and rejects stale callbacks", async () => {
     const secret = "per-mailbox-secret"; const timestamp = "1000"; const eventId = "message-1";
     const raw = new TextEncoder().encode("From: sender@example.org\r\n\r\nprivate body");

@@ -22,6 +22,54 @@ async function listRequest(query = "") {
 }
 
 describe("Artifact list pagination", () => {
+  it("infers a known file type when multipart metadata is generic", async () => {
+    const put = vi.fn(async (..._args: unknown[]) => undefined);
+    const env = {
+      ENVIRONMENT: "test",
+      PLATFORM_SECRET: platformSecret,
+      ARTIFACT_BUCKET: { put } as unknown as R2Bucket,
+    } as ArtifactEnv;
+    const token = await mintInternalToken(platformSecret, "tenant-1");
+    const form = new FormData();
+    form.append("file", new Blob(["# Guide"], { type: "application/octet-stream" }), "guide.md");
+    const response = await worker.fetch(new Request("https://artifact.test/spaces/space-1/artifacts", {
+      method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token }, body: form,
+    }), env, {} as ExecutionContext);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ filename: "guide.md", content_type: "text/markdown; charset=utf-8" });
+    expect(put.mock.calls[0]?.[2]).toMatchObject({ httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+  });
+
+  it("infers JSON text and base64 artifact MIME from filenames without provider metadata", async () => {
+    const put = vi.fn(async (..._args: unknown[]) => undefined);
+    const env = {
+      ENVIRONMENT: "test",
+      PLATFORM_SECRET: platformSecret,
+      ARTIFACT_BUCKET: { put } as unknown as R2Bucket,
+    } as ArtifactEnv;
+    const token = await mintInternalToken(platformSecret, "tenant-1");
+    const send = (body: Record<string, string>) => worker.fetch(new Request("https://artifact.test/spaces/space-1/artifacts", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      body: JSON.stringify(body),
+    }), env, {} as ExecutionContext);
+
+    const textResponse = await send({ filename: "report.html", content: "<h1>Report</h1>" });
+    expect(textResponse.status).toBe(201);
+    expect(await textResponse.json()).toMatchObject({ content_type: "text/html; charset=utf-8" });
+    const binaryResponse = await send({ filename: "report.pdf", data_base64: "JVBERg==" });
+    expect(binaryResponse.status).toBe(201);
+    expect(await binaryResponse.json()).toMatchObject({ content_type: "application/pdf" });
+    const unknownResponse = await send({ filename: "payload.mystery", data_base64: "AQID" });
+    expect(unknownResponse.status).toBe(201);
+    expect(await unknownResponse.json()).toMatchObject({ content_type: "application/octet-stream" });
+    expect(put.mock.calls.map((call) => call[2])).toEqual([
+      expect.objectContaining({ httpMetadata: { contentType: "text/html; charset=utf-8" } }),
+      expect.objectContaining({ httpMetadata: { contentType: "application/pdf" } }),
+      expect.objectContaining({ httpMetadata: { contentType: "application/octet-stream" } }),
+    ]);
+  });
+
   it("returns a stable bounded page and an explicit continuation cursor", async () => {
     const list = vi.fn(async (options: R2ListOptions) => options.cursor
       ? { objects: [object(3)], truncated: false }

@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import { inferWorkspaceContentType } from "@naelao/types";
 import type { LiveRuntimeControlDO } from "./LiveRuntimeControlDO.js";
 import {
   canonicalManifest,
@@ -74,6 +75,15 @@ interface ContentGcState {
   marksCursor?: string;
   cleanupDone?: boolean;
 }
+interface WorkspaceRetentionPolicy {
+  version: 1;
+  stagingRetentionDays: number;
+  legalHold: null | { expiresAt?: string; reason: string; actorId: string; createdAt: string };
+  updatedAt: string;
+  updatedBy: string;
+}
+interface WorkspaceErasureAdmission { scope: WorkspaceScope; admittedAt: string; }
+interface RetentionGcLease { id: string; expiresAt: number; }
 interface Session {
   id: string;
   actorId: string;
@@ -154,6 +164,7 @@ const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CONTENT_GC_LOCK_MS = 10 * 60 * 1000;
 const CONTENT_GC_CLAIM_MS = 2 * 60 * 1000;
 const CONTENT_GC_ENTRY_BATCH = 100;
+const RETENTION_GC_LEASE_MS = 5 * 60 * 1000;
 const UPLOAD_INTENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_CONTENT_GC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -250,7 +261,7 @@ function expiryKey(expiresAt: number, nonce: string): string { return `expiry:${
 function gcMarksRoot(scope: WorkspaceScope): string { return `workspace-v1/${keyScope(scope)}/gc/marks/`; }
 function gcMarksPrefix(scope: WorkspaceScope, epoch: string): string { return `${gcMarksRoot(scope)}${epoch}/`; }
 function entrySignature(entry: WorkspaceEntry | undefined): string | null {
-  return entry ? JSON.stringify([entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"]) : null;
+  return entry ? JSON.stringify([entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)]) : null;
 }
 
 /**
@@ -321,8 +332,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const url = new URL(request.url);
     const body = request.method === "POST" ? await readJson(request) : null;
     if (request.method === "POST" && !body) return fail("invalid_request", 413);
+    const erasureControl = request.method === "POST" && ["/v1/erase", "/v1/erase/admission"].includes(url.pathname);
     if (request.method !== "POST" && await this.ctx.storage.get<boolean>("erased")) return fail("workspace_erased", 410);
-    if (request.method === "POST" && url.pathname !== "/v1/erase" && await this.ctx.storage.get<boolean>("erased")) return fail("workspace_erased", 410);
+    if (request.method === "POST" && !erasureControl && await this.ctx.storage.get<boolean>("erased")) return fail("workspace_erased", 410);
+    const admission = await this.ctx.storage.get<WorkspaceErasureAdmission>("workspace_erasure_admission");
+    if (admission && !erasureControl && url.pathname !== "/v1/retention/policy") return fail("workspace_erasure_in_progress", 423);
+    if (request.method === "POST" && url.pathname === "/v1/erase/admission") return this.admitErase(body!, tenantId);
     if (request.method === "POST" && url.pathname === "/v1/erase") return this.erase(body!, tenantId);
     if (request.method === "GET" && url.pathname === "/v1/migration/status") {
       const migration = await this.ctx.storage.get<WorkspaceMigration>("project_migration") ?? null;
@@ -338,6 +353,12 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       return json({ migration, rollbackAlias, restore, canonicalRevisionRestore: await this.ctx.storage.get("canonical_revision_restore") ?? null,
         readPolicy, currentHeads, aliasCleanup: await this.ctx.storage.get("legacy_alias_cleanup_receipt") ?? null });
     }
+    if (request.method === "GET" && url.pathname === "/v1/retention/policy") {
+      return json({ policy: await this.ctx.storage.get<WorkspaceRetentionPolicy>("workspace_retention_policy") ?? {
+        version: 1, stagingRetentionDays: 7, legalHold: null, updatedAt: null, updatedBy: null,
+      } });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/retention/policy") return this.setRetentionPolicy(body!, tenantId);
     if (request.method === "GET" && url.pathname === "/v1/read-policy") return json(await this.getReadPolicy());
     if (request.method === "GET" && url.pathname === "/v1/sessions") return this.sessions(url);
     if (request.method === "GET" && url.pathname === "/v1/live-checkpoint/status") return this.liveCheckpointStatus(url);
@@ -421,9 +442,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const { scope, branch } = validated;
     if (!Array.isArray(body.entries) || body.entries.length > MAX_ENTRIES || !body.entries.every(validateWorkspaceEntry)) return fail("invalid_manifest");
     if (new Set(body.entries.map((entry) => (entry as WorkspaceEntry).path)).size !== body.entries.length) return fail("duplicate_workspace_path");
-    // Every canonical entry has a content type. Callers with no source MIME declare the
-    // conservative binary default; clients with real metadata preserve it explicitly.
-    const entries = (body.entries as WorkspaceEntry[]).map(entry => ({ ...entry, contentType: entry.contentType ?? "application/octet-stream" }));
+    // Keep supplied metadata, and infer the shared known-extension map for older callers.
+    const entries = (body.entries as WorkspaceEntry[]).map(entry => ({ ...entry, contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }));
     const total = entries.reduce((sum, entry) => sum + entry.size, 0);
     if (total > MAX_WORKSPACE_BYTES) return fail("workspace_limit_exceeded", 413);
     const verified = await this.verifyEntries(scope, entries);
@@ -521,7 +541,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         const hash = await sha256Hex(bytes);
         if (object.customMetadata?.sha256 && object.customMetadata.sha256 !== hash) throw new Error("workspace_migration_legacy_hash_mismatch");
         const objectKey = `${contentPrefix(scope)}${hash}`;
-        const contentType = object.httpMetadata?.contentType ?? "application/octet-stream";
+        const contentType = object.httpMetadata?.contentType ?? inferWorkspaceContentType(path);
         if (storeContentObjects) {
           const stored = await this.env.SCRIPTS_R2!.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: hash, size: String(bytes.byteLength) }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
           if (!stored) {
@@ -543,7 +563,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
 
   private async inventorySummary(entries: WorkspaceEntry[], tombstones: string[]): Promise<InventorySummary> {
     const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path));
-    const normalized = sorted.map(entry => [entry.path, entry.sha256, entry.size, entry.contentType ?? "application/octet-stream", entry.executable === true]);
+    const normalized = sorted.map(entry => [entry.path, entry.sha256, entry.size, entry.contentType ?? inferWorkspaceContentType(entry.path), entry.executable === true]);
     const hashRows = async (rows: unknown[]) => sha256Hex(new TextEncoder().encode(JSON.stringify(rows)));
     const normalizedTombstones = [...tombstones].sort();
     return {
@@ -551,7 +571,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       pathHash: await hashRows(sorted.map(entry => entry.path)),
       contentHash: await hashRows(sorted.map(entry => [entry.path, entry.sha256])),
       sizeHash: await hashRows(sorted.map(entry => [entry.path, entry.size])),
-      mimeHash: await hashRows(sorted.map(entry => [entry.path, entry.contentType ?? "application/octet-stream"])),
+      mimeHash: await hashRows(sorted.map(entry => [entry.path, entry.contentType ?? inferWorkspaceContentType(entry.path)])),
       executableHash: await hashRows(sorted.map(entry => [entry.path, entry.executable === true])),
       tombstoneHash: await hashRows(normalizedTombstones),
       fileCount: entries.length,
@@ -634,7 +654,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     head = await this.ctx.storage.get<WorkspaceHead>(headKey(branch));
     if (!head) throw new Error("workspace_migration_branch_head_missing");
     currentEntries = await this.readManifestEntries(head);
-    const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"]));
+    const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)]));
     if (signature(currentEntries) !== signature(desiredEntries)) throw new Error("workspace_migration_branch_manifest_mismatch");
     const invalid = await this.verifyEntries(scope, currentEntries);
     if (invalid) throw new Error("workspace_migration_branch_content_integrity_failed");
@@ -683,7 +703,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         return { main, branches, totalBytes };
       };
-      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? "application/octet-stream", executable === true]));
+      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? inferWorkspaceContentType(path), executable === true]));
       const snapshotSignature = (snapshot: Awaited<ReturnType<typeof scan>>) => JSON.stringify({
         main: signature(snapshot.main.entries), mainTombstones: snapshot.main.tombstones,
         branches: snapshot.branches.map(({ name, tree }) => [name, signature(tree.entries), tree.tombstones]),
@@ -772,7 +792,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         }
         return { main, branches, totalBytes };
       };
-      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? "application/octet-stream", executable === true]));
+      const signature = (entries: WorkspaceEntry[]) => JSON.stringify(entries.map(({ path, sha256, size, contentType, executable }) => [path, sha256, size, contentType ?? inferWorkspaceContentType(path), executable === true]));
       const snapshotSignature = (snapshot: Awaited<ReturnType<typeof scan>>) => JSON.stringify({
         main: signature(snapshot.main.entries), mainTombstones: snapshot.main.tombstones,
         branches: snapshot.branches.map(({ name, tree }) => [name, signature(tree.entries), tree.tombstones]),
@@ -1109,8 +1129,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
           seedFromMain: false, expectedRevision: currentHead.revision, stageNamespace: `rollback-${restoreDigest}`,
         });
         const verifiedEntries = await this.readManifestEntries(head);
-        if (JSON.stringify(verifiedEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"])) !==
-            JSON.stringify(desiredEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"]))) throw new Error("workspace_migration_restore_manifest_mismatch");
+        if (JSON.stringify(verifiedEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)])) !==
+            JSON.stringify(desiredEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)]))) throw new Error("workspace_migration_restore_manifest_mismatch");
         const savedHead = { revision: head.revision, manifestHash: head.manifestHash };
         const saved = await this.ctx.storage.transaction(async tx => {
           const currentRestore = await tx.get<WorkspaceRollbackRestore>("migration_restore");
@@ -1271,8 +1291,8 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         seedFromMain: false, expectedRevision: currentHead.revision, stageNamespace: `revision-restore-${restoreDigest}`,
       });
       const verifiedEntries = await this.readManifestEntries(restored);
-      if (JSON.stringify(verifiedEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"])) !==
-          JSON.stringify(desiredEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? "application/octet-stream"]))) {
+      if (JSON.stringify(verifiedEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)])) !==
+          JSON.stringify(desiredEntries.map(entry => [entry.path, entry.sha256, entry.size, entry.executable, entry.contentType ?? inferWorkspaceContentType(entry.path)]))) {
         throw new Error("workspace_revision_restore_manifest_mismatch");
       }
       const savedHead = { revision: restored.revision, manifestHash: restored.manifestHash };
@@ -1347,7 +1367,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     if (className === "warning") console.warn("workspace_ops_alert", { signal });
   }
 
-  private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, evidence: unknown, requireExact = false): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
+  private async verifyLiveCapability(scope: WorkspaceScope, actorId: string, runtimeId: string, generation: number, _callerEvidence: unknown, requireExact = false): Promise<{ binding?: LiveCapabilityBinding; missing: string[] }> {
     if (!this.env.LIVE_CAPABILITY_VERIFIER) return { missing: ["authorityBackedVerification"] };
     let response: Response;
     try {
@@ -1355,7 +1375,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId) },
-        body: JSON.stringify({ scope, actorId, preferredRuntimeId: runtimeId, preferredAllocationGeneration: generation, capabilityEvidence: evidence,
+        // Capability claims from the caller are deliberately not forwarded. The verifier
+        // searches current D1 authority and returns only operator-observed, reservation-backed evidence.
+        body: JSON.stringify({ scope, actorId, preferredRuntimeId: runtimeId, preferredAllocationGeneration: generation,
           requireExact,
           requiredCapabilities: ["live_mount", "fuse", "incremental_sync", "real_flush", "authenticated_transport", "reconnect_generation_check", "runtime_accounting"] }),
       }));
@@ -1690,7 +1712,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       if (!entries) return fail("workspace_manifest_unavailable", 503);
       const current = entries.find(entry => entry.path === path);
       if (entrySignature(current) !== entrySignature(previous)) {
-        versions.push({ revision, updatedAt: retained.createdAt, ...(current ? { sha256: current.sha256, size: current.size, contentType: current.contentType ?? "application/octet-stream" } : {}), deleted: !current });
+        versions.push({ revision, updatedAt: retained.createdAt, ...(current ? { sha256: current.sha256, size: current.size, contentType: current.contentType ?? inferWorkspaceContentType(current.path) } : {}), deleted: !current });
       }
       previous = current;
     }
@@ -1755,7 +1777,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const bytes = new Uint8Array(await content.arrayBuffer());
     if (await sha256Hex(bytes) !== entry.sha256) return fail("workspace_content_corrupt", 503);
     if (!await this.hasCurrentSessionAuthority(session)) return fail("stale_fence", 409);
-    return new Response(bytes, { headers: { "content-type": entry.contentType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "x-content-sha256": entry.sha256, "x-executable": String(entry.executable), "cache-control": "no-store" } });
+    return new Response(bytes, { headers: { "content-type": entry.contentType ?? inferWorkspaceContentType(entry.path), "content-length": String(bytes.byteLength), "x-content-sha256": entry.sha256, "x-executable": String(entry.executable), "cache-control": "no-store" } });
   }
 
   private async receipt(url: URL): Promise<Response> {
@@ -1909,7 +1931,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
               : protectedUpload === "gc_busy" ? fail("workspace_gc_in_progress", 423)
                 : protectedUpload === "intent_limit" ? fail("workspace_upload_intent_limit", 413) : fail("workspace_scope_mismatch", 403);
           }
-          const contentType = change.contentType ?? old?.contentType ?? "application/octet-stream";
+          const contentType = change.contentType ?? old?.contentType ?? inferWorkspaceContentType(change.path);
           const uploaded = await this.env.SCRIPTS_R2!.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: hash, size: String(bytes.byteLength) }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
           if (uploaded) newlyStoredContentKeys.push(objectKey);
           if (!uploaded) {
@@ -2024,7 +2046,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
           (change.contentType !== undefined && !validateWorkspaceContentType(change.contentType))) return fail("invalid_stage");
       paths.add(change.path);
       if (change.contentBase64 === null) {
-        stagedChanges.push({ path: change.path, expectedHash: change.expectedHash, sha256: null, size: 0, ...(change.executable === undefined ? {} : { executable: change.executable }), ...(change.contentType ? { contentType: change.contentType } : {}) });
+        stagedChanges.push({ path: change.path, expectedHash: change.expectedHash, sha256: null, size: 0, ...(change.executable === undefined ? {} : { executable: change.executable }), contentType: change.contentType ?? inferWorkspaceContentType(change.path) });
         continue;
       }
       let bytes: Uint8Array;
@@ -2034,13 +2056,14 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       const hash = await sha256Hex(bytes);
       const pathHash = await sha256Hex(new TextEncoder().encode(change.path));
       const objectKey = `${stagingPrefix(branchHead.scope)}${sessionId}/${stageId}/${pathHash}`;
-      const put = await this.env.SCRIPTS_R2!.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: hash, size: String(bytes.byteLength) }, ...(change.contentType ? { httpMetadata: { contentType: change.contentType } } : {}) });
+      const contentType = change.contentType ?? inferWorkspaceContentType(change.path);
+      const put = await this.env.SCRIPTS_R2!.put(objectKey, bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: hash, size: String(bytes.byteLength) }, httpMetadata: { contentType } });
       if (put) newlyStoredStageKeys.push(objectKey);
       if (!put) {
         const existing = await this.env.SCRIPTS_R2!.get(objectKey);
         if (!existing || existing.size !== bytes.byteLength || await sha256Hex(new Uint8Array(await existing.arrayBuffer())) !== hash) return fail("workspace_stage_content_conflict", 409);
       }
-      stagedChanges.push({ path: change.path, expectedHash: change.expectedHash, sha256: hash, size: bytes.byteLength, ...(change.executable === undefined ? {} : { executable: change.executable }), ...(change.contentType ? { contentType: change.contentType } : {}), objectKey });
+      stagedChanges.push({ path: change.path, expectedHash: change.expectedHash, sha256: hash, size: bytes.byteLength, ...(change.executable === undefined ? {} : { executable: change.executable }), contentType, objectKey });
     }
     const changeSetHash = await sha256Hex(new TextEncoder().encode(JSON.stringify(changes)));
     const prior = await this.ctx.storage.get<StageRecord>(stageKey(sessionId, stageId));
@@ -2069,7 +2092,18 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const requestedScope = body.scope;
     const existingScope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (existingScope && JSON.stringify(existingScope) !== JSON.stringify(requestedScope)) return fail("workspace_scope_mismatch", 403);
-    await this.ctx.storage.transaction(async (tx) => { await tx.put("erased", true); });
+    const started = await this.ctx.storage.transaction(async tx => {
+      if (await tx.get<boolean>("erased")) return "already_erased" as const;
+      const admission = await tx.get<WorkspaceErasureAdmission>("workspace_erasure_admission");
+      if (!admission || JSON.stringify(admission.scope) !== JSON.stringify(requestedScope)) return "erasure_admission_required" as const;
+      const policy = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+      const hold = policy?.legalHold;
+      if (hold && (!hold.expiresAt || Date.parse(hold.expiresAt) > Date.now())) return "legal_hold_active" as const;
+      await tx.put("erased", true);
+      return "started" as const;
+    });
+    if (started === "erasure_admission_required") return fail(started, 409);
+    if (started === "legal_hold_active") return fail(started, 423);
     const hasRuntimeControl = Boolean(this.env.LIVE_RUNTIME_CONTROL || this.env.LIVE_RUNTIME_CONTROL_DO);
     if (hasRuntimeControl) {
       const controlTombstone = await this.callLiveRuntimeControl("/internal/v1/project/erase", requestedScope, { confirm: true });
@@ -2111,11 +2145,51 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       ...(hasRuntimeControl ? { runtimeControlTombstoneRecorded: true, providerRuntimeDeletion: "tracked_separately" } : {}) });
   }
 
+  private async admitErase(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    if (body.confirm !== true || !validateWorkspaceScope(body.scope) || body.scope.tenantId !== tenantId) return fail("invalid_erasure_scope", 403);
+    const requestedScope = body.scope;
+    const existingScope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (existingScope && JSON.stringify(existingScope) !== JSON.stringify(requestedScope)) return fail("workspace_scope_mismatch", 403);
+    const at = new Date().toISOString();
+    const result = await this.ctx.storage.transaction(async tx => {
+      if (await tx.get<boolean>("erased")) return { status: "already_erased" as const };
+      const policy = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+      const hold = policy?.legalHold;
+      if (hold && (!hold.expiresAt || Date.parse(hold.expiresAt) > Date.now())) return { status: "legal_hold_active" as const, expiresAt: hold.expiresAt ?? null };
+      const prior = await tx.get<WorkspaceErasureAdmission>("workspace_erasure_admission");
+      if (prior) return JSON.stringify(prior.scope) === JSON.stringify(requestedScope)
+        ? { status: "admitted" as const, admittedAt: prior.admittedAt, deduplicated: true }
+        : { status: "scope_mismatch" as const };
+      await tx.put("workspace_erasure_admission", { scope: requestedScope, admittedAt: at } satisfies WorkspaceErasureAdmission);
+      return { status: "admitted" as const, admittedAt: at, deduplicated: false };
+    });
+    if (result.status === "scope_mismatch") return fail("workspace_scope_mismatch", 403);
+    if (result.status === "legal_hold_active") return json({ error_code: "legal_hold_active", holdExpiresAt: result.expiresAt }, 423);
+    return json({ admitted: true, alreadyErased: result.status === "already_erased", ...("admittedAt" in result ? { admittedAt: result.admittedAt, deduplicated: result.deduplicated } : {}) });
+  }
+
   private async collectStaging(body: Record<string, unknown>): Promise<Response> {
     const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
     if (!scope) return fail("workspace_scope_missing", 503);
-    const requestedCutoff = typeof body.before === "number" ? body.before : Date.now() - STAGING_RETENTION_MS;
-    if (!Number.isFinite(requestedCutoff) || requestedCutoff > Date.now() - STAGING_RETENTION_MS) return fail("staging_retention_too_short");
+    const leaseId = crypto.randomUUID();
+    const claim = await this.ctx.storage.transaction(async tx => {
+      if (await tx.get<boolean>("erased")) return { error: "workspace_erased" as const };
+      const policy = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+      const hold = policy?.legalHold;
+      if (hold && (!hold.expiresAt || Date.parse(hold.expiresAt) > Date.now())) return { hold };
+      const current = await tx.get<RetentionGcLease>("workspace_retention_gc_lease");
+      if (current && current.expiresAt > Date.now()) return { error: "workspace_gc_in_progress" as const };
+      await tx.put("workspace_retention_gc_lease", { id: leaseId, expiresAt: Date.now() + RETENTION_GC_LEASE_MS });
+      return { policy };
+    });
+    if ("hold" in claim) return json({ skipped: true, reason: "legal_hold_active", holdExpiresAt: claim.hold.expiresAt ?? null });
+    if ("error" in claim) return fail(claim.error, claim.error === "workspace_erased" ? 410 : 423);
+    const policy = claim.policy;
+    try {
+    const retentionMs = Math.max(STAGING_RETENTION_MS, (policy?.stagingRetentionDays ?? 7) * 24 * 60 * 60 * 1000);
+    const minimumCutoff = Date.now() - retentionMs;
+    const requestedCutoff = typeof body.before === "number" ? body.before : minimumCutoff;
+    if (!Number.isFinite(requestedCutoff) || requestedCutoff > minimumCutoff) return fail("staging_retention_too_short");
     const cursor = typeof body.cursor === "string" && body.cursor.length <= 1024 ? body.cursor : undefined;
     const prefix = stagingPrefix(scope);
     const page = await this.env.SCRIPTS_R2!.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
@@ -2163,6 +2237,49 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     }
     const nextRecordCursor = stageRecords.size === 1000 ? [...stageRecords.keys()].at(-1) ?? null : null;
     return json({ scanned: page.objects.length, deleted: deleteKeys.length, recordsDeleted, cursor: nextStageCursor ?? null, recordCursor: nextRecordCursor, hasMore: nextStageCursor !== undefined || nextRecordCursor !== null });
+    } finally {
+      await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<RetentionGcLease>("workspace_retention_gc_lease");
+        if (current?.id === leaseId) await tx.delete("workspace_retention_gc_lease");
+      });
+    }
+  }
+
+  private async setRetentionPolicy(body: Record<string, unknown>, tenantId: string): Promise<Response> {
+    const scope = await this.ctx.storage.get<WorkspaceScope>("scope");
+    if (!scope || scope.tenantId !== tenantId || !validateWorkspaceScope(body.scope) ||
+        body.scope.tenantId !== scope.tenantId || body.scope.spaceId !== scope.spaceId ||
+        body.scope.projectId !== scope.projectId || body.scope.jurisdiction !== scope.jurisdiction)
+      return fail("workspace_scope_mismatch", 403);
+    const actorId = body.actorId, reason = body.reason;
+    const days = body.stagingRetentionDays;
+    const holdEnabled = body.legalHold === true;
+    const expiresAt = body.legalHoldExpiresAt;
+    if (typeof actorId !== "string" || !ID.test(actorId) || typeof reason !== "string" || reason.trim().length < 10 || reason.length > 500 ||
+        !Number.isSafeInteger(days) || Number(days) < 7 || Number(days) > 3650 ||
+        (holdEnabled && expiresAt !== undefined && (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now() || Date.parse(expiresAt) > Date.now() + 3650 * 24 * 60 * 60 * 1000)))
+      return fail("workspace_retention_policy_invalid", 400);
+    const at = new Date().toISOString();
+    const policy = await this.ctx.storage.transaction(async tx => {
+      const now = Date.now();
+      if (await tx.get<WorkspaceErasureAdmission>("workspace_erasure_admission")) return { error: "workspace_erasure_in_progress" as const };
+      const stagingLease = await tx.get<RetentionGcLease>("workspace_retention_gc_lease");
+      const contentLease = await tx.get<ContentGcState>("content_gc");
+      if ((stagingLease && stagingLease.expiresAt > now) || (contentLease && contentLease.lockUntil > now)) return { error: "workspace_gc_in_progress" as const };
+      const prior = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy") ?? {
+        version: 1 as const, stagingRetentionDays: 7, legalHold: null, updatedAt: at, updatedBy: actorId,
+      };
+      const next: WorkspaceRetentionPolicy = { version: 1, stagingRetentionDays: Number(days),
+        legalHold: holdEnabled ? { ...(typeof expiresAt === "string" ? { expiresAt: new Date(expiresAt).toISOString() } : {}), reason: reason.trim(), actorId, createdAt: at } : null,
+        updatedAt: at, updatedBy: actorId };
+      const audit = await tx.get<Array<Record<string, unknown>>>("workspace_retention_policy_audit") ?? [];
+      audit.push({ actorId, reason: reason.trim(), at, prior, next });
+      await tx.put("workspace_retention_policy", next);
+      await tx.put("workspace_retention_policy_audit", audit.slice(-100));
+      return next;
+    });
+    if ("error" in policy) return fail(policy.error, 423);
+    return json({ policy });
   }
 
   /** Expiry indexes are ordered by deadline so each invocation performs a bounded sweep. */
@@ -2244,6 +2361,9 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
     const claimed = await this.ctx.storage.transaction(async (tx) => {
       if (await tx.get<boolean>("erased")) return { error: "workspace_erased" as const };
       const now = Date.now();
+      const policy = await tx.get<WorkspaceRetentionPolicy>("workspace_retention_policy");
+      const hold = policy?.legalHold;
+      if (hold && (!hold.expiresAt || Date.parse(hold.expiresAt) > now)) return { hold };
       const current = await tx.get<ContentGcState>("content_gc");
       if (!current && resumeOnly) return { error: "workspace_gc_not_running" as const };
       if (current && current.lockUntil > now && current.claimUntil > now) return { error: "workspace_gc_step_in_progress" as const };
@@ -2253,6 +2373,7 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
       await tx.put("content_gc", state);
       return { state };
     });
+    if ("hold" in claimed) return json({ skipped: true, reason: "legal_hold_active", holdExpiresAt: claimed.hold.expiresAt ?? null });
     if ("error" in claimed) return fail(claimed.error, claimed.error === "workspace_erased" ? 410 : 409);
     const state = claimed.state;
     let processed = 0;

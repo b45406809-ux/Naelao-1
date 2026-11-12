@@ -3,13 +3,20 @@
 import * as React from "react";
 import {
   getManagedRuntimeProfile,
+  getProjectMainRuntimeProfile,
+  getSidecarRuntimeExecutionProfile,
   listContainerInstallations,
   resetManagedRuntimeProfile,
+  saveProjectMainRuntimeProfile,
+  saveSidecarRuntimeExecutionProfile,
   type ManagedRuntimeProfile,
+  type ProjectMainRuntimeProfile,
+  type SidecarRuntimeExecutionProfile,
   type SessionCredentials,
 } from "@/lib/api";
 
-type ProfileRow = { installationId: string; extensionName: string; containerId: string; branch?: string; profile?: ManagedRuntimeProfile; error?: string };
+type ProfileRow = { installationId: string; extensionName: string; containerId: string; branch?: string; profile?: ManagedRuntimeProfile; error?: string;
+  executionProfile?: SidecarRuntimeExecutionProfile; executionProfileDraft?: number; executionProfileError?: string };
 
 /** Shows the provider-backed state of installed project containers. This is a whole-container
  * checkpoint/reset control; it does not claim to migrate or health-check app-specific profiles. */
@@ -20,12 +27,30 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [loadError, setLoadError] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState("");
+  const [mainProfile, setMainProfile] = React.useState<ProjectMainRuntimeProfile | null>(null);
+  const [mainProfileDraft, setMainProfileDraft] = React.useState<ProjectMainRuntimeProfile["profile"] | "">("");
+  const [mainProfileError, setMainProfileError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
     setLoadError(false);
+    setMainProfile(null);
+    setMainProfileDraft("");
+    setMainProfileError("");
     try {
-      const { installations } = await listContainerInstallations(spaceId, stableSession, projectId);
+      const [inventory, savedMainProfile] = await Promise.all([
+        listContainerInstallations(spaceId, stableSession, projectId),
+        getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
+          setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
+          return null;
+        }),
+      ]);
+      const { installations } = inventory;
+      if (savedMainProfile) {
+        setMainProfile(savedMainProfile);
+        setMainProfileDraft(savedMainProfile.profile);
+        setMainProfileError("");
+      }
       const targets = installations.filter(({ instance }) => instance.status === "active" && instance.project_id === projectId)
         .flatMap(({ instance, manifest }) => {
           const ids = new Set<string>();
@@ -34,8 +59,16 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
           return [...ids].map(containerId => ({ installationId: instance.instance_id ?? "", extensionName: manifest.name ?? manifest.id ?? "Installed extension", containerId }));
         }).filter(target => target.installationId);
       const profiles = await Promise.all(targets.map(async target => {
-        try { return { ...target, profile: await getManagedRuntimeProfile(spaceId, projectId, target.installationId, target.containerId, stableSession) }; }
-        catch (error) { return { ...target, error: error instanceof Error ? error.message : "Profile status unavailable" }; }
+        const [runtime, execution] = await Promise.allSettled([
+          getManagedRuntimeProfile(spaceId, projectId, target.installationId, target.containerId, stableSession),
+          getSidecarRuntimeExecutionProfile(spaceId, projectId, target.installationId, target.containerId, stableSession),
+        ]);
+        return {
+          ...target,
+          ...(runtime.status === "fulfilled" ? { profile: runtime.value } : { error: runtime.reason instanceof Error ? runtime.reason.message : "Runtime status unavailable" }),
+          ...(execution.status === "fulfilled" ? { executionProfile: execution.value, executionProfileDraft: execution.value.maxExecutionSeconds }
+            : { executionProfileError: execution.reason instanceof Error ? execution.reason.message : "Execution limit unavailable" }),
+        };
       }));
       setRows(profiles);
     } catch {
@@ -58,10 +91,70 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     finally { setBusy(null); }
   }
 
+  async function saveMainProfile() {
+    if (!mainProfile || !mainProfileDraft || busy) return;
+    setBusy("main-profile"); setNotice(""); setMainProfileError("");
+    try {
+      const saved = await saveProjectMainRuntimeProfile(spaceId, projectId, stableSession, {
+        profile: mainProfileDraft, expected_version: mainProfile.version,
+      });
+      setMainProfile(saved);
+      setNotice(saved.runtimeEnabled ? "Main computer profile saved for new allocations." : "Main computer profile saved; runtime allocation remains disabled on this deployment.");
+    } catch (error) { setMainProfileError(error instanceof Error ? error.message : "Main computer profile could not be saved"); }
+    finally { setBusy(null); }
+  }
+
+  async function saveSidecarExecutionProfile(row: ProfileRow) {
+    if (!row.executionProfile || row.executionProfileDraft === undefined || busy) return;
+    const key = `${row.installationId}:${row.containerId}:execution`;
+    setBusy(key); setNotice("");
+    try {
+      const saved = await saveSidecarRuntimeExecutionProfile(spaceId, projectId, row.installationId, row.containerId, stableSession, {
+        max_execution_seconds: row.executionProfileDraft, expected_version: row.executionProfile.version,
+      });
+      setRows(current => current.map(item => {
+        if (item.installationId !== row.installationId || item.containerId !== row.containerId) return item;
+        const updated = { ...item, executionProfile: saved, executionProfileDraft: saved.maxExecutionSeconds };
+        delete updated.executionProfileError;
+        return updated;
+      }));
+      setNotice(`Execution limit saved for new runs of ${row.extensionName} / ${row.containerId}.`);
+    } catch (error) {
+      setRows(current => current.map(item => item.installationId === row.installationId && item.containerId === row.containerId
+        ? { ...item, executionProfileError: error instanceof Error ? error.message : "Execution limit could not be saved" } : item));
+    } finally { setBusy(null); }
+  }
+
   return <section className="settings-block" style={{ marginTop: 24, padding: 16 }}>
+    <div className="section-label" style={{ marginTop: 0 }}>Project main computer</div>
+    <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
+      Choose an approved Cloudflare size for future main-computer allocations. Provider and image remain deployment controlled; the plan sets the maximum size.
+    </p>
+    {mainProfile ? <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+      <label htmlFor="project-main-runtime-profile">Runtime size</label>
+      <select id="project-main-runtime-profile" value={mainProfileDraft || mainProfile.profile}
+        onChange={(event) => setMainProfileDraft(event.target.value as ProjectMainRuntimeProfile["profile"])} disabled={busy !== null}>
+        {!mainProfile.allowedProfiles.includes(mainProfile.profile) && <option value={mainProfile.profile}>{mainProfile.profile} · above current plan limit</option>}
+        {mainProfile.allowedProfiles.map((profile) => <option key={profile} value={profile}>{profile}</option>)}
+      </select>
+      <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null || !mainProfileDraft
+        || !mainProfile.allowedProfiles.includes(mainProfileDraft) || mainProfileDraft === mainProfile.profile} onClick={() => void saveMainProfile()}>
+        {busy === "main-profile" ? "Saving…" : "Save main profile"}
+      </button>
+      <span style={{ color: "var(--text3)", fontSize: 12 }}>{mainProfile.runtimeEnabled ? "Applies to new allocations." : "Saved preference; runtime allocation is disabled here."}</span>
+    </div> : mainProfileError ? <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{mainProfileError}</p>
+      : <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading project profile…</p>}
+    {mainProfile && <p style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 12px" }}>
+      {!mainProfile.snapshotRetention ? "No provider snapshot receipt is recorded. This does not establish whether older provider snapshots exist."
+        : mainProfile.snapshotRetention.state === "ttl_elapsed_unverified"
+          ? <>The last recorded provider snapshot passed its retention window on {new Date(mainProfile.snapshotRetention.expiresAt).toLocaleString()}; provider-side deletion is unverified.</>
+          : <>{mainProfile.snapshotRetention.state === "erasure_notified" ? "Project erasure was sent to the runtime. "
+            : mainProfile.snapshotRetention.state === "reference_dropped" ? "The local restore reference was removed. " : "A provider snapshot is recorded. "}
+            Its recorded retention window ends {new Date(mainProfile.snapshotRetention.expiresAt).toLocaleString()}; provider-side deletion is not supported or verified.</>}
+    </p>}
     <div className="section-label" style={{ marginTop: 0 }}>Managed runtime state</div>
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
-      Inspect installed project containers and reset their saved container checkpoint. App-specific login profiles and cross-provider restore are not managed here.
+      Set a per-container execution ceiling within the image limit and inspect or reset saved container state. Changes affect new executions; they do not interrupt a run already admitted.
     </p>
     {loading ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading runtime state…</p>
       : loadError ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Runtime inventory is unavailable. Check the deployed container configuration.</p>
@@ -74,6 +167,18 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             {row.error ? <div style={{ color: "var(--text3)", fontSize: 12, marginTop: 4 }}>{row.error}</div> : row.profile && <div style={{ color: "var(--text3)", fontSize: 12, marginTop: 4 }}>
               State: {row.profile.state}{row.profile.checkpoint_created_at ? ` · checkpoint ${new Date(row.profile.checkpoint_created_at).toLocaleString()}` : ""}{row.profile.enabled ? " · snapshots enabled" : " · snapshots disabled by deployment"}
             </div>}
+            {row.executionProfile ? <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+              <label htmlFor={`sidecar-execution-${key}`} style={{ fontSize: 12 }}>Maximum run time</label>
+              <select id={`sidecar-execution-${key}`} value={row.executionProfileDraft ?? row.executionProfile.maxExecutionSeconds}
+                disabled={busy !== null} onChange={event => setRows(current => current.map(item => item.installationId === row.installationId && item.containerId === row.containerId
+                  ? { ...item, executionProfileDraft: Number(event.target.value) } : item))}>
+                {[1, 5, 10, 15, 30, row.executionProfile.maximumSeconds].filter((value, index, values) => value <= row.executionProfile!.maximumSeconds && values.indexOf(value) === index).map(value =>
+                  <option key={value} value={value}>{value} seconds{value === row.executionProfile!.maximumSeconds ? " · image limit" : ""}</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" disabled={busy !== null || row.executionProfileDraft === row.executionProfile.maxExecutionSeconds}
+                onClick={() => void saveSidecarExecutionProfile(row)}>{busy === `${row.installationId}:${row.containerId}:execution` ? "Saving…" : "Save limit"}</button>
+              <span style={{ color: "var(--text3)", fontSize: 11 }}>Maximum {row.executionProfile.maximumSeconds}s from the approved image</span>
+            </div> : row.executionProfileError && <div style={{ color: "var(--text3)", fontSize: 12, marginTop: 8 }}>{row.executionProfileError}</div>}
           </div>
           <button className="btn btn-secondary btn-sm" disabled={!row.profile || busy !== null} onClick={() => void reset(row)}>
             {busy === key ? "Resetting…" : "Reset runtime state"}

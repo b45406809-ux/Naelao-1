@@ -14,7 +14,11 @@ function env(): Env {
     PLATFORM_SECRET: "secret",
     PLATFORM_DB: {
       prepare(sql: string) {
-        return { bind: () => ({ first: async () => sql.includes("SELECT config_json") ? { config_json: "{}" } : server }) };
+        return { bind: () => ({
+          first: async () => sql.includes("SELECT config_json") ? { config_json: "{}" } : server,
+          all: async () => ({ results: [] }),
+          run: async () => ({ meta: { changes: 0 } }),
+        }) };
       },
     } as unknown as D1Database,
   };

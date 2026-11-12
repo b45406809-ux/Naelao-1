@@ -12,6 +12,10 @@ export function profileOwner(scope: BrowserRuntimeScope): string {
     scope.connectionId,
   ]);
 }
+export async function websiteProfileId(scope: BrowserRuntimeScope): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(profileOwner(scope))))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 async function profileKey(secret: string, owner: string): Promise<CryptoKey> {
   const root = await crypto.subtle.importKey(
     "raw",

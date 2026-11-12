@@ -1,6 +1,7 @@
 /** Journal authenticated Telnyx event deliveries before any extension dispatch. A claimed
  * event is never replayed automatically: a crash may have occurred after the handler acted. */
-export async function claimTelnyxIngress(db: D1Database, bindingId: string, eventId: string, rawBody: string) {
+export async function claimTelnyxIngress(db: D1Database, bindingId: string, eventId: string, rawBody: string,
+  options: { retryIndeterminateCostEvent?: boolean } = {}) {
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(bindingId) || !/^[A-Za-z0-9_-]{1,128}$/.test(eventId)
     || new TextEncoder().encode(rawBody).byteLength > 256 * 1024) throw new Error("telnyx_ingress_invalid");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawBody));
@@ -12,6 +13,18 @@ export async function claimTelnyxIngress(db: D1Database, bindingId: string, even
   const row = await db.prepare("SELECT payload_hash,state FROM assistant_telnyx_ingress_receipts WHERE binding_id=? AND event_id=?")
     .bind(bindingId, eventId).first<{ payload_hash: string; state: "claimed" | "completed" | "indeterminate" }>();
   if (!row || row.payload_hash !== hash) throw new Error("telnyx_ingress_event_conflict");
+  if (row.state === "indeterminate" && options.retryIndeterminateCostEvent === true) {
+    // A call-cost callback only persists a validated receipt; unlike call-control and message
+    // events it has no external effect to replay. Reacquire the exact signed payload under CAS.
+    const retry = await db.prepare(`UPDATE assistant_telnyx_ingress_receipts SET state='claimed',updated_at=?
+      WHERE binding_id=? AND event_id=? AND payload_hash=? AND state='indeterminate'`)
+      .bind(now, bindingId, eventId, hash).run();
+    if (retry.meta.changes === 1) return { state: "claimed" as const, acquired: true };
+    const current = await db.prepare("SELECT payload_hash,state FROM assistant_telnyx_ingress_receipts WHERE binding_id=? AND event_id=?")
+      .bind(bindingId, eventId).first<{ payload_hash: string; state: "claimed" | "completed" | "indeterminate" }>();
+    if (!current || current.payload_hash !== hash) throw new Error("telnyx_ingress_event_conflict");
+    return { state: current.state, acquired: false };
+  }
   return { state: row.state, acquired: false };
 }
 

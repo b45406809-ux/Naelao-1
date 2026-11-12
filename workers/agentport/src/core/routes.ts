@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { verifyInternalToken } from "@naelao/http";
 import { accountModelRequiresParent, inspectDependencyGraph, leaseExpiry, validateServiceRegistration, type AccountModel, type AccountDependency, type DependencyType } from "./core.js";
 import { createSealedAgentKey, signAgentCredential } from "./identity.js";
+import { parseThreadSessionBinding, type ThreadSessionBinding } from "./thread-session-binding.js";
 import { deriveEmailWebhookSecret, normalizedEmailDomain, validEmailAddress, validInboundWebhookUrl } from "../email.js";
 import { eventWebhookSecret } from "../notifications.js";
 
@@ -172,12 +173,12 @@ routes.post("/agents", async (c) => {
 routes.get("/agents/:agentId/identity", async c => {
   const tenantId = c.get("tenantId"); const agentId = c.req.param("agentId");
   if(!await actorOwnsAgent(c,agentId))return c.json({error_code:"agent_unavailable"},404);
-  const row = await c.env.PLATFORM_DB.prepare(`SELECT a.id,a.status,a.host_platform,a.host_resource_id,a.created_at,p.principal_type,p.verification_level,k.id AS kid,k.public_jwk_json
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT a.id,a.status,a.host_platform,a.host_resource_id,a.created_at,a.principal_id,p.principal_type,p.verification_level,k.id AS kid,k.public_jwk_json
     FROM agentport_agents a JOIN agentport_principals p ON p.id=a.principal_id AND p.tenant_id=a.tenant_id
     LEFT JOIN agentport_identity_keys k ON k.agent_id=a.id AND k.tenant_id=a.tenant_id AND k.status='active'
     WHERE a.id=? AND a.tenant_id=?`).bind(agentId, tenantId).first<Record<string, unknown>>();
   if (!row) return c.json({ error_code: "agent_unavailable" }, 404);
-  return c.json({ identity: { id: row.id, status: row.status, host: { platform: row.host_platform, resourceId: row.host_resource_id }, principal: { type: row.principal_type, verificationLevel: row.verification_level }, createdAt: row.created_at, publicKey: row.public_jwk_json ? JSON.parse(String(row.public_jwk_json)) : null } });
+  return c.json({ identity: { id: row.id, status: row.status, host: { platform: row.host_platform, resourceId: row.host_resource_id }, principal: { id: row.principal_id, type: row.principal_type, verificationLevel: row.verification_level }, createdAt: row.created_at, publicKey: row.public_jwk_json ? JSON.parse(String(row.public_jwk_json)) : null } });
 });
 
 routes.post("/agents/:agentId/credentials", async c => {
@@ -286,6 +287,31 @@ routes.post("/accounts/:accountId/activate", async (c) => {
   if (!await actorOwnsAccount(c,c.req.param("accountId"))) return c.json({ error_code: "account_unavailable" },404);
   const changed = await c.env.PLATFORM_DB.prepare("UPDATE agentport_accounts SET status='active',updated_at=? WHERE id=? AND tenant_id=? AND status='pending'").bind(stamp(), c.req.param("accountId"), c.get("tenantId")).run();
   return changed.meta.changes ? c.json({ active: true }) : c.json({ error_code: "account_not_pending" }, 409);
+});
+
+routes.post("/accounts/:accountId/revoke", async c => {
+  const accountId=c.req.param("accountId"),tenantId=c.get("tenantId");
+  if(!await actorOwnsAccount(c,accountId))return c.json({error_code:"account_unavailable"},404);
+  const at=stamp();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_accounts SET status='revoked',updated_at=? WHERE id=? AND tenant_id=? AND status IN ('pending','active','suspended')").bind(at,accountId,tenantId),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_account_grants SET status='revoked',updated_at=? WHERE account_id=? AND tenant_id=? AND status='active'").bind(at,accountId,tenantId),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_event_subscriptions SET status='revoked',updated_at=? WHERE account_id=? AND tenant_id=? AND status IN ('active','paused')").bind(at,accountId,tenantId),
+    c.env.PLATFORM_DB.prepare("UPDATE agentport_channels SET status='revoked',updated_at=? WHERE account_id=? AND tenant_id=? AND status='active'").bind(at,accountId,tenantId),
+  ]);
+  const row=await c.env.PLATFORM_DB.prepare("SELECT status FROM agentport_accounts WHERE id=? AND tenant_id=?").bind(accountId,tenantId).first<{status:string}>();
+  return row?.status==="revoked"?c.json({revoked:true,accountId}):c.json({error_code:"account_unavailable"},404);
+});
+
+routes.post("/accounts/:accountId/reactivate", async c => {
+  const accountId=c.req.param("accountId"),tenantId=c.get("tenantId");
+  if(!await actorOwnsAccount(c,accountId))return c.json({error_code:"account_unavailable"},404);
+  const updated=await c.env.PLATFORM_DB.prepare(`UPDATE agentport_accounts SET status='active',updated_at=? WHERE id=? AND tenant_id=? AND status='revoked'
+    AND EXISTS(SELECT 1 FROM agentport_services s WHERE s.id=agentport_accounts.service_id AND s.tenant_id=agentport_accounts.tenant_id AND s.status='active')`)
+    .bind(stamp(),accountId,tenantId).run();
+  if(updated.meta.changes)return c.json({active:true,reactivated:true,accountId});
+  const row=await c.env.PLATFORM_DB.prepare("SELECT status FROM agentport_accounts WHERE id=? AND tenant_id=?").bind(accountId,tenantId).first<{status:string}>();
+  return row?.status==="active"?c.json({active:true,reactivated:false,accountId}):c.json({error_code:"account_not_reactivatable"},409);
 });
 
 routes.post("/email/accounts", async c => {
@@ -439,21 +465,81 @@ routes.post("/accounts/:accountId/grants", async (c) => {
   return c.json({ grant: { id: grantId, accountId: c.req.param("accountId"), agentId: body.agentId, permissions: [...new Set(body.permissions)], expiresAt: body.expiresAt ?? null } }, 201);
 });
 
+routes.post("/accounts/:accountId/actions/authorize",async c=>{
+  const body=await c.req.json<{agentId?:string;action?:string;resourceRef?:string;idempotencyKey?:string}>().catch(()=>null);
+  if(body&&Object.keys(body).some(key=>!["agentId","action","resourceRef","idempotencyKey"].includes(key)))return c.json({error_code:"invalid_provider_action"},400);
+  if(!body?.agentId||!body.action||!/^[A-Za-z0-9._:-]{1,160}$/.test(body.action)||
+      (body.resourceRef!==undefined&&(typeof body.resourceRef!=="string"||body.resourceRef.length>512))||
+      !body.idempotencyKey||!/^[A-Za-z0-9._:-]{1,160}$/.test(body.idempotencyKey))return c.json({error_code:"invalid_provider_action"},400);
+  const tenantId=c.get("tenantId"),accountId=c.req.param("accountId"),db=c.env.PLATFORM_DB;
+  if(!await actorOwnsAccount(c,accountId)||!await actorOwnsAgent(c,body.agentId))return c.json({error_code:"account_or_agent_unavailable"},404);
+  if(c.req.header("x-agentport-actor-role")==="agent"&&body.agentId!==c.req.header("x-agentport-actor-id"))return c.json({error_code:"agent_identity_mismatch"},403);
+  const account=await db.prepare(`SELECT a.id,a.service_id,a.external_account_id,s.capabilities_json
+    FROM agentport_accounts a JOIN agentport_services s ON s.id=a.service_id AND s.tenant_id=a.tenant_id
+    JOIN agentport_agents ag ON ag.id=? AND ag.tenant_id=a.tenant_id AND ag.status='active'
+    WHERE a.id=? AND a.tenant_id=? AND a.status='active' AND s.status='active'`)
+    .bind(body.agentId,accountId,tenantId).first<{id:string;service_id:string;external_account_id:string|null;capabilities_json:string}>();
+  if(!account)return c.json({error_code:"account_or_agent_unavailable"},404);
+  const capabilities=JSON.parse(account.capabilities_json) as string[];
+  if(!providerCapabilitySupports(capabilities,body.action))return c.json({error_code:"service_capability_not_declared"},422);
+  const grant=await db.prepare(`SELECT permissions_json FROM agentport_account_grants WHERE tenant_id=? AND account_id=? AND agent_id=?
+    AND status='active' AND (expires_at IS NULL OR expires_at>?)`)
+    .bind(tenantId,accountId,body.agentId,stamp()).first<{permissions_json:string}>();
+  if(!grant)return c.json({error_code:"account_grant_required"},403);
+  const permissions=JSON.parse(grant.permissions_json) as string[];
+  if(!accountPermissionAllows(permissions,body.action))return c.json({error_code:"permission_denied"},403);
+  const resourceRef=body.resourceRef??account.external_account_id??account.id;
+  const prior=await db.prepare(`SELECT id,outcome,account_id,action,resource_ref,provider_id FROM agentport_action_receipts
+    WHERE tenant_id=? AND agent_id=? AND authorization_ref=?`)
+    .bind(tenantId,body.agentId,body.idempotencyKey)
+    .first<{id:string;outcome:string;account_id:string|null;action:string;resource_ref:string|null;provider_id:string|null}>();
+  if(prior){
+    if(prior.account_id!==account.id||prior.action!==body.action||prior.resource_ref!==resourceRef||prior.provider_id!==account.service_id)
+      return c.json({error_code:"idempotency_conflict"},409);
+    return c.json({decision:prior.outcome==="allowed"?"allow":"deny",authorizationId:prior.id,accountId:account.id,serviceId:account.service_id,contentStored:false});
+  }
+  const receiptId=id("rcpt"),at=stamp();
+  const inserted=await db.prepare(`INSERT OR IGNORE INTO agentport_action_receipts(id,tenant_id,agent_id,account_id,channel_id,action,resource_ref,authorization_ref,provider_id,outcome,details_json,receipt_hash,created_at)
+    VALUES(?,?,?,?,NULL,?,?,?,?,'allowed',?,?,?)`)
+    .bind(receiptId,tenantId,body.agentId,account.id,body.action,resourceRef,body.idempotencyKey,account.service_id,
+      JSON.stringify({authorizationType:"provider_action",contentStored:false}),await hashReceipt(`${tenantId}:${receiptId}:${body.agentId}:${body.action}:${body.idempotencyKey}`),at).run();
+  const receipt=await db.prepare(`SELECT id,outcome,account_id,action,resource_ref,provider_id FROM agentport_action_receipts
+    WHERE tenant_id=? AND agent_id=? AND authorization_ref=?`).bind(tenantId,body.agentId,body.idempotencyKey)
+    .first<{id:string;outcome:string;account_id:string|null;action:string;resource_ref:string|null;provider_id:string|null}>();
+  if(!receipt)return c.json({error_code:"provider_action_receipt_unavailable"},503);
+  if(receipt.account_id!==account.id||receipt.action!==body.action||receipt.resource_ref!==resourceRef||receipt.provider_id!==account.service_id)
+    return c.json({error_code:"idempotency_conflict"},409);
+  return c.json({decision:receipt.outcome==="allowed"?"allow":"deny",authorizationId:receipt.id,accountId:account.id,serviceId:account.service_id,contentStored:false},inserted.meta.changes?201:200);
+});
+
 routes.post("/accounts/:accountId/access/check",async c=>{
   const body=await c.req.json<{agentId?:string;action?:string}>().catch(()=>null);
   if(!body?.agentId||!body.action||body.action.length>160)return c.json({error_code:"invalid_access_check"},400);
   if(!await actorOwnsAgent(c,body.agentId))return c.json({error_code:"agent_unavailable"},404);
   if(c.req.header("x-agentport-actor-role")==="agent"&&body.agentId!==c.req.header("x-agentport-actor-id"))return c.json({error_code:"agent_identity_mismatch"},403);
-  const grant=await c.env.PLATFORM_DB.prepare(`SELECT a.id,a.service_id,a.external_account_id,a.credential_ref,a.status AS account_status,g.status AS agent_status,gr.permissions_json,gr.expires_at
+  const grant=await c.env.PLATFORM_DB.prepare(`SELECT a.id,a.service_id,a.external_account_id,a.credential_ref,a.status AS account_status,g.status AS agent_status,gr.permissions_json,gr.expires_at,s.capabilities_json
     FROM agentport_accounts a JOIN agentport_agents g ON g.id=? AND g.tenant_id=a.tenant_id
+    JOIN agentport_services s ON s.id=a.service_id AND s.tenant_id=a.tenant_id
     JOIN agentport_account_grants gr ON gr.account_id=a.id AND gr.tenant_id=a.tenant_id AND gr.agent_id=g.id
-    WHERE a.id=? AND a.tenant_id=? AND a.status='active' AND g.status='active' AND gr.status='active' AND (gr.expires_at IS NULL OR gr.expires_at>?)`)
-    .bind(body.agentId,c.req.param("accountId"),c.get("tenantId"),stamp()).first<{id:string;service_id:string;external_account_id:string|null;credential_ref:string|null;permissions_json:string}>();
+    WHERE a.id=? AND a.tenant_id=? AND a.status='active' AND s.status='active' AND g.status='active' AND gr.status='active' AND (gr.expires_at IS NULL OR gr.expires_at>?)`)
+    .bind(body.agentId,c.req.param("accountId"),c.get("tenantId"),stamp()).first<{id:string;service_id:string;external_account_id:string|null;credential_ref:string|null;permissions_json:string;capabilities_json:string}>();
   if(!grant)return c.json({authorized:false,error_code:"account_grant_required"},403);
   const permissions=JSON.parse(grant.permissions_json) as string[];
-  const authorized=permissions.includes("*")||permissions.includes(body.action)||((body.action==="messages.read")&&permissions.some(x=>["email.read","email.receive"].includes(x)))||((body.action==="messages.send")&&permissions.includes("email.send"));
+  const authorized=providerCapabilitySupports(JSON.parse(grant.capabilities_json) as string[],body.action)&&accountPermissionAllows(permissions,body.action);
   return c.json({authorized, ...(authorized?{serviceId:grant.service_id,accountId:grant.id,providerAccountId:grant.external_account_id,credentialRef:grant.credential_ref}:{}),...(authorized?{}:{error_code:"permission_denied"})},authorized?200:403);
 });
+
+function accountPermissionAllows(permissions:string[],action:string){
+  return permissions.includes("*")||permissions.includes(action)||((action==="messages.read")&&permissions.some(permission=>["email.read","email.receive"].includes(permission)))||
+    ((action==="messages.send")&&permissions.includes("email.send"));
+}
+function providerCapabilitySupports(capabilities:string[],action:string){
+  const aliases:Record<string,string[]>={
+    "messages.read":["messages.read","email.read","email.receive"],
+    "messages.send":["messages.send","email.send"],
+  };
+  return (aliases[action]??[action]).some(capability=>capabilities.includes(capability));
+}
 
 routes.delete("/grants/:grantId", async (c) => {
   if (c.req.header("x-agentport-actor-role")==="agentport_api") {
@@ -592,7 +678,10 @@ routes.get("/events/pending", async (c) => {
   const agentId = c.req.query("agentId"); if (!agentId) return c.json({ error_code: "agent_id_required" }, 400);
   if(!await actorOwnsAgent(c,agentId))return c.json({error_code:"agent_unavailable"},404);
   if (c.req.header("x-agentport-actor-role") === "agent" && agentId !== c.req.header("x-agentport-actor-id")) return c.json({ error_code: "agent_identity_mismatch" }, 403);
-  const rows = await c.env.PLATFORM_DB.prepare(`SELECT d.id AS delivery_id,e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.attempts,d.available_at,n.status AS notification_status,n.attempts AS notification_attempts
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT d.id AS delivery_id,e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.attempts,d.available_at,n.status AS notification_status,n.attempts AS notification_attempts,
+      s.consumer_group,(SELECT CASE WHEN COUNT(*)=1 THEN MAX(t.session_binding_json) ELSE NULL END FROM agentport_channels ch
+        JOIN agentport_threads t ON t.tenant_id=ch.tenant_id AND t.channel_id=ch.id AND t.status='active'
+        WHERE ch.tenant_id=e.tenant_id AND ch.account_id=e.account_id AND t.provider_thread_id=e.thread_ref) AS session_binding_json
     FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id
     JOIN agentport_event_subscriptions s ON s.id=d.subscription_id AND s.tenant_id=d.tenant_id
     LEFT JOIN agentport_event_notifications n ON n.delivery_id=d.id
@@ -600,7 +689,10 @@ routes.get("/events/pending", async (c) => {
       AND (e.account_id IS NULL OR EXISTS (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=d.tenant_id AND g.account_id=e.account_id AND g.agent_id=d.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?)))
     ORDER BY d.created_at LIMIT 100`)
     .bind(c.get("tenantId"), agentId, stamp(), stamp()).all();
-  return c.json({ events: (rows.results ?? []).map(({ payload_ref, ...event }) => ({ ...event, dataRef: payload_ref })) });
+  return c.json({ events: (rows.results ?? []).map(({ payload_ref, session_binding_json, consumer_group, ...event }) => {
+    const sessionBinding = typeof consumer_group === "string" ? parseThreadSessionBinding(session_binding_json, consumer_group) : null;
+    return { ...event, dataRef: payload_ref, ...(sessionBinding ? { sessionBinding } : {}) };
+  }) });
 });
 
 routes.post("/events/:eventId/claim", async (c) => {
@@ -622,12 +714,22 @@ routes.post("/events/:eventId/claim", async (c) => {
       (SELECT 1 FROM agentport_account_grants g WHERE g.tenant_id=e.tenant_id AND g.account_id=e.account_id AND g.agent_id=agentport_event_deliveries.agent_id AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>?)))) RETURNING id`)
     .bind(body.consumerId, claimExpiry, at, c.req.param("eventId"), tenantId, body.agentId, body.deliveryId ?? null, body.deliveryId ?? null, at, at, at, at).first<{ id: string }>();
   if (!result) return c.json({ error_code: "event_unavailable" }, 409);
-  const event = await c.env.PLATFORM_DB.prepare(`SELECT e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.id AS delivery_id,d.attempts,d.claim_expires_at
-    FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id WHERE d.id=? AND d.tenant_id=?`)
+  const event = await c.env.PLATFORM_DB.prepare(`SELECT e.id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,d.id AS delivery_id,d.attempts,d.claim_expires_at,
+      s.consumer_group,(SELECT CASE WHEN COUNT(*)=1 THEN MAX(t.session_binding_json) ELSE NULL END FROM agentport_channels ch
+        JOIN agentport_threads t ON t.tenant_id=ch.tenant_id AND t.channel_id=ch.id AND t.status='active'
+        WHERE ch.tenant_id=e.tenant_id AND ch.account_id=e.account_id AND t.provider_thread_id=e.thread_ref) AS session_binding_json
+    FROM agentport_event_deliveries d JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id
+    JOIN agentport_event_subscriptions s ON s.id=d.subscription_id AND s.tenant_id=d.tenant_id
+    WHERE d.id=? AND d.tenant_id=?`)
     .bind(result.id, tenantId).first();
   if (event && "payload_ref" in event) {
     const { payload_ref, ...rest } = event as Record<string, unknown>;
-    return c.json({ claimed: true, event: { ...rest, dataRef: payload_ref } });
+    const sessionBinding = parseThreadSessionBinding(rest.session_binding_json, body.consumerId);
+    const subscriptionConsumer = rest.consumer_group === body.consumerId;
+    delete rest.session_binding_json;
+    delete rest.consumer_group;
+    return c.json({ claimed: true, event: { ...rest, dataRef: payload_ref,
+      ...(subscriptionConsumer && sessionBinding ? { sessionBinding } : {}) } });
   }
   return c.json({ claimed: true, event });
 });
@@ -766,8 +868,12 @@ routes.post("/channels/:channelId/trusted-senders", async (c) => {
 });
 
 routes.post("/channels/:channelId/threads", async (c) => {
-  const body = await c.req.json<{ providerThreadId?: string; participants?: string[]; metadata?: Record<string, unknown>; sessionBinding?: Record<string, unknown> }>().catch(() => null);
+  const body = await c.req.json<{ providerThreadId?: string; participants?: string[]; metadata?: Record<string, unknown>; sessionBinding?: unknown }>().catch(() => null);
   if (!body?.providerThreadId || body.providerThreadId.length > 512) return c.json({ error_code: "invalid_thread" }, 400);
+  const sessionBinding = body.sessionBinding === undefined || body.sessionBinding === null
+    ? null : parseThreadSessionBinding(body.sessionBinding);
+  if (body.sessionBinding !== undefined && body.sessionBinding !== null && !sessionBinding)
+    return c.json({ error_code: "invalid_session_binding" }, 400);
   const tenantId = c.get("tenantId"); const channelId = c.req.param("channelId");
   if(!await actorOwnsChannel(c,channelId))return c.json({error_code:"channel_unavailable"},404);
   const channel = await c.env.PLATFORM_DB.prepare("SELECT id FROM agentport_channels WHERE id=? AND tenant_id=? AND status='active'").bind(channelId, tenantId).first();
@@ -775,9 +881,9 @@ routes.post("/channels/:channelId/threads", async (c) => {
   const threadId = id("thr"); const at = stamp();
   try { await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_threads(id,tenant_id,channel_id,provider_thread_id,participants_json,metadata_json,session_binding_json,created_at,updated_at)
     VALUES(?,?,?,?,?,?,?,?,?)`).bind(threadId, tenantId, channelId, body.providerThreadId,
-      JSON.stringify((body.participants ?? []).filter(x => typeof x === "string").slice(0, 100)), JSON.stringify(body.metadata ?? {}), body.sessionBinding ? JSON.stringify(body.sessionBinding) : null, at, at).run(); }
+      JSON.stringify((body.participants ?? []).filter(x => typeof x === "string").slice(0, 100)), JSON.stringify(body.metadata ?? {}), sessionBinding ? JSON.stringify(sessionBinding) : null, at, at).run(); }
   catch { return c.json({ error_code: "thread_conflict" }, 409); }
-  return c.json({ thread: { id: threadId, channelId, providerThreadId: body.providerThreadId, sessionBinding: body.sessionBinding ?? null, status: "active" } }, 201);
+  return c.json({ thread: { id: threadId, channelId, providerThreadId: body.providerThreadId, sessionBinding, status: "active" } }, 201);
 });
 
 routes.get("/channels/:channelId/threads", async (c) => {

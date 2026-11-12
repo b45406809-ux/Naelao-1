@@ -47,7 +47,8 @@ import type { Env } from "../env.js";
 import { TRUSTED_PACKAGE_HOSTS } from "../script-engine/package-egress.js";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import { workspaceCoordinatorRequest } from "../workspace/workspace-client.js";
-import type { WorkspaceEntry, WorkspaceHead, WorkspaceScope } from "../workspace/workspace-contract.js";
+import { validateWorkspaceScope, type WorkspaceEntry, type WorkspaceHead, type WorkspaceScope } from "../workspace/workspace-contract.js";
+import { environmentArtifactObjectKey } from "../script-engine/environment-artifacts.js";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -69,8 +70,8 @@ export interface ContainerRuntime {
 export interface SandboxWorkspaceScope {
   spaceId: string;
   projectId?: string;
-  /** Space-wide extension instance. Its files live under Space Workspace, never the
-   *  Space Assistant workspace. Project extensions continue using their project workspace. */
+  /** Installed sidecar identity. Its files live in an installation-owned workspace,
+   *  separate from the project and Space Assistant workspaces. */
   installationId?: string;
   installationScope?: InstallationScope;
   branch?: string;
@@ -95,6 +96,12 @@ interface WorkspacePublication {
   scope: SandboxWorkspaceScope;
   changes: Array<{ path: string; expectedHash: string | null; newHash: string | null; stagedKey?: string }>;
   createdAt?: string;
+}
+
+interface ProjectMainGenerationAttempt {
+  generation: number;
+  branch: string;
+  token: string;
 }
 
 const HARNESS_PORT = 8080;
@@ -153,22 +160,22 @@ export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
   const project = scope.projectId;
   if (project && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(project)) throw new Error("invalid workspace project");
   if (scope.installationScope === "SPACE_ASSISTANT" && project) throw new Error("assistant_runtime_project_scope_mismatch");
+  if (["SPACE_SHARED", "SPACE_USER"].includes(scope.installationScope ?? "") && project)
+    throw new Error("space_runtime_project_scope_mismatch");
   if (scope.installationId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.installationId)) throw new Error("invalid workspace installation");
   const branch = scope.branch?.replaceAll("\\", "/");
   if (branch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(branch) || branch.includes(".."))) throw new Error("invalid workspace branch");
-  // Project-scoped extensions use their project workspace. Space-shared installations
-  // receive a dedicated extension workspace; SPACE_ASSISTANT targets the normal assistant
-  // workspace and is only valid without a project scope.
-  const spaceExtension = scope.installationId && ["SPACE_SHARED", "SPACE_USER"].includes(scope.installationScope ?? "");
-  const base = spaceExtension
-    ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
-    : scope.installationScope === "SPACE_ASSISTANT"
-      ? `spaces/${scope.spaceId}/workspace/`
+  if (scope.installationId && ["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope ?? "") && !project)
+    throw new Error("project_runtime_project_scope_required");
+  // An installed sidecar must never resolve to the project's canonical workspace or
+  // the Space Assistant's workspace. Project files use the explicit artifact path.
+  const base = scope.installationId
+    ? project
+      ? `spaces/${scope.spaceId}/projects/${project}/extensions/${scope.installationId}/workspace/`
+      : `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
     : project
       ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
-      : scope.installationId
-        ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
-        : `spaces/${scope.spaceId}/workspace/`;
+      : `spaces/${scope.spaceId}/workspace/`;
   return branch ? `${base}branches/${branch}/` : base;
 }
 
@@ -221,6 +228,7 @@ export class ToolSandboxDO extends DurableObject {
 
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/_internal/workspace/erase") return this.eraseWorkspaceRuntime(request);
     const largeWorkspaceWrite = ["/workspace/write", "/workspace/state-sync", "/workspace/rehydrate"].includes(path);
     if (largeWorkspaceWrite) {
       try { await this.authenticatedScope(request); }
@@ -265,6 +273,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   protected async prepareAllocation(_scope: ContainerInvocationScope): Promise<void> {}
+  protected workspaceRuntimeKind(): "tool_sandbox" | "dynamic_sandbox" | "document_sandbox" | "media_sandbox" { return "tool_sandbox"; }
   protected async reserveCapacity(_scope: ContainerInvocationScope, _holder: string, _expiresAt: number): Promise<void> {}
   protected async releaseCapacity(): Promise<void> {}
   protected async beforeIdleStop(_container: ContainerRuntime): Promise<void> {}
@@ -290,6 +299,25 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("container_owner", owner);
     await this.ctx.storage.put("container_invocation_scope", scope);
     return scope;
+  }
+
+  /** Persisted project-sidecar execution limits are host-enforced and only shorten the
+   *  authenticated image contract timeout. The profile is read for each new execution; the
+   *  resulting scope is pinned in the durable execution receipt. */
+  private async applySidecarExecutionProfile(scope: ContainerInvocationScope): Promise<ContainerInvocationScope> {
+    if (!scope.installationId || !scope.projectId || !scope.containerId) return scope;
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    if (!db) return scope;
+    const row = await db.prepare(`SELECT max_execution_seconds FROM sidecar_runtime_execution_profiles
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND container_id=?`)
+      .bind(scope.tenantId,scope.spaceId,scope.projectId,scope.installationId,scope.containerId)
+      .first<{ max_execution_seconds: number }>();
+    if (!row) return scope;
+    if (!Number.isSafeInteger(row.max_execution_seconds) || row.max_execution_seconds < 1 || row.max_execution_seconds > 60)
+      throw new Error("sidecar_runtime_profile_unavailable");
+    const next = { ...scope, timeoutMs: Math.min(scope.timeoutMs, row.max_execution_seconds * 1000) };
+    await this.ctx.storage.put("container_invocation_scope", next);
+    return next;
   }
 
   private async tenantSpaceIsActive(tenantId: string, spaceId: string): Promise<boolean> {
@@ -328,7 +356,7 @@ export class ToolSandboxDO extends DurableObject {
   /** Stop project execution and remove the local content cache. Provider snapshots are separate
    * external resources; retain their receipt metadata for reconciliation, while the local marker
    * permanently prevents this object from restoring them. */
-  private async blockErasedProject(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<void> {
+  protected async blockErasedProject(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<void> {
     await this.ctx.storage.put("workspace_erasure_blocked", { ...scope, observedAt: new Date().toISOString() });
     this.activeExecution?.controller.abort();
     await this.discardCheckpoint();
@@ -350,6 +378,151 @@ export class ToolSandboxDO extends DurableObject {
     for (const key of executions.keys()) await this.ctx.storage.delete(key);
     await this.ctx.storage.delete("sidecar_warm_expires_at");
     await this.ctx.storage.put("container_status", "hibernated");
+  }
+
+  private async eraseWorkspaceRuntime(request: Request): Promise<Response> {
+    const bindings = this.env as SandboxBindings;
+    let body: { scope?: unknown; confirm?: unknown };
+    try {
+      const bytes = await readBoundedRequestBytes(request, 8 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+    } catch { return Response.json({ error_code: "invalid_runtime_erasure_request" }, { status: 400 }); }
+    if (!body.scope || !validateWorkspaceScope(body.scope) || body.confirm !== true || !bindings.PLATFORM_SECRET ||
+        !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.scope.tenantId, bindings.PLATFORM_SECRET)) {
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    }
+    const scope = body.scope;
+    const existingOwner = await this.ctx.storage.get<string>("container_owner");
+    if (existingOwner && existingOwner !== JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId]))
+      return Response.json({ error_code: "runtime_erasure_scope_mismatch" }, { status: 409 });
+    const state = await this.projectErasureState(scope);
+    if (state === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
+    if (state !== "erased") return Response.json({ error_code: "workspace_erasure_tombstone_required" }, { status: 409 });
+    try {
+      await this.blockErasedProject(scope);
+      return Response.json({ erased: true, runtimeKind: this.workspaceRuntimeKind(), localStatePurged: true, providerSnapshotPurge: "not_supported" }, { headers: { "cache-control": "no-store" } });
+    } catch {
+      return Response.json({ error_code: "runtime_erasure_retry_required" }, { status: 503 });
+    }
+  }
+
+  private async registerWorkspaceRuntime(scope: ContainerInvocationScope, request: Request): Promise<void> {
+    if (!scope.projectId) return;
+    const objectName = request.headers.get("x-naelao-runtime-object-name");
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    // Older internal callers do not yet supply a host-derived object name. They remain protected
+    // by the D1 tombstone check, but are not eligible for proactive private-state erasure yet.
+    if (!objectName || objectName.length > 1024 || !db) return;
+    if (objectName.includes("\0")) throw new Error("workspace_runtime_identity_invalid");
+    if (this.isProjectMainRuntimeScope(scope, request)) await this.reconcileProjectMainGenerationAttempt(scope, request, db);
+    const now = new Date().toISOString();
+    const inserted = await db.prepare(`INSERT INTO workspace_runtime_registry
+      (tenant_id,space_id,project_id,runtime_kind,object_name,branch,installation_id,first_seen_at,last_seen_at)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id,runtime_kind,object_name)
+      DO UPDATE SET branch=excluded.branch,installation_id=excluded.installation_id,last_seen_at=excluded.last_seen_at,
+        erasure_notified_at=NULL,last_erasure_error=NULL`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId, this.workspaceRuntimeKind(), objectName,
+        scope.workspaceBranch ?? "", scope.installationId ?? null, now, now).run();
+    if (!inserted.meta.changes) throw new Error("workspace_runtime_registry_write_failed");
+    if (this.isProjectMainRuntimeScope(scope, request)) {
+      const branch = scope.workspaceBranch ?? "main";
+      const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+      const main = await db.prepare(`INSERT INTO project_main_runtime_registry
+        (tenant_id,space_id,project_id,runtime_kind,runtime_object_name,allocation_generation,fencing_token,active_branch,state,last_seen_at)
+        VALUES (?,?,?,'dynamic_sandbox',?,?,0,?,'registered',?)
+        ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET
+          fencing_token=project_main_runtime_registry.fencing_token + CASE WHEN project_main_runtime_registry.active_branch<>excluded.active_branch THEN 1 ELSE 0 END,
+          active_branch=excluded.active_branch,last_seen_at=excluded.last_seen_at
+        WHERE project_main_runtime_registry.runtime_object_name=excluded.runtime_object_name
+          AND project_main_runtime_registry.allocation_generation=excluded.allocation_generation
+          AND project_main_runtime_registry.state<>'erased'`)
+        .bind(scope.tenantId, scope.spaceId, scope.projectId, objectName, generation, branch, now).run();
+      if (!main.meta.changes) throw new Error("project_main_runtime_registry_write_failed");
+    }
+  }
+
+  private async reconcileProjectMainGenerationAttempt(scope: ContainerInvocationScope, request: Request, db: D1Database): Promise<void> {
+    const attempt = await this.ctx.storage.get<ProjectMainGenerationAttempt>("project_main_generation_attempt");
+    if (!attempt || !Number.isSafeInteger(attempt.generation) || attempt.generation < 1 || !attempt.token
+      || attempt.branch !== (scope.workspaceBranch ?? "main")) return;
+    const recovered = await db.prepare(`UPDATE project_main_runtime_registry /* recover-project-main-generation */ SET last_seen_at=?
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=? AND allocation_generation=? AND allocation_token=? AND active_branch=?`)
+      .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId,
+        request.headers.get("x-naelao-runtime-object-name"), attempt.generation, attempt.token, attempt.branch).run();
+    if (recovered.meta.changes) {
+      const localGeneration = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+      if (localGeneration < attempt.generation) await this.ctx.storage.put("workspace_runtime_generation", attempt.generation);
+    }
+  }
+
+  private async reserveProjectMainGeneration(scope: ContainerInvocationScope, request: Request): Promise<number | undefined> {
+    if (!this.isProjectMainRuntimeScope(scope, request)) return undefined;
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    if (!db) throw new Error("project_main_runtime_registry_unavailable");
+    const branch = scope.workspaceBranch ?? "main";
+    const localGeneration = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+    let attempt = await this.ctx.storage.get<ProjectMainGenerationAttempt>("project_main_generation_attempt");
+    if (!attempt || attempt.generation < localGeneration || attempt.generation > localGeneration + 1 || attempt.branch !== branch) {
+      attempt = { generation: localGeneration + 1, branch, token: crypto.randomUUID() };
+      // Persist the idempotency token before D1. It lets a retry discover a committed claim
+      // when the response is lost, without accepting a different allocation's generation.
+      await this.ctx.storage.put("project_main_generation_attempt", attempt);
+    }
+    const objectName = request.headers.get("x-naelao-runtime-object-name");
+    const timestamp = new Date().toISOString();
+    let claimed = await db.prepare(`UPDATE project_main_runtime_registry /* retry-project-main-generation */
+      SET state='recovery_required',last_seen_at=? WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=?
+        AND allocation_generation=? AND allocation_token=? AND active_branch=? AND state<>'erased'`)
+      .bind(timestamp, scope.tenantId, scope.spaceId, scope.projectId, objectName, attempt.generation, attempt.token, branch).run();
+    if (!claimed.meta.changes && attempt.generation === localGeneration + 1) {
+      claimed = await db.prepare(`UPDATE project_main_runtime_registry /* claim-project-main-generation */
+        SET allocation_generation=?,allocation_token=?,state='recovery_required',last_seen_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=? AND allocation_generation=? AND active_branch=? AND state<>'erased'`)
+        .bind(attempt.generation, attempt.token, timestamp, scope.tenantId, scope.spaceId, scope.projectId,
+          objectName, localGeneration, branch).run();
+    }
+    if (!claimed.meta.changes) throw new Error("project_main_runtime_registry_write_failed");
+    if (localGeneration < attempt.generation) await this.ctx.storage.put("workspace_runtime_generation", attempt.generation);
+    return attempt.generation;
+  }
+
+  private async activateProjectMainGeneration(scope: ContainerInvocationScope, request: Request): Promise<void> {
+    if (!this.isProjectMainRuntimeScope(scope, request)) return;
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    if (!db) throw new Error("project_main_runtime_registry_unavailable");
+    const generation = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
+    const branch = scope.workspaceBranch ?? "main";
+    const activated = await db.prepare(`UPDATE project_main_runtime_registry /* activate-project-main-generation */
+      SET state='active',last_seen_at=? WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=?
+        AND allocation_generation=? AND active_branch=? AND state<>'erased'`)
+      .bind(new Date().toISOString(), scope.tenantId, scope.spaceId, scope.projectId,
+        request.headers.get("x-naelao-runtime-object-name"), generation, branch).run();
+    if (!activated.meta.changes) throw new Error("project_main_runtime_registry_write_failed");
+    await this.ctx.storage.delete("project_main_generation_attempt");
+  }
+
+  private isProjectMainRuntimeScope(scope: ContainerInvocationScope, request: Request): boolean {
+    if (this.workspaceRuntimeKind() !== "dynamic_sandbox" || !scope.projectId || scope.installationId
+      || scope.workspaceBranch?.startsWith("race/")) return false;
+    return request.headers.get("x-naelao-runtime-object-name") === `sandbox:${scope.spaceId}:${scope.projectId}`;
+  }
+
+  /** One active writer per project main Container. Race branches have different DO names. */
+  private async acquireProjectMainWriter(scope: ContainerInvocationScope): Promise<boolean> {
+    return this.ctx.storage.transaction(async (tx) => {
+      const now = Date.now();
+      const current = await tx.get<{ executionId: string; expiresAt: number }>("project_main_writer_admission");
+      if (current && current.executionId !== scope.executionId && current.expiresAt > now) return false;
+      await tx.put("project_main_writer_admission", { executionId: scope.executionId, expiresAt: now + 120_000 });
+      return true;
+    });
+  }
+
+  private async releaseProjectMainWriter(executionId: string): Promise<void> {
+    await this.ctx.storage.transaction(async (tx) => {
+      const current = await tx.get<{ executionId: string }>("project_main_writer_admission");
+      if (current?.executionId === executionId) await tx.delete("project_main_writer_admission");
+    });
   }
 
   private async requireProjectNotErased(scope: Pick<ContainerInvocationScope, "tenantId" | "spaceId" | "projectId">): Promise<ProjectErasureState> {
@@ -511,6 +684,8 @@ export class ToolSandboxDO extends DurableObject {
   private async executeScoped(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch (error) { return Response.json({ ok: false, error: String(error) }, { status: 403 }); }
+    try { scope = await this.applySidecarExecutionProfile(scope); }
+    catch { return Response.json({ ok: false, error: "sidecar_runtime_profile_unavailable" }, { status: 503 }); }
     if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) {
       await this.discardCheckpoint();
       return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
@@ -518,6 +693,11 @@ export class ToolSandboxDO extends DurableObject {
     const erasure = await this.requireProjectNotErased(scope);
     if (erasure === "erased") return Response.json({ ok: false, error: "workspace_project_erased" }, { status: 410 });
     if (erasure === "unavailable") return Response.json({ ok: false, error: "workspace_erasure_check_unavailable" }, { status: 503 });
+    const mainWriter = this.isProjectMainRuntimeScope(scope, request);
+    if (this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId
+      && !scope.workspaceBranch?.startsWith("race/") && !mainWriter) {
+      return Response.json({ ok: false, error: "project_main_runtime_identity_mismatch" }, { status: 409 });
+    }
     const body = await request.clone().text();
     const payloadHash = await hashWorkspaceContent(new URL(request.url).pathname + body);
     const key = "execution:" + scope.executionId;
@@ -527,7 +707,19 @@ export class ToolSandboxDO extends DurableObject {
       if (previous.status === "committed" && previous.response) return new Response(previous.response.body, { status: previous.response.status, headers: { "content-type": "application/json" } });
       return Response.json({ ok: false, error: "container_execution_reconciliation_required" }, { status: 409 });
     }
-    await this.ctx.storage.put(key, { scope, payloadHash, status: "prepared" } satisfies ExecutionRecord);
+    if (mainWriter) {
+      let admitted: boolean;
+      try { admitted = await this.acquireProjectMainWriter(scope); }
+      catch { return Response.json({ ok: false, error: "project_main_writer_admission_unavailable" }, { status: 503 }); }
+      if (!admitted) return Response.json({ ok: false, error: "project_main_writer_busy" }, { status: 423 });
+    }
+    try {
+      await this.registerWorkspaceRuntime(scope, request);
+      await this.ctx.storage.put(key, { scope, payloadHash, status: "prepared" } satisfies ExecutionRecord);
+    } catch {
+      if (mainWriter) await this.releaseProjectMainWriter(scope.executionId).catch(() => undefined);
+      return Response.json({ ok: false, error: "workspace_runtime_registry_unavailable" }, { status: 503 });
+    }
     let retainSidecarWarm = false;
     let metered = false;
     const startedAt = Date.now();
@@ -609,6 +801,7 @@ export class ToolSandboxDO extends DurableObject {
         metered = false;
       }
       this.activeExecution = undefined;
+      if (mainWriter) await this.releaseProjectMainWriter(scope.executionId).catch(() => undefined);
       if (scope.installationId) {
         await this.ctx.storage.delete("task_active");
         if (retainSidecarWarm) {
@@ -690,7 +883,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async hydrateWorkspace(container: ContainerRuntime, scope: SandboxWorkspaceScope): Promise<void> {
-    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true") {
+    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true" && !scope.installationId) {
       await this.hydrateUnifiedWorkspace(container, scope);
       return;
     }
@@ -869,7 +1062,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async publishWorkspaceChanges(container: ContainerRuntime, scope: SandboxWorkspaceScope, holderId: string): Promise<{ changed: number }> {
-    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true") {
+    if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true" && !scope.installationId) {
       return this.publishUnifiedWorkspaceChanges(container, scope, holderId);
     }
     const invocation = this.activeExecution?.scope;
@@ -1058,7 +1251,10 @@ export class ToolSandboxDO extends DurableObject {
     const invocation = this.activeExecution?.scope ?? await this.ctx.storage.get<ContainerInvocationScope>("container_invocation_scope");
     const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
     const tenantId = invocation?.tenantId ?? meter?.tenantId;
-    if (publication.scope.projectId) {
+    // The migration barrier is meaningful only while the coordinator path is enabled: its
+    // migration routes are themselves behind the same kill switch. With rollout disabled,
+    // requiring a coordinator here would make the independent legacy R2 writer unavailable.
+    if (publication.scope.projectId && !publication.scope.installationId && bindings.UNIFIED_WORKSPACE_ENABLED === "true") {
       if (!tenantId) throw new Error("workspace_tenant_scope_required");
       const erasure = await this.requireProjectNotErased({ tenantId, spaceId: publication.scope.spaceId, projectId: publication.scope.projectId });
       if (erasure === "unavailable") throw new Error("workspace_erasure_check_unavailable");
@@ -1251,6 +1447,8 @@ export class ToolSandboxDO extends DurableObject {
 
   private async handleRequest(request: Request): Promise<Response> {
     if (request.signal.aborted) throw new Error("container_cancelled");
+    if (new URL(request.url).pathname === "/_internal/artifact-transfer" && request.method === "POST")
+      return this.transferInstallationArtifact(request);
     const scopeHeader = request.headers.get("x-naelao-container-scope");
     if (scopeHeader) {
       const scope = JSON.parse(scopeHeader) as ContainerInvocationScope;
@@ -1329,7 +1527,8 @@ export class ToolSandboxDO extends DurableObject {
       const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
       if (storedScope && (storedScope.spaceId !== workspaceScope.spaceId || storedScope.projectId !== workspaceScope.projectId
         || storedScope.branch !== workspaceScope.branch)) return Response.json({ ok: false, error: "sandbox_workspace_scope_mismatch" }, { status: 409 });
-      if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true" && (body.status === "blocked" || body.status === "completed")) {
+      if ((this.env as unknown as SandboxBindings).UNIFIED_WORKSPACE_ENABLED === "true" && !scope.installationId
+        && (body.status === "blocked" || body.status === "completed")) {
         const session = await this.ctx.storage.get<{ id: string; fence: number; allocationGeneration: number; branch: string; parentBranch: string; runId: string }>("workspace_session");
         if (session) {
           try {
@@ -1526,9 +1725,12 @@ export class ToolSandboxDO extends DurableObject {
       // harness protocol. Select only the authenticated installation's pin; never accept an
       // image from the execution body or model-generated command.
       await this.ctx.storage.put("container_egress_profile", egressProfile);
+      const reservedMainGeneration = startScope ? await this.reserveProjectMainGeneration(startScope, request) : undefined;
       await this.startContainer(container, startScope);
-      const allocationGeneration = (await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0) + 1;
-      await this.ctx.storage.put("workspace_runtime_generation", allocationGeneration);
+      if (reservedMainGeneration === undefined) {
+        const allocationGeneration = (await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0) + 1;
+        await this.ctx.storage.put("workspace_runtime_generation", allocationGeneration);
+      }
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);
       const readyDeadline = Math.min(Date.now() + 20000, Number(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}").deadline) || Date.now() + 20000);
@@ -1548,6 +1750,13 @@ export class ToolSandboxDO extends DurableObject {
     if (request.signal.aborted) throw new Error("container_cancelled");
     const requestedScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
     await this.verifyContainer(container, requestedScope);
+    if (requestedScope) {
+      try { await this.activateProjectMainGeneration(requestedScope, request); }
+      catch (error) {
+        if (this.isProjectMainRuntimeScope(requestedScope, request)) await this.stopContainer().catch(() => undefined);
+        throw error;
+      }
+    }
     if (requestedScope?.image) {
       // Installed sidecars are installation-scoped across worker runs. The Durable Object
       // name is also scope/branch-bound; keep this persisted guard aligned with that identity
@@ -1666,9 +1875,95 @@ export class ToolSandboxDO extends DurableObject {
     }
     return response;
   }
+
+  private async transferInstallationArtifact(request: Request): Promise<Response> {
+    let scope: ContainerInvocationScope;
+    try { scope = await this.authenticatedScope(request); }
+    catch { return Response.json({ error_code: "container_scope_denied" }, { status: 403 }); }
+    if (!scope.installationId || !scope.image) return Response.json({ error_code: "container_installation_required" }, { status: 403 });
+    const owner = JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
+      scope.installationScope, scope.workspaceBranch, scope.image]);
+    const previousOwner = await this.ctx.storage.get<string>("sidecar_owner");
+    if (previousOwner && previousOwner !== owner) return Response.json({ error_code: "container_sidecar_scope_mismatch" }, { status: 409 });
+    await this.ctx.storage.put("sidecar_owner", owner);
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    const erasure = await this.projectErasureState(scope);
+    if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
+    if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    let body: { direction?: string; path?: string; requestId?: string; digest?: string; expectedHash?: string | null };
+    try { body = await request.json<typeof body>(); }
+    catch { return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 }); }
+    const direction = body.direction;
+    const path = body.path;
+    const requestId = body.requestId;
+    const digest = body.digest;
+    const expectedHash = body.expectedHash;
+    if ((direction !== "import" && direction !== "export") || typeof path !== "string" || !isSyncableWorkspacePath(path)
+      || path.startsWith("shared/") || typeof requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)
+      || direction === "import" && (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)
+        || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))) {
+      return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 });
+    }
+    const bindings = this.env as unknown as SandboxBindings;
+    if (!bindings.SCRIPTS_R2) return Response.json({ error_code: "artifact_transfer_store_unavailable" }, { status: 503 });
+    let privatePrefix: string;
+    try { privatePrefix = this.workspacePrefix({ spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
+      installationId: scope.installationId, ...(scope.installationScope ? { installationScope: scope.installationScope } : {}),
+      ...(scope.workspaceBranch ? { branch: scope.workspaceBranch } : {}) }); }
+    catch { return Response.json({ error_code: "artifact_transfer_scope_invalid" }, { status: 400 }); }
+    const requestHash = await hashWorkspaceContent(JSON.stringify({ direction, path, digest: digest ?? null, expectedHash: expectedHash ?? null }));
+    const storageKey = `sidecar_artifact_transfer:${requestId}`;
+    const prior = await this.ctx.storage.get<{ requestHash: string; status: string; result?: { request_id: string; direction: string; path: string; digest: string; bytes: number } }>(storageKey);
+    if (prior && prior.requestHash !== requestHash) return Response.json({ error_code: "artifact_transfer_idempotency_conflict" }, { status: 409 });
+    if (prior?.status === "complete" && prior.result) return Response.json({ status: "complete", ...prior.result });
+    await this.ctx.storage.put(storageKey, { requestHash, status: "dispatching" });
+    try {
+      let transferDigest: string;
+      let bytes: Uint8Array;
+      let contentType: string | undefined;
+      const privateKey = privatePrefix + path;
+      if (direction === "import") {
+        const artifactKey = environmentArtifactObjectKey({ tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}) }, digest!);
+        const artifact = await readBytesWithHash(bindings.SCRIPTS_R2, artifactKey, 16 * 1024 * 1024);
+        if (!artifact || artifact.hash !== digest) return Response.json({ error_code: "environment_artifact_integrity_failed" }, { status: 404 });
+        bytes = artifact.bytes; transferDigest = artifact.hash; contentType = artifact.contentType;
+        const current = await readBytesWithHash(bindings.SCRIPTS_R2, privateKey, 16 * 1024 * 1024);
+        // Idempotent recovery after a lost acknowledgement: the exact intended bytes already
+        // occupy the installation-owned key, so the original operation is complete.
+        if (current?.hash !== transferDigest) {
+          if ((current?.hash ?? null) !== expectedHash) return Response.json({ error_code: "artifact_transfer_destination_conflict", current_hash: current?.hash ?? null }, { status: 409 });
+          const head = await bindings.SCRIPTS_R2.head(privateKey);
+          const stored = await bindings.SCRIPTS_R2.put(privateKey, bytes, { onlyIf: head?.etag ? { etagMatches: head.etag } : { etagDoesNotMatch: "*" },
+            customMetadata: { sha256: transferDigest, transferRequestId: requestId }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
+          if (!stored) return Response.json({ error_code: "artifact_transfer_destination_conflict" }, { status: 409 });
+        }
+      } else {
+        const source = await readBytesWithHash(bindings.SCRIPTS_R2, privateKey, 16 * 1024 * 1024);
+        if (!source) return Response.json({ error_code: "artifact_transfer_source_missing" }, { status: 404 });
+        bytes = source.bytes; transferDigest = source.hash; contentType = source.contentType;
+        const artifactKey = environmentArtifactObjectKey({ tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}) }, transferDigest);
+        const saved = await bindings.SCRIPTS_R2.put(artifactKey, bytes, { onlyIf: { etagDoesNotMatch: "*" },
+          customMetadata: { sha256: transferDigest, sourcePath: `sidecar:${scope.installationId}:${path}` }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
+        if (!saved) {
+          const existing = await readBytesWithHash(bindings.SCRIPTS_R2, artifactKey, 16 * 1024 * 1024);
+          if (existing?.hash !== transferDigest) return Response.json({ error_code: "environment_artifact_integrity_failed" }, { status: 409 });
+        }
+      }
+      const result = { request_id: requestId, direction, path, digest: transferDigest, bytes: bytes.byteLength };
+      await this.ctx.storage.put(storageKey, { requestHash, status: "complete", result });
+      return Response.json({ status: "complete", ...result });
+    } catch {
+      await this.ctx.storage.put(storageKey, { requestHash, status: "indeterminate" });
+      return Response.json({ error_code: "artifact_transfer_outcome_unknown", request_id: requestId }, { status: 503 });
+    }
+  }
 }
 
 /** Fixed default-policy bindings. Deployment pins are validated through inspect() before
  * execution; neither this subclass nor a manifest can select an arbitrary image at runtime. */
-export class DocumentSandboxDO extends ToolSandboxDO {}
-export class MediaSandboxDO extends ToolSandboxDO {}
+export class DocumentSandboxDO extends ToolSandboxDO {
+  protected override workspaceRuntimeKind(): "document_sandbox" { return "document_sandbox"; }
+}
+export class MediaSandboxDO extends ToolSandboxDO {
+  protected override workspaceRuntimeKind(): "media_sandbox" { return "media_sandbox"; }
+}

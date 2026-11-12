@@ -114,6 +114,301 @@ export async function assistantPhone(env: AgentsEnv, identityId: string) {
     .bind(identityId)
     .first<AssistantPhoneBinding>();
 }
+type TelnyxNumberOrderOperation = {
+  id: string; identity_id: string; quote_id: string; binding_id: string; provider_account_ref: string;
+  customer_reference: string; phone_number: string; country_code: string; upfront_cost_minor: number;
+  monthly_cost_minor: number; currency: string; status: string; provider_order_id: string | null;
+  provider_number_id: string | null; reconcile_attempts?:number; next_reconcile_at?:string|null; lease_until?:string|null;
+};
+function isTelnyxOrderId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Fa-f0-9-]{36}$/.test(value);
+}
+async function reconcileTelnyxNumberOrder(
+  env: AgentsEnv,
+  identity: CommunicationIdentity,
+  client: InstanceType<typeof import("../voice/telnyx-telephony.js").TelnyxTelephony>,
+  operation: TelnyxNumberOrderOperation,
+  order: Record<string, unknown>,
+) {
+  if (!isTelnyxOrderId(order.id) || order.customer_reference !== operation.customer_reference
+    || !["pending", "success", "failure"].includes(String(order.status))) throw new PhoneProviderError(true, "telnyx_number_order_receipt_invalid");
+  const providerOrderId = order.id;
+  if (order.status === "pending") {
+    const nextCheck=new Date(Date.now()+5*60_000).toISOString();
+    await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='pending',provider_order_id=?,last_error=NULL,lease_until=NULL,next_reconcile_at=?,last_reconciled_at=?,updated_at=? WHERE id=? AND identity_id=? AND status IN ('submitting','uncertain','pending')")
+        .bind(providerOrderId,nextCheck,new Date().toISOString(),new Date().toISOString(),operation.id,identity.id),
+      env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='configuring',updated_at=datetime('now') WHERE id=? AND identity_id=? AND status IN ('configuring','indeterminate')")
+        .bind(operation.binding_id, identity.id),
+    ]);
+    return { operation_id: operation.id, status: "pending", provider_order_id: providerOrderId, phone_number: operation.phone_number };
+  }
+  if (order.status === "failure") {
+    const at=new Date().toISOString();
+    await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='failed',provider_order_id=?,last_error='provider_order_failed',lease_until=NULL,next_reconcile_at=NULL,last_reconciled_at=?,updated_at=? WHERE id=? AND identity_id=? AND status IN ('submitting','uncertain','pending')").bind(providerOrderId,at,at,operation.id,identity.id),
+      env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND status IN ('configuring','indeterminate')").bind(operation.binding_id, identity.id),
+      env.PLATFORM_DB.prepare("UPDATE assistant_phone_quotes SET status='failed' WHERE id=? AND status='processing'").bind(operation.quote_id),
+    ]);
+    return { operation_id: operation.id, status: "failed", provider_order_id: providerOrderId, phone_number: operation.phone_number };
+  }
+  const numbers = Array.isArray(order.phone_numbers) ? order.phone_numbers : [];
+  const ordered = numbers.length === 1 && numbers[0] && typeof numbers[0] === "object" && !Array.isArray(numbers[0])
+    ? numbers[0] as Record<string, unknown> : null;
+  if (!ordered || ordered.phone_number !== operation.phone_number || typeof ordered.id !== "string" || !/^\d{1,32}$/.test(ordered.id))
+    throw new PhoneProviderError(true, "telnyx_number_order_number_missing");
+  const number = await client.inspectPhoneNumber(ordered.id);
+  if (number.phoneNumber !== operation.phone_number) throw new PhoneProviderError(true, "telnyx_number_order_number_mismatch");
+  const at=new Date().toISOString();
+  await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='succeeded',provider_order_id=?,provider_number_id=?,last_error=NULL,lease_until=NULL,next_reconcile_at=NULL,last_reconciled_at=?,updated_at=? WHERE id=? AND identity_id=? AND status IN ('submitting','uncertain','pending')")
+      .bind(providerOrderId,number.id,at,at,operation.id,identity.id),
+    env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET provider_number_sid=?,phone_number=?,country_code=?,status='configuring',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND payer='byo' AND status IN ('configuring','indeterminate')")
+      .bind(number.id, number.phoneNumber, operation.country_code, operation.binding_id, identity.id),
+    env.PLATFORM_DB.prepare("UPDATE assistant_phone_quotes SET status='completed' WHERE id=? AND status='processing'").bind(operation.quote_id),
+  ]);
+  return { operation_id: operation.id, status: "succeeded", provider_order_id: providerOrderId, phone_number: number.phoneNumber };
+}
+
+type TelnyxNumberOrderReconciliationRow=TelnyxNumberOrderOperation&Omit<CommunicationIdentity,"id">&{
+  identity_record_id:string;identity_status:string;
+  binding_payer:string;binding_provider_number_sid:string|null;binding_phone_number:string|null;binding_status:string;
+};
+
+async function deferTelnyxNumberOrderReconciliation(env:AgentsEnv,operation:TelnyxNumberOrderReconciliationRow,errorCode:string,now:Date){
+  const attempts=(operation.reconcile_attempts??0)+1;
+  const delay=Math.min(24*60*60_000,5*60_000*2**Math.min(attempts-1,8));
+  const next=new Date(now.getTime()+delay).toISOString();
+  await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_order_operations SET
+      status=CASE WHEN status='submitting' THEN 'uncertain' ELSE status END,lease_until=NULL,last_error=?,
+      reconcile_attempts=?,next_reconcile_at=?,last_reconciled_at=?,updated_at=?
+    WHERE id=? AND identity_id=? AND status IN ('submitting','uncertain','pending')`)
+    .bind(errorCode,attempts,next,now.toISOString(),now.toISOString(),operation.id,operation.identity_id).run();
+}
+
+/** Polls only provider read APIs after an ambiguous customer-owned number order. It never resubmits a paid order. */
+export async function sweepTelnyxNumberOrders(env:AgentsEnv,now=new Date(),limit=10){
+  if(!Number.isSafeInteger(limit)||limit<1||limit>25)throw new Error("telnyx_number_order_reconciliation_limit_invalid");
+  const staleSubmitting=new Date(now.getTime()-5*60_000).toISOString();
+  const due=await env.PLATFORM_DB.prepare(`SELECT o.*,i.id AS identity_record_id,i.tenant_id AS tenant_id,i.space_id AS space_id,i.project_id AS project_id,
+      i.scope_key,i.owner_user_id,i.email_address,i.address_hash,i.email_provider,i.email_status,i.autonomy_json,i.status AS identity_status,
+      b.payer AS binding_payer,b.provider_number_sid AS binding_provider_number_sid,b.phone_number AS binding_phone_number,b.status AS binding_status
+    FROM assistant_telnyx_number_order_operations o
+    JOIN assistant_communication_identities i ON i.id=o.identity_id
+    JOIN assistant_phone_bindings b ON b.id=o.binding_id AND b.identity_id=o.identity_id
+    JOIN spaces s ON s.id=i.space_id AND s.tenant_id=i.tenant_id AND s.status='active'
+    JOIN orgs g ON g.id=i.tenant_id AND g.status='active'
+    WHERE o.status IN ('submitting','uncertain','pending') AND (o.lease_until IS NULL OR julianday(o.lease_until)<=julianday(?))
+      AND ((o.next_reconcile_at IS NOT NULL AND julianday(o.next_reconcile_at)<=julianday(?))
+        OR (o.status='submitting' AND julianday(o.updated_at)<=julianday(?)))
+      AND i.status='active' AND i.email_status!='erased'
+    ORDER BY COALESCE(o.next_reconcile_at,o.updated_at),o.created_at LIMIT ?`)
+    .bind(now.toISOString(),now.toISOString(),staleSubmitting,limit).all<TelnyxNumberOrderReconciliationRow>();
+  const result={checked:due.results.length,reconciled:0,deferred:0,failed:0};
+  for(const row of due.results){
+    const claim=await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_order_operations SET lease_until=?,updated_at=?
+      WHERE id=? AND identity_id=? AND status IN ('submitting','uncertain','pending')
+        AND (lease_until IS NULL OR julianday(lease_until)<=julianday(?))
+        AND ((next_reconcile_at IS NOT NULL AND julianday(next_reconcile_at)<=julianday(?))
+          OR (status='submitting' AND julianday(updated_at)<=julianday(?)))`)
+      .bind(new Date(now.getTime()+120_000).toISOString(),now.toISOString(),row.id,row.identity_id,now.toISOString(),now.toISOString(),staleSubmitting).run();
+    if(!claim.meta.changes){result.deferred++;continue;}
+    try{
+      if(!row.owner_user_id||row.binding_payer!=="byo"||!row.binding_phone_number
+        ||!(["configuring","indeterminate"].includes(row.binding_status))||row.identity_status!=="active"){
+        await deferTelnyxNumberOrderReconciliation(env,row,"telnyx_number_order_scope_unavailable",now);result.deferred++;continue;
+      }
+      const identity:CommunicationIdentity={id:row.identity_record_id,tenant_id:row.tenant_id,space_id:row.space_id,project_id:row.project_id??null,
+        scope_key:row.scope_key,owner_user_id:row.owner_user_id,email_address:row.email_address??null,address_hash:row.address_hash??null,
+        email_provider:row.email_provider,email_status:row.email_status,status:row.identity_status,autonomy_json:row.autonomy_json};
+      const {resolveTelnyxAccount}=await import("./telnyx-account.js");
+      const account=await resolveTelnyxAccount(env,identity,{payer:"byo",provider_number_sid:row.binding_provider_number_sid,phone_number:row.binding_phone_number});
+      if(!account||String(account.verifiedNumberId)!==row.provider_account_ref){
+        await deferTelnyxNumberOrderReconciliation(env,row,"telnyx_account_changed_since_order",now);result.deferred++;continue;
+      }
+      const client=new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account);
+      let matches:Record<string,unknown>[]=[];
+      if(row.provider_order_id&&isTelnyxOrderId(row.provider_order_id)){
+        try{const exact=await client.inspectNumberOrder(row.provider_order_id);if(exact.customer_reference===row.customer_reference)matches=[exact];}
+        catch{/* A read-only reference search below recovers absent or temporarily unavailable order IDs. */}
+      }
+      if(!matches.length)matches=(await client.listNumberOrders(row.customer_reference)).filter(order=>order.customer_reference===row.customer_reference);
+      if(matches.length!==1){
+        if(matches.length>1){
+          await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_order_operations SET lease_until=NULL,next_reconcile_at=NULL,
+            last_error='duplicate_provider_orders_require_manual_review',last_reconciled_at=?,updated_at=? WHERE id=? AND identity_id=?`)
+            .bind(now.toISOString(),now.toISOString(),row.id,row.identity_id).run();
+          result.deferred++;continue;
+        }
+        await deferTelnyxNumberOrderReconciliation(env,row,"telnyx_number_order_not_yet_visible",now);result.deferred++;continue;
+      }
+      const outcome=await reconcileTelnyxNumberOrder(env,identity,client,row,matches[0]!);
+      if(outcome.status==="pending")result.deferred++;else result.reconciled++;
+    }catch(error){
+      const code=error instanceof Error&&/^[a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"telnyx_number_order_reconciliation_failed";
+      await deferTelnyxNumberOrderReconciliation(env,row,code,now).catch(()=>undefined);result.failed++;
+    }
+  }
+  return result;
+}
+
+type TelnyxNumberReleaseOperation = {
+  id: string; identity_id: string; binding_id: string; provider_account_fingerprint: string;
+  provider_number_id: string; phone_number: string; prior_binding_status: "active" | "billing_hold" | "indeterminate";
+  status: "submitting" | "uncertain" | "released" | "failed"; reconcile_attempts: number;
+  next_reconcile_at: string | null; lease_until: string | null; last_error: string | null;
+};
+function sha256Hex(bytes: Uint8Array) {
+  return crypto.subtle.digest("SHA-256", bytes).then(digest => [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2,"0")).join(""));
+}
+async function telnyxAccountFingerprint(env: AgentsEnv, account: { apiKey: string; publicKey: string }) {
+  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(env.PLATFORM_SECRET),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  const signature=await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(`${account.apiKey}\0${account.publicKey}`));
+  return [...new Uint8Array(signature)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+}
+function boundedPhoneError(error: unknown, fallback: string) {
+  return error instanceof Error && /^[a-z0-9_:-]{1,100}$/.test(error.message) ? error.message : fallback;
+}
+async function finishTelnyxNumberRelease(env: AgentsEnv, operation: TelnyxNumberReleaseOperation, now: Date) {
+  const at = now.toISOString();
+  const result = await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET status='released',next_reconcile_at=NULL,
+      lease_until=NULL,last_error=NULL,last_reconciled_at=?,updated_at=? WHERE id=? AND status IN ('submitting','uncertain')`)
+      .bind(at,at,operation.id),
+    env.PLATFORM_DB.prepare(`UPDATE assistant_phone_bindings SET status='released',updated_at=? WHERE id=? AND identity_id=?
+      AND provider='telnyx' AND payer='managed' AND provider_number_sid=? AND phone_number=? AND status IN ('disabling','indeterminate','released')`)
+      .bind(at,operation.binding_id,operation.identity_id,operation.provider_number_id,operation.phone_number),
+  ]);
+  if (result[0]?.meta.changes !== 1 || result[1]?.meta.changes !== 1) throw new Error("managed_telnyx_release_receipt_unconfirmed");
+  return { operation_id: operation.id, status: "released", released: true, carrier_number_released: true, current_month_rental_refundable: false };
+}
+async function deferTelnyxNumberRelease(env: AgentsEnv, operation: TelnyxNumberReleaseOperation, errorCode: string, now: Date) {
+  const attempts=(operation.reconcile_attempts??0)+1;
+  const delay=Math.min(6*60*60_000,5*60_000*2**Math.min(attempts-1,6));
+  const next=new Date(now.getTime()+delay).toISOString();
+  await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET status='uncertain',lease_until=NULL,last_error=?,
+    reconcile_attempts=?,next_reconcile_at=?,last_reconciled_at=?,updated_at=? WHERE id=? AND status IN ('submitting','uncertain')`)
+    .bind(errorCode,attempts,next,now.toISOString(),now.toISOString(),operation.id).run();
+  await env.PLATFORM_DB.prepare(`UPDATE assistant_phone_bindings SET status='indeterminate',updated_at=? WHERE id=? AND identity_id=?
+    AND provider='telnyx' AND payer='managed' AND provider_number_sid=? AND status IN ('disabling','indeterminate')`)
+    .bind(now.toISOString(),operation.binding_id,operation.identity_id,operation.provider_number_id).run();
+  return { operation_id: operation.id, status: "uncertain", released: false, reconciliation_scheduled: true, reason: errorCode };
+}
+
+/** Bounded read-only release reconciliation. DELETE is issued only by the owner action below;
+ * a worker retry checks the exact Telnyx number and confirms absence without replaying DELETE. */
+export async function sweepTelnyxNumberReleases(env: AgentsEnv, now = new Date(), limit = 10) {
+  if(!Number.isSafeInteger(limit)||limit<1||limit>25)throw new Error("telnyx_number_release_reconciliation_limit_invalid");
+  const staleSubmitting=new Date(now.getTime()-5*60_000).toISOString();
+  const due=await env.PLATFORM_DB.prepare(`SELECT o.*,i.id AS identity_record_id,i.tenant_id,i.space_id,i.project_id,i.scope_key,
+      i.owner_user_id,i.email_address,i.address_hash,i.email_provider,i.email_status,i.autonomy_json,i.status AS identity_status,
+      b.payer AS binding_payer,b.provider_number_sid AS binding_provider_number_sid,b.phone_number AS binding_phone_number,b.status AS binding_status
+    FROM assistant_telnyx_number_release_operations o JOIN assistant_communication_identities i ON i.id=o.identity_id
+    JOIN assistant_phone_bindings b ON b.id=o.binding_id AND b.identity_id=o.identity_id
+    WHERE o.status IN ('submitting','uncertain') AND (o.lease_until IS NULL OR julianday(o.lease_until)<=julianday(?))
+      AND ((o.next_reconcile_at IS NOT NULL AND julianday(o.next_reconcile_at)<=julianday(?))
+        OR (o.status='submitting' AND julianday(o.updated_at)<=julianday(?)))
+    ORDER BY COALESCE(o.next_reconcile_at,o.updated_at),o.created_at LIMIT ?`)
+    .bind(now.toISOString(),now.toISOString(),staleSubmitting,limit).all<Record<string,unknown>&TelnyxNumberReleaseOperation>();
+  const result={checked:due.results.length,released:0,deferred:0,failed:0};
+  for(const row of due.results){
+    const claim=await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET lease_until=?,updated_at=?
+      WHERE id=? AND status IN ('submitting','uncertain') AND (lease_until IS NULL OR julianday(lease_until)<=julianday(?))
+        AND ((next_reconcile_at IS NOT NULL AND julianday(next_reconcile_at)<=julianday(?))
+          OR (status='submitting' AND julianday(updated_at)<=julianday(?)))`)
+      .bind(new Date(now.getTime()+120_000).toISOString(),now.toISOString(),row.id,now.toISOString(),now.toISOString(),staleSubmitting).run();
+    if(!claim.meta.changes){result.deferred++;continue;}
+    try{
+      if(row.binding_payer!=="managed"||row.binding_provider_number_sid!==row.provider_number_id||row.binding_phone_number!==row.phone_number
+        ||!(row.binding_status==="disabling"||row.binding_status==="indeterminate")){
+        await deferTelnyxNumberRelease(env,row,"telnyx_release_scope_unavailable",now);result.deferred++;continue;
+      }
+      const identity:CommunicationIdentity={id:String(row.identity_record_id),tenant_id:String(row.tenant_id),space_id:String(row.space_id),
+        project_id:typeof row.project_id==="string"?row.project_id:null,scope_key:String(row.scope_key),owner_user_id:String(row.owner_user_id),
+        email_address:typeof row.email_address==="string"?row.email_address:null,address_hash:typeof row.address_hash==="string"?row.address_hash:null,
+        email_provider:String(row.email_provider),email_status:String(row.email_status),status:String(row.identity_status),autonomy_json:String(row.autonomy_json)};
+      const account=await (await import("./telnyx-account.js")).resolveTelnyxAccount(env,identity,{payer:"managed",provider_number_sid:row.provider_number_id,phone_number:row.phone_number});
+      if(!account||await telnyxAccountFingerprint(env,account)!==row.provider_account_fingerprint){
+        await deferTelnyxNumberRelease(env,row,"telnyx_managed_account_changed_since_release",now);result.deferred++;continue;
+      }
+      const client=new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account);
+      const current=await client.inspectPhoneNumberForRelease(row.provider_number_id);
+      if(!current){await finishTelnyxNumberRelease(env,row,now);result.released++;continue;}
+      if(current.phoneNumber!==row.phone_number){await deferTelnyxNumberRelease(env,row,"telnyx_release_resource_mismatch",now);result.deferred++;continue;}
+      await deferTelnyxNumberRelease(env,row,"telnyx_number_still_present_after_release",now);result.deferred++;
+    }catch(error){
+      await deferTelnyxNumberRelease(env,row,boundedPhoneError(error,"telnyx_number_release_reconciliation_failed"),now).catch(()=>undefined);
+      result.failed++;
+    }
+  }
+  return result;
+}
+
+async function releaseManagedTelnyxNumber(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding) {
+  const existing=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_telnyx_number_release_operations WHERE binding_id=?
+    AND status IN ('submitting','uncertain','released') ORDER BY created_at DESC LIMIT 1`).bind(binding.id).first<TelnyxNumberReleaseOperation>();
+  if(existing){
+    if(existing.status==="released")return {operation_id:existing.id,status:"released",released:true,carrier_number_released:true,current_month_rental_refundable:false};
+    return {operation_id:existing.id,status:"uncertain",released:false,reconciliation_scheduled:true,reason:existing.last_error??"release_reconciliation_pending"};
+  }
+  const account=await (await import("./telnyx-account.js")).resolveTelnyxAccount(env,identity,binding);
+  if(!account)throw new Error("managed_telnyx_credentials_unavailable");
+  if(!binding.provider_number_sid||!binding.phone_number||!/^\d{1,32}$/.test(binding.provider_number_sid))throw new Error("telnyx_release_resource_invalid");
+  const at=new Date().toISOString(),operationId=`tnrel_${crypto.randomUUID().replace(/-/g,"")}`;
+  const statements=await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(`INSERT INTO assistant_telnyx_number_release_operations(id,identity_id,binding_id,provider_account_fingerprint,
+      provider_number_id,phone_number,prior_binding_status,status,next_reconcile_at,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,?,?, ?,?,? WHERE EXISTS(SELECT 1 FROM assistant_phone_bindings WHERE id=? AND identity_id=?
+        AND provider='telnyx' AND payer='managed' AND provider_number_sid=? AND phone_number=? AND status=?)`)
+      .bind(operationId,identity.id,binding.id,await telnyxAccountFingerprint(env,account),binding.provider_number_sid,binding.phone_number,binding.status,
+        binding.status==="active"?"submitting":"uncertain",binding.status==="active"?null:at,at,at,binding.id,identity.id,binding.provider_number_sid,binding.phone_number,binding.status),
+    env.PLATFORM_DB.prepare(`UPDATE assistant_phone_bindings SET status=?,updated_at=? WHERE id=? AND identity_id=?
+      AND provider='telnyx' AND payer='managed' AND provider_number_sid=? AND phone_number=? AND status=?
+      AND EXISTS(SELECT 1 FROM assistant_telnyx_number_release_operations WHERE id=? AND binding_id=?)`)
+      .bind(binding.status==="active"?"disabling":"indeterminate",at,binding.id,identity.id,binding.provider_number_sid,binding.phone_number,binding.status,operationId,binding.id),
+    env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET status='failed',last_error='binding_changed_before_release',updated_at=?
+      WHERE id=? AND status IN ('submitting','uncertain') AND NOT EXISTS(SELECT 1 FROM assistant_phone_bindings WHERE id=? AND status IN ('disabling','indeterminate'))`)
+      .bind(at,operationId,binding.id),
+  ]);
+  if(statements[0]?.meta.changes!==1||statements[1]?.meta.changes!==1){
+    const raced=await env.PLATFORM_DB.prepare(`SELECT * FROM assistant_telnyx_number_release_operations WHERE binding_id=? AND status IN ('submitting','uncertain','released') ORDER BY created_at DESC LIMIT 1`)
+      .bind(binding.id).first<TelnyxNumberReleaseOperation>();
+    if(raced)return {operation_id:raced.id,status:raced.status==="released"?"released":"uncertain",released:raced.status==="released",reconciliation_scheduled:raced.status!=="released",reason:raced.last_error??"release_reconciliation_pending"};
+    throw new Error("telnyx_binding_changed");
+  }
+  const operation:TelnyxNumberReleaseOperation={id:operationId,identity_id:identity.id,binding_id:binding.id,
+    provider_account_fingerprint:await telnyxAccountFingerprint(env,account),provider_number_id:binding.provider_number_sid,phone_number:binding.phone_number,
+    prior_binding_status:binding.status as TelnyxNumberReleaseOperation["prior_binding_status"],status:binding.status==="active"?"submitting":"uncertain",reconcile_attempts:0,
+    next_reconcile_at:binding.status==="active"?null:at,lease_until:null,last_error:binding.status==="active"?null:"preexisting_binding_state_requires_read_only_reconciliation"};
+  if(operation.status==="uncertain"){
+    return deferTelnyxNumberRelease(env,operation,operation.last_error!,new Date());
+  }
+  try{
+    await new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account).releasePhoneNumber(binding.provider_number_sid);
+  }catch(error){
+    if(error instanceof PhoneProviderError&&error.uncertain){
+      return deferTelnyxNumberRelease(env,operation,boundedPhoneError(error,"telnyx_provider_outcome_unknown"),new Date());
+    }
+    const failedAt=new Date().toISOString();
+    await env.PLATFORM_DB.batch([
+      env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET status='failed',last_error=?,next_reconcile_at=NULL,updated_at=? WHERE id=? AND status='submitting'`)
+        .bind(boundedPhoneError(error,"telnyx_release_rejected"),failedAt,operationId),
+      env.PLATFORM_DB.prepare(`UPDATE assistant_phone_bindings SET status=?,updated_at=? WHERE id=? AND identity_id=? AND status='disabling'`)
+        .bind(binding.status,failedAt,binding.id,identity.id),
+    ]);
+    throw error;
+  }
+  const completed=await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_number_release_operations SET status='released',last_error=NULL,next_reconcile_at=NULL,updated_at=?
+      WHERE id=? AND status='submitting'`).bind(new Date().toISOString(),operationId),
+    env.PLATFORM_DB.prepare(`UPDATE assistant_phone_bindings SET status='released',updated_at=? WHERE id=? AND identity_id=?
+      AND provider='telnyx' AND payer='managed' AND provider_number_sid=? AND phone_number=? AND status='disabling'`)
+      .bind(new Date().toISOString(),binding.id,identity.id,binding.provider_number_sid,binding.phone_number),
+  ]);
+  if(completed[0]?.meta.changes!==1||completed[1]?.meta.changes!==1)throw new Error("managed_telnyx_release_receipt_unconfirmed");
+  return {operation_id:operationId,status:"released",released:true,carrier_number_released:true,current_month_rental_refundable:false};
+}
+
 async function livePhoneAllowed(env: AgentsEnv, scope: CommunicationScope) {
   if (
     !(await scopeAccess(env, scope, false)) ||
@@ -168,6 +463,19 @@ export async function handlePhoneAction(
   if (action === "phone-status") {
     const preferences = await channelPreferences(env, scope);
     const currentPhone = await assistantPhone(env, identity.id);
+    const telnyxOrder = await env.PLATFORM_DB.prepare("SELECT id,status,phone_number,upfront_cost_minor,monthly_cost_minor,currency,provider_order_id FROM assistant_telnyx_number_order_operations WHERE identity_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
+      .bind(identity.id).first<{ id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null }>();
+    const telnyxRelease = await env.PLATFORM_DB.prepare("SELECT id,status,phone_number,next_reconcile_at,last_error FROM assistant_telnyx_number_release_operations WHERE identity_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
+      .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
+    const agentPortShare = currentPhone?.provider === "telnyx" ? await env.PLATFORM_DB.prepare(`SELECT m.agentport_link_status,
+        (SELECT o.operation_name FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
+          ORDER BY o.updated_at DESC LIMIT 1) AS operation_name,
+        (SELECT o.status FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
+          ORDER BY o.updated_at DESC LIMIT 1) AS operation_status,
+        (SELECT o.error_code FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
+          ORDER BY o.updated_at DESC LIMIT 1) AS operation_error
+      FROM managed_service_accounts m WHERE m.id='telnyx-'||? AND m.tenant_id=? AND m.space_id=?`).bind(currentPhone.id,scope.tenantId,scope.spaceId)
+      .first<{agentport_link_status:string|null;operation_name:string|null;operation_status:string|null;operation_error:string|null}>() : null;
     let telnyxWebhook: string | null = null;
     if (manager && currentPhone?.provider === "telnyx" && currentPhone.status === "configuring") {
       try { telnyxWebhook = currentPhone.payer === "managed"
@@ -176,6 +484,15 @@ export async function handlePhoneAction(
     }
     return {
       phone: metadata(currentPhone),
+      telnyx_agentport_shared: agentPortShare?.agentport_link_status === "active",
+      telnyx_agentport_link_status: agentPortShare?.agentport_link_status ?? null,
+      telnyx_agentport_operation: agentPortShare?.operation_name ? { operation_name:agentPortShare.operation_name,
+        status:agentPortShare.operation_status,error_code:agentPortShare.operation_error } : null,
+      telnyx_order: telnyxOrder ? { operation_id: telnyxOrder.id, status: telnyxOrder.status, phone_number: telnyxOrder.phone_number,
+        upfront_cost_minor: telnyxOrder.upfront_cost_minor, monthly_cost_minor: telnyxOrder.monthly_cost_minor,
+        currency: telnyxOrder.currency, provider_order_id: telnyxOrder.provider_order_id } : null,
+      telnyx_release: telnyxRelease ? { operation_id:telnyxRelease.id,status:telnyxRelease.status,phone_number:telnyxRelease.phone_number,
+        next_reconcile_at:telnyxRelease.next_reconcile_at,error_code:telnyxRelease.last_error } : null,
       telnyx_webhook_url: telnyxWebhook,
       extension_lines: manager
         ? (
@@ -234,14 +551,46 @@ export async function handlePhoneAction(
       "phone-reconcile-number",
       "phone-telnyx-remove",
       "phone-telnyx-status",
+      "phone-agentport-unlink",
       "phone-telnyx-cancel",
       "phone-telnyx-detach",
       "phone-telnyx-reconcile",
+      "phone-telnyx-order-reconcile",
       "phone-telnyx-cost",
+      "phone-twilio-cost",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
   let binding = await assistantPhone(env, identity.id);
+  if (action === "phone-telnyx-cost-status") {
+    if (!manager || agent || !binding || binding.provider !== "telnyx" || binding.status !== "active")
+      throw new Error("telnyx_call_cost_status_owner_required");
+    const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
+    if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number
+      || !account.callControlId) throw new Error("telnyx_call_cost_application_unavailable");
+    const client = new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account);
+    const [number, app] = await Promise.all([
+      client.inspectPhoneNumber(account.verifiedNumberId), client.inspectCallControlApplication(account.callControlId),
+    ]);
+    const expected = binding.payer === "managed"
+      ? `${phonePublicOrigin(env)}/assistant-phone/telnyx-managed`
+      : `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(binding.id)}`;
+    if (number.callControlId !== account.callControlId || app.webhookUrl !== expected)
+      throw new Error("telnyx_call_cost_application_mismatch");
+    const capabilities = JSON.parse(binding.capabilities_json) as Record<string, unknown>;
+    capabilities.call_cost_webhooks = app.callCostInWebhooks;
+    const changed = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET capabilities_json=?,updated_at=datetime('now') WHERE id=? AND identity_id=? AND status='active'")
+      .bind(JSON.stringify(capabilities), binding.id, identity.id).run();
+    if (!changed.meta.changes) throw new Error("telnyx_binding_changed");
+    return { call_cost_webhooks_enabled: app.callCostInWebhooks };
+  }
+  if (action === "phone-agentport-share" || action === "phone-agentport-unlink") {
+    if (!manager || agent || body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "active")
+      throw new Error("telnyx_agentport_owner_confirmation_required");
+    if (action === "phone-agentport-share")
+      return (await import("./telnyx-agentport.js")).shareTelnyxSmsWithAgentPort(env, scope, identity, binding.id);
+    return (await import("./telnyx-agentport.js")).revokeTelnyxAgentPortShare(env, scope, identity, binding.id);
+  }
   if (action === "phone-telnyx-activate") {
     if (body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "configuring") throw new Error("telnyx_staged_binding_required");
     const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
@@ -255,9 +604,11 @@ export async function handlePhoneAction(
       : `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(binding.id)}`;
     if (profile.webhookUrl !== expected) throw new Error("telnyx_webhook_not_configured");
     let voiceActive = false;
+    let voiceCostWebhooksEnabled = false;
     if (account.callControlId && number.callControlId === account.callControlId) {
       const app = await client.inspectCallControlApplication(account.callControlId);
       if (app.webhookUrl !== expected) throw new Error("telnyx_call_webhook_not_configured");
+      voiceCostWebhooksEnabled = app.callCostInWebhooks;
       voiceActive = true;
     }
     if (binding.payer === "managed" && (!voiceActive || !env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH)) throw new Error("managed_telnyx_billing_unavailable");
@@ -267,9 +618,10 @@ export async function handlePhoneAction(
     }
     await livePhoneAllowed(env, scope);
     const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='active',capabilities_json=?,updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='configuring'")
-      .bind(JSON.stringify({ sms: true, voice: voiceActive, mms: false }), binding.id, identity.id).run();
+      .bind(JSON.stringify({ sms: true, voice: voiceActive, mms: false, call_cost_webhooks: voiceCostWebhooksEnabled }), binding.id, identity.id).run();
     if (!updated.meta.changes) throw new Error("telnyx_staged_binding_changed");
-    return { phone: metadata(await assistantPhone(env, identity.id)), sms_active: true, voice_active: voiceActive };
+    return { phone: metadata(await assistantPhone(env, identity.id)), sms_active: true, voice_active: voiceActive,
+      voice_cost_webhooks_enabled: voiceCostWebhooksEnabled };
   }
   if (action === "phone-telnyx-detach") {
     if (body.confirm !== true || !binding || binding.provider !== "telnyx" || !["active", "billing_hold", "indeterminate"].includes(binding.status)
@@ -281,18 +633,10 @@ export async function handlePhoneAction(
       if (await env.PLATFORM_DB.prepare("SELECT action_id FROM assistant_telnyx_cost_polls p JOIN assistant_phone_actions a ON a.id=p.action_id WHERE a.binding_id=? AND p.status IN ('pending','running','held') LIMIT 1").bind(binding.id).first()) throw new Error("carrier_cost_reconciliation_required_before_release");
       if (await env.PLATFORM_DB.prepare("SELECT provider_message_id FROM assistant_managed_telnyx_message_costs WHERE binding_id=? AND status IN ('pending','running','held') LIMIT 1").bind(binding.id).first()) throw new Error("carrier_cost_reconciliation_required_before_release");
       if (await env.PLATFORM_DB.prepare("SELECT live_call_id FROM assistant_telnyx_live_calls WHERE binding_id=? AND state='ended' AND settled_credits IS NULL LIMIT 1").bind(binding.id).first()) throw new Error("carrier_call_reconciliation_required_before_release");
-      const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
-      if (!account) throw new Error("managed_telnyx_credentials_unavailable");
-      try { await new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account).releasePhoneNumber(binding.provider_number_sid!); }
-      catch (error) {
-        if (error instanceof PhoneProviderError && error.uncertain) await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='indeterminate',updated_at=datetime('now') WHERE id=? AND status='active'").bind(binding.id).run();
-        throw error;
-      }
-      const released = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='released',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND payer='managed' AND status IN ('active','billing_hold','indeterminate')")
-        .bind(binding.id, identity.id).run();
-      if (!released.meta.changes) throw new Error("managed_telnyx_release_receipt_unconfirmed");
-      return { released: true, carrier_number_released: true, current_month_rental_refundable: false };
+      await (await import("./telnyx-agentport.js")).revokeTelnyxAgentPortShare(env, scope, identity, binding.id);
+      return releaseManagedTelnyxNumber(env,identity,binding);
     }
+    await (await import("./telnyx-agentport.js")).revokeTelnyxAgentPortShare(env, scope, identity, binding.id);
     const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='active'")
       .bind(binding.id, identity.id).run();
     if (!updated.meta.changes) throw new Error("telnyx_binding_changed");
@@ -348,6 +692,8 @@ export async function handlePhoneAction(
   if (action === "phone-telnyx-cancel") {
     if (body.confirm !== true) throw new Error("phone_confirmation_required");
     if (!binding || binding.provider !== "telnyx" || binding.status !== "configuring") throw new Error("telnyx_staged_binding_required");
+    if (await env.PLATFORM_DB.prepare("SELECT id FROM assistant_telnyx_number_order_operations WHERE binding_id=? AND status IN ('submitting','uncertain','pending') LIMIT 1").bind(binding.id).first())
+      throw new Error("telnyx_number_order_reconciliation_required");
     const result = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='configuring'")
       .bind(binding.id, identity.id).run();
     if (!result.meta.changes) throw new Error("telnyx_staged_binding_changed");
@@ -365,6 +711,112 @@ export async function handlePhoneAction(
     return action === "phone-telnyx-configure"
       ? configureTelnyxAccount(env, scope, identity, body)
       : telnyxAccountStatus(env, identity);
+  }
+  if (["phone-telnyx-search", "phone-telnyx-quote", "phone-telnyx-order", "phone-telnyx-order-reconcile"].includes(action)) {
+    if (!manager || agent) throw new Error("human_control_required");
+    const { resolveTelnyxAccount } = await import("./telnyx-account.js");
+    const account = await resolveTelnyxAccount(env, identity);
+    if (!account) throw new Error("telnyx_account_not_configured");
+    const { TelnyxTelephony } = await import("../voice/telnyx-telephony.js");
+    const client = new TelnyxTelephony(account);
+    if (action === "phone-telnyx-search") {
+      const countryCode = String(body.country ?? "").toUpperCase();
+      const contains = typeof body.contains === "string" && body.contains ? body.contains : undefined;
+      const numberType = body.number_type === undefined || body.number_type === "" ? undefined : String(body.number_type);
+      if(numberType!==undefined&&!(["local","toll_free","mobile","national","shared_cost"] as string[]).includes(numberType))throw new Error("telnyx_number_type_invalid");
+      const numbers = await client.searchAvailablePhoneNumbers({ countryCode,
+        ...(contains ? { contains } : {}), ...(numberType ? { numberType: numberType as "local"|"toll_free"|"mobile"|"national"|"shared_cost" } : {}), limit: 20 });
+      return { numbers: numbers.map(row => ({ phone_number: row.phoneNumber, country_code: row.countryCode,
+        number_type: row.numberType, features: row.features, locality: row.locality, region: row.region,
+        upfront_cost_minor: row.upfrontCostMinor, monthly_cost_minor: row.monthlyCostMinor, currency: row.currency })), purchased: false };
+    }
+    if (action === "phone-telnyx-quote") {
+      if (binding && !["released", "detached"].includes(binding.status)) throw new Error("assistant_phone_already_bound");
+      const phoneNumber = String(body.phone_number ?? ""), countryCode = String(body.country ?? "").toUpperCase();
+      if (!isE164(phoneNumber) || !/^[A-Z]{2}$/.test(countryCode)) throw new Error("invalid_phone_number");
+      const result = await client.searchAvailablePhoneNumbers({ countryCode, startsWith: phoneNumber.replace(/\D/g, ""), limit: 20 });
+      const exact = result.find(row => row.phoneNumber === phoneNumber);
+      if (!exact) throw new Error("telnyx_phone_number_unavailable");
+      if (exact.currency !== "USD") throw new Error("telnyx_phone_currency_unsupported");
+      const id = crypto.randomUUID(), expires = new Date(Date.now() + 180000).toISOString();
+      await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_quotes(id,identity_id,payer,provider_account_sid,phone_number,country_code,monthly_cost_minor,inbound_rate_minor,quoted_by,expires_at,provider,upfront_cost_minor,currency) VALUES(?,?,'byo',?,?,?, ?,0,?,?, 'telnyx',?,'USD')")
+        .bind(id, identity.id, String(account.verifiedNumberId), phoneNumber, countryCode, exact.monthlyCostMinor, scope.userId, expires, exact.upfrontCostMinor).run();
+      return { quote_id: id, phone_number: phoneNumber, upfront_cost_minor: exact.upfrontCostMinor,
+        monthly_cost_minor: exact.monthlyCostMinor, currency: "USD", expires_at: expires,
+        billed_by: "Telnyx", taxes_included: false, other_usage_charges_apply: true };
+    }
+    if (action === "phone-telnyx-order") {
+      const quote = await env.PLATFORM_DB.prepare("SELECT id,phone_number,country_code,provider_account_sid,monthly_cost_minor,inbound_rate_minor,upfront_cost_minor,currency FROM assistant_phone_quotes WHERE id=? AND identity_id=? AND quoted_by=? AND provider='telnyx' AND status='quoted' AND expires_at>? LIMIT 1")
+        .bind(String(body.quote_id ?? ""), identity.id, scope.userId, new Date().toISOString())
+        .first<{ id: string; phone_number: string; country_code: string; provider_account_sid: string; monthly_cost_minor: number; inbound_rate_minor: number; upfront_cost_minor: number; currency: string }>();
+      if (!quote || quote.provider_account_sid !== String(account.verifiedNumberId)
+        || quote.currency !== "USD" || body.confirm_upfront_cost_minor !== quote.upfront_cost_minor
+        || body.confirm_monthly_cost_minor !== quote.monthly_cost_minor || body.confirm !== true)
+        throw new Error("phone_quote_expired_or_price_not_confirmed");
+      if (binding && !["released", "detached"].includes(binding.status)) throw new Error("assistant_phone_already_bound");
+      const current = await client.searchAvailablePhoneNumbers({ countryCode: quote.country_code,
+        startsWith: quote.phone_number.replace(/\D/g, ""), limit: 20 });
+      const exact = current.find(row => row.phoneNumber === quote.phone_number);
+      if (!exact || exact.currency !== quote.currency || exact.upfrontCostMinor !== quote.upfront_cost_minor
+        || exact.monthlyCostMinor !== quote.monthly_cost_minor) throw new Error("telnyx_phone_price_or_availability_changed");
+      const operationId = `tn_${crypto.randomUUID()}`;
+      const customerReference = `naelao_${operationId.replace(/-/g, "_")}`;
+      const bindingId = crypto.randomUUID();
+      const configured = await client.inspectPhoneNumber(account.verifiedNumberId);
+      const inserted = await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare("UPDATE assistant_phone_quotes SET status='processing' WHERE id=? AND identity_id=? AND provider='telnyx' AND status='quoted' AND expires_at>?").bind(quote.id, identity.id, new Date().toISOString()),
+        env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,country_code,capabilities_json,previous_callbacks_json,policy_json,monthly_cost_minor,status) SELECT ?,?,'assistant','byo','telnyx',?,NULL,?,?, '{}','{}',?,?,'configuring' WHERE EXISTS(SELECT 1 FROM assistant_phone_quotes WHERE id=? AND identity_id=? AND status='processing') AND NOT EXISTS(SELECT 1 FROM assistant_telnyx_number_order_operations WHERE quote_id=?)")
+          .bind(bindingId, identity.id, `identity:${identity.id}`, quote.phone_number, quote.country_code, JSON.stringify(defaultPhonePolicy), quote.monthly_cost_minor, quote.id, identity.id, quote.id),
+        env.PLATFORM_DB.prepare("INSERT INTO assistant_telnyx_number_order_operations(id,identity_id,quote_id,binding_id,provider_account_ref,customer_reference,phone_number,country_code,upfront_cost_minor,monthly_cost_minor,currency,status) SELECT ?,?,?,?,?,?,?,?,?,?,'USD','prepared' WHERE EXISTS(SELECT 1 FROM assistant_phone_bindings WHERE id=? AND identity_id=? AND status='configuring') AND EXISTS(SELECT 1 FROM assistant_phone_quotes WHERE id=? AND identity_id=? AND status='processing') AND NOT EXISTS(SELECT 1 FROM assistant_telnyx_number_order_operations WHERE quote_id=?)")
+          .bind(operationId, identity.id, quote.id, bindingId, String(account.verifiedNumberId), customerReference, quote.phone_number, quote.country_code, quote.upfront_cost_minor, quote.monthly_cost_minor, bindingId, identity.id, quote.id, identity.id, quote.id),
+      ]);
+      if (inserted[0]?.meta.changes !== 1 || inserted[1]?.meta.changes !== 1 || inserted[2]?.meta.changes !== 1) throw new Error("phone_quote_already_used");
+      const operation = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_telnyx_number_order_operations WHERE id=? AND identity_id=?")
+        .bind(operationId, identity.id).first<TelnyxNumberOrderOperation>();
+      if (!operation) throw new Error("telnyx_number_order_journal_unavailable");
+      await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='submitting',updated_at=datetime('now') WHERE id=? AND status='prepared'")
+        .bind(operationId).run();
+      try {
+        const order = await client.createNumberOrder({ phoneNumber: quote.phone_number, customerReference,
+          connectionId: configured.callControlId, messagingProfileId: configured.messagingProfileId });
+        const result = await reconcileTelnyxNumberOrder(env, identity, client, operation, order);
+        return { ...result, upfront_cost_minor: quote.upfront_cost_minor, monthly_cost_minor: quote.monthly_cost_minor, currency: quote.currency };
+      } catch (error) {
+        const code = error instanceof Error && /^[a-z0-9_:-]{1,100}$/.test(error.message) ? error.message : "telnyx_number_order_outcome_unknown";
+        const rejected = error instanceof PhoneProviderError && !error.uncertain;
+        const nextReconcileAt=new Date(Date.now()+5*60_000).toISOString();
+        await env.PLATFORM_DB.batch(rejected ? [
+          env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='failed',last_error=?,lease_until=NULL,next_reconcile_at=NULL,updated_at=datetime('now') WHERE id=? AND status IN ('submitting','pending')").bind(code, operationId),
+          env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND status IN ('configuring','indeterminate')").bind(bindingId),
+          env.PLATFORM_DB.prepare("UPDATE assistant_phone_quotes SET status='failed' WHERE id=? AND status='processing'").bind(quote.id),
+        ] : [
+          env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_number_order_operations SET status='uncertain',last_error=?,lease_until=NULL,next_reconcile_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('submitting','pending')").bind(code,nextReconcileAt,operationId),
+          env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='indeterminate',updated_at=datetime('now') WHERE id=? AND status='configuring'").bind(bindingId),
+        ]);
+        if (rejected) throw error;
+        throw new PhoneProviderError(true, "telnyx_number_order_reconciliation_required");
+      }
+    }
+    const operationId = String(body.operation_id ?? "");
+    const operation = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_telnyx_number_order_operations WHERE id=? AND identity_id=?")
+      .bind(operationId, identity.id).first<TelnyxNumberOrderOperation>();
+    if (!operation || operation.status === "failed") throw new Error("telnyx_number_order_not_found");
+    if (operation.provider_account_ref !== String(account.verifiedNumberId)) throw new Error("telnyx_account_changed_since_order");
+    let matches: Record<string, unknown>[] = [];
+    if (operation.provider_order_id && isTelnyxOrderId(operation.provider_order_id)) {
+      try {
+        const exact = await client.inspectNumberOrder(operation.provider_order_id);
+        if (exact.customer_reference === operation.customer_reference) matches = [exact];
+      } catch { /* Fall back to read-only reference search after a missing or unavailable receipt. */ }
+    }
+    if (!matches.length) {
+      const listed = await client.listNumberOrders(operation.customer_reference);
+      matches = listed.filter(row => row.customer_reference === operation.customer_reference);
+    }
+    if (matches.length !== 1) return { operation_id: operation.id, status: operation.status, reconciled: false,
+      reason: matches.length ? "duplicate_provider_orders_require_manual_review" : "provider_order_not_yet_visible_no_replay" };
+    const result = await reconcileTelnyxNumberOrder(env, identity, client, operation, matches[0]!);
+    return { ...result, reconciled: true };
   }
   if (body.binding_id !== undefined) {
     if (
@@ -539,6 +991,12 @@ export async function handlePhoneAction(
     !legacyBindingId && binding.provider_account_sid !== credentials.accountSid
   )
     throw new Error("phone_provider_account_changed");
+  if (action === "phone-twilio-cost") {
+    if (!manager || agent || body.confirm !== true || !binding || (binding.provider ?? "twilio") !== "twilio")
+      throw new Error("twilio_cost_owner_confirmation_required");
+    if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new Error("air_gap_egress_denied");
+    return (await import("./twilio-cost.js")).observeTwilioSmsCost(env, identity, binding, credentials, String(body.id ?? ""));
+  }
   if (action === "phone-search") {
     const country = String(body.country ?? "").toUpperCase(),
       areaCode = String(body.area_code ?? "");

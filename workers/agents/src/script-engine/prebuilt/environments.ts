@@ -59,6 +59,8 @@ export const environments: PrebuiltScript = {
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
     "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
     "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
+    "environment.sidecar_artifact_import": "installation_id, source_path, destination_path and expected_hash (required). Explicitly copy one bounded project/Space workspace artifact into an installed Cloudflare sidecar's private filesystem. Null expected_hash creates a new file; a SHA-256 expected_hash permits an observed revision. No mount, full hydration, or implicit writeback. Reuse request_id to reconcile uncertain outcomes.",
+    "environment.sidecar_artifact_export": "installation_id, source_path, destination_path and expected_hash (required). Export one sidecar file as an immutable artifact, then publish it to the project/Space workspace with a checked revision. A conflict preserves the sidecar file and artifact. Reuse request_id to reconcile uncertain outcomes.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
     "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. A host-classified worker runtime requirement is automatically included for managed execution and remains pinned by the session. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
@@ -73,6 +75,36 @@ export const environments: PrebuiltScript = {
       if (typeof args.path !== "string" || typeof args.digest !== "string" || args.expected_hash !== null && typeof args.expected_hash !== "string") throw new Error("environment_artifact_expected_revision_required");
       if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: args.path, access: "write" })) throw new Error("environment_artifact_write_denied");
       return restoreEnvironmentArtifact(ctx.env, args.digest, args.path, args.expected_hash);
+    },
+    "environment.sidecar_artifact_import": async (args, ctx) => {
+      const installationId = String(args.installation_id ?? ""), sourcePath = String(args.source_path ?? ""), destinationPath = String(args.destination_path ?? "");
+      const expectedHash = args.expected_hash;
+      if (!installationId || !sourcePath || !destinationPath || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))
+        throw new Error("environment_sidecar_artifact_scope_required");
+      if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: sourcePath, access: "read" })) throw new Error("environment_artifact_read_denied");
+      const transfer = ctx.env.transferContainerArtifact;
+      if (!transfer) throw new Error("environment_sidecar_transfer_unavailable");
+      const artifact = await publishEnvironmentArtifact(ctx.env, sourcePath);
+      const requestId = typeof args.request_id === "string" ? args.request_id
+        : await transferRequestId(ctx, "sidecar-import", installationId, destinationPath, artifact.digest);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
+      return transfer({ installationId, direction: "import", path: destinationPath, requestId, digest: artifact.digest, expectedHash });
+    },
+    "environment.sidecar_artifact_export": async (args, ctx) => {
+      const installationId = String(args.installation_id ?? ""), sourcePath = String(args.source_path ?? ""), destinationPath = String(args.destination_path ?? "");
+      const expectedHash = args.expected_hash;
+      if (!installationId || !sourcePath || !destinationPath || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))
+        throw new Error("environment_sidecar_artifact_scope_required");
+      if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: destinationPath, access: "write" })) throw new Error("environment_artifact_write_denied");
+      const transfer = ctx.env.transferContainerArtifact;
+      if (!transfer) throw new Error("environment_sidecar_transfer_unavailable");
+      const requestId = typeof args.request_id === "string" ? args.request_id
+        : await transferRequestId(ctx, "sidecar-export", installationId, sourcePath);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
+      const artifact = await transfer({ installationId, direction: "export", path: sourcePath, requestId });
+      if (artifact.status !== "complete") return artifact;
+      const publication = await restoreEnvironmentArtifact(ctx.env, artifact.digest, destinationPath, expectedHash);
+      return { ...publication, installation_id: installationId, source_path: sourcePath, request_id: artifact.request_id };
     },
     "environment.artifact_import": async (args, ctx) => {
       const machineId = String(args.machine_id ?? ""), path = String(args.path ?? "");

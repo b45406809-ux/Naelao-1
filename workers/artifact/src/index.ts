@@ -20,6 +20,7 @@ import {
 } from "@naelao/http";
 import { Hono, type Context } from "hono";
 import { applyDurableObjectJurisdiction } from "@naelao/security";
+import { inferWorkspaceContentType, resolveFileContentType } from "@naelao/types";
 export { RepositoryDO } from "./RepositoryDO.js";
 import { repositoryName, assertSegment } from "./repository.js";
 import {
@@ -233,7 +234,7 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
       type: string;
     };
     filename = fileBlob.name || `artifact-${artifactId}`;
-    mimeType = fileBlob.type || "application/octet-stream";
+    mimeType = resolveFileContentType(filename, fileBlob.type);
     fileBytes = new Uint8Array(await fileBlob.arrayBuffer());
   } else {
     let body: {
@@ -249,8 +250,9 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
     }
     if (!body.filename) throw badRequest("filename is required");
     filename = body.filename;
-    mimeType = body.content_type || "text/plain";
+    mimeType = resolveFileContentType(filename, body.content_type);
     if (typeof body.content === "string") {
+      if (mimeType === "application/octet-stream") mimeType = "text/plain; charset=utf-8";
       fileBytes = new TextEncoder().encode(body.content);
     } else if (body.data_base64) {
       const binaryStr = atob(body.data_base64);
@@ -314,7 +316,7 @@ app.get("/spaces/:spaceId/artifacts", async (c) => {
       content_type:
         o.customMetadata?.["content_type"] ??
         o.httpMetadata?.contentType ??
-        "application/octet-stream",
+        inferWorkspaceContentType(filename),
       size: o.size,
       uploaded: o.uploaded.toISOString(),
     });
@@ -340,7 +342,7 @@ app.get("/spaces/:spaceId/artifacts/:artifactId", async (c) => {
   const mimeType =
     object.customMetadata?.["content_type"] ??
     object.httpMetadata?.contentType ??
-    "application/octet-stream";
+    inferWorkspaceContentType(firstObject.key.slice(prefix.length));
   const filename = firstObject.key.slice(prefix.length);
   const encodedFilename = encodeURIComponent(filename).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 

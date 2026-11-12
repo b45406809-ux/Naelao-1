@@ -16,6 +16,22 @@ export interface BrowserStateStorage {
 }
 const SESSION_RECORD = "browser-session";
 
+export async function browserSessionId(scope: BrowserRuntimeScope): Promise<string> {
+  const owner = [scope.tenantId, scope.spaceId, scope.projectId ?? "", scope.actorId, scope.agentId, scope.runId, scope.sessionId];
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(owner))))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Persist only identifiers needed to reconstruct exact Durable Object owner keys. */
+export function browserErasureScope(scope: BrowserRuntimeScope): BrowserRuntimeScope {
+  return {
+    tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
+    actorId: scope.actorId, agentId: scope.agentId, runId: scope.runId, sessionId: scope.sessionId,
+    expiresAt: scope.expiresAt, authorizedOrigins: ["https://erasure.invalid"], authorizedActions: [],
+    ...(scope.connectionId ? { connectionId: scope.connectionId } : {}), maxTier: 4,
+  };
+}
+
 /** Persist the R2 cleanup intent before uploading so a DO restart cannot orphan an image. */
 export async function uploadScreenshotWithCleanupIntent(
   storage: BrowserStateStorage,

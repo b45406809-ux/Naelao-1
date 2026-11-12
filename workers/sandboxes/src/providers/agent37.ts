@@ -33,9 +33,22 @@ export interface Agent37Template {
   diskGiB: number;
 }
 
+export interface Agent37WorkspaceUsage {
+  from: string;
+  to: string;
+  totalMicros: number;
+  byIntegration: Array<{ kind: "compute" | "llm" | "brave" | "composio" | "perflo"; costMicros: number; awakeMinutes?: number }>;
+}
+
 /** Checked coordinator boundary. Implementations must call WorkspaceCoordinatorDO, never the
  * legacy per-file bridge. Provider files are only a temporary execution copy. */
 export interface Agent37WorkspaceHandoff {
+  readSelectedCommitted?(input: { tenantId: string; spaceId: string; projectId: string; branch: string; allocationGeneration: number;
+    paths: string[]; allowMissing?: boolean }): Promise<{
+      tenantId: string; spaceId: string; projectId: string; branch: string; sessionId: string; revision: number; fence: number;
+      allocationGeneration: number;
+      files: Array<{ path: string; sha256: string; executable: boolean; contentType?: string; bytes: Uint8Array }>;
+    }>;
   readCommitted(input: { tenantId: string; spaceId: string; projectId: string; branch: string; allocationGeneration: number }): Promise<{
     tenantId: string; spaceId: string; projectId: string; branch: string;
     sessionId: string; revision: number; fence: number; allocationGeneration: number;
@@ -107,6 +120,7 @@ export class Agent37Provider implements SandboxProvider {
       generation: computer.allocationGeneration,
       region: this.template.region,
       endpoint,
+      ...(typeof instance.image_digest === "string" ? { imageDigest: instance.image_digest } : {}),
     };
   }
 
@@ -114,11 +128,67 @@ export class Agent37Provider implements SandboxProvider {
   static forControlPlane(credentials: Agent37Credentials, fetcher: typeof fetch = fetch): Agent37Provider {
     return new Agent37Provider(credentials, null, fetcher);
   }
+  /** Checks only the control-plane API key. The instance execution key and runtime/template
+   * capabilities remain unverified until a separately admitted allocation passes acceptance. */
+  async verifyControlPlaneCredentials(): Promise<void> {
+    asObject(await this.control("/v1/instances?limit=1", { method: "GET" }));
+  }
+  /** Read the provider-account usage summary. This does not fund, mutate, or admit an instance. */
+  async readWorkspaceUsage(from: string, to: string): Promise<Agent37WorkspaceUsage> {
+    if (!validUsageDate(from) || !validUsageDate(to) || from > to || dayDistance(from, to) > 89)
+      throw new Error("agent37_usage_period_invalid");
+    const url = new URL("/v1/usage", API);
+    url.searchParams.set("from", from);
+    url.searchParams.set("to", to);
+    let response: Response;
+    try {
+      response = await this.fetcher(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
+        headers: { authorization: `Bearer ${this.credentials.apiKey}` } });
+    } catch { throw new Error("agent37_usage_unavailable"); }
+    if (!response.ok) throw new Error(`agent37_http_${response.status}`);
+    const result = asObject(await readJson(response));
+    if (result.from !== from || result.to !== to || !validProviderMicros(result.total_micros))
+      throw new Error("agent37_usage_response_invalid");
+    const integrations = result.by_integration;
+    if (!integrations || typeof integrations !== "object" || Array.isArray(integrations)) throw new Error("agent37_usage_response_invalid");
+    const byIntegration: Agent37WorkspaceUsage["byIntegration"] = [];
+    for (const kind of ["compute", "llm", "brave", "composio", "perflo"] as const) {
+      const entry = (integrations as Record<string, unknown>)[kind];
+      if (entry === undefined) continue;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("agent37_usage_response_invalid");
+      const costMicros = (entry as Record<string, unknown>).cost_micros;
+      if (!validProviderMicros(costMicros)) throw new Error("agent37_usage_response_invalid");
+      const awakeMinutes = (entry as Record<string, unknown>).awake_minutes;
+      if (kind === "compute" && awakeMinutes !== undefined && !validProviderMicros(awakeMinutes)) throw new Error("agent37_usage_response_invalid");
+      byIntegration.push({ kind, costMicros, ...(kind === "compute" && typeof awakeMinutes === "number" ? { awakeMinutes } : {}) });
+    }
+    return { from, to, totalMicros: result.total_micros, byIntegration };
+  }
+  /** Read-only check of the separate instance key against the Agent37 file plane. */
+  async verifyInstanceCredentials(allocation: ProviderAllocation): Promise<void> {
+    const response = await this.fileRequest(this.fileUrl(allocation, "/v1/files", {}), "GET");
+    if (!response.ok) throw new Error(`agent37_file_http_${response.status}`);
+    const result = asObject(await readJson(response));
+    if (!Array.isArray(result.entries) || typeof result.path !== "string") throw new Error("agent37_invalid_file_listing");
+  }
+  /** Read-only discovery for a journaled create. Never treats absence as permission to create again. */
+  async findInstanceByOperationId(operationId: string): Promise<Record<string, unknown> | null> {
+    if (!operationId || operationId.length > 200) throw new Error("agent37_invalid_operation_id");
+    const result = asObject(await this.control("/v1/instances", { method: "GET" }));
+    if (!Array.isArray(result.data) || result.data.length > 1000) throw new Error("agent37_incomplete_instance_listing");
+    const matches = result.data.filter((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const metadata = (value as Record<string, unknown>).metadata;
+      return !!metadata && typeof metadata === "object" && !Array.isArray(metadata) &&
+        (metadata as Record<string, unknown>).naelao_operation_id === operationId;
+    }) as Record<string, unknown>[];
+    if (matches.length > 1) throw new Error("agent37_duplicate_operation_metadata");
+    return matches[0] ?? null;
+  }
   async inspect(allocation: ProviderAllocation) {
     let result: Record<string, unknown>;
-    try {
-      result = asObject(await this.control(`/v1/instances/${encodeURIComponent(allocation.externalId)}`, { method: "GET" }));
-    } catch (error) {
+    try { result = await this.inspectDetails(allocation); }
+    catch (error) {
       if (error instanceof Error && error.message === "agent37_http_404") return { state: "deleted" as const, healthy: false };
       throw error;
     }
@@ -134,6 +204,10 @@ export class Agent37Provider implements SandboxProvider {
               : ("error" as const),
       healthy: state === "running",
     };
+  }
+  async inspectDetails(allocation: ProviderAllocation): Promise<Record<string, unknown>> {
+    if (!/^[a-z0-9]{10}$/.test(allocation.externalId)) throw new Error("agent37_invalid_instance_id");
+    return asObject(await this.control(`/v1/instances/${encodeURIComponent(allocation.externalId)}`, { method: "GET" }));
   }
   async start(allocation: ProviderAllocation) {
     await this.control(
@@ -566,6 +640,17 @@ function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("agent37_invalid_response");
   return value as Record<string, unknown>;
+}
+function validUsageDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+function dayDistance(from: string, to: string): number {
+  return (Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000;
+}
+function validProviderMicros(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 9_000_000_000_000;
 }
 function bounded(value: unknown) {
   const text = typeof value === "string" ? value : "";

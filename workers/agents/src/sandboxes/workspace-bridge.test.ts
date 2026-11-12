@@ -168,16 +168,18 @@ describe("sandbox workspace snapshot bridge", () => {
     const largeStage = await handleSandboxWorkspaceBridge(new Request("http://agents/internal/sandbox-workspaces/blobs", { method: "POST", headers: unifiedHeaders,
       body: JSON.stringify({ filesystemId: "fs-1", snapshotId: manifestSnapshotBody.snapshot.id, sha256: largeHash, contentBase64: btoa(largeBinary), contentType: "application/octet-stream" }) }), coordinatorEnv);
     expect(largeStage.status).toBe(200);
+    metadata.delete(`${legacyMainKey}:http`);
     const result = await handleSandboxWorkspaceBridge(new Request(path, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token },
       body: JSON.stringify({ filesystemId: "fs-1", computerId: "computer-1" }),
     }), env);
     expect(result.status).toBe(200);
-    const body = await result.json() as { snapshot: { id: string; entries: Array<{ path: string; sha256: string; blobId: string }> } };
+    const body = await result.json() as { snapshot: { id: string; entries: Array<{ path: string; sha256: string; blobId: string; contentType?: string }> } };
     expect(body.snapshot.entries.map((entry) => entry.path)).toEqual(["src/main.ts"]);
     expect(body.snapshot.entries[0].sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(body.snapshot.entries[0].blobId).toMatch(/^swb_/);
+    expect(body.snapshot.entries[0].contentType).toBe("text/plain; charset=utf-8");
 
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token };
     const changedBytes = new TextEncoder().encode("changed");

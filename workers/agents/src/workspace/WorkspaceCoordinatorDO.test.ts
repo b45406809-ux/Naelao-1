@@ -30,6 +30,7 @@ class Storage {
 
 function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unifiedEnabled?: boolean; runtimeControl?: "ok" | "flush_failure" | "activation_failure";
   candidateSelection?: { runtimeId: string; allocationGeneration: number };
+  authorityMissing?: string[];
   runtimeControlNamespace?: { idFromName(name: string): unknown; get(id: unknown): Fetcher } } = {}) {
   const storage = new Storage();
   const objects = new Map<string, Uint8Array>();
@@ -60,14 +61,19 @@ function setup(options: { liveEnabled?: boolean; liveVerifier?: boolean; unified
     async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key); },
   };
   const verifier = options.liveVerifier ?? options.liveEnabled ? { async fetch(request: Request) {
-    const body = await request.json() as { capabilityEvidence?: unknown };
+    const body = await request.json() as { preferredRuntimeId: string; preferredAllocationGeneration: number };
     if (!verificationState.authorized) return Response.json({ verified: false, missing: ["authorizationRevoked"] });
-    const evidence = body.capabilityEvidence && typeof body.capabilityEvidence === "object" ? body.capabilityEvidence as Record<string, unknown> : {};
+    if (options.authorityMissing?.length) return Response.json({ verified: false, missing: options.authorityMissing });
     const selection = options.candidateSelection;
+    const runtimeId = selection?.runtimeId ?? body.preferredRuntimeId;
+    const allocationGeneration = selection?.allocationGeneration ?? body.preferredAllocationGeneration;
     const complete = { authorized: true, residencyAllowed: true, liveMountReady: true, fuseReady: true, incrementalSyncReady: true,
       flushReady: true, reconnectGenerationCheck: true, authenticatedTransport: true, billingReserved: true, budgetReserved: true,
-      runtimeAccountingReady: true, ...evidence, ...(selection ? { ...selection, allocationId: `allocation-${selection.allocationGeneration}`,
-        billingReservationId: `billing-${selection.allocationGeneration}`, budgetReservationId: `budget-${selection.allocationGeneration}` } : {}) };
+      runtimeAccountingReady: true, runtimeId, runtimeType: "cloudflare-computer", templateId: "cloudflare-live",
+      templateDigest: `sha256:${"a".repeat(64)}`, region: "wnam", authorizationId: `owner:${runtimeId}`,
+      authorizationEpoch: allocationGeneration, residencyPolicyId: "residency-global",
+      allocationId: `allocation-${allocationGeneration}`, allocationGeneration,
+      billingReservationId: `billing-${allocationGeneration}`, budgetReservationId: `budget-${allocationGeneration}`, verifiedAt: Date.now() };
     return Response.json({ verified: true, evidence: complete,
       ...(selection ? { candidateSearchPerformed: true } : {}) });
   } } : undefined;
@@ -164,6 +170,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       idFromName() { return "project-control"; },
       get() { return runtimeControl as unknown as Fetcher; },
     } });
+    expect((await call(instance, "/v1/erase/admission", { scope, confirm: true })).status).toBe(200);
     const response = await call(instance, "/v1/erase", { scope, confirm: true });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ erased: true, runtimeControlTombstoneRecorded: true, providerRuntimeDeletion: "tracked_separately" });
@@ -559,7 +566,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     const changedReplay = await call(instance, "/v1/checkpoint", { sessionId: session.id, allocationGeneration: 1, fence: 0, baseRevision: 1, idempotencyKey: "checkpoint-1", changes: [{ path: "src/a.txt", expectedHash: firstHash, contentBase64: btoa("different") }] });
     expect(await changedReplay.json()).toMatchObject({ error_code: "idempotency_conflict" });
     const read = await call(instance, "/v1/read?branch=main");
-    expect(await read.json()).toMatchObject({ head: { revision: 2 }, entries: [{ path: "src/a.txt", size: 3 }] });
+    expect(await read.json()).toMatchObject({ head: { revision: 2 }, entries: [{ path: "src/a.txt", size: 3, contentType: "text/plain; charset=utf-8" }] });
     const revisionChanges = await call(instance, "/v1/changes?branch=main&afterRevision=1");
     expect(await revisionChanges.json()).toMatchObject({ cursor: 2, resetRequired: false, revisions: [{ revision: 2, changedPaths: ["src/a.txt"] }] });
     expect(await (await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "project-ui", revision: 2 })).json()).toMatchObject({ revision: 2 });
@@ -618,6 +625,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(await (await call(instance, `/v1/session-snapshot?${query}`)).json()).toMatchObject({ session: { baseRevision: 1, allocationGeneration: 9 }, entries: [{ path: "src/file.txt", sha256: hash }] });
     const content = await call(instance, `/v1/session-content?${query}&path=src%2Ffile.txt`);
     expect(content.status).toBe(200);
+    expect(content.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(content.headers.get("x-content-sha256")).toBe(hash);
     expect(new TextDecoder().decode(await content.arrayBuffer())).toBe("snapshot bytes");
     expect((await call(instance, `/v1/session-snapshot?sessionId=${session.id}&runtimeId=some-other-computer&allocationGeneration=9&fence=${session.fence}`)).status).toBe(403);
@@ -738,6 +746,47 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     }
     expect((await storage.list({ prefix: "revision:main:" })).size).toBe(500);
     expect(await (await call(instance, "/v1/changes?branch=main&afterRevision=0")).json()).toMatchObject({ head: { revision: 501 }, resetRequired: true, cursor: 0 });
+  });
+
+  it("retains staging artifacts according to owner policy and pauses cleanup under a legal hold", async () => {
+    const { instance, objects } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const configured = await call(instance, "/v1/retention/policy", { scope, actorId: "owner-a", stagingRetentionDays: 30,
+      legalHold: true, reason: "Preserve project staging artifacts for an active review." });
+    expect(configured.status).toBe(200);
+    expect(await configured.json()).toMatchObject({ policy: { stagingRetentionDays: 30, legalHold: { actorId: "owner-a" } } });
+    const retainedKey="workspace-v1/tenant/space/project/global/staging/ws_12345678-1234-1234-1234-123456789012/stage-a/file";
+    objects.set(retainedKey, new TextEncoder().encode("retained"));
+    const held = await call(instance, "/v1/gc/staging", { before: Date.now() - 365 * 24 * 60 * 60 * 1000 });
+    expect(await held.json()).toMatchObject({ skipped: true, reason: "legal_hold_active" });
+    expect(objects.has(retainedKey)).toBe(true);
+    await call(instance, "/v1/retention/policy", { scope, actorId: "owner-a", stagingRetentionDays: 30,
+      legalHold: false, reason: "Review concluded; apply the approved retention period." });
+    const tooShort = await call(instance, "/v1/gc/staging", { before: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+    expect(await tooShort.json()).toMatchObject({ error_code: "staging_retention_too_short" });
+    expect(objects.has(retainedKey)).toBe(true);
+  });
+
+  it("pauses canonical content collection under a legal hold and fences policy changes during collection", async () => {
+    const { instance, objects, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    await storage.put("content_gc_backfill_complete", true);
+    const heldContentKey = `workspace-v1/tenant/space/project/global/content/${"a".repeat(64)}`;
+    objects.set(heldContentKey, new TextEncoder().encode("held canonical bytes"));
+    const policyBody = { scope, actorId: "owner-a", stagingRetentionDays: 30, legalHold: true, reason: "Preserve canonical project history for review." };
+    await call(instance, "/v1/retention/policy", policyBody);
+
+    const held = await call(instance, "/v1/gc/content", {});
+    expect(await held.json()).toMatchObject({ skipped: true, reason: "legal_hold_active" });
+    expect(objects.has(heldContentKey)).toBe(true);
+
+    await call(instance, "/v1/retention/policy", { ...policyBody, legalHold: false, reason: "Review concluded; resume approved cleanup." });
+    expect((await call(instance, "/v1/gc/content", {})).status).toBe(200);
+    const changedDuringCollection = await call(instance, "/v1/retention/policy", policyBody);
+    expect(changedDuringCollection.status).toBe(423);
+    expect(await changedDuringCollection.json()).toMatchObject({ error_code: "workspace_gc_in_progress" });
+    for (let attempts = 0; attempts < 15 && storage.values.has("content_gc"); attempts++) await instance.alarm();
+    expect(storage.values.has("content_gc")).toBe(false);
   });
 
   it("marks all retained manifests before sweeping orphan content and blocks writes during collection", async () => {
@@ -886,6 +935,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(storage.values.has(`session:${session.id}`)).toBe(true);
     await call(instance, "/v1/subscriptions/ack", { branch: "main", subscriberId: "reader-subscription", revision: 1 });
     expect(storage.values.has("subscription:main:reader-subscription")).toBe(true);
+    expect((await call(instance, "/v1/erase/admission", { scope, confirm: true })).status).toBe(200);
     const erased = await call(instance, "/v1/erase", { scope, confirm: true });
     expect(await erased.json()).toMatchObject({ erased: true, scope, objectsDeleted: 2 });
     expect(objects.size).toBe(0);
@@ -894,6 +944,29 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     expect(storage.alarmAt).toBeNull();
     expect((await call(instance, "/v1/head?branch=main")).status).toBe(410);
     expect(await (await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] })).json()).toMatchObject({ error_code: "workspace_erased" });
+  });
+
+  it("does not admit project erasure while a legal hold is active and fences hold changes after admission", async () => {
+    const { instance, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const setRetentionPolicy = (legalHold: boolean) => call(instance, "/v1/retention/policy", {
+      scope, actorId: "owner", reason: legalHold ? "Preserve workspace for legal review." : "Legal review hold released by owner.",
+      stagingRetentionDays: 30, legalHold,
+    });
+    expect((await setRetentionPolicy(true)).status).toBe(200);
+    const held = await call(instance, "/v1/erase/admission", { scope, confirm: true });
+    expect(held.status).toBe(423);
+    expect(await held.json()).toMatchObject({ error_code: "legal_hold_active" });
+    expect(storage.values.has("erased")).toBe(false);
+    expect(storage.values.has("workspace_erasure_admission")).toBe(false);
+
+    expect((await setRetentionPolicy(false)).status).toBe(200);
+    expect((await call(instance, "/v1/erase/admission", { scope, confirm: true })).status).toBe(200);
+    const reenabled = await setRetentionPolicy(true);
+    expect(reenabled.status).toBe(423);
+    expect(await reenabled.json()).toMatchObject({ error_code: "workspace_erasure_in_progress" });
+    expect((await call(instance, "/v1/erase", { scope, confirm: true })).status).toBe(200);
+    expect(storage.values.has("erased")).toBe(true);
   });
 
   it("exposes bounded operator session inventory and generation-fenced revocation", async () => {
@@ -933,6 +1006,7 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
       changes: [{ path: "late.txt", expectedHash: null, contentBase64: btoa("late upload") }],
     });
     await uploadEntered;
+    expect((await call(instance, "/v1/erase/admission", { scope, confirm: true })).status).toBe(200);
     expect((await call(instance, "/v1/erase", { scope, confirm: true })).status).toBe(200);
     releaseUpload();
     expect((await checkpoint).status).toBe(410);
@@ -962,10 +1036,10 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
   });
 
   it("rejects live mode without the exact runtime, authorization, residency, transport, and accounting evidence and never downgrades", async () => {
-    const { instance } = setup({ liveEnabled: true });
+    const { instance } = setup({ liveEnabled: true, authorityMissing: ["fuseReady", "billingReserved", "authorizationEpoch"] });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
     const response = await call(instance, "/v1/open", { scope, branch: "main", actorId: "user", runtimeId: "runtime", allocationGeneration: 2,
-      mode: "live_single_writer", capabilityEvidence: liveEvidence(2, { fuseReady: false, billingReserved: false, authorizationEpoch: undefined }) });
+      mode: "live_single_writer", capabilityEvidence: liveEvidence(2) });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "capability_unavailable", mode: "live_single_writer", missing: expect.arrayContaining(["fuseReady", "billingReserved", "authorizationEpoch"]) });
     expect(await (await call(instance, "/v1/head?branch=main")).json()).toMatchObject({ head: { revision: 1 } });

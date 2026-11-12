@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createDOStorage } from "./helpers/sqlite-do-shim";
+
+const migration = (name: string) => readFileSync(join(__dirname, "../../infra/migrations", name), "utf8");
+
+describe("durable Agent37 sandbox lifecycle migration", () => {
+  it("adds scoped connection, operation, template evidence, execution envelope, and artifact receipt fields", () => {
+    const db = createDOStorage();
+    db.sql.exec(migration("0172_assistant_agentmail_accounts.sql"));
+    db.sql.exec(migration("0173_sandboxes_platform.sql"));
+    db.sql.exec(migration("0179_managed_services_control_plane.sql"));
+    db.sql.exec(migration("0181_managed_service_ownership_and_audit.sql"));
+    db.sql.exec(migration("0184_sandbox_connection_verification.sql"));
+    db.sql.exec(migration("0185_sandbox_agent37_lifecycle.sql"));
+    db.sql.exec(migration("0186_workspace_live_runtime_authority.sql"));
+    db.sql.exec(migration("0187_workspace_runtime_erasure_registry.sql"));
+    db.sql.exec(migration("0189_project_main_runtime_registry.sql"));
+    db.sql.exec(migration("0197_project_main_runtime_allocation_tokens.sql"));
+    db.sql.exec(migration("0191_sandbox_provider_cost_receipts.sql"));
+    db.sql.exec(migration("0199_sidecar_runtime_execution_profiles.sql"));
+    db.sql.exec(migration("0204_workspace_browser_profile_erasure_registry.sql"));
+    db.sql.exec(migration("0205_workspace_browser_session_erasure_registry.sql"));
+    db.sql.exec(migration("0206_workspace_runtime_snapshot_retention.sql"));
+    db.sql.exec(migration("0207_managed_service_provider_cost_observations.sql"));
+    db.sql.exec(migration("0192_managed_service_provider_cost_receipts.sql"));
+    db.sql.exec(migration("0211_managed_service_cost_budgets.sql"));
+    db.sql.exec(migration("0212_userport_agentport_connector_sync.sql"));
+    db.sql.exec(migration("0213_sandbox_agentport_computer_shares.sql"));
+    db.sql.exec(migration("0214_agent37_provider_usage_snapshots.sql"));
+    db.sql.exec(migration("0215_agentmail_usage_snapshots.sql"));
+    db.sql.exec(migration("0216_agentmail_connection_region.sql"));
+    const columns = (table: string) => db.sql.exec<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`).toArray().map((row) => row.name);
+    expect(columns("sandbox_computers")).toContain("connection_id");
+    expect(columns("sandbox_computers")).toContain("active_operation_id");
+    expect(columns("sandbox_operations")).toContain("lease_until");
+    expect(columns("sandbox_connections")).toContain("execution_key_check_status");
+    expect(columns("sandbox_template_versions")).toContain("evidence_json");
+    expect(columns("sandbox_executions")).toContain("request_ciphertext");
+    expect(columns("sandbox_executions")).toContain("result_ciphertext");
+    expect(columns("sandbox_artifact_transfers")).toContain("allocation_generation");
+    expect(columns("sandbox_artifact_transfers")).toContain("agentport_agent_id");
+    expect(columns("sandbox_executions")).toContain("agentport_agent_id");
+    expect(columns("sandbox_operations")).toContain("agentport_agent_id");
+    expect(columns("sandbox_agentport_shares")).toContain("capabilities_json");
+    expect(columns("sandbox_agentport_operations")).toContain("request_sha256");
+    expect(columns("workspace_live_runtime_observations")).toContain("capability_observations_json");
+    expect(columns("workspace_live_runtime_observation_audit")).toContain("evidence_sha256");
+    expect(columns("workspace_runtime_registry")).toContain("object_name");
+    expect(columns("workspace_runtime_registry")).toContain("erasure_notified_at");
+    expect(columns("project_main_runtime_registry")).toContain("allocation_generation");
+    expect(columns("project_main_runtime_registry")).toContain("fencing_token");
+    expect(columns("project_main_runtime_registry")).toContain("allocation_token");
+    expect(columns("sandbox_provider_cost_receipts")).toContain("evidence_sha256");
+    expect(columns("sandbox_agent37_usage_snapshots")).toContain("connection_ref_sha256");
+    expect(columns("sandbox_agent37_usage_snapshots")).toContain("source_api");
+    expect(columns("managed_service_agentmail_usage_snapshots")).toContain("connection_ref_sha256");
+    expect(columns("managed_service_agentmail_usage_snapshots")).toContain("message_count");
+    expect(columns("managed_service_agentmail_usage_snapshots")).toContain("source_api");
+    expect(columns("assistant_agentmail_accounts")).toContain("provider_region");
+    expect(columns("managed_service_provider_cost_observations")).toContain("evidence_sha256");
+    expect(columns("managed_service_cost_budgets")).toContain("limit_provider_cost_micros");
+    expect(columns("agentport_userport_connector_bindings")).toContain("provider_connection_sha256");
+    expect(columns("agentport_userport_connector_bindings")).toContain("tool_actions_json");
+    expect(columns("sidecar_runtime_execution_profiles")).toContain("max_execution_seconds");
+    expect(columns("sidecar_runtime_execution_profile_audit")).toContain("previous_max_execution_seconds");
+    expect(() => db.sql.exec(`INSERT INTO sandbox_artifact_transfers
+      (id,tenant_id,owner_id,computer_id,allocation_id,allocation_generation,direction,idempotency_key,payload_hash,status,request_json,created_at,updated_at)
+      VALUES ('x','t','u','missing-computer','missing-allocation',1,'import','k','${"a".repeat(64)}','running','{}','now','now')`)).toThrow();
+  });
+});

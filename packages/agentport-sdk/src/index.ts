@@ -7,6 +7,50 @@ export interface AgentPortOAuthToken { access_token: string; token_type: "Bearer
 export interface AgentPortEmailAccount { id: string; address: string; agentId: string; status: string; permissions?: string[]; }
 export interface AgentPortChannel { id: string; provider: string; address?: string; }
 export interface AgentPortEmailSend { id: string; status: "sending" | "sent" | "indeterminate"; providerMessageId?: string | null; }
+/** Opaque external consumer/session references. AgentPort stores and returns them without routing message content. */
+export interface AgentPortThreadSessionBinding {
+  version: 1;
+  consumerId: string;
+  sessionRef: string;
+  conversationRef?: string;
+}
+/** Metadata-only provider event wake. The session binding is present only when its consumerId
+ * matches the subscription's consumer group; content remains with the provider. */
+export interface AgentPortEventNotification {
+  id: string;
+  deliveryId: string;
+  subscriptionId: string;
+  agentId: string;
+  serviceId: string;
+  accountId: string | null;
+  type: string;
+  threadRef: string | null;
+  dataRef: string | null;
+  sessionBinding?: AgentPortThreadSessionBinding;
+}
+export interface AgentPortEventReference {
+  id: string;
+  service_id: string;
+  account_id: string | null;
+  event_type: string;
+  thread_ref: string | null;
+  delivery_id: string;
+  attempts: number;
+  dataRef: string | null;
+  sessionBinding?: AgentPortThreadSessionBinding;
+}
+export interface AgentPortClaimedEvent extends AgentPortEventReference { claim_expires_at: string; }
+export interface AgentPortEventConsumeOptions {
+  agentId: string;
+  consumerId: string;
+  /** Maximum pending events to claim in this sequential batch (1–25). */
+  limit?: number;
+  /** Lease duration in seconds; the server applies its own bound. */
+  ttlSeconds?: number;
+  /** Resolve only after this consumer has durably accepted the event. Throw or return retry to retry it. */
+  handle: (event: AgentPortClaimedEvent) => Promise<void | "delivered" | "retry" | "dead_letter">;
+}
+export interface AgentPortEventConsumeResult { polled: number; claimed: number; delivered: number; retried: number; deadLettered: number; skipped: number; }
 export interface AgentPortPKCEChallenge { codeVerifier: string; codeChallenge: string; state: string; }
 export interface ServiceManifest {
   id: string; name: string; type: ServiceType; endpoint?: string; accountModels: AccountModel[];
@@ -199,7 +243,7 @@ export class AgentPortClient {
   revokeEmailAccount(accountId: string) { return this.request<{ revoked: boolean; contentStored?: false }>(`/email/accounts/${encodeURIComponent(accountId)}/revoke`, { method: "POST", body: "{}" }); }
   createChannel(input: { serviceId: string; accountId: string; agentId: string; providerChannelId: string; displayName: string; trustPolicy?: Record<string, unknown> }) { return this.request<{ channel: { id: string; status: string; trustPolicy: Record<string, unknown> } }>("/channels", { method: "POST", body: JSON.stringify(input) }); }
   listChannels(agentId?: string) { return this.request<{ channels: unknown[] }>(`/channels${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`); }
-  createThread(channelId: string, input: { providerThreadId: string; participants?: string[]; metadata?: Record<string, unknown>; sessionBinding?: Record<string, unknown> }) { return this.request<{ thread: { id: string; channelId: string; sessionBinding: Record<string, unknown> | null } }>(`/channels/${encodeURIComponent(channelId)}/threads`, { method: "POST", body: JSON.stringify(input) }); }
+  createThread(channelId: string, input: { providerThreadId: string; participants?: string[]; metadata?: Record<string, unknown>; sessionBinding?: AgentPortThreadSessionBinding | null }) { return this.request<{ thread: { id: string; channelId: string; sessionBinding: AgentPortThreadSessionBinding | null } }>(`/channels/${encodeURIComponent(channelId)}/threads`, { method: "POST", body: JSON.stringify(input) }); }
   listThreads(channelId: string, agentId?: string) { return this.request<{ threads: unknown[] }>(`/channels/${encodeURIComponent(channelId)}/threads${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`); }
   listMessageReferences(threadId: string, agentId: string) { return this.request<{ messageReferences: Array<{ providerMessageId: string | null; direction: string; senderId: string | null; senderRole: string; trustLevel: string; status: string; occurredAt: string }>; contentLocation: "channel_provider" }>(`/threads/${encodeURIComponent(threadId)}/message-references?agentId=${encodeURIComponent(agentId)}`); }
   authorizeChannelAction(threadId: string, input: { agentId: string; action: "messages.read" | "messages.send"; resourceRef?: string; idempotencyKey: string }) { return this.request<{ decision: "allow" | "deny"; authorizationId: string; serviceId: string; providerChannelId: string; providerThreadId: string; providerMessageId?: string; contentLocation: "channel_provider" }>(`/threads/${encodeURIComponent(threadId)}/actions/authorize`, { method: "POST", body: JSON.stringify(input) }); }
@@ -207,9 +251,38 @@ export class AgentPortClient {
   subscribe(input: { agentId: string; serviceId: string; accountId?: string; eventType: string; deliveryMode: "webhook" | "poll" | "mcp"; consumerGroup?: string; routing?: { webhookUrl: string } }) { return this.request<{ subscription: { id: string }; webhookSecret?: string }>("/events/subscriptions", { method: "POST", body: JSON.stringify(input) }); }
   getSubscription(subscriptionId: string) { return this.request<{ subscription: Record<string, unknown>; webhookSecret?: string }>(`/events/subscriptions/${encodeURIComponent(subscriptionId)}`); }
   unsubscribe(subscriptionId: string) { return this.request<{ revoked: boolean }>(`/events/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" }); }
-  pendingEvents(agentId: string) { return this.request<{ events: unknown[] }>(`/events/pending?agentId=${encodeURIComponent(agentId)}`); }
-  claimEvent(eventId: string, input: { agentId: string; consumerId: string; deliveryId?: string; ttlSeconds?: number }) { return this.request<{ claimed: boolean; event: unknown }>(`/events/${encodeURIComponent(eventId)}/claim`, { method: "POST", body: JSON.stringify(input) }); }
+  pendingEvents(agentId: string) { return this.request<{ events: Array<AgentPortEventReference & { available_at: string; notification_status: string | null; notification_attempts: number | null }> }>(`/events/pending?agentId=${encodeURIComponent(agentId)}`); }
+  claimEvent(eventId: string, input: { agentId: string; consumerId: string; deliveryId?: string; ttlSeconds?: number }) { return this.request<{ claimed: boolean; event: AgentPortClaimedEvent }>(`/events/${encodeURIComponent(eventId)}/claim`, { method: "POST", body: JSON.stringify(input) }); }
   acknowledgeEvent(eventId: string, input: { agentId: string; consumerId: string; deliveryId?: string; result: "delivered" | "retry" | "dead_letter" }) { return this.request<{ acknowledged: boolean; status: string }>(`/events/${encodeURIComponent(eventId)}/ack`, { method: "POST", body: JSON.stringify(input) }); }
+  /** Sequential at-least-once consumer helper. The callback owns provider fetch and must resolve
+   * only after durable acceptance; failed or explicitly retried work is acknowledged as retry. */
+  async consumePendingEvents(input: AgentPortEventConsumeOptions): Promise<AgentPortEventConsumeResult> {
+    if (!input.agentId || input.agentId.length > 160 || !input.consumerId || input.consumerId.length > 200
+      || typeof input.handle !== "function") throw new Error("invalid_event_consumer");
+    const limit = input.limit ?? 10;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 25) throw new Error("invalid_event_consumer_limit");
+    const pending = await this.pendingEvents(input.agentId);
+    const result: AgentPortEventConsumeResult = { polled: Math.min(pending.events.length, limit), claimed: 0, delivered: 0, retried: 0, deadLettered: 0, skipped: 0 };
+    for (const candidate of pending.events.slice(0, limit)) {
+      const claim = await this.claimEvent(candidate.id, { agentId: input.agentId, consumerId: input.consumerId,
+        deliveryId: candidate.delivery_id, ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds }) });
+      if (!claim.claimed) { result.skipped++; continue; }
+      result.claimed++;
+      let acknowledgement: "delivered" | "retry" | "dead_letter" = "delivered";
+      try {
+        const disposition = await input.handle(claim.event);
+        if (disposition !== undefined && !["delivered", "retry", "dead_letter"].includes(disposition)) throw new Error("invalid_event_consumer_disposition");
+        acknowledgement = disposition ?? "delivered";
+      } catch { acknowledgement = "retry"; }
+      const ack = await this.acknowledgeEvent(candidate.id, { agentId: input.agentId, consumerId: input.consumerId,
+        deliveryId: candidate.delivery_id, result: acknowledgement });
+      if (!ack.acknowledged) throw new Error("event_acknowledgement_unconfirmed");
+      if (ack.status === "delivered") result.delivered++;
+      else if (ack.status === "dead_letter") result.deadLettered++;
+      else result.retried++;
+    }
+    return result;
+  }
   acquireActivity(input: { agentId: string; subscriptionId: string; consumerId: string; ttlSeconds?: number }) { return this.request<{ lease: { id: string; expiresAt: string } }>("/activity/leases", { method: "POST", body: JSON.stringify(input) }); }
   renewActivity(leaseId: string, input: { agentId: string; ttlSeconds?: number }) { return this.request<{ renewed: boolean; expiresAt: string }>(`/activity/leases/${encodeURIComponent(leaseId)}/renew`, { method: "POST", body: JSON.stringify(input) }); }
   releaseActivity(leaseId: string) { return this.request<{ released: boolean }>(`/activity/leases/${encodeURIComponent(leaseId)}`, { method: "DELETE" }); }

@@ -264,7 +264,7 @@ async function runContainer(
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
-        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), installationId: params.installationId,
+        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), installationId: params.installationId, containerId: installation.contract.id,
         ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
         ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
         ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
@@ -334,7 +334,12 @@ async function runContainerRequest(
     actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
   validateContainerScope(scope);
   const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
-  const headers = { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope), ...(token ? { "x-naelao-internal-token": token } : {}) };
+  const runtimeObjectName = scope.installationId
+    ? sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)
+    : sandboxInstanceName(scope.spaceId, scope.projectId, scope.workspaceBranch);
+  const headers = { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
+    ...(scope.projectId && !localTunnel ? { "x-naelao-runtime-object-name": runtimeObjectName } : {}),
+    ...(token ? { "x-naelao-internal-token": token } : {}) };
   const cancel = () => {
     controller.abort();
     const cancelledScope = { ...scope, timeoutMs: 5000, deadline: Date.now() + 5000 };

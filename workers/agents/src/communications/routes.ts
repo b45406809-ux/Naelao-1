@@ -7,7 +7,14 @@ import {
   readBoundedResponseJson,
 } from "@naelao/http";
 import { hashEmailAddress } from "../channels/cloudflare-email.js";
-import { connectUserAgentMail, callAgentMailTool, getAssistantAgentMailStatus, provisionManagedAgentMail, receiveAgentMailWebhook, receiveAgentPortNotification } from "./agentmail.js";
+import { connectUserAgentMail, callAgentMailTool, getAssistantAgentMailStatus, getAgentPortSyncIdentity, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, syncAgentPortAgentMail } from "./agentmail.js";
+import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
+import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
+import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
+import { runManagedModelOperation } from "./managed-models.js";
+import { discoverUserPortAgentPortConnector, revokeUserPortAgentPortConnector, revokeUserPortAgentPortOwnerLink, syncUserPortAgentPortConnector } from "./userport-agentport-sync.js";
+import { authorizeHiggsfieldAgentOperation, revokeHiggsfieldAgentPortShare, shareHiggsfieldWithAgentPort } from "./higgsfield-agentport.js";
+import { cancelHiggsfieldRequest, connectHiggsfieldAccount, createHiggsfieldEstimate, deleteHiggsfieldRequest, listHiggsfieldRequests, refreshHiggsfieldRequest, revokeHiggsfieldAccount, submitHiggsfieldGeneration } from "./higgsfield.js";
 import {
   channelPreferences,
   assistantEmailProvisioning,
@@ -23,6 +30,16 @@ import {
 } from "./core.js";
 type C = Context<{ Bindings: AgentsEnv }>;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+function constantTimeSecretEqual(expected:string|undefined,provided:string){
+  if(!expected||expected.length!==provided.length)return false;
+  let difference=0;for(let i=0;i<expected.length;i++)difference|=expected.charCodeAt(i)^provided.charCodeAt(i);
+  return difference===0;
+}
+function capabilityAdminError(error:unknown):{code:string;status:400|404|409}{
+  const code=error instanceof Error?error.message:"managed_service_capability_request_failed";
+  const status=code.endsWith("_not_found")?404:code.includes("conflict")||code.includes("disabled_create_new_version")?409:400;
+  return {code,status};
+}
 export async function manageIdentity(
   env: AgentsEnv,
   scope: CommunicationScope,
@@ -193,6 +210,8 @@ async function handle(c: C, agent: boolean) {
       "verification-status",
       "verification-begin",
       "verification-cancel",
+      "higgsfield-estimate",
+      "higgsfield-submit",
     ].includes(action)
   )
     return c.json({ error_code: "human_control_required" }, 403);
@@ -211,30 +230,238 @@ async function handle(c: C, agent: boolean) {
     }
   }
   const preferences = await channelPreferences(c.env, scope);
+  if(action==="managed-service-dashboard"){
+    if(c.req.method!=="GET")return c.json({error_code:"method_not_allowed"},405);
+    if(scope.projectId){
+      let identity:CommunicationIdentity;
+      try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+      if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    }else{
+      const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
+        .bind(scope.spaceId,scope.userId).first<{role:string}>();
+      const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
+      if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
+    }
+    try{return c.json(await getManagedServiceDashboard(c.env,scope));}
+    catch{return c.json({error_code:"managed_service_dashboard_unavailable"},503);}
+  }
+  if(action==="managed-service-cost-budget"){
+    if(c.req.method!=="POST"||Object.keys(body).some(key=>!["action","provider","service_id","provenance","currency","limit_provider_cost_micros"].includes(key))
+      ||typeof body.provider!=="string"||typeof body.service_id!=="string"
+      ||(body.provenance!=="operator_imported"&&body.provenance!=="provider_api_observed")
+      ||typeof body.currency!=="string"
+      ||(body.limit_provider_cost_micros!==null&&(!Number.isSafeInteger(body.limit_provider_cost_micros)||Number(body.limit_provider_cost_micros)<=0)))
+      return c.json({error_code:"invalid_managed_service_cost_budget"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(scope.projectId){
+      if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    }else{
+      const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
+        .bind(scope.spaceId,scope.userId).first<{role:string}>();
+      const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
+      if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
+    }
+    try{return c.json(await setManagedServiceCostBudget(c.env,scope,{provider:body.provider,serviceId:body.service_id,
+      provenance:body.provenance,currency:body.currency,limitProviderCostMicros:body.limit_provider_cost_micros as number|null}));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_cost_budget_failed";
+      return c.json({error_code:code},code.includes("conflict")?409:400);}
+  }
+  if(action==="managed-service-cost-alert-ack"){
+    if(c.req.method!=="POST"||Object.keys(body).some(key=>!["action","alert_id"].includes(key))||typeof body.alert_id!=="string")
+      return c.json({error_code:"invalid_managed_service_cost_alert_ack"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(scope.projectId){
+      if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    }else{
+      const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
+        .bind(scope.spaceId,scope.userId).first<{role:string}>();
+      const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
+      if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
+    }
+    try{return c.json(await acknowledgeManagedServiceCostBudgetAlert(c.env,scope,body.alert_id));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_cost_alert_ack_failed";
+      return c.json({error_code:code},code.includes("not_found")?404:400);}
+  }
+  if(action==="managed-model-run"){
+    if(c.req.method!=="POST"||body.confirmed!==true||typeof body.model_id!=="string"
+      ||typeof body.prompt!=="string"||typeof body.idempotency_key!=="string")return c.json({error_code:"managed_model_confirmation_required"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(scope.projectId){
+      if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    }else{
+      const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL")
+        .bind(scope.spaceId,scope.userId).first<{role:string}>();
+      const effectiveRole=scope.role==="product_end_user"?membership?.role:scope.role;
+      if(!["owner","admin"].includes(effectiveRole??""))return c.json({error_code:"owner_authorization_required"},403);
+    }
+    try{return c.json(await runManagedModelOperation(c.env,scope,{modelId:body.model_id,prompt:body.prompt,idempotencyKey:body.idempotency_key}));}
+    catch(error){
+      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_model_operation_failed";
+      const status=code.includes("not_entitled")?403:code.includes("not_found")?404:code.includes("conflict")||code.includes("expired")?409
+        :code.includes("quota")||code.includes("limit")?402:code.includes("unavailable")?503:400;
+      return c.json({error_code:code},status);
+    }
+  }
+  if(action==="agentport-owner-unlink"){
+    if(c.req.method!=="POST"||typeof body.owner_link_id!=="string"||!ID.test(body.owner_link_id))return c.json({error_code:"invalid_owner_link"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{return c.json(await revokeAgentPortOwnerLink(c.env,scope,body.owner_link_id));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_owner_link_revoke_failed";return c.json({error_code:code},code.includes("not_found")?404:code.includes("conflict")?409:502);}
+  }
+  if(action==="agentport-event-route-set"){
+    if(c.req.method!=="POST"||typeof body.connection_id!=="string"||typeof body.assistant_id!=="string"
+      ||(body.wake_enabled!==undefined&&typeof body.wake_enabled!=="boolean"))return c.json({error_code:"invalid_agentport_assistant_route"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{return c.json(await setAgentPortEventAssistant(c.env,scope,body.connection_id,body.assistant_id,body.wake_enabled!==false));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentport_assistant_route_failed";
+      return c.json({error_code:code},code.includes("not_provisioned")?404:code.includes("conflict")?409:code.includes("unavailable")?409:400);}
+  }
+  if(action==="userport-agentport-owner-unlink"){
+    if(c.req.method!=="POST"||typeof body.owner_link_id!=="string"||!ID.test(body.owner_link_id)||scope.projectId)
+      return c.json({error_code:"invalid_userport_agentport_owner_link"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{return c.json(await revokeUserPortAgentPortOwnerLink(c.env,scope,body.owner_link_id));}
+    catch(error){const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,120}$/.test(error.message)?error.message:"userport_agentport_owner_unlink_failed";
+      return c.json({error_code:code},code.includes("not_found")?404:code.includes("unavailable")?503:code.includes("pending")?409:400);}
+  }
+  if(action.startsWith("userport-agentport-")){
+    if(c.req.method!=="POST"||typeof body.alias_id!=="string"||!ID.test(body.alias_id))return c.json({error_code:"invalid_userport_agentport_connector"},400);
+    let identity:CommunicationIdentity;
+    try{identity=await ensureIdentity(c.env,scope);}catch{return c.json({error_code:"identity_unavailable"},409);}
+    if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+    try{
+      if(action==="userport-agentport-discover")return c.json(await discoverUserPortAgentPortConnector(c.env,scope,body.alias_id));
+      if(action==="userport-agentport-sync")return c.json(await syncUserPortAgentPortConnector(c.env,scope,body.alias_id,body.tool_names));
+      if(action==="userport-agentport-revoke")return c.json(await revokeUserPortAgentPortConnector(c.env,scope,body.alias_id));
+      return c.json({error_code:"unknown_userport_agentport_action"},400);
+    }catch(error){
+      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,120}$/.test(error.message)?error.message:"userport_agentport_connector_failed";
+      const status=code.includes("not_found")?404:code.includes("stale")||code.includes("conflict")||code.includes("pending")?409:code.includes("unavailable")?503:400;
+      return c.json({error_code:code},status);
+    }
+  }
   if(action.startsWith("agentmail-")) {
+    if(action==="agentmail-agentport-sync"){
+      if(c.req.method!=="POST"||typeof body.connection_id!=="string"||!ID.test(body.connection_id)
+        ||typeof body.request_id!=="string"||!ID.test(body.request_id))return c.json({error_code:"invalid_agentport_sync_request"},400);
+      try{
+        const identity=await getAgentPortSyncIdentity(c.env,scope,body.connection_id);
+        if(!identity)return c.json({error_code:"agentport_sync_account_not_found"},404);
+        if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
+        return c.json(await syncAgentPortAgentMail(c.env,scope,body.connection_id,body.request_id));
+      }catch(error){
+        const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentport_sync_failed";
+        return c.json({error_code:code},code.includes("not_found")?404:code.includes("conflict")?409:code.includes("invalid")?400:502);
+      }
+    }
     let connectedIdentity:CommunicationIdentity;
     try {
       if(action==="agentmail-status")return c.json(await getAssistantAgentMailStatus(c.env,scope));
       connectedIdentity=await ensureIdentity(c.env,scope);
       if(!(await manageIdentity(c.env,scope,connectedIdentity)))return c.json({error_code:"owner_authorization_required"},403);
       if(action==="agentmail-connect") {
-        if(c.req.method!=="POST"||typeof body.inbox_id!=="string"||typeof body.api_key!=="string")return c.json({error_code:"invalid_agentmail_connection"},400);
-        const connection=await connectUserAgentMail(c.env,scope,connectedIdentity,{inboxId:body.inbox_id,apiKey:body.api_key});
+        if(c.req.method!=="POST"||typeof body.inbox_id!=="string"||typeof body.api_key!=="string"
+          ||body.region!==undefined&&body.region!=="us"&&body.region!=="eu")return c.json({error_code:"invalid_agentmail_connection"},400);
+        const connection=await connectUserAgentMail(c.env,scope,connectedIdentity,{inboxId:body.inbox_id,apiKey:body.api_key,
+          region:typeof body.region==="string"?body.region:"us"});
         return c.json({connection},201);
       }
       if(action==="agentmail-provision"){
         const result=await provisionManagedAgentMail(c.env,scope,connectedIdentity,typeof body.display_name==="string"?body.display_name:undefined);
         return c.json({connection:result},result.pending?202:201);
       }
+      if(action==="agentmail-stop-renewal"){
+        if(c.req.method!=="POST"||typeof body.connection_id!=="string"||!ID.test(body.connection_id))return c.json({error_code:"invalid_agentmail_connection"},400);
+        return c.json(await stopManagedAgentMailRenewal(c.env,scope,body.connection_id));
+      }
+      if(action==="agentmail-usage"){
+        if(c.req.method!=="POST"||typeof body.connection_id!=="string"||!ID.test(body.connection_id))return c.json({error_code:"invalid_agentmail_connection"},400);
+        return c.json(await readAgentMailUsage(c.env,scope,body.connection_id));
+      }
       if(action==="agentmail-operation") {
+        if(c.req.method!=="POST")return c.json({error_code:"method_not_allowed"},405);
         const operation=typeof body.operation==="string"?body.operation:"";
-        const result=await callAgentMailTool(c.env,scope,operation,body.args&&typeof body.args==="object"&&!Array.isArray(body.args)?body.args as Record<string,unknown>:{});
+        const connectionId=typeof body.connection_id==="string"?body.connection_id:undefined;
+        const result=await callAgentMailTool(c.env,scope,operation,body.args&&typeof body.args==="object"&&!Array.isArray(body.args)?body.args as Record<string,unknown>:{},connectionId);
         return c.json({result});
       }
       return c.json({error_code:"agentmail_action_unsupported"},400);
     } catch(error) {
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_unavailable";
-      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")?409:502);
+      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")?409:code.includes("invalid")?400:502);
+    }
+  }
+  if(action.startsWith("higgsfield-")) {
+    let connectedIdentity:CommunicationIdentity;
+    try {
+      connectedIdentity=await ensureIdentity(c.env,scope);
+      if(!(await manageIdentity(c.env,scope,connectedIdentity)))return c.json({error_code:"owner_authorization_required"},403);
+      if(action==="higgsfield-requests"){
+        if(c.req.method!=="POST"||typeof body.account_id!=="string")return c.json({error_code:"invalid_higgsfield_request"},400);
+        return c.json(await listHiggsfieldRequests(c.env,scope,connectedIdentity,body.account_id));
+      }
+      if(action==="higgsfield-connect"){
+        if(c.req.method!=="POST"||typeof body.api_key!=="string")return c.json({error_code:"invalid_higgsfield_connection"},400);
+        return c.json({account:await connectHiggsfieldAccount(c.env,scope,connectedIdentity,{apiKey:body.api_key})},201);
+      }
+      if(action==="higgsfield-estimate"){
+        if(c.req.method!=="POST"||typeof body.account_id!=="string")return c.json({error_code:"invalid_higgsfield_request"},400);
+        if(agent){
+          const agentId=c.req.header("x-naelao-agent-id")??"";
+          const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(body.request??null))));
+          const requestKey=[...digest].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+          await authorizeHiggsfieldAgentOperation(c.env,scope,body.account_id,agentId,"estimate",requestKey);
+        }
+        return c.json(await createHiggsfieldEstimate(c.env,scope,connectedIdentity,body.account_id,body.request));
+      }
+      if(action==="higgsfield-submit"){
+        if(c.req.method!=="POST"||typeof body.account_id!=="string"||typeof body.estimate_id!=="string"
+          ||typeof body.confirmed_usd!=="string"||typeof body.idempotency_key!=="string")return c.json({error_code:"invalid_higgsfield_request"},400);
+        if(agent){
+          const agentId=c.req.header("x-naelao-agent-id")??"";
+          const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify({
+            accountId:body.account_id,estimateId:body.estimate_id,confirmedUsd:body.confirmed_usd,idempotencyKey:body.idempotency_key,request:body.request,
+          }))));
+          const requestKey=[...digest].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+          await authorizeHiggsfieldAgentOperation(c.env,scope,body.account_id,agentId,"generate",requestKey);
+        }
+        return c.json(await submitHiggsfieldGeneration(c.env,scope,connectedIdentity,{accountId:body.account_id,estimateId:body.estimate_id,
+          confirmedUsd:body.confirmed_usd,idempotencyKey:body.idempotency_key,request:body.request}));
+      }
+      if(action==="higgsfield-agentport-share"||action==="higgsfield-agentport-revoke"){
+        if(agent||c.req.method!=="POST"||typeof body.account_id!=="string")return c.json({error_code:"human_control_required"},403);
+        return c.json(action==="higgsfield-agentport-share"
+          ?await shareHiggsfieldWithAgentPort(c.env,scope,connectedIdentity,body.account_id)
+          :await revokeHiggsfieldAgentPortShare(c.env,scope,connectedIdentity,body.account_id));
+      }
+      if(action==="higgsfield-status"||action==="higgsfield-cancel"||action==="higgsfield-delete"){
+        if(c.req.method!=="POST"||typeof body.account_id!=="string"||typeof body.request_id!=="string")return c.json({error_code:"invalid_higgsfield_request"},400);
+        if(action==="higgsfield-status")return c.json({request:await refreshHiggsfieldRequest(c.env,scope,connectedIdentity,body.account_id,body.request_id)});
+        if(action==="higgsfield-cancel")return c.json(await cancelHiggsfieldRequest(c.env,scope,connectedIdentity,body.account_id,body.request_id));
+        return c.json(await deleteHiggsfieldRequest(c.env,scope,connectedIdentity,body.account_id,body.request_id));
+      }
+      if(action==="higgsfield-disconnect"){
+        if(c.req.method!=="POST"||typeof body.account_id!=="string")return c.json({error_code:"invalid_higgsfield_connection"},400);
+        await revokeHiggsfieldAgentPortShare(c.env,scope,connectedIdentity,body.account_id);
+        return c.json(await revokeHiggsfieldAccount(c.env,scope,connectedIdentity,body.account_id));
+      }
+      return c.json({error_code:"higgsfield_action_unsupported"},400);
+    } catch(error) {
+      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"higgsfield_unavailable";
+      const status=code.includes("not_found")||code.includes("unavailable")?404
+        :code.includes("disabled")||code.includes("capability")||code.includes("region_not_verified")||code.includes("confirmation")||code.includes("reconciliation")?409
+        :code.includes("forbidden")||code.includes("not_authorized")||code.includes("agentport_action_denied")||code.includes("agentport_share_required")?403
+        :code.startsWith("higgsfield_provider_")?502:400;
+      return c.json({error_code:code},status);
     }
   }
   if (action === "identity" && !preferences.enabled.email) {
@@ -944,6 +1171,24 @@ async function handle(c: C, agent: boolean) {
 export function registerCommunicationRoutes(
   app: Hono<{ Bindings: AgentsEnv }>
 ) {
+  app.post("/internal/managed-services/capabilities/:provider/:serviceId/verify",async c=>{
+    if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+    if(!constantTimeSecretEqual(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+    const actorId=c.req.header("x-managed-services-operator-id")??"";
+    const body=await readBoundedRequestText(c.req.raw,64*1024).then(text=>JSON.parse(text) as {version?:number;reason?:string;valid_until?:string;regions?:string[];evidence?:unknown;metering?:Record<string,unknown>}).catch(()=>null);
+    if(!body||typeof body.version!=="number"||typeof body.reason!=="string"||typeof body.valid_until!=="string"||!Array.isArray(body.regions)||!body.evidence||!body.metering||typeof body.metering!=="object")return c.json({error_code:"bad_request"},400);
+    try{return c.json(await verifyManagedServiceCapability(c.env.PLATFORM_DB,{provider:c.req.param("provider"),serviceId:c.req.param("serviceId"),version:body.version,actorId,reason:body.reason,validUntil:body.valid_until,regions:body.regions,evidence:body.evidence,metering:body.metering}));}
+    catch(error){const result=capabilityAdminError(error);return c.json({error_code:result.code},result.status);}
+  });
+  app.post("/internal/managed-services/capabilities/:provider/:serviceId/disable",async c=>{
+    if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+    if(!constantTimeSecretEqual(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+    const actorId=c.req.header("x-managed-services-operator-id")??"";
+    const body=await readBoundedRequestText(c.req.raw,64*1024).then(text=>JSON.parse(text) as {version?:number;reason?:string}).catch(()=>null);
+    if(!body||typeof body.version!=="number"||typeof body.reason!=="string")return c.json({error_code:"bad_request"},400);
+    try{return c.json(await disableManagedServiceCapability(c.env.PLATFORM_DB,{provider:c.req.param("provider"),serviceId:c.req.param("serviceId"),version:body.version,actorId,reason:body.reason}));}
+    catch(error){const result=capabilityAdminError(error);return c.json({error_code:result.code},result.status);}
+  });
   app.post("/internal/agentmail/webhook/:connectionId",async c=>receiveAgentMailWebhook(c.env,c.req.param("connectionId"),c.req.raw));
   app.post("/internal/agentport/event/:connectionId",async c=>receiveAgentPortNotification(c.env,c.req.param("connectionId"),c.req.raw));
   app.on(["GET", "POST"], "/spaces/:spaceId/assistant-communications", (c) =>

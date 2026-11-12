@@ -299,7 +299,17 @@ binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
 [[services]]
+binding = "SANDBOXES_WORKER"
+service = "naelao-sandboxes"
+
+[[services]]
 binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+# WorkspaceCoordinatorDO uses the same Worker through this internal verifier route. The route
+# reads the authority database and ignores capability claims supplied by runtime callers.
+[[services]]
+binding = "LIVE_CAPABILITY_VERIFIER"
 service = "naelao-agents"
 
 [[services]]
@@ -367,6 +377,7 @@ DYNAMIC_CONTAINERS_ENABLED = "false"
 UNIFIED_WORKSPACE_ENABLED = "false"
 WORKSPACE_DUAL_READ_ENABLED = "false"
 LIVE_WORKSPACE_ENABLED = "false"
+HIGGSFIELD_BYO_ENABLED = "false"
 DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1"
 DYNAMIC_CONTAINER_MAX_INSTANCES = "5"
 DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false"
@@ -425,7 +436,7 @@ binding = "AI"
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
 # never actually activate.
-vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false", LIVE_WORKSPACE_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false", LIVE_WORKSPACE_ENABLED = "false", HIGGSFIELD_BYO_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
 [[env.staging.send_email]]
@@ -457,7 +468,7 @@ service = "naelao-browser"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false", LIVE_WORKSPACE_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", UNIFIED_WORKSPACE_ENABLED = "false", WORKSPACE_DUAL_READ_ENABLED = "false", LIVE_WORKSPACE_ENABLED = "false", HIGGSFIELD_BYO_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
 [[env.production.send_email]]
@@ -727,8 +738,16 @@ binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
 [[env.staging.services]]
+binding = "LIVE_CAPABILITY_VERIFIER"
+service = "naelao-agents"
+
+[[env.staging.services]]
 binding = "AGENTPORT_WORKER"
 service = "agentport-api-staging"
+
+[[env.staging.services]]
+binding = "SANDBOXES_WORKER"
+service = "naelao-sandboxes-staging"
 
 
 [[env.staging.services]]
@@ -1012,8 +1031,16 @@ binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
 [[env.production.services]]
+binding = "LIVE_CAPABILITY_VERIFIER"
+service = "naelao-agents"
+
+[[env.production.services]]
 binding = "AGENTPORT_WORKER"
 service = "agentport-api-production"
+
+[[env.production.services]]
+binding = "SANDBOXES_WORKER"
+service = "naelao-sandboxes-production"
 
 
 [[env.production.services]]

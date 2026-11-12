@@ -237,6 +237,7 @@ async function runBash(
     args["commands"] ?? args["command"] ?? args["cmd"] ?? ""
   ).trim();
   if (!command) throw new Error("commands is required");
+  const admittedShell = parseAdmittedShell(command);
   await inspectMutation(command, {
     kind: "shell",
     ...(ctx.env.mutationGrant ? { token: ctx.env.mutationGrant } : {}),
@@ -326,7 +327,7 @@ async function runBash(
   }
 
   // /.avos is deliberately a sibling namespace in R2, never under the deliverable prefix.
-  const parsedShell = parseShell(command);
+  const parsedShell = admittedShell;
   const first = parsedShell[0]?.commands[0]?.argv[0];
   if (parsedShell.length === 1 && parsedShell[0]!.commands.length === 1 && !parsedShell[0]!.commands[0]!.redirects.length && first && /^[a-zA-Z][\w-]*$/.test(first)) {
     if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: first })) throw new Error(`shell_permission_denied:${first}`);
@@ -344,20 +345,43 @@ async function runBash(
       }, undefined, VirtualCliDispatcher.synthesizedCapabilities(source));
     }
   }
-  const stages = parseShell(command).flatMap((pipeline) => pipeline.commands);
-  if (stages.length === 1 && first && !stages[0]!.redirects.length && ctx.env.resolveContainerCommand) {
-    const sidecar = await ctx.env.resolveContainerCommand(first);
-    if (sidecar) {
+  const stages = admittedShell.flatMap((pipeline) => pipeline.commands);
+  if (stages.length && admittedShell.length === 1 && ctx.env.resolveContainerCommand
+    && stages.every(stage => !stage.redirects.length && !Object.keys(stage.environment).length)) {
+    // A whole single-pipeline command may use one installed specialist image only when every
+    // executable is declared by that exact installation. Never splice commands from different
+    // images or combine a sidecar binary with an assumed base-image command.
+    const resolved = await Promise.all(stages.map(stage => ctx.env.resolveContainerCommand!(stage.argv[0] ?? "")));
+    const sidecar = resolved[0];
+    if (sidecar && resolved.every(item => item?.installationId === sidecar.installationId
+      && item.contract.image === sidecar.contract.image)) {
       if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) throw new Error("container_execution_ceiling_exceeded");
-      if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: first })) throw new Error("shell_permission_denied:" + first);
-      const binary = first.includes("/") ? first.split("/").at(-1)! : first;
-      const words = [binary, ...stages[0]!.argv.slice(1)];
-      const resolvedCommand = words.map(word => "'" + word.replaceAll("'", "'\\''") + "'").join(" ");
+      const commandLines: string[] = [];
+      for (let index = 0; index < stages.length; index++) {
+        const stage = stages[index]!;
+        const name = stage.argv[0] ?? "";
+        if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name })) throw new Error("shell_permission_denied:" + name);
+        const binary = name.includes("/") ? name.split("/").at(-1)! : name;
+        commandLines.push([binary, ...stage.argv.slice(1)].map(word => "'" + word.replaceAll("'", "'\\''") + "'").join(" "));
+      }
+      const resolvedCommand = commandLines.join(" | ");
       return runTier(ctx, "container.extension_binary", BASH_HARNESS, 6, { ...args, commands: resolvedCommand }, sidecar);
     }
   }
-  if (!stages.length || stages.some(({ argv }) => !isDeclaredNativeCommand(argv[0] ?? "")))
-    throw new Error(`command_not_found: ${first ?? "unknown"}. Run runtime find ${first ?? "<binary>"} to discover an approved runtime, or tools.search for an existing capability. Installation requires explicit human approval.`);
+  if (!stages.length) {
+    const error = new Error("shell_capability_unavailable: no executable command was resolved");
+    throw Object.assign(error, { capability_error: { code: "shell_capability_unavailable", required_tier: 6 as const } });
+  }
+  const unsupported = stages.find(({ argv }) => !isDeclaredNativeCommand(argv[0] ?? ""));
+  if (unsupported) {
+    const capability = unsupported.argv[0] ?? "unknown";
+    const mixedRuntime = stages.length > 1;
+    const code = mixedRuntime ? "shell_capability_union_unsupported" : "shell_capability_unavailable";
+    const detail = mixedRuntime
+      ? `The complete command also requires '${capability}', which cannot run inside the selected native runtime. Run it as an explicit specialist workflow with declared artifact inputs and outputs.`
+      : `No approved runtime provides '${capability}'. Run runtime find ${capability} to discover an approved runtime, or tools.search for an existing capability. Installation requires explicit human approval.`;
+    throw Object.assign(new Error(detail), { capability_error: { code, capability, required_tier: 6 as const } });
+  }
   for (const stage of stages) if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: stage.argv[0]! })) throw new Error(`shell_permission_denied:${stage.argv[0]}`);
   if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) {
     throw new Error(
@@ -446,7 +470,19 @@ export async function runEnvironmentBash(command: string, installation: import("
 export async function authorizeEnvironmentCommand(command: string, ctx: PrebuiltOpContext): Promise<void> {
   if (!ctx.env.nativeExecutionAllowed || (ctx.env.maxTier ?? 0) < 6) throw new Error("environment_native_execution_denied");
   await inspectMutation(command, { kind: "shell", ...(ctx.env.mutationGrant ? { token: ctx.env.mutationGrant } : {}), secret: ctx.env.platformSecret ?? "", resourceId: ctx.env.projectId ?? ctx.env.spaceId });
-  for (const stage of parseShell(command).flatMap(pipeline => pipeline.commands)) {
+  for (const stage of parseAdmittedShell(command).flatMap(pipeline => pipeline.commands)) {
     if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "command", name: stage.argv[0] ?? "" })) throw new Error("environment_shell_permission_denied");
+  }
+}
+
+function parseAdmittedShell(command: string): ReturnType<typeof parseShell> {
+  try { return parseShell(command); }
+  catch (error) {
+    if (error instanceof Error && error.message === "shell_substitution_not_supported") {
+      throw Object.assign(new Error("Nested shell commands cannot be authorized from the outer command. Rewrite them as explicit commands or use an approved capability workflow."), {
+        capability_error: { code: "shell_capability_dynamic_execution_unsupported", required_tier: 6 as const },
+      });
+    }
+    throw error;
   }
 }

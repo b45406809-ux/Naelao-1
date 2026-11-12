@@ -30,6 +30,39 @@ describe("Telnyx transport boundary", () => {
     const client = new TelnyxTelephony({ apiKey: "test-api-key-123456", publicKey }, vi.fn<typeof fetch>().mockResolvedValue(Response.json({})));
     await expect(client.sendSms("+14155550100", "+14155550101", "hello", "profile-1")).rejects.toMatchObject({ uncertain: true });
   });
+  it("searches the documented account inventory and returns only voice/SMS matches with bounded USD cost", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data: [
+      { phone_number: "+14155550123", phone_number_type: "local", features: [{ name: "voice" }, { name: "sms" }],
+        region_information: [{ region_type: "location", region_name: "San Francisco" }, { region_type: "state", region_name: "CA" }],
+        cost_information: { upfront_cost: "1.25", monthly_cost: "2.00", currency: "USD" } },
+      { phone_number: "+14155550124", features: [{ name: "voice" }], cost_information: { upfront_cost: "0", monthly_cost: "1", currency: "USD" } },
+      { phone_number: "+14155550125", features: [{ name: "voice" }, { name: "sms" }], cost_information: { upfront_cost: "0", monthly_cost: "1.001", currency: "USD" } },
+    ] }));
+    const client = new TelnyxTelephony({ apiKey: "test-api-key-123456", publicKey }, fetcher);
+    await expect(client.searchAvailablePhoneNumbers({ countryCode: "us", numberType: "local", startsWith: "14155550123", limit: 5 }))
+      .resolves.toEqual([{ phoneNumber: "+14155550123", countryCode: "US", numberType: "local", features: ["voice", "sms"],
+        locality: "San Francisco", region: "CA", upfrontCostMinor: 125, monthlyCostMinor: 200, currency: "USD" }]);
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("/v2/available_phone_numbers?");
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("filter%5Bcountry_code%5D=US");
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("filter%5Bphone_number%5D%5Bstarts_with%5D=14155550123");
+    expect(fetcher.mock.calls[0]?.[1]?.method).toBe("GET");
+  });
+  it("creates one number order with a stable customer reference and lists it without replaying a mutation", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ data: { id: "123e4567-e89b-12d3-a456-426614174000", status: "pending", customer_reference: "naelao_order_1" } }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: "123e4567-e89b-12d3-a456-426614174000", status: "pending", customer_reference: "naelao_order_1" }] }));
+    const client = new TelnyxTelephony({ apiKey: "test-api-key-123456", publicKey }, fetcher);
+    await expect(client.createNumberOrder({ phoneNumber: "+14155550123", customerReference: "naelao_order_1", connectionId: "connection-1", messagingProfileId: "profile-1" }))
+      .resolves.toMatchObject({ status: "pending", customer_reference: "naelao_order_1" });
+    await expect(client.listNumberOrders("naelao_order_1")).resolves.toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.telnyx.com/v2/number_orders");
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+      phone_numbers: [{ phone_number: "+14155550123" }], customer_reference: "naelao_order_1",
+      connection_id: "connection-1", messaging_profile_id: "profile-1",
+    });
+    expect(fetcher.mock.calls[1]?.[0]).toBe("https://api.telnyx.com/v2/number_orders?filter%5Bcustomer_reference%5D=naelao_order_1");
+  });
   it("rejects resource injection without contacting the provider", () => {
     const fetcher = vi.fn<typeof fetch>();
     const client = new TelnyxTelephony({ apiKey: "test-api-key-123456", publicKey }, fetcher);

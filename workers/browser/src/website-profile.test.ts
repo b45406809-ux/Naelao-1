@@ -24,6 +24,18 @@ const state = {
 };
 function profile() {
   const data = new Map<string, unknown>();
+  const profileRegistry = new Map<string, unknown>();
+  const db = { prepare: (sql: string) => {
+    let values: unknown[] = [];
+    const statement = {
+      bind: (...next: unknown[]) => { values = next; return statement; },
+      run: async () => {
+        if (sql.includes("workspace_browser_profile_registry")) profileRegistry.set(String(values[0]), values);
+        return { meta: { changes: 1 } };
+      },
+    };
+    return statement;
+  } };
   const storage = {
     get: async (key: string) => data.get(key),
     put: async (key: string, value: unknown) => {
@@ -39,10 +51,10 @@ function profile() {
   };
   const object = new WebsiteProfileDO(
     ctx as never,
-    { PLATFORM_SECRET: "test-secret" } as never
+    { PLATFORM_SECRET: "test-secret", PLATFORM_DB: db } as never
   );
   return {
-    data,
+    data, profileRegistry,
     object,
     send: (operation: string, s = scope, saved?: typeof state) =>
       object.fetch(

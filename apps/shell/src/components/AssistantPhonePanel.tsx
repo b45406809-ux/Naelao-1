@@ -32,6 +32,7 @@ type Row = {
   cost_collection_status?: string | null;
   managed_charge_credits?: number | null;
 };
+type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 export function AssistantPhonePanel({
   spaceId,
   projectId,
@@ -40,10 +41,15 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
+      telnyx_agentport_shared?: boolean;
+      telnyx_agentport_link_status?: string | null;
+      telnyx_agentport_operation?: { operation_name: string; status: string | null; error_code: string | null } | null;
       managed_available?: boolean;
       managed_reason?: string;
       managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
       telnyx_webhook_url?: string | null;
+      telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
+      telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
@@ -71,8 +77,11 @@ export function AssistantPhonePanel({
   const [telnyxKey, setTelnyxKey] = React.useState("");
   const [telnyxPublicKey, setTelnyxPublicKey] = React.useState("");
   const [telnyxNumberId, setTelnyxNumberId] = React.useState("");
+  const [telnyxNumberType, setTelnyxNumberType] = React.useState("");
   const [telnyxSetup, setTelnyxSetup] = React.useState("");
-  const [telnyxCost, setTelnyxCost] = React.useState("");
+  const [phoneCost, setPhoneCost] = React.useState("");
+  const [telnyxNumbers, setTelnyxNumbers] = React.useState<TelnyxInventoryNumber[]>([]);
+  const [telnyxQuote, setTelnyxQuote] = React.useState<{ quote_id: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; expires_at: string } | null>(null);
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
@@ -106,6 +115,8 @@ export function AssistantPhonePanel({
         managed_reason?: string;
         managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
         telnyx_webhook_url?: string | null;
+        telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
+        telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
         extension_lines?: Array<{
           id: string;
           phone_number: string | null;
@@ -151,7 +162,7 @@ export function AssistantPhonePanel({
     setTelnyxPublicKey("");
     setTelnyxNumberId("");
     setTelnyxSetup("");
-    setTelnyxCost("");
+    setPhoneCost("");
     setSid("");
     setTo("");
     setText("");
@@ -179,6 +190,9 @@ export function AssistantPhonePanel({
             expires_at: string;
           }
         );
+      if (action === "phone-telnyx-search") setTelnyxNumbers((result.numbers as TelnyxInventoryNumber[] | undefined) ?? []);
+      if (action === "phone-telnyx-quote") setTelnyxQuote(result as unknown as { quote_id: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; expires_at: string });
+      if (action === "phone-telnyx-order") setTelnyxQuote(null);
       if (action === "phone-event")
         setContent(JSON.stringify(result.body, null, 2));
       if (action === "phone-live") {
@@ -198,7 +212,18 @@ export function AssistantPhonePanel({
         setTelnyxKey("");
         setTelnyxSetup(result.configured ? `Telnyx account verified for ${String(result.phone_number)}. Messaging and eligible call control can be activated after webhook verification.` : "No Telnyx account configured.");
       }
-      if (action === "phone-telnyx-cost") setTelnyxCost(result.status === "observed" ? `Carrier-reported cost: ${String(result.amount)} ${String(result.currency)}. Telnyx bills your account.` : "Carrier cost is not final yet.");
+      if (action === "phone-telnyx-activate") setTelnyxSetup(result.voice_cost_webhooks_enabled === true
+        ? "Telnyx call cost webhooks are enabled. Signed call.cost events are recorded as provider API observations, not invoice reconciliation."
+        : "Channels are active, but Telnyx call cost webhooks are disabled. Enable call_cost_in_webhooks in the associated Call Control Application, then check the setting.");
+      if (action === "phone-telnyx-cost-status") setTelnyxSetup(result.call_cost_webhooks_enabled === true
+        ? "Telnyx call cost webhooks are enabled."
+        : "Telnyx call cost webhooks are still disabled.");
+      if (["phone-telnyx-cost", "phone-twilio-cost"].includes(action)) {
+        const carrier = action === "phone-telnyx-cost" ? "Telnyx" : "Twilio";
+        setPhoneCost(result.status === "observed"
+          ? `Provider API-reported message charge: ${String(result.amount)} ${String(result.currency)}. ${carrier} bills your account; this is not an invoice.`
+          : "Provider API has not reported a final message charge yet.");
+      }
       await refresh();
     } catch (e) {
       if (g === generation.current)
@@ -237,6 +262,10 @@ export function AssistantPhonePanel({
         {state?.phone?.status ?? ""}
         {state?.phone ? ` · ${state.phone.provider ?? "twilio"}` : ""}
       </p>
+      {state?.phone?.provider === "telnyx" && state.phone.capabilities.voice === true
+        && state.phone.capabilities.call_cost_webhooks !== true && <p role="status">
+          Telnyx per-call cost events are disabled or have not been verified for this Call Control Application. Enable call cost webhooks at Telnyx, then check the setting below. Until enabled, provider cost observations omit these calls; the dashboard does not reconcile invoices.
+        </p>}
       <p>
         Phone is optional for Space and Project assistants. Enable it in assistant channel settings first.
         {state?.phone?.payer === "managed" ? " Naelao bills rental and usage to the space plan using the configured carrier price schedule." : " Your carrier bills your account directly for rental, calls, SMS/MMS and other carrier charges."}
@@ -248,7 +277,7 @@ export function AssistantPhonePanel({
       </button>
       <details style={{ marginTop: 12 }}>
         <summary>Telnyx setup</summary>
-        <p>Connect a Telnyx number. A managed number uses Naelao’s configured carrier account and is billed to the space plan; a BYO number is billed by Telnyx directly.</p>
+        <p>Connect or order a number through your Telnyx account. BYO inventory and usage are billed directly by Telnyx. Naelao managed inventory remains available only for numbers already assigned to the configured Naelao Telnyx account and approved plan rates.</p>
         <fieldset disabled={busy || !state?.enabled}>
           <legend>Verify Telnyx account</legend>
           <label>API key <input type="password" autoComplete="new-password" value={telnyxKey} onChange={event => setTelnyxKey(event.target.value)} /></label>
@@ -263,13 +292,44 @@ export function AssistantPhonePanel({
           </div>}
           {telnyxSetup && <p role="status">{telnyxSetup}</p>}
         </fieldset>
-        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this unfinished number setup? Telnyx will continue to bill the number.")) void act("phone-telnyx-cancel", { confirm: true }); }}>Cancel number setup</button>}
-        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <div>
+        {(!state?.phone || ["released", "detached"].includes(state.phone.status)) && <fieldset disabled={busy || !state?.enabled}>
+          <legend>Search and order from your Telnyx account</legend>
+          <label>Country code <input value={country} maxLength={2} onChange={event => { setCountry(event.target.value.toUpperCase()); setTelnyxNumbers([]); setTelnyxQuote(null); }} /></label>{" "}
+          <label>Number type <select value={telnyxNumberType} onChange={event => setTelnyxNumberType(event.target.value)}><option value="">Any type</option><option value="local">Local</option><option value="toll_free">Toll free</option><option value="mobile">Mobile</option><option value="national">National</option><option value="shared_cost">Shared cost</option></select></label>{" "}
+          <button type="button" onClick={() => void act("phone-telnyx-search", { country, ...(telnyxNumberType ? { number_type: telnyxNumberType } : {}) })}>Search voice and SMS numbers</button>
+          {telnyxNumbers.map(item => <p key={item.phone_number}>
+            {item.phone_number} · {item.locality ?? item.region ?? item.country_code} · {item.number_type ?? "number"} · ${(item.upfront_cost_minor / 100).toFixed(2)} upfront + ${(item.monthly_cost_minor / 100).toFixed(2)}/month · {item.currency}{" "}
+            <button type="button" onClick={() => void act("phone-telnyx-quote", { country: item.country_code, phone_number: item.phone_number })}>Quote</button>
+          </p>)}
+          {telnyxQuote && <p>
+            Telnyx quote for {telnyxQuote.phone_number}: ${(telnyxQuote.upfront_cost_minor / 100).toFixed(2)} upfront + ${(telnyxQuote.monthly_cost_minor / 100).toFixed(2)}/month, plus usage, taxes and regulatory fees. Expires {telnyxQuote.expires_at}.{" "}
+            <button type="button" onClick={() => { if (window.confirm(`Order ${telnyxQuote.phone_number} from your Telnyx account for $${(telnyxQuote.upfront_cost_minor / 100).toFixed(2)} upfront and $${(telnyxQuote.monthly_cost_minor / 100).toFixed(2)} monthly, plus usage and taxes?`)) void act("phone-telnyx-order", { quote_id: telnyxQuote.quote_id, confirm: true, confirm_upfront_cost_minor: telnyxQuote.upfront_cost_minor, confirm_monthly_cost_minor: telnyxQuote.monthly_cost_minor }); }}>Confirm Telnyx purchase</button>
+          </p>}
+        </fieldset>}
+        {state?.telnyx_order && ["uncertain", "pending"].includes(state.telnyx_order.status) && <p role="status">
+          Telnyx order for {state.telnyx_order.phone_number} is {state.telnyx_order.status}; no new order will be submitted while its outcome is unresolved. {state.telnyx_order.status === "uncertain" ? "Reconcile its provider receipt before continuing." : "The provider is still processing it."}{" "}
+          <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-order-reconcile", { operation_id: state.telnyx_order!.operation_id })}>Check Telnyx order status</button>
+        </p>}
+        {state?.telnyx_release && ["submitting", "uncertain"].includes(state.telnyx_release.status) && <p role="status">
+          Managed Telnyx release for {state.telnyx_release.phone_number} is {state.telnyx_release.status}. Naelao will inspect that number on the scheduled reconciliation path and will not repeat the release request. Check again after {state.telnyx_release.next_reconcile_at ? new Date(state.telnyx_release.next_reconcile_at).toLocaleString() : "the next check"}.
+        </p>}
+        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && !["pending", "uncertain"].includes(state.telnyx_order?.status ?? "") && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this unfinished number setup? Telnyx will continue to bill the number.")) void act("phone-telnyx-cancel", { confirm: true }); }}>Cancel number setup</button>}
+        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && state.phone.provider_number_id && <div>
           <p>Set the Telnyx messaging profile and call control application webhook URL to <code>{state.telnyx_webhook_url ?? "unavailable: public phone endpoint is not configured"}</code> with API version 2. Naelao verifies both before enabling the supported channels.</p>
           <button type="button" disabled={busy || !state.telnyx_webhook_url} onClick={() => void act("phone-telnyx-activate", { confirm: true })}>Verify and enable channels</button>
         </div>}
         {state?.phone?.provider === "telnyx" && ["active", "billing_hold", "indeterminate"].includes(state.phone.status) && <button type="button" disabled={busy} onClick={() => { const managed = state.phone?.payer === "managed"; if (window.confirm(managed ? "Release this Naelao managed number at Telnyx? The current month rental is not refundable. For a billing hold or uncertain release, first check the Telnyx number record." : "Detach this BYO number? Its carrier webhook and rental continue until you change them at Telnyx.")) void act("phone-telnyx-detach", { confirm: true, ...(state.phone?.status !== "active" ? { provider_checked: true } : {}) }); }}>{state.phone.payer === "managed" ? "Release managed Telnyx number" : "Detach Telnyx number"}</button>}
+        {state?.phone?.provider === "telnyx" && state.phone.payer === "byo" && state.phone.status === "active" && (state.telnyx_agentport_shared
+          ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("Revoke this assistant’s AgentPort permission to use this Telnyx number for SMS? Existing approved phone actions still require your approval.")) void act("phone-agentport-unlink", { confirm: true }); }}>Revoke AgentPort SMS access</button>
+          : state.telnyx_agentport_operation?.operation_name === "agentport_revoke" && ["revoking", "unknown"].includes(state.telnyx_agentport_link_status ?? "")
+            ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("The previous AgentPort revoke was not confirmed. Retry revoking this SMS account before detaching the number?")) void act("phone-agentport-unlink", { confirm: true }); }}>Retry AgentPort revoke</button>
+            : <button type="button" disabled={busy} onClick={() => { if (window.confirm("Share this Telnyx number with the current assistant in AgentPort for SMS sending? Each message still requires your explicit approval, and the provider bills your Telnyx account.")) void act("phone-agentport-share", { confirm: true }); }}>{state.telnyx_agentport_operation?.operation_name === "agentport_sync" && ["pending", "uncertain"].includes(state.telnyx_agentport_operation.status ?? "") ? "Retry AgentPort SMS share" : "Share SMS with AgentPort"}</button>)}
+        {state?.phone?.provider === "telnyx" && state.phone.payer === "byo" && state.phone.status === "active" && (state.telnyx_agentport_shared
+          ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("Revoke this assistant’s AgentPort permission to use this Telnyx number for SMS? Existing approved phone actions still require your approval.")) void act("phone-agentport-unlink", { confirm: true }); }}>Revoke AgentPort SMS access</button>
+          : <button type="button" disabled={busy} onClick={() => { if (window.confirm("Share this Telnyx number with the current assistant in AgentPort for SMS sending? Each message still requires your explicit approval, and the provider bills your Telnyx account.")) void act("phone-agentport-share", { confirm: true }); }}>Share SMS with AgentPort</button>)}
         <button type="button" disabled={busy} onClick={() => { if (window.confirm("Remove the saved Telnyx account credentials? This does not release numbers at Telnyx.")) void act("phone-telnyx-remove", { confirm: true }); }}>Remove saved Telnyx credentials</button>
+        {state?.phone?.provider === "telnyx" && state.phone.status === "active" && state.phone.capabilities.voice === true
+          && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost-status")}>Check call cost webhook setting</button>}
       </details>
       {!state?.phone ||
       ["released", "detached"].includes(state.phone.status) ? (
@@ -713,13 +773,14 @@ export function AssistantPhonePanel({
             </fieldset>
           )}
           <ul>
-            {telnyxCost && <li role="status">{telnyxCost}</li>}
+            {phoneCost && <li role="status">{phoneCost}</li>}
             {actions.map((a) => (
               <li key={a.id}>
                 {a.kind} to {a.recipient}: {a.status}{" "}
                 {state?.phone?.provider === "telnyx" && a.cost_collection_status && <span> · carrier cost: {a.cost_collection_status}</span>}{" "}
                 {a.managed_charge_credits !== null && a.managed_charge_credits !== undefined && <span> · plan charge: {a.managed_charge_credits} credits</span>}{" "}
                 {state?.phone?.provider === "telnyx" && a.kind === "sms" && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost", { id: a.id, confirm: true })}>Check carrier cost</button>}{" "}
+                {(state?.phone?.provider ?? "twilio") === "twilio" && ["sms", "call"].includes(a.kind) && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-twilio-cost", { id: a.id, confirm: true })}>Check provider cost</button>}{" "}
                 {a.status === "draft" && (
                   <button
                     type="button"

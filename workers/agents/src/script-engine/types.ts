@@ -1018,7 +1018,7 @@ export interface ScriptEngineEnv {
    *  Legacy R2 reads are used only until the coordinator creates its first branch head. */
   workspaceManifestRead?: () => Promise<{
     head: { branch: string; revision: number; updatedAt: string };
-    entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string }>;
+    entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }>;
   } | null>;
   /** Bounded per-file revision metadata for the coordinator-backed workspace history tool. */
   workspaceHistoryRead?: (input: { path: string; afterRevision?: number; limit?: number }) => Promise<{
@@ -1064,6 +1064,8 @@ export interface ScriptEngineEnv {
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
   notificationsWorker?: Fetcher;
+  /** Sandboxes control plane for owner-consented customer-owned Agent37 specialist tools. */
+  sandboxesWorker?: Fetcher;
   /** Host checks current template/user settings before assistant channel use. */
   assistantChannelAllowed?: (channel: import("@naelao/agent-sdk").AssistantChannel) => Promise<boolean>;
   /** The agents worker's own self-binding (AGENTS_WORKER), used for authenticated host operations. */
@@ -1130,6 +1132,9 @@ export interface ScriptEngineEnv {
    *  `local-machine` prebuilt reports itself unavailable, not degraded, when absent (unlike
    *  lockGateway, there's no safe fallback behavior for "pretend the local machine exists"). */
   localTunnel?: LocalTunnelGateway;
+  /** Explicit, scoped transfer to an installed Cloudflare sidecar's private filesystem. */
+  transferContainerArtifact?: (input: { installationId: string; direction: "import" | "export"; path: string; requestId: string;
+    digest?: string; expectedHash?: string | null }) => Promise<{ request_id: string; direction: "import" | "export"; path: string; digest: string; bytes: number; status: "complete" | "indeterminate" }>;
   executionSessions?: import("../tunnels/execution-sessions.js").ExecutionSessions;
   /** Host evidence only: no managed compute binding is deployed. Not a budget/permission override. */
   managedEnvironmentsUnavailable?: boolean;

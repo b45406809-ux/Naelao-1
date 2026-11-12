@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { applyDurableObjectJurisdiction } from "@naelao/security";
+import { inferWorkspaceContentType } from "@naelao/types";
 import {
   type CommitRecord,
   type RepositoryScope,
@@ -461,6 +462,7 @@ export class RepositoryDO extends DurableObject<Env> {
       if (change.next && (bytes.byteLength !== change.next.size || await sha256(bytes) !== change.next.hash)) throw new Error("workspace_publication_blob_corrupt");
       const result = await this.env.WORKSPACE_R2.put(key, bytes, {
         onlyIf: head ? { etagMatches: head.etag } : { etagDoesNotMatch: "*" },
+        httpMetadata: { contentType: inferWorkspaceContentType(change.path) },
         customMetadata: { ...(change.next ? { sha256: change.next.hash } : {}), deleted: change.next ? "false" : "true" },
       });
       if (!result) throw new Error(`workspace_publication_conflict:${change.path}`);
@@ -832,7 +834,7 @@ export class RepositoryDO extends DurableObject<Env> {
         const dualRead = at ? undefined : await this.verifyWorkspaceProjection(scope, branch, state.worktrees[branch]!);
         return new Response(object.body, {
           headers: {
-            "content-type": "application/octet-stream",
+            "content-type": inferWorkspaceContentType(entry.path),
             "x-git-oid": entry.oid,
             ...(dualRead?.enabled ? { "x-workspace-branch": branch, "x-workspace-revision": String(dualRead.revision), "x-workspace-dual-read-mismatches": String(dualRead.mismatchCount) } : {}),
           },
@@ -853,7 +855,7 @@ export class RepositoryDO extends DurableObject<Env> {
         if (object.type !== "blob" || !entry || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash) return jsonError("Blob integrity check failed", 500);
         return new Response(object.body, {
           headers: {
-            "content-type": "application/octet-stream",
+            "content-type": inferWorkspaceContentType(entry.path),
             "x-git-oid": oid,
           },
         });

@@ -8,12 +8,13 @@ import { publishWorkspaceBytesCas, readBytesWithHash, sha256Bytes } from "./r2-c
 // R2 artifacts are read into a bounded worker buffer before digest/CAS operations.
 // Match the bounded coordinator file size while keeping handoff reads finite.
 const MAX_BYTES = 20 * 1024 * 1024;
-function artifactKey(env: ScriptEngineEnv, digest: string) {
+export function environmentArtifactObjectKey(scope: { tenantId: string; spaceId: string; projectId?: string }, digest: string) {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("environment_artifact_digest_invalid");
-  const ids = [env.tenantId, env.spaceId, env.projectId ?? "space"];
+  const ids = [scope.tenantId, scope.spaceId, scope.projectId ?? "space"];
   if (ids.some((id) => !id || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id))) throw new Error("environment_artifact_scope_invalid");
   return `workspace-artifacts/${ids[0]}/${ids[1]}/${ids[2]}/environment/${digest}`;
 }
+function artifactKey(env: ScriptEngineEnv, digest: string) { return environmentArtifactObjectKey(env, digest); }
 function legacyArtifactKey(env: ScriptEngineEnv, digest: string) {
   return workspacePrefix(env) + ".environment-artifacts/" + digest;
 }
@@ -23,6 +24,17 @@ function artifactBucket(env: ScriptEngineEnv) {
 export async function publishEnvironmentArtifact(env: ScriptEngineEnv, path: string) {
   const clean = assertWorkspaceFileAllowed(env.workspaceFileScope, path);
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
+  const manifest = await env.workspaceManifestRead?.();
+  if (manifest) {
+    const entry = manifest.entries.find(candidate => candidate.path === clean);
+    if (!entry) throw new Error("environment_artifact_source_missing");
+    if (!/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_BYTES
+      || !entry.objectKey.startsWith(`workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId ?? "space"}/`))
+      throw new Error("environment_artifact_manifest_invalid");
+    const canonical = await readBytesWithHash(bucket, entry.objectKey, MAX_BYTES);
+    if (!canonical || canonical.hash !== entry.sha256 || canonical.bytes.byteLength !== entry.size) throw new Error("environment_artifact_integrity_failed");
+    return publishEnvironmentArtifactBytes(env, canonical.bytes, clean, entry.contentType ?? canonical.contentType);
+  }
   const source = await readBytesWithHash(bucket, workspacePrefix(env) + clean, MAX_BYTES);
   if (!source) throw new Error("environment_artifact_source_missing");
   return publishEnvironmentArtifactBytes(env, source.bytes, clean, source.contentType);

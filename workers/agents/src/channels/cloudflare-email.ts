@@ -1,4 +1,5 @@
 import PostalMime, { type Attachment, type Email } from "postal-mime";
+import { inferWorkspaceContentType } from "@naelao/types";
 
 export const MAX_INBOUND_EMAIL_BYTES = 20 * 1024 * 1024;
 export const MAX_EMAIL_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -49,7 +50,8 @@ export async function parseCloudflareEmail(raw: ReadableStream<Uint8Array>): Pro
     if (totalBytes > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) throw new Error("email_attachments_total_too_large");
     const fallback = `attachment-${index + 1}`;
     const filename = safeFilename(attachment.filename ?? fallback);
-    const mimeType = /^[\w.+-]+\/[\w.+-]+$/.test(attachment.mimeType) ? attachment.mimeType : "application/octet-stream";
+    const suppliedType = /^[\w.+-]+\/[\w.+-]+$/.test(attachment.mimeType) ? attachment.mimeType : "application/octet-stream";
+    const mimeType = suppliedType === "application/octet-stream" ? inferWorkspaceContentType(filename) : suppliedType;
     return { filename, mimeType, bytes };
   });
   const links = [...new Set([...String(parsed.html??"").matchAll(/href\s*=\s*["'](https:\/\/[^"']+)["']/gi)].slice(0,32).map(match=>match[1]!.replaceAll("&amp;","&")))];

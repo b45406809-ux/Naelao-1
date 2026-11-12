@@ -16,6 +16,24 @@ const computer = {
   allocationGeneration: 1,
 };
 describe("Agent37 adapter", () => {
+  it("reads only bounded cost fields from the documented account usage API", async () => {
+    const fetcher = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      expect(String(input)).toBe("https://api.agent37.com/v1/usage?from=2026-11-01&to=2026-11-30");
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer control-key-123456");
+      return Response.json({ from: "2026-11-01", to: "2026-11-30", total_micros: 125000,
+        by_integration: { compute: { cost_micros: 50000, awake_minutes: 12 }, llm: { cost_micros: 75000, calls: 2 } },
+        by_model: [{ model: "sensitive/model-name", cost_micros: 75000 }], instances: [{ id: "provider-instance", total_micros: 125000 }] });
+    });
+    const provider = Agent37Provider.forControlPlane({ apiKey: "control-key-123456", instanceKey: "instance-key" }, fetcher as typeof fetch);
+    await expect(provider.readWorkspaceUsage("2026-11-01", "2026-11-30")).resolves.toEqual({
+      from: "2026-11-01", to: "2026-11-30", totalMicros: 125000,
+      byIntegration: [{ kind: "compute", costMicros: 50000, awakeMinutes: 12 }, { kind: "llm", costMicros: 75000 }],
+    });
+    await expect(provider.readWorkspaceUsage("2026-01-01", "2026-04-01")).rejects.toThrow("agent37_usage_period_invalid");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("uses checked snapshot, stage, and publish mocks for a file change", async () => {
     const bytes = new TextEncoder().encode("old");
     const next = new TextEncoder().encode("new");
@@ -233,6 +251,24 @@ describe("Agent37 adapter", () => {
       name: "naelao-exec-1",
       command: "cd '/workspace/demo' && 'printf' 'hello world' 'a'\\''b'",
     });
+  });
+
+  it("checks the instance key read-only and discovers create receipts by stable metadata", async () => {
+    const fetcher = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://ab12cd34ef.agent37.app/v1/files") return Response.json({ path: "/home/node", entries: [], truncated: false });
+      if (target === "https://api.agent37.com/v1/instances") return Response.json({ data: [
+        { id: "ab12cd34ef", status: "running", metadata: { naelao_operation_id: "op-create" } },
+      ] });
+      return Response.json({}, { status: 404 });
+    });
+    const provider = new Agent37Provider({ apiKey: "control", instanceKey: "instance" }, null, fetcher as typeof fetch);
+    const allocation = { provider: "agent37" as const, externalId: "ab12cd34ef", generation: 4 };
+    await provider.verifyInstanceCredentials(allocation);
+    expect(await provider.findInstanceByOperationId("op-create")).toMatchObject({ id: "ab12cd34ef" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("x-agent37-key")).toBe("instance");
+    expect(new Headers(fetcher.mock.calls[1]?.[1]?.headers).get("authorization")).toBe("Bearer control");
   });
   it("marks a timed out command as indeterminate because aborting HTTP cannot prove the process stopped", async () => {
     const fetcher = vi.fn(

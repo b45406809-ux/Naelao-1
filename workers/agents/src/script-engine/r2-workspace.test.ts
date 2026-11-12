@@ -16,13 +16,14 @@ import { withWorkspaceManifestRead } from "./workspace-r2-compat.js";
 function createMockEnv() {
   const store = new Map();
   const metadata = new Map();
+  const httpMetadata = new Map();
   const etags = new Map();
   const getCalls: string[] = [];
   const mockBucket = {
     get: async (key) => {
       getCalls.push(key);
       const data = store.get(key);
-      return data ? { size: data.byteLength, customMetadata: metadata.get(key), arrayBuffer: async () => data.buffer } : null;
+      return data ? { size: data.byteLength, customMetadata: metadata.get(key), httpMetadata: httpMetadata.get(key), arrayBuffer: async () => data.buffer } : null;
     },
     head: async (key) => store.has(key) ? { customMetadata: metadata.get(key), etag: etags.get(key) } : null,
     put: async (key, value, options) => {
@@ -30,6 +31,7 @@ function createMockEnv() {
       if (options?.onlyIf?.etagDoesNotMatch === "*" && store.has(key)) return undefined;
       store.set(key, value);
       metadata.set(key, options?.customMetadata ?? {});
+      if (options?.httpMetadata) httpMetadata.set(key, options.httpMetadata);
       const etag = `etag-${store.size}-${Date.now()}`;
       etags.set(key, etag);
       return { etag };
@@ -48,6 +50,7 @@ function createMockEnv() {
   return {
     store,
     metadata,
+    httpMetadata,
     getCalls,
     scriptsBucket: mockBucket,
     workspaceBucket: mockBucket,
@@ -185,6 +188,7 @@ describe("R2 Virtual POSIX Workspace", () => {
     const digest = await hash(canonicalText);
     const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
     env.store.set(legacyKey, new TextEncoder().encode(legacyText));
+    env.httpMetadata.set(legacyKey, { contentType: "text/plain; charset=utf-8" });
     env.store.set(objectKey, new TextEncoder().encode(canonicalText));
     env.workspaceManifestRead = async () => ({ head: { branch: "task/run-1", revision: 7, updatedAt: "2026-11-08T00:00:00.000Z" }, entries: [
       { path, sha256: digest, size: new TextEncoder().encode(canonicalText).byteLength, executable: false, objectKey },
@@ -217,6 +221,7 @@ describe("R2 Virtual POSIX Workspace", () => {
     const digest = await hash(value);
     const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
     env.store.set(legacyKey, new TextEncoder().encode(value));
+    env.httpMetadata.set(legacyKey, { contentType: "text/plain; charset=utf-8" });
     env.store.set(objectKey, new TextEncoder().encode(value));
     env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 8, updatedAt: "2026-11-09T00:00:00.000Z" }, entries: [
       { path, sha256: digest, size: new TextEncoder().encode(value).byteLength, executable: false, objectKey },
@@ -233,6 +238,31 @@ describe("R2 Virtual POSIX Workspace", () => {
       const event = JSON.stringify(log.mock.calls);
       expect(event).not.toContain(path);
       expect(event).not.toContain(value);
+    } finally { log.mockRestore(); }
+  });
+
+  it("reports a missing legacy MIME separately when the canonical extension is known", async () => {
+    const env = createMockEnv();
+    const path = "docs/guide.md";
+    const value = "# Guide";
+    const legacyKey = `${workspacePrefix(env)}${path}`;
+    const digest = await hash(value);
+    const objectKey = `workspace-v1/${env.tenantId}/${env.spaceId}/${env.projectId}/global/content/${digest}`;
+    env.store.set(legacyKey, new TextEncoder().encode(value));
+    env.store.set(objectKey, new TextEncoder().encode(value));
+    env.workspaceManifestRead = async () => ({ head: { branch: "main", revision: 10, updatedAt: "2026-11-10T00:00:00.000Z" }, entries: [
+      { path, sha256: digest, size: new TextEncoder().encode(value).byteLength, executable: false, objectKey },
+    ] });
+    env.workspaceBucket = withWorkspaceManifestRead(env.scriptsBucket, workspacePrefix(env), env.workspaceManifestRead, {
+      enabled: true, tenantId: env.tenantId, spaceId: env.spaceId, projectId: env.projectId,
+    });
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await env.workspaceBucket.get(legacyKey);
+      expect(log).toHaveBeenCalledWith("workspace_dual_read", expect.objectContaining({
+        branch: "main", revision: 10, mismatchClass: "content_type_mismatch", compared: 1, mismatched: 1,
+      }));
+      expect(JSON.stringify(log.mock.calls)).not.toContain(path);
     } finally { log.mockRestore(); }
   });
 

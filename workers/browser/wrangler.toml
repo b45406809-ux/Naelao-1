@@ -29,9 +29,21 @@ service = "naelao-spaces"
 [vars]
 ENVIRONMENT = "development"
 
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 browser = { binding = "BROWSER" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [[env.staging.durable_objects.bindings]]
 name = "BROWSER_SESSION_DO"
@@ -46,6 +58,12 @@ service = "naelao-spaces-staging"
 [env.production]
 vars = { ENVIRONMENT = "production" }
 browser = { binding = "BROWSER" }
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [[env.production.durable_objects.bindings]]
 name = "BROWSER_SESSION_DO"

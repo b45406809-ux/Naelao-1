@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserRuntimeScope } from "@naelao/agent-sdk";
 import {
+  browserErasureScope,
+  browserSessionId,
   uploadScreenshotWithCleanupIntent,
   type BrowserSessionRecord,
   type BrowserStateStorage,
@@ -25,6 +27,16 @@ function session(): BrowserSessionRecord {
 }
 
 describe("browser screenshot cleanup intent", () => {
+  it("keeps only exact owner identity in erasure inventory scopes", async () => {
+    const projectScope = { ...scope, projectId: "project-a", connectionId: "connection-a" };
+    const sanitized = browserErasureScope(projectScope);
+    expect(sanitized).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", actorId: "member-a",
+      agentId: "agent-a", runId: "run-a", sessionId: "session-a", connectionId: "connection-a", authorizedActions: [], maxTier: 4 });
+    expect(sanitized.authorizedOrigins).toEqual(["https://erasure.invalid"]);
+    expect(JSON.stringify(sanitized)).not.toContain("example.com");
+    expect(await browserSessionId(projectScope)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("durably records the R2 path before upload begins", async () => {
     const storage = new MemoryStorage();
     const record = session();

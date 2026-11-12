@@ -1,0 +1,203 @@
+import { Hono } from "hono";
+import { mintInternalToken } from "@naelao/http";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentsEnv } from "../index.js";
+import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
+import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
+import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget, sweepManagedServiceCostBudgetAlertDeliveries, sweepManagedServiceCostBudgetAlerts } from "./managed-service-cost-budgets.js";
+import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
+import { registerCommunicationRoutes } from "./routes.js";
+
+describe("managed-service provider-cost threshold notices", () => {
+  it("keeps the owner-selected rolling threshold scoped by space, source and currency", async () => {
+    const f = fixture();
+    await recordProviderApiCostObservation(f.db, {
+      tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"private-operation-ref",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",
+      quantityMicros:1_000_000,providerCost:"0.004500",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",
+      sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z",
+    });
+    const input={provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed" as const,currency:"USD",limitProviderCostMicros:5_000};
+    await expect(setManagedServiceCostBudget(f.env,scope,input)).resolves.toMatchObject({removed:false,limitProviderCostMicros:5_000});
+    const dashboard=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:00:00.000Z"));
+    expect(dashboard.providerCostBudgets30d).toEqual([expect.objectContaining({
+      provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",
+      limitProviderCostMicros:5_000,observedProviderCostMicros:4_500,thresholdReached:false,
+    })]);
+    expect(JSON.stringify(dashboard.providerCostBudgets30d)).not.toContain("private-");
+
+    await setManagedServiceCostBudget(f.env,scope,{...input,limitProviderCostMicros:4_000});
+    const reached=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:00:00.000Z"));
+    expect(reached.providerCostBudgets30d[0]?.thresholdReached).toBe(true);
+    const sweep=await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    expect(sweep).toMatchObject({scanned:1,alertsCreated:1,thresholdsReset:0,deferred:0});
+    expect(f.db.db.prepare("SELECT status,user_id FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"pending",user_id:scope.userId});
+    await expect(sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({alertsCreated:0,thresholdsReset:0,deferred:0});
+    const alerted=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:01:00.000Z"));
+    expect(alerted.providerCostAlerts).toEqual([expect.objectContaining({provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",
+      observedProviderCostMicros:4_500,limitProviderCostMicros:4_000,windowStart:"2026-10-13T02:00:00.000Z",windowEnd:"2026-11-12T02:00:00.000Z"})]);
+    const alertId=alerted.providerCostAlerts[0]!.id;
+    expect(alerted.providerCostAlerts[0]?.pushDeliveryStatus).toBe("pending");
+    await expect(acknowledgeManagedServiceCostBudgetAlert(f.env,scope,alertId)).resolves.toEqual({acknowledged:true,replayed:false});
+    await expect(acknowledgeManagedServiceCostBudgetAlert(f.env,scope,alertId)).resolves.toEqual({acknowledged:true,replayed:true});
+    expect((await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:02:00.000Z"))).providerCostAlerts).toEqual([]);
+
+    await expect(sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-12-20T02:00:00.000Z")))
+      .resolves.toMatchObject({alertsCreated:0,thresholdsReset:1,deferred:0});
+    await recordProviderApiCostObservation(f.db, {
+      tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"second-operation-ref",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",
+      quantityMicros:1_000_000,providerCost:"0.006000",currency:"USD",periodStart:"2026-12-20T01:00:00.000Z",
+      sourceApi:"telnyx.messages.get",observedAt:"2026-12-20T01:01:00.000Z",
+    });
+    await expect(sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-12-20T02:01:00.000Z")))
+      .resolves.toMatchObject({alertsCreated:1,thresholdsReset:0,deferred:0});
+    await setManagedServiceCostBudget(f.env,scope,{...input,limitProviderCostMicros:null});
+    const cleared=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:00:00.000Z"));
+    expect(cleared.providerCostBudgets30d).toEqual([]);
+  });
+
+  it("rejects unsupported provenance, currencies and unbounded limits", async () => {
+    const f=fixture();
+    const save=(input:Record<string,unknown>)=>setManagedServiceCostBudget(f.env,scope,input as never);
+    await expect(save({provider:"telnyx",serviceId:"phone-number",provenance:"invoice_claimed",currency:"USD",limitProviderCostMicros:1000}))
+      .rejects.toThrow("managed_service_cost_budget_invalid");
+    await expect(save({provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"usd",limitProviderCostMicros:1000}))
+      .rejects.toThrow("managed_service_cost_budget_invalid");
+    await expect(save({provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:1_000_000_000_001}))
+      .rejects.toThrow("managed_service_cost_budget_invalid");
+  });
+
+  it("uses dashboard-consistent Space rollups while keeping project budgets isolated", async () => {
+    const f=fixture();
+    const observation=(projectId:string,operationRef:string,providerCost:string)=>recordProviderApiCostObservation(f.db,{
+      tenantId:scope.tenantId,spaceId:scope.spaceId,projectId,provider:"telnyx",serviceId:"phone-number",operationRef,
+      accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,providerCost,
+      currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z",
+    });
+    await observation("project-a","project-a-operation","0.003000");
+    await observation("project-b","project-b-operation","0.003000");
+    const budget={provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed" as const,currency:"USD",limitProviderCostMicros:5_000};
+    await setManagedServiceCostBudget(f.env,scope,budget);
+
+    const workspaceDashboard=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:00:00.000Z"));
+    expect(workspaceDashboard.providerCostBudgets30d[0]).toMatchObject({observedProviderCostMicros:6_000,thresholdReached:true});
+    const sweeps=await Promise.all([
+      sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z")),
+      sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z")),
+    ]);
+    expect(sweeps.reduce((total,result)=>total+result.alertsCreated,0)).toBe(1);
+    expect(sweeps.reduce((total,result)=>total+result.deferred,0)).toBeGreaterThanOrEqual(1);
+    expect((await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:01:00.000Z"))).providerCostAlerts)
+      .toHaveLength(1);
+
+    const projectScope={...scope,projectId:"project-a"};
+    await setManagedServiceCostBudget(f.env,projectScope,budget);
+    const projectDashboard=await getManagedServiceDashboard(f.env,projectScope,new Date("2026-11-12T02:00:00.000Z"));
+    expect(projectDashboard.providerCostBudgets30d[0]).toMatchObject({observedProviderCostMicros:3_000,thresholdReached:false});
+  });
+
+  it("saves and removes a threshold through the owner-authenticated UserPort action", async () => {
+    const f = fixture();
+    const app = new Hono<{ Bindings: AgentsEnv }>();
+    registerCommunicationRoutes(app);
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": scope.tenantId,
+      "x-naelao-user-id": scope.userId,
+      "x-naelao-role": scope.role,
+      "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
+    };
+    const call = (userId: string, limit: number | null) => app.request(
+      "/spaces/space/assistant-communications?action=managed-service-cost-budget",
+      { method: "POST", headers: { ...headers, "x-naelao-user-id": userId }, body: JSON.stringify({
+        action: "managed-service-cost-budget", provider: "telnyx", service_id: "phone-number",
+        provenance: "provider_api_observed", currency: "USD", limit_provider_cost_micros: limit,
+      }) }, f.env,
+    );
+
+    expect((await call("other", 5_000)).status).toBe(403);
+    expect((await call(scope.userId, 5_000)).status).toBe(200);
+    expect((await call(scope.userId, null)).status).toBe(200);
+    expect((await getManagedServiceDashboard(f.env, scope)).providerCostBudgets30d).toEqual([]);
+  });
+
+  it("acknowledges durable cost alerts only through the owner-authorized action", async () => {
+    const f=fixture();
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"alert-operation-ref",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,scope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:5_000});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    const alert=(await getManagedServiceDashboard(f.env,scope)).providerCostAlerts[0]!;
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const call=(userId:string)=>app.request("/spaces/space/assistant-communications?action=managed-service-cost-alert-ack",
+      {method:"POST",headers:{...headers,"x-naelao-user-id":userId},body:JSON.stringify({action:"managed-service-cost-alert-ack",alert_id:alert.id})},f.env);
+    expect((await call("other")).status).toBe(403);
+    expect((await call(scope.userId)).status).toBe(200);
+    expect((await call(scope.userId)).status).toBe(200);
+    expect((await getManagedServiceDashboard(f.env,scope)).providerCostAlerts).toEqual([]);
+  });
+
+  it("delivers opted-in browser push alerts through a leased durable outbox and retries transient failures", async () => {
+    const f=fixture();
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"push-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,scope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:5_000});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    const notify=vi.fn(async()=>Response.json({delivered:true,channel:"web_push",devices:1}));
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toEqual({scanned:1,delivered:1,noSubscription:0,suppressed:0,deferred:0});
+    const request=notify.mock.calls[0]?.[0] as Request;
+    expect(request.url).toBe("http://notifications-worker/internal/notify");
+    expect(request.headers.get("x-naelao-tenant-id")).toBe(scope.tenantId);
+    expect(await request.json()).toMatchObject({channel:"web_push",space_id:scope.spaceId,user_id:scope.userId,
+      subject:"Managed service cost threshold reached",message:expect.stringContaining("0.01 USD")});
+    expect(f.db.db.prepare("SELECT status,attempts,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"delivered",attempts:1,last_error:null});
+
+    const retry=fixture();
+    await recordProviderApiCostObservation(retry.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"retry-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(retry.env,scope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:5_000});
+    await sweepManagedServiceCostBudgetAlerts(retry.env,new Date("2026-11-12T02:00:00.000Z"));
+    retry.env.NOTIFICATIONS_WORKER={fetch:vi.fn(async()=>Response.json({delivered:false},{status:503}))} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(retry.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({scanned:1,delivered:0,deferred:1});
+    expect(retry.db.db.prepare("SELECT status,attempts,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toMatchObject({status:"pending",attempts:1,last_error:"notifications_http_503"});
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(retry.env,new Date("2026-11-12T02:01:30.000Z")))
+      .resolves.toMatchObject({scanned:0});
+    retry.env.NOTIFICATIONS_WORKER={fetch:vi.fn(async()=>Response.json({delivered:false,reason:"no_subscription"},{status:404}))} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(retry.env,new Date("2026-11-12T02:02:00.000Z")))
+      .resolves.toMatchObject({scanned:1,noSubscription:1,deferred:0});
+    expect(retry.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"no_subscription",last_error:"no_active_web_push_subscription"});
+  });
+
+  it("suppresses queued push after the configuring user loses organization and Space access", async () => {
+    const f=fixture();
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"revoked-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,scope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:5_000});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    f.db.db.prepare("DELETE FROM org_members WHERE org_id=? AND user_id=?").run(scope.tenantId,scope.userId);
+    f.db.db.prepare("UPDATE orgs SET owner_id='somebody-else' WHERE id=?").run(scope.tenantId);
+    f.db.db.prepare("DELETE FROM space_members WHERE space_id=? AND end_user_id=?").run(scope.spaceId,scope.userId);
+    const notify=vi.fn();
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({scanned:1,suppressed:1,delivered:0});
+    expect(notify).not.toHaveBeenCalled();
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"suppressed",last_error:"recipient_access_revoked"});
+  });
+});

@@ -14,12 +14,12 @@ describe("sandbox workspace ownership", () => {
     expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project" }))
       .toBe("spaces/space/projects/project/workspace/");
     expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "install-a" }))
-      .toBe("spaces/space/projects/project/workspace/");
+      .toBe("spaces/space/projects/project/extensions/install-a/workspace/");
   });
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; sidecarExecutionSeconds?: number; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean; unifiedWorkspace?: boolean; workspaceProject?: boolean; workspaceProjectUnmigrated?: boolean; failCheckpointOnce?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -177,6 +177,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
           bind: () => ({
             first: async () => {
               if (!tenantActive) return null;
+              if (query.includes("sidecar_runtime_execution_profiles")) return options.sidecarExecutionSeconds === undefined
+                ? null : { max_execution_seconds: options.sidecarExecutionSeconds };
               if (query.includes("workspace_erasure_tombstones")) return workspaceErased ? { erased: 1 } : null;
               return query.includes("config_json")
                 ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
@@ -193,7 +195,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       headers.delete("x-test-execution-id");
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", ...(options.workspaceProject ? { projectId: "project" } : {}), actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
-        ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
+        ...(options.sidecar ? { projectId: "project", installationId: "install-a", containerId: "container-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
         executionId: testExecutionId ?? crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
@@ -426,6 +428,14 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       error: "container_execution_time_limit_exceeded: maximum 1000ms; move waits and schedules to a Durable Workflow and keep each container step bounded",
       workspace_may_require_reconciliation: true });
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("applies the persisted sidecar execution ceiling to new executions", async () => {
+    const { sandbox, mockContainer } = await createTestSandbox({ sidecar: true, sidecarExecutionSeconds: 1, hangExecution: true });
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: JSON.stringify({ code: "sleep" }) }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: expect.stringContaining("maximum 1000ms") });
+    expect(mockContainer.destroy).toHaveBeenCalled();
   });
 
   it("does not extend base-container idle time from an active-task hint", async () => {

@@ -20,6 +20,7 @@ export function createContainerWorkspaceGateway(options: {
     const stub = options.namespace.get(options.namespace.idFromName(sandboxInstanceName(actor.spaceId, actor.projectId, actor.branch)));
     const response = await stub.fetch(new Request("http://sandbox/workspace/" + operation, { method: "POST", headers: {
       "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
+      ...(actor.projectId ? { "x-naelao-runtime-object-name": sandboxInstanceName(actor.spaceId, actor.projectId, actor.branch) } : {}),
       "x-naelao-internal-token": await mintInternalToken(options.secret, actor.tenantId),
     }, body: JSON.stringify({ ...payload, spaceId: actor.spaceId, projectId: actor.projectId, workspaceBranch: actor.branch }),
       signal: actor.signal ? AbortSignal.any([actor.signal, AbortSignal.timeout(55000)]) : AbortSignal.timeout(55000) }));

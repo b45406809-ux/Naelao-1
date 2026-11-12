@@ -1,4 +1,5 @@
 import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
+import { resolveFileContentType } from "@naelao/types";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
@@ -71,8 +72,7 @@ export async function downloadDiscordAttachments(raw: JsonObject, input: { fetch
     const bytes = await readBounded(response);
     if (bytes.byteLength !== declaredSize) throw new Error("discord_media_size_mismatch");
     const filename = safeFilename(typeof reference.filename === "string" ? reference.filename : String(reference.id ?? "attachment"));
-    const mimeType = typeof reference.content_type === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(reference.content_type)
-      ? reference.content_type.toLowerCase() : "application/octet-stream";
+    const mimeType = resolveFileContentType(filename, reference.content_type);
     results.push({ filename, mimeType, bytes });
     total += bytes.byteLength;
   }

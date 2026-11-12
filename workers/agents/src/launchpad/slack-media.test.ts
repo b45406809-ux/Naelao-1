@@ -32,6 +32,19 @@ describe("Slack attachment ingress", () => {
     expect((fetcher.mock.calls[1]![1] as RequestInit).redirect).toBe("manual");
   });
 
+  it("infers a known extension for generic provider metadata and preserves valid provider types", async () => {
+    const generic = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, file: { name: "invoice.pdf", mimetype: "application/octet-stream", size: 1, url_private: "https://files.slack.com/file" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])));
+    await expect(downloadSlackAttachments(raw, { botToken: "token", fetcher: generic }))
+      .resolves.toMatchObject([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
+    const declared = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, file: { name: "invoice.pdf", mimetype: "application/vnd.example.invoice+json; version=2", size: 1, url_private: "https://files.slack.com/file" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1])));
+    await expect(downloadSlackAttachments(raw, { botToken: "token", fetcher: declared }))
+      .resolves.toMatchObject([{ mimeType: "application/vnd.example.invoice+json; version=2" }]);
+  });
+
   it("fails closed on missing scope, hostile URLs, and declared oversize files", async () => {
     await expect(downloadSlackAttachments(raw, {})).rejects.toThrow("slack_media_unavailable");
     const hostile = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, file: { name: "a", size: 1, url_private_download: "https://attacker.example/file" } }));

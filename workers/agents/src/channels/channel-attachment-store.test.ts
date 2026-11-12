@@ -34,6 +34,17 @@ describe("scoped channel attachment storage", () => {
     expect(state.queries[0]?.values.slice(1, 4)).toEqual(["tenant-a", "space-a", "event/1"]);
   });
 
+  it("infers a known filename extension for generic provider MIME while preserving explicit MIME", async () => {
+    const state = setup();
+    const input = { ...state, platformSecret: "secret", tenantId: "tenant-a", spaceId: "space-a", taskId: "task", channel: "email" };
+    const [inferred] = await storeChannelAttachments({ ...input, files: [{ ...file, mimeType: "application/octet-stream" }] });
+    expect(inferred).toMatchObject({ filename: "_invoice.pdf", mimeType: "application/pdf" });
+    expect(state.bucket.put.mock.calls[0]?.[2]).toMatchObject({ httpMetadata: { contentType: "application/pdf" } });
+
+    const [explicit] = await storeChannelAttachments({ ...input, indexOffset: 1, files: [{ ...file, mimeType: "application/x-provider-recorded" }] });
+    expect(explicit?.mimeType).toBe("application/x-provider-recorded");
+  });
+
   it("rejects zero-byte, oversized, and excessive attachment sets before object storage", async () => {
     const state = setup();
     const input = { ...state, platformSecret: "secret", tenantId: "tenant-a", spaceId: "space-a", taskId: "task", channel: "discord" };

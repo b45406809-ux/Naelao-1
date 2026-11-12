@@ -29,7 +29,8 @@ async function dispatchEvent(c: WebhookContext, binding: AssistantPhoneBinding, 
   const id = binding.id;
   if (event.eventType.startsWith("call.") || event.eventType.startsWith("streaming.")) {
     let claim;
-    try { claim = await claimTelnyxIngress(c.env.PLATFORM_DB, id, event.eventId, raw); }
+    try { claim = await claimTelnyxIngress(c.env.PLATFORM_DB, id, event.eventId, raw,
+      { retryIndeterminateCostEvent: event.eventType === "call.cost" }); }
     catch { return c.json({ error_code: "event_conflict_or_storage_unavailable" }, 409); }
     if (!claim.acquired) return claim.state === "completed" ? c.json({ accepted: true, duplicate: true }) : c.json({ error_code: "event_reconciliation_required" }, 409);
     try {

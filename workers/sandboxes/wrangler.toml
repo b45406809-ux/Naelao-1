@@ -23,6 +23,10 @@ migrations_dir = "../../infra/migrations"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api"
+
 [env.staging]
 name = "naelao-sandboxes-staging"
 
@@ -38,6 +42,10 @@ migrations_dir = "../../infra/migrations"
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents-staging"
+
+[[env.staging.services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api-staging"
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
@@ -61,6 +69,10 @@ migrations_dir = "../../infra/migrations"
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents-production"
+
+[[env.production.services]]
+binding = "AGENTPORT_WORKER"
+service = "agentport-api-production"
 
 [env.production.triggers]
 crons = ["*/5 * * * *"]

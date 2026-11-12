@@ -14,6 +14,7 @@ export interface ProviderDeletionOperation {
   computer_id: string;
   allocation_id: string;
   connection_id: string | null;
+  operation_id?: string | null;
   provider: string;
   external_id: string | null;
   generation: number;
@@ -26,6 +27,8 @@ export interface ProviderDeletionOperation {
   connection_provider: string | null;
   base_url: string | null;
   connection_region: string | null;
+  connection_status?: string | null;
+  template_digest?: string | null;
   template_id: string | null;
   template_version: string | null;
   filesystem_id?: string | null;
@@ -240,21 +243,68 @@ export async function runSandboxAllocationReconciliation(
   const { results } = await env.PLATFORM_DB.prepare(
     `SELECT a.id AS allocation_id,a.computer_id,a.connection_id,a.provider,a.external_id,a.generation,
             c.tenant_id,c.space_id,c.project_id,conn.owner_id,conn.credential_ciphertext,conn.credential_iv,
-            conn.provider AS connection_provider,conn.region AS connection_region,c.template_id,c.template_version
+            conn.provider AS connection_provider,conn.region AS connection_region,conn.status AS connection_status,
+            c.template_id,c.template_version,a.operation_id,t.digest AS template_digest,op.status AS operation_status
        FROM sandbox_allocations a JOIN sandbox_computers c ON c.id=a.computer_id
        LEFT JOIN sandbox_connections conn ON conn.id=a.connection_id
+       LEFT JOIN sandbox_template_versions t ON t.template_id=c.template_id AND t.version=c.template_version
+       LEFT JOIN sandbox_operations op ON op.id=a.operation_id
       WHERE a.status IN ('intent','unknown','error')
+        AND a.updated_at <= ?
         AND NOT EXISTS (SELECT 1 FROM sandbox_provider_deletion_operations d WHERE d.allocation_id=a.id AND d.status NOT IN ('confirmed_deleted','retained'))
       ORDER BY a.updated_at,a.id LIMIT ?`,
-  ).bind(boundedLimit).all<ProviderDeletionOperation>();
+  ).bind(new Date(now.getTime()-60_000).toISOString(),boundedLimit).all<ProviderDeletionOperation>();
   const counts = { scanned: 0, observed: 0, indeterminate: 0 };
   for (const row of results ?? []) {
     counts.scanned++;
     const current = now.toISOString();
-    const adapter = await adapterForOperation({ ...row, id: row.allocation_id, status: "indeterminate" }, env.PLATFORM_SECRET, fetcher);
+    const operation: ProviderDeletionOperation = { ...row, id: row.allocation_id, status: "indeterminate" };
+    const adapter = await adapterForOperation(operation, env.PLATFORM_SECRET, fetcher);
     let observed: ProviderObservedState = "error";
     let reason: string | null = null;
-    if (!row.external_id) reason = "allocation_identity_unknown";
+    let reconciledCreate = false;
+    if (!row.external_id && row.provider === "agent37" && row.operation_id && row.connection_status !== "revoked") {
+      const provider = await agent37ProviderForOperation(operation, env.PLATFORM_SECRET, fetcher);
+      if (!provider) reason = "provider_connection_unavailable";
+      else {
+        try {
+          const found = await provider.findInstanceByOperationId(row.operation_id);
+          if (found) {
+            const externalId = found.id;
+            if (typeof externalId !== "string" || !/^[a-z0-9]{10}$/.test(externalId)) throw new Error("agent37_invalid_instance_id");
+            await env.PLATFORM_DB.prepare(`UPDATE sandbox_allocations SET external_id=?,updated_at=? WHERE id=? AND generation=? AND external_id IS NULL`)
+              .bind(externalId,current,row.allocation_id,row.generation).run();
+            const details = await provider.inspectDetails({ provider: "agent37", externalId, generation: row.generation });
+            await env.PLATFORM_DB.prepare(`UPDATE sandbox_allocations SET image_digest=?,updated_at=? WHERE id=? AND generation=?`)
+              .bind(typeof details.image_digest === "string" ? details.image_digest : null,current,row.allocation_id,row.generation).run();
+            const status = String(details.status ?? "unknown");
+            observed = status === "running" ? "running" : status === "sleeping" || status === "stopped" ? "sleeping" : "error";
+            const expectedDigest = typeof row.template_digest === "string" ? row.template_digest.toLowerCase().replace(/^sha256:/, "") : "";
+            const actualDigest = typeof details.image_digest === "string" ? details.image_digest.toLowerCase().replace(/^sha256:/, "") : "";
+            if (!expectedDigest || expectedDigest !== actualDigest) {
+              reason = "agent37_image_digest_unconfirmed";
+              await env.PLATFORM_DB.batch([
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_allocations SET status='active',updated_at=? WHERE id=? AND generation=?`).bind(current,row.allocation_id,row.generation),
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_computers SET state='recovery_required',updated_at=? WHERE id=? AND deleted_at IS NULL`).bind(current,row.computer_id),
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_operations SET status='failed',error_code=?,lease_until=NULL,updated_at=? WHERE id=?`).bind(reason,current,row.operation_id),
+              ]);
+            } else if (observed !== "running" && observed !== "sleeping") reason = "provider_state_unconfirmed";
+            else {
+              await provider.verifyInstanceCredentials({ provider: "agent37", externalId, generation: row.generation });
+              const state = observed === "running" ? "running" : "sleeping";
+              const result = { computerId: row.computer_id, state, allocation: { id: row.allocation_id, generation: row.generation, provider: "agent37", externalId, imageDigest: details.image_digest }, billingModel: "customer_owned_agent37_account" };
+              await env.PLATFORM_DB.batch([
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_connections SET execution_key_check_status='verified',execution_key_verified_at=?,execution_key_check_error_code=NULL,updated_at=? WHERE id=? AND status!='revoked'`).bind(current,current,row.connection_id),
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_allocations SET status=?,updated_at=? WHERE id=? AND generation=?`).bind(state === "running" ? "active" : "sleeping",current,row.allocation_id,row.generation),
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_computers SET state=?,active_operation_id=NULL,updated_at=? WHERE id=? AND deleted_at IS NULL`).bind(state,current,row.computer_id),
+                env.PLATFORM_DB.prepare(`UPDATE sandbox_operations SET status='complete',result_json=?,error_code=NULL,lease_until=NULL,updated_at=? WHERE id=?`).bind(JSON.stringify(result),current,row.operation_id),
+              ]);
+              reconciledCreate = true;
+            }
+          } else reason = "allocation_identity_unknown";
+        } catch { reason = "provider_inspection_unavailable"; }
+      }
+    } else if (!row.external_id) reason = "allocation_identity_unknown";
     else if (!adapter) reason = "provider_connection_unavailable";
     else {
       try { observed = await adapter.inspect(); }
@@ -278,7 +328,7 @@ export async function runSandboxAllocationReconciliation(
           updated_at=? WHERE id=? AND NOT EXISTS (SELECT 1 FROM sandbox_allocations WHERE computer_id=? AND status IN ('intent','unknown','error'))`)
           .bind(current, row.computer_id, row.computer_id),
       ]);
-    } else if (!reason && (observed === "running" || observed === "sleeping")) {
+    } else if (!reason && !reconciledCreate && (observed === "running" || observed === "sleeping")) {
       await env.PLATFORM_DB.batch([
         env.PLATFORM_DB.prepare("UPDATE sandbox_allocations SET status=?,updated_at=? WHERE id=? AND generation=? AND status IN ('intent','unknown','error')")
           .bind(observed === "running" ? "active" : "sleeping", current, row.allocation_id, row.generation),
@@ -323,6 +373,18 @@ async function adapterForOperation(operation: ProviderDeletionOperation, secret:
     } catch { return null; }
   }
   return null;
+}
+
+async function agent37ProviderForOperation(operation: ProviderDeletionOperation, secret: string, fetcher: typeof fetch): Promise<Agent37Provider | null> {
+  if (!operation.connection_id || !operation.owner_id || !operation.credential_ciphertext || !operation.credential_iv || operation.connection_provider !== "agent37") return null;
+  try {
+    const parsed = JSON.parse(await openConnection(secret, operation.tenant_id, operation.owner_id, operation.connection_id,
+      { ciphertext: operation.credential_ciphertext, iv: operation.credential_iv })) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const credentials = parsed as Record<string, unknown>;
+    if (typeof credentials.apiKey !== "string" || typeof credentials.instanceKey !== "string") return null;
+    return Agent37Provider.forControlPlane({ apiKey: credentials.apiKey, instanceKey: credentials.instanceKey }, fetcher);
+  } catch { return null; }
 }
 
 function d1Store(db: D1Database): ProviderDeletionStore {

@@ -2,7 +2,7 @@ import {issueApprovalDecisions,applyApprovalDecision} from "../communications/ap
 import {receiveSteering,drainSteering} from "../script-engine/worker-steering.js";
 import { createContainerWorkspaceGateway } from "../script-engine/container-workspace.js";
 import { dynamicSandboxNamespace } from "../script-engine/dynamic-containers.js";
-import { sandboxInstanceName } from "../script-engine/sandbox-routing.js";
+import { sandboxInstanceName, workspaceBranchScope } from "../script-engine/sandbox-routing.js";
 import { containerWorkerConcurrency, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
@@ -94,7 +94,7 @@ import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../sc
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
-import { resolveContainerBinary, resolveContainerCapabilities, containerRuntimeResourceKey, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
+import { resolveContainerBinary, resolveContainerCapabilities, containerRuntimeResourceKey, parseApprovedContainerImages, approvedContainer, sidecarKey, type InstalledContainer } from "../script-engine/container-policy.js";
 import { deployedContainerCatalogue, deployedDynamicImages } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
@@ -1054,6 +1054,7 @@ export interface AgentDOEnv {
   PLATFORM_DB?: D1Database;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
+  SANDBOXES_WORKER?: Fetcher;
   HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
   ANALYTICS?: AnalyticsEngineDataset;         // G-AZ09: unit economics tracking
   /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing approval.requested to any connected
@@ -2819,6 +2820,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
+    if (this.env.SANDBOXES_WORKER) env.sandboxesWorker = this.env.SANDBOXES_WORKER;
     if (!airGappedOnly && this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
     // Self-binding is available to host-managed prebuilt operations; provider credentials remain
     // outside the script isolate.
@@ -3016,6 +3018,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
       ...(!airGappedOnly && this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
       ...(!airGappedOnly && this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
+      ...(!airGappedOnly && this.env.SANDBOXES_WORKER ? { sandboxesWorker: this.env.SANDBOXES_WORKER } : {}),
       ...(!airGappedOnly && this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(dynamicSandboxNamespace(this.env) ? { toolSandbox: dynamicSandboxNamespace(this.env)! } : {}),
@@ -3034,6 +3037,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       },
       ...(commitContext ? { activeTask: true } : {}),
     });
+
+    env.transferContainerArtifact = async input => {
+      const runId = env.runId;
+      if (airGappedOnly || !userId || !runId || !await nativeGrantActive({ tenantId, spaceId, projectId, agentId, userId, runId }))
+        throw new Error("environment_sidecar_transfer_denied");
+      const installation = (await installedContainers()).find(item => item.installationId === input.installationId
+        && item.tenantId === tenantId && item.spaceId === spaceId && item.projectId === projectId
+        && (!item.userId || item.userId === userId));
+      if (!installation) throw new Error("container_active_installation_required");
+      const approved = approvedContainer(installation, parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY));
+      const namespace = approved.schedulingPolicy === "durable_object"
+        ? this.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? this.env.DYNAMIC_SANDBOX : undefined
+        : this.env[approved.binding];
+      if (!namespace) throw new Error("container_binding_unavailable");
+      const scope: ContainerInvocationScope = { tenantId, spaceId, ...(projectId ? { projectId } : {}), actorId: userId,
+        agentId, runId, executionId: `artifact-${input.requestId}`, ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
+        installationId: installation.installationId, ...(installation.scope ? { installationScope: installation.scope } : {}),
+        image: installation.contract.image, ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
+        ...(approved.schedulingPolicy === "durable_object" ? { dynamicImage: true } : {}), timeoutMs: 5000, deadline: Date.now() + 10000 };
+      validateContainerScope(scope);
+      const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)));
+      const response = await stub.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+        body: JSON.stringify(input) }));
+      const result = await response.json<{ status?: string; request_id?: string; direction?: string; path?: string; digest?: string; bytes?: number; error_code?: string }>()
+        .catch(() => ({} as { status?: string; request_id?: string; direction?: string; path?: string; digest?: string; bytes?: number; error_code?: string }));
+      if (!response.ok || !result.request_id || !result.digest || !Number.isSafeInteger(result.bytes))
+        throw new Error(result.error_code ?? `environment_sidecar_transfer_failed:${response.status}`);
+      return { request_id: result.request_id, direction: input.direction, path: input.path, digest: result.digest,
+        bytes: result.bytes!, status: result.status === "complete" ? "complete" as const : "indeterminate" as const };
+    };
 
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
     // per-project addressing as code-runner.ts's runContainer (a project's threads share one
@@ -6168,6 +6203,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           tokens_used: 0,
         },
       });
+    }
+    if (body.runId) {
+      try {
+        const active = this.ctx.storage.sql.exec(
+          `SELECT status, updated_at FROM run_state WHERE run_id = ?`, runId
+        ).toArray() as Array<{ status: string; updated_at: number }>;
+        const row = active[0];
+        if (row?.status === "running" && Date.now() - row.updated_at < 15 * 60 * 1000) {
+          // Provider queues can retry after the runtime accepted a run but its response was lost.
+          // Reuse the caller's stable run ID and let it poll the existing execution instead of
+          // starting a second model/tool turn for the same external delivery.
+          return Response.json({ status: "running", run_id: runId, session_id: sessionId }, { status: 202 });
+        }
+      } catch { /* if durable status is unavailable, fall through to existing recovery handling */ }
     }
     // Only recover after the previous execution has been quiet long enough that an active
     // request is unlikely to still be in flight. The journal contains completed tool boundaries;

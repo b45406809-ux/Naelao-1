@@ -18,6 +18,7 @@ function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destination
       const url = new URL(request.url);
       const body = request.method === "POST" ? await request.json() as Record<string, unknown> : undefined;
       coordinatorCalls.push({ path: url.pathname, body });
+      if (url.pathname === "/v1/read") return Response.json({ head: { branch: "main", revision: 5 }, entries: [] });
       if (url.pathname === "/v1/head") return Response.json({ head: { revision: 5 } });
       if (url.pathname === "/v1/open") return Response.json({ session: { id: sessionId, fence: 0 }, head: { revision: 5 } });
       if (url.pathname === "/v1/checkpoint") return Response.json({ publication: { status: "published", revision: 6 } });
@@ -40,7 +41,11 @@ function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destination
     },
     SCRIPTS_R2: {
       async head() { return options.destinationExists ? {} : null; },
-      async get(key: string) { sourceRead++; expect(key).toBe(attachment.object_key); return { size: options.sourceSize ?? attachment.size_bytes, arrayBuffer: async () => { sourceBytesRead++; return new Uint8Array([1, 2, 3, 4]).buffer; } }; },
+      async get(key: string) {
+        if (key !== attachment.object_key) return null; // no erasure-ledger receipt in this fixture
+        sourceRead++;
+        return { size: options.sourceSize ?? attachment.size_bytes, arrayBuffer: async () => { sourceBytesRead++; return new Uint8Array([1, 2, 3, 4]).buffer; } };
+      },
       async put(key: string, bytes: Uint8Array) { destinationWrites.push({ key, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }); return { etag: "created" }; },
     },
   };

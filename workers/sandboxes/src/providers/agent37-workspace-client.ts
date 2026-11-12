@@ -1,5 +1,6 @@
 import { mintInternalToken } from "@naelao/http";
-import type { ComputerConfig } from "@naelao/sandboxes-core";
+import { inferWorkspaceContentType } from "@naelao/types";
+import { assertWorkspacePath, type ComputerConfig } from "@naelao/sandboxes-core";
 import type { Agent37Provider, Agent37WorkspaceHandoff } from "./agent37.js";
 import type { RuntimeRequest } from "@naelao/sandboxes-core";
 
@@ -50,7 +51,7 @@ export function agent37WorkspaceHandoff(env: Agent37WorkspaceClientEnv, computer
           const response = await request({ operation: "content", sessionId, allocationGeneration, fence, filePath: entry.path });
           if (!response.ok) throw new Error(`workspace_content_http_${response.status}`);
           const bytes = new Uint8Array(await response.arrayBuffer());
-          const contentType = entry.contentType ?? "application/octet-stream";
+          const contentType = entry.contentType ?? inferWorkspaceContentType(entry.path);
           if (bytes.byteLength !== entry.size || response.headers.get("x-content-sha256") !== entry.sha256 || response.headers.get("x-executable") !== String(entry.executable) ||
               (response.headers.get("content-type") ?? "application/octet-stream") !== contentType) throw new Error("workspace_content_metadata_mismatch");
           files.push({ path: entry.path, sha256: entry.sha256, executable: entry.executable, contentType, bytes });
@@ -59,6 +60,43 @@ export function agent37WorkspaceHandoff(env: Agent37WorkspaceClientEnv, computer
           sessionId, revision: snapshot.session.baseRevision, fence, allocationGeneration: snapshot.session.allocationGeneration, files };
       } catch (error) {
         // No provider execution has been dispatched yet, so closing this read-only session is safe.
+        await request({ operation: "close", sessionId, allocationGeneration, fence }).catch(() => undefined);
+        throw error;
+      }
+    },
+    async readSelectedCommitted({ allocationGeneration, paths, allowMissing = false }) {
+      if (!paths.length || paths.length > 100) throw new Error("workspace_artifact_path_limit_exceeded");
+      const selected = paths.map(assertWorkspacePath);
+      if (new Set(selected).size !== selected.length) throw new Error("workspace_artifact_path_duplicate");
+      const opened = await json<{ session: { id: string; fence: number } }>(await request({ operation: "open", allocationGeneration }));
+      const sessionId = opened.session.id, fence = opened.session.fence;
+      try {
+        const snapshot = await json<{ session: { baseRevision: number; allocationGeneration: number }; entries: Array<{ path: string; sha256: string; size: number; executable: boolean; contentType?: string }> }>(
+          await request({ operation: "snapshot", sessionId, allocationGeneration, fence }));
+        if (snapshot.entries.length > 10_000) throw new Error("workspace_entry_limit_exceeded");
+        const byPath = new Map(snapshot.entries.map((entry) => [entry.path, entry]));
+        const files = [];
+        let total = 0;
+        for (const path of selected) {
+          const entry = byPath.get(path);
+          if (!entry) {
+            if (allowMissing) continue;
+            throw new Error("workspace_artifact_not_found");
+          }
+          if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > MAX_FILE_BYTES || (total += entry.size) > MAX_STAGED_BYTES)
+            throw new Error("workspace_artifact_transfer_limit_exceeded");
+          const response = await request({ operation: "content", sessionId, allocationGeneration, fence, filePath: path });
+          if (!response.ok) throw new Error(`workspace_content_http_${response.status}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const contentType = entry.contentType ?? inferWorkspaceContentType(entry.path);
+          if (bytes.byteLength !== entry.size || response.headers.get("x-content-sha256") !== entry.sha256 ||
+              response.headers.get("x-executable") !== String(entry.executable) ||
+              (response.headers.get("content-type") ?? "application/octet-stream") !== contentType) throw new Error("workspace_content_metadata_mismatch");
+          files.push({ path, sha256: entry.sha256, executable: entry.executable, contentType, bytes });
+        }
+        return { tenantId, spaceId: computer.scope.spaceId!, projectId: computer.scope.projectId!, branch, sessionId,
+          revision: snapshot.session.baseRevision, fence, allocationGeneration: snapshot.session.allocationGeneration, files };
+      } catch (error) {
         await request({ operation: "close", sessionId, allocationGeneration, fence }).catch(() => undefined);
         throw error;
       }

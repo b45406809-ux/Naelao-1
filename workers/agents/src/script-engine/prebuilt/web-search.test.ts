@@ -53,6 +53,16 @@ describe("bounded web-search tool inputs and download results", () => {
     expect((put.mock.calls[0]?.[1] as Uint8Array).byteLength).toBe(3_750_000);
   });
 
+  it("infers MIME from a known download filename when the provider omits content type", async () => {
+    const fetch = vi.fn(async () => Response.json({
+      url: "https://example.com/file.pdf", status: 200, encoding: "base64", content: "JVBERg==", size: 4, truncated: false,
+    }));
+    const put = vi.fn(async () => ({ etag: "etag" }));
+    const result = await webSearch.operations.download_file!({ url: "https://example.com/file", filename: "scan.pdf" }, context(fetch, { head: async () => null, put } as never)) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true, path: "downloads/scan.pdf", content_type: "application/pdf" });
+    expect(put.mock.calls[0]?.[2]).toMatchObject({ httpMetadata: { contentType: "application/pdf" } });
+  });
+
   it("returns the checked branch revision for project downloads", async () => {
     const fetch = vi.fn(async () => Response.json({ url: "https://example.com/file.txt", status: 200, encoding: "text", content: "hello", size: 5 }));
     const ctx = context(fetch, { head: async () => null } as never);

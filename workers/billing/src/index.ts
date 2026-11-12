@@ -22,6 +22,7 @@ import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
 import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
+import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
@@ -34,6 +35,8 @@ export interface BillingEnv {
   PLATFORM_DB: D1Database;
   QUOTA_CACHE: KVNamespace;
   BILLING_EVENTS: Queue;
+  /** Separate operator key for enabling verified managed-service plan entitlements. */
+  MANAGED_SERVICES_OPERATOR_SECRET?: string;
   // Lemon Squeezy (the ONLY billing provider — spec Appendix H / CLAUDE.md #9)
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
@@ -59,6 +62,45 @@ export interface BillingEnv {
   WHOP_CUSTOMER_BUSINESS_PLAN_ID?: string;
   /** Naelao's own company's webhook signing secret. */
   WHOP_PLATFORM_PLAN_WEBHOOK_SECRET?: string;
+}
+
+interface ManagedServiceMeterOutboxRow { event_id: string; org_id: string; payload_json: string; attempt_count: number }
+
+/** Dispatch committed managed-service meter intents at least once. D1 retains the intent until
+ * Queue acknowledges it; the Queue consumer records the stable event ID before acknowledging. */
+export async function dispatchManagedServiceMeterOutbox(env: BillingEnv, now = new Date(), limit = 50) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("managed_service_meter_outbox_limit_invalid");
+  const at = now.toISOString();
+  const leaseUntil = new Date(now.getTime() + 60_000).toISOString();
+  const claimed = await env.PLATFORM_DB.prepare(`UPDATE managed_service_meter_outbox SET status='leased',lease_until=?,
+      attempt_count=attempt_count+1,updated_at=? WHERE event_id IN (
+        SELECT event_id FROM managed_service_meter_outbox WHERE
+          (status='pending' AND next_attempt_at<=?) OR (status='leased' AND lease_until<=?)
+        ORDER BY next_attempt_at,created_at,event_id LIMIT ?
+      ) AND ((status='pending' AND next_attempt_at<=?) OR (status='leased' AND lease_until<=?))
+      RETURNING event_id,org_id,payload_json,attempt_count`)
+    .bind(leaseUntil,at,at,at,limit,at,at).all<ManagedServiceMeterOutboxRow>();
+  let sent = 0, deferred = 0;
+  for (const row of claimed.results ?? []) {
+    let payload: BillingQueueMessage | null = null;
+    try {
+      payload = JSON.parse(row.payload_json) as BillingQueueMessage;
+      if (payload.type !== "meter" || payload.event_id !== row.event_id || payload.org_id !== row.org_id) throw new Error("outbox_payload_invalid");
+      await env.BILLING_EVENTS.send(payload);
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_meter_outbox SET status='sent',lease_until=NULL,sent_at=?,
+        last_error=NULL,updated_at=? WHERE event_id=? AND org_id=? AND status='leased' AND lease_until=?`)
+        .bind(at,at,row.event_id,row.org_id,leaseUntil).run();
+      sent++;
+    } catch {
+      const backoffSeconds = Math.min(6 * 60 * 60, 30 * 2 ** Math.min(10, Math.max(0,row.attempt_count - 1)));
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_meter_outbox SET status='pending',lease_until=NULL,
+        next_attempt_at=?,last_error=?,updated_at=? WHERE event_id=? AND org_id=? AND status='leased' AND lease_until=?`)
+        .bind(new Date(now.getTime() + backoffSeconds * 1000).toISOString(),payload ? "queue_send_failed" : "outbox_payload_invalid",
+          at,row.event_id,row.org_id,leaseUntil).run();
+      deferred++;
+    }
+  }
+  return { claimed: claimed.results?.length ?? 0, sent, deferred };
 }
 
 // G-A11: Validate required secrets at startup. Vendor cutover: the STRIPE_* requirement is gone
@@ -490,6 +532,7 @@ app.post("/billing/usage", async (c) => {
 // INSERT accounts for both recorded monthly infra usage and unexpired holds in one D1 statement,
 // so two concurrent dispatches cannot both consume the same remaining allowance.
 app.use("/internal/workflows/budget/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.use("/internal/managed-services/credits/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 
 // Holds estimated builder LLM tokens before provider dispatch so concurrent Space Assistant
 // runs share the same day/week/month quota envelope. Holds are separate from usage_events and
@@ -662,8 +705,8 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
       || existing.project_id !== (body.project_id ?? null) || existing.installation_id !== (body.installation_id ?? null)
       || existing.runtime_tier !== (body.runtime_tier ?? null)) return c.json({ error_code: "reservation_scope_conflict" }, 409);
     if (existing.status === "released") {
-      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) <= ?")
-        .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, quota.limit).run();
+      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) + (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?")
+        .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, orgId, quota.limit).run();
       if (!renewed.meta.changes) return c.json({ error_code: "infra_quota_exceeded", message: "Workflow retry budget is unavailable" }, 402);
     }
     if (existing.status === "settled") return c.json({ error_code: "reservation_already_settled" }, 409);
@@ -675,9 +718,10 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
     SELECT ?,?,?,?,?,?,?,?,?,'held',?,datetime('now'),datetime('now')
     WHERE ? +
       (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id = ? AND event_type = 'infra_credits' AND recorded_at >= datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
-      (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND julianday(expires_at) > julianday('now')) <= ?
+      (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND julianday(expires_at) > julianday('now')) +
+      (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id = ? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?
   `).bind(id, orgId, body.space_id, workflowId, body.budget_key, body.project_id ?? null, body.installation_id ?? null,
-    body.runtime_tier ?? null, credits, expiry, credits, orgId, orgId, quota.limit).run();
+    body.runtime_tier ?? null, credits, expiry, credits, orgId, orgId, orgId, quota.limit).run();
   if (inserted.meta.changes === 0) {
     // Concurrent idempotent launches can both pass the initial read. If the other request
     // won the unique workflow insert, return its reservation instead of a false quota error.
@@ -752,6 +796,491 @@ app.post("/internal/workflows/budget/settle", async (c) => {
     if (state?.status !== "settled") return c.json({ settled: false, reservation_id: body.reservation_id });
   }
   return c.json({ settled: true, reservation_id: body.reservation_id, charged, deduplicated: (batch[1]?.meta.changes ?? 0) === 0 });
+});
+
+// Provider operations share the existing monthly infra-credit allowance and usage ledger.
+// Unlike short-lived workflow holds, an uncertain external effect has no automatic expiry.
+function operatorKeyMatches(expected:string|undefined,provided:string){
+  if(!expected||expected.length!==provided.length)return false;
+  let difference=0;for(let index=0;index<expected.length;index++)difference|=expected.charCodeAt(index)^provided.charCodeAt(index);
+  return difference===0;
+}
+
+app.post("/internal/managed-services/provider-cost-receipts/import",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const actorId=c.req.header("x-managed-services-operator-id")??"";
+  const body=await readBoundedRequestText(c.req.raw,256*1024).then(text=>JSON.parse(text) as {
+    tenant_id?:string;space_id?:string;project_id?:string|null;receipts?:ManagedProviderCostReceiptInput[];
+  }).catch(()=>null);
+  if(!body||typeof body.tenant_id!=="string"||typeof body.space_id!=="string"||!Array.isArray(body.receipts))return c.json({error_code:"managed_provider_cost_receipts_invalid"},400);
+  try{return c.json(await recordManagedProviderCostReceipts(c.env.PLATFORM_DB,{tenantId:body.tenant_id,spaceId:body.space_id,
+    ...(body.project_id===undefined?{}:{projectId:body.project_id}),actorId,receipts:body.receipts}),201);}
+  catch(error){const code=error instanceof Error&&error.message.startsWith("managed_provider_cost_")?error.message:"managed_provider_cost_receipt_failed";
+    return c.json({error_code:code},code.includes("conflict")?409:400);}
+});
+
+app.post("/internal/managed-services/provider-cost-receipts/summary",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const body=await readBoundedRequestText(c.req.raw,16*1024).then(text=>JSON.parse(text) as {
+    tenant_id?:string;space_id?:string;provider?:string;service_id?:string;period_start?:string;period_end?:string;currency?:string;
+  }).catch(()=>null);
+  if(!body||typeof body.tenant_id!=="string"||typeof body.provider!=="string"||typeof body.period_start!=="string"
+    ||typeof body.period_end!=="string"||typeof body.currency!=="string")return c.json({error_code:"managed_provider_cost_summary_invalid"},400);
+  try{return c.json(await summarizeManagedProviderCostReceipts(c.env.PLATFORM_DB,{tenantId:body.tenant_id,
+    ...(body.space_id?{spaceId:body.space_id}:{}),provider:body.provider,...(body.service_id?{serviceId:body.service_id}:{}),
+    periodStart:body.period_start,periodEnd:body.period_end,currency:body.currency}));}
+  catch(error){const code=error instanceof Error&&error.message.startsWith("managed_provider_cost_")?error.message:"managed_provider_cost_summary_failed";
+    return c.json({error_code:code},400);}
+});
+
+app.post("/internal/managed-services/entitlements/verify",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const body=await readBoundedRequestText(c.req.raw,64*1024).then(value=>JSON.parse(value) as {
+    plan_tier?:string;provider?:string;service_id?:string;operation_name?:string;region?:string;price_version?:string;
+    max_credits_per_operation?:number;max_operations_per_period?:number|null;valid_until?:string;reason?:string;
+  }).catch(()=>null);
+  const actorId=c.req.header("x-managed-services-operator-id")??"";
+  const allowedTiers=["free","growth","business","enterprise"];
+  const now=new Date(),validUntil=Date.parse(body?.valid_until??"");
+  if(!body||!allowedTiers.includes(body.plan_tier??"")||! /^[a-z][a-z0-9_-]{1,63}$/.test(body.provider??"")
+    ||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.service_id??"")||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name??"")
+    ||! /^[a-z0-9][a-z0-9-]{0,31}$/.test(body.region??"")||! /^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version??"")
+    ||!Number.isSafeInteger(body.max_credits_per_operation)||body.max_credits_per_operation!<1||body.max_credits_per_operation!>10_000_000
+    ||(body.max_operations_per_period!==undefined&&body.max_operations_per_period!==null&&(!Number.isSafeInteger(body.max_operations_per_period)||body.max_operations_per_period<1||body.max_operations_per_period>100_000))
+    ||!Number.isFinite(validUntil)||validUntil<=now.getTime()||validUntil>now.getTime()+180*86_400_000
+    ||!actorId.match(/^[A-Za-z0-9._:@-]{1,160}$/)||!body.reason||body.reason.trim().length<10||body.reason.length>500){
+    return c.json({error_code:"managed_service_entitlement_verification_invalid"},400);
+  }
+  const capability=await c.env.PLATFORM_DB.prepare(`SELECT version,operations_json,regions_json,account_modes_json,metering_json,status,valid_until
+    FROM managed_service_capability_versions WHERE provider=? AND service_id=? ORDER BY version DESC LIMIT 1`)
+    .bind(body.provider,body.service_id).first<{version:number;operations_json:string;regions_json:string;account_modes_json:string;metering_json:string;status:string;valid_until:string|null}>();
+  if(!capability||capability.status!=="verified"||!capability.valid_until||capability.valid_until<=now.toISOString())return c.json({error_code:"managed_service_capability_unverified"},409);
+  try{
+    const operations=JSON.parse(capability.operations_json) as unknown[],regions=JSON.parse(capability.regions_json) as unknown[],modes=JSON.parse(capability.account_modes_json) as unknown[];
+    const metering=JSON.parse(capability.metering_json) as Record<string,unknown>;
+    if(!operations.includes(body.operation_name)||!regions.includes(body.region)||!modes.includes("naelao_managed")||metering.priceVersion!==body.price_version)
+      return c.json({error_code:"managed_service_entitlement_evidence_mismatch"},409);
+  }catch{return c.json({error_code:"managed_service_capability_invalid"},409);}
+  const at=now.toISOString(),auditId=`msea_${crypto.randomUUID().replaceAll("-","")}`;
+  const result=await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_plan_entitlements(
+      plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,max_operations_per_period,
+      status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?, ?,?)
+      ON CONFLICT(plan_tier,provider,service_id,operation_name,region) DO UPDATE SET capability_version=excluded.capability_version,
+        price_version=excluded.price_version,max_credits_per_operation=excluded.max_credits_per_operation,max_operations_per_period=excluded.max_operations_per_period,
+        status='active',verified_by=excluded.verified_by,verified_at=excluded.verified_at,valid_until=excluded.valid_until,updated_at=excluded.updated_at`)
+      .bind(body.plan_tier,body.provider,body.service_id,capability.version,body.operation_name,body.region,body.price_version,body.max_credits_per_operation,
+        body.max_operations_per_period??null,actorId,at,new Date(validUntil).toISOString(),at,at),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_entitlement_audit(id,plan_tier,provider,service_id,operation_name,region,action,actor_id,reason,created_at)
+      SELECT ?,?,?,?,?,?,'verified',?,?,? WHERE EXISTS(SELECT 1 FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=? AND status='active' AND verified_at=?)`)
+      .bind(auditId,body.plan_tier,body.provider,body.service_id,body.operation_name,body.region,actorId,body.reason.trim(),at,
+        body.plan_tier,body.provider,body.service_id,body.operation_name,body.region,at),
+  ]);
+  if(!result[0]?.meta.changes||!result[1]?.meta.changes)return c.json({error_code:"managed_service_entitlement_verification_conflict"},409);
+  return c.json({verified:true,planTier:body.plan_tier,provider:body.provider,serviceId:body.service_id,operation:body.operation_name,region:body.region,capabilityVersion:capability.version,validUntil:new Date(validUntil).toISOString()});
+});
+
+app.post("/internal/managed-services/entitlements/disable",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const body=await readBoundedRequestText(c.req.raw,16*1024).then(value=>JSON.parse(value) as {plan_tier?:string;provider?:string;service_id?:string;operation_name?:string;region?:string;reason?:string}).catch(()=>null);
+  const actorId=c.req.header("x-managed-services-operator-id")??"";
+  if(!body||!body.plan_tier||!body.provider||!body.service_id||!body.operation_name||!body.region||!body.reason||body.reason.trim().length<10||body.reason.length>500||! /^[A-Za-z0-9._:@-]{1,160}$/.test(actorId))return c.json({error_code:"managed_service_entitlement_disable_invalid"},400);
+  const key=[body.plan_tier,body.provider,body.service_id,body.operation_name,body.region];
+  const prior=await c.env.PLATFORM_DB.prepare(`SELECT status FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=?`)
+    .bind(...key).first<{status:string}>();
+  if(!prior)return c.json({error_code:"managed_service_entitlement_not_found"},404);
+  if(prior.status==="disabled")return c.json({disabled:true,deduplicated:true});
+  const at=new Date().toISOString(),auditId=`msea_${crypto.randomUUID().replaceAll("-","")}`;
+  const result=await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`UPDATE managed_service_plan_entitlements SET status='disabled',updated_at=? WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=? AND status IN ('draft','active')`)
+      .bind(at,...key),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_entitlement_audit(id,plan_tier,provider,service_id,operation_name,region,action,actor_id,reason,created_at)
+      SELECT ?,?,?,?, ?,?,'disabled',?,?,? WHERE EXISTS(SELECT 1 FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=? AND status='disabled' AND updated_at=?)`)
+      .bind(auditId,...key,actorId,body.reason.trim(),at,...key,at),
+  ]);
+  if(!result[0]?.meta.changes||!result[1]?.meta.changes)return c.json({error_code:"managed_service_entitlement_disable_conflict"},409);
+  return c.json({disabled:true});
+});
+
+app.post("/internal/managed-services/model-entitlements/verify",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const body=await readBoundedRequestText(c.req.raw,64*1024).then(value=>JSON.parse(value) as {
+    plan_tier?:string;provider?:string;service_id?:string;operation_name?:string;model_id?:string;region?:string;price_version?:string;
+    credits_per_operation?:number;max_output_tokens?:number;max_credits_per_operation?:number;max_operations_per_period?:number|null;valid_until?:string;reason?:string;evidence?:unknown;
+  }).catch(()=>null);
+  const actorId=c.req.header("x-managed-services-operator-id")??"";
+  const tiers=["free","growth","business","enterprise"],now=new Date(),until=Date.parse(body?.valid_until??"");
+  const evidence=Array.isArray(body?.evidence)?body.evidence:[];
+  const validEvidence=evidence.length>0&&evidence.length<=10&&evidence.every(candidate=>{
+    if(!candidate||typeof candidate!=="object"||Array.isArray(candidate))return false;
+    const item=candidate as Record<string,unknown>;
+    if(typeof item.url!=="string"||typeof item.checkedAt!=="string")return false;
+    try{const url=new URL(item.url),checked=Date.parse(item.checkedAt);return url.protocol==="https:"&&!url.username&&!url.password&&Number.isFinite(checked)&&checked<=now.getTime()+60_000
+      &&(item.note===undefined||typeof item.note==="string"&&item.note.length<=500);}catch{return false;}
+  });
+  if(!body||!tiers.includes(body.plan_tier??"")||! /^[a-z][a-z0-9_-]{1,63}$/.test(body.provider??"")
+    ||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.service_id??"")||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name??"")
+    ||! /^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(body.model_id??"")||! /^[a-z0-9][a-z0-9-]{0,31}$/.test(body.region??"")
+    ||! /^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version??"")||!Number.isSafeInteger(body.credits_per_operation)
+    ||body.credits_per_operation!<1||!Number.isSafeInteger(body.max_output_tokens)||body.max_output_tokens!<1||body.max_output_tokens!>4096
+    ||!Number.isSafeInteger(body.max_credits_per_operation)||body.credits_per_operation!>body.max_credits_per_operation!
+    ||body.max_credits_per_operation!<1||body.max_credits_per_operation!>10_000_000
+    ||(body.max_operations_per_period!==undefined&&body.max_operations_per_period!==null&&(!Number.isSafeInteger(body.max_operations_per_period)||body.max_operations_per_period<1||body.max_operations_per_period>100_000))
+    ||!Number.isFinite(until)||until<=now.getTime()||until>now.getTime()+180*86_400_000
+    ||!validEvidence||! /^[A-Za-z0-9._:@-]{1,160}$/.test(actorId)||!body.reason||body.reason.trim().length<10||body.reason.length>500)
+    return c.json({error_code:"managed_service_model_entitlement_verification_invalid"},400);
+  const capability=await c.env.PLATFORM_DB.prepare(`SELECT version,operations_json,regions_json,account_modes_json,metering_json,status,valid_until
+    FROM managed_service_capability_versions WHERE provider=? AND service_id=? ORDER BY version DESC LIMIT 1`)
+    .bind(body.provider,body.service_id).first<{version:number;operations_json:string;regions_json:string;account_modes_json:string;metering_json:string;status:string;valid_until:string|null}>();
+  if(!capability||capability.status!=="verified"||!capability.valid_until||capability.valid_until<=now.toISOString())return c.json({error_code:"managed_service_capability_unverified"},409);
+  try{
+    const operations=JSON.parse(capability.operations_json) as unknown[],regions=JSON.parse(capability.regions_json) as unknown[],modes=JSON.parse(capability.account_modes_json) as unknown[];
+    const metering=JSON.parse(capability.metering_json) as Record<string,unknown>;
+    if(!operations.includes(body.operation_name)||!regions.includes(body.region)||!modes.includes("naelao_managed")||metering.priceVersion!==body.price_version)
+      return c.json({error_code:"managed_service_model_entitlement_evidence_mismatch"},409);
+  }catch{return c.json({error_code:"managed_service_capability_invalid"},409);}
+  if(until>Date.parse(capability.valid_until))return c.json({error_code:"managed_service_model_entitlement_outlives_capability"},400);
+  const evidenceJson=JSON.stringify(evidence),evidenceSha256=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(evidenceJson)))].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+  const at=now.toISOString(),auditId=`msmea_${crypto.randomUUID().replaceAll("-","")}`;
+  const result=await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_model_entitlements
+      (plan_tier,provider,service_id,capability_version,operation_name,model_id,region,price_version,max_credits_per_operation,max_operations_per_period,
+       credits_per_operation,max_output_tokens,evidence_json,evidence_sha256,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?)
+      ON CONFLICT(plan_tier,provider,service_id,operation_name,model_id,region) DO UPDATE SET capability_version=excluded.capability_version,
+       price_version=excluded.price_version,max_credits_per_operation=excluded.max_credits_per_operation,max_operations_per_period=excluded.max_operations_per_period,
+       credits_per_operation=excluded.credits_per_operation,max_output_tokens=excluded.max_output_tokens,
+       evidence_json=excluded.evidence_json,evidence_sha256=excluded.evidence_sha256,status='active',verified_by=excluded.verified_by,
+       verified_at=excluded.verified_at,valid_until=excluded.valid_until,updated_at=excluded.updated_at`)
+      .bind(body.plan_tier,body.provider,body.service_id,capability.version,body.operation_name,body.model_id,body.region,body.price_version,
+        body.max_credits_per_operation,body.max_operations_per_period??null,body.credits_per_operation,body.max_output_tokens,evidenceJson,evidenceSha256,actorId,at,new Date(until).toISOString(),at,at),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_model_entitlement_audit
+      (id,plan_tier,provider,service_id,operation_name,model_id,region,action,actor_id,reason,evidence_sha256,created_at)
+      SELECT ?,?,?,?,?,?,?,'verified',?,?,?,? WHERE EXISTS(SELECT 1 FROM managed_service_model_entitlements
+       WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND model_id=? AND region=? AND status='active' AND verified_at=?)`)
+      .bind(auditId,body.plan_tier,body.provider,body.service_id,body.operation_name,body.model_id,body.region,actorId,body.reason.trim(),evidenceSha256,at,
+        body.plan_tier,body.provider,body.service_id,body.operation_name,body.model_id,body.region,at),
+  ]);
+  if(!result[0]?.meta.changes||!result[1]?.meta.changes)return c.json({error_code:"managed_service_model_entitlement_verification_conflict"},409);
+  return c.json({verified:true,planTier:body.plan_tier,provider:body.provider,serviceId:body.service_id,operation:body.operation_name,
+    modelId:body.model_id,region:body.region,creditsPerOperation:body.credits_per_operation,maxOutputTokens:body.max_output_tokens,
+    capabilityVersion:capability.version,evidenceSha256,validUntil:new Date(until).toISOString()});
+});
+
+app.post("/internal/managed-services/model-entitlements/disable",async c=>{
+  if(!c.env.MANAGED_SERVICES_OPERATOR_SECRET)return c.json({error_code:"managed_service_operator_key_unavailable"},503);
+  if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
+  const body=await readBoundedRequestText(c.req.raw,16*1024).then(value=>JSON.parse(value) as {plan_tier?:string;provider?:string;service_id?:string;operation_name?:string;model_id?:string;region?:string;reason?:string}).catch(()=>null);
+  const actorId=c.req.header("x-managed-services-operator-id")??"";
+  if(!body||!body.plan_tier||!body.provider||!body.service_id||!body.operation_name||!body.model_id||!body.region||!body.reason
+    ||body.reason.trim().length<10||body.reason.length>500||! /^[A-Za-z0-9._:@-]{1,160}$/.test(actorId))return c.json({error_code:"managed_service_model_entitlement_disable_invalid"},400);
+  const key=[body.plan_tier,body.provider,body.service_id,body.operation_name,body.model_id,body.region];
+  const prior=await c.env.PLATFORM_DB.prepare(`SELECT status FROM managed_service_model_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND model_id=? AND region=?`)
+    .bind(...key).first<{status:string}>();
+  if(!prior)return c.json({error_code:"managed_service_model_entitlement_not_found"},404);
+  if(prior.status==="disabled")return c.json({disabled:true,deduplicated:true});
+  const at=new Date().toISOString(),auditId=`msmea_${crypto.randomUUID().replaceAll("-","")}`;
+  const result=await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`UPDATE managed_service_model_entitlements SET status='disabled',updated_at=?
+      WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND model_id=? AND region=? AND status IN ('draft','active')`).bind(at,...key),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_model_entitlement_audit
+      (id,plan_tier,provider,service_id,operation_name,model_id,region,action,actor_id,reason,created_at)
+      SELECT ?,?,?,?,?,?,?,'disabled',?,?,? WHERE EXISTS(SELECT 1 FROM managed_service_model_entitlements
+       WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND model_id=? AND region=? AND status='disabled' AND updated_at=?)`)
+      .bind(auditId,...key,actorId,body.reason.trim(),at,...key,at),
+  ]);
+  if(!result[0]?.meta.changes||!result[1]?.meta.changes)return c.json({error_code:"managed_service_model_entitlement_disable_conflict"},409);
+  return c.json({disabled:true});
+});
+
+app.post("/internal/managed-services/credits/reserve", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{
+    reservation_id?: string; operation_id?: string; space_id?: string; project_id?: string | null;
+    provider?: string; service_id?: string; operation_name?: string; model_id?: string; region?: string; payer_type?: string; payer_id?: string; agentport_agent_id?: string; payer_mandate_id?:string;
+    credits?: number; price_version?: string; expires_in_seconds?: number;
+  }>().catch(() => null);
+  const reservationId = body?.reservation_id ?? "", operationId = body?.operation_id ?? "";
+  const credits = body?.credits ?? 0, expiresIn = body?.expires_in_seconds ?? 172800;
+  if (!orgId || !/^[A-Za-z0-9._:-]{1,200}$/.test(reservationId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(operationId)
+    || typeof body?.space_id !== "string" || body.space_id.length < 1 || body.space_id.length > 160
+    || (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || body.project_id.length > 128))
+    || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.provider ?? "") || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(body.service_id ?? "")
+    || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name ?? "")
+    || (body.model_id !== undefined && !/^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(body.model_id))
+    || (body.agentport_agent_id !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.agentport_agent_id))
+    || (body.payer_mandate_id !== undefined && !/^[A-Za-z0-9._:-]{1,200}$/.test(body.payer_mandate_id))
+    || body.payer_type !== "organization" || body.payer_id !== orgId
+    || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(body.region ?? "")
+    || !Number.isSafeInteger(credits) || credits < 1 || credits > 10_000_000
+    || !/^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version ?? "")
+    || !Number.isSafeInteger(expiresIn) || expiresIn < 60 || expiresIn > 91 * 86400) return c.json({ error_code: "bad_request" }, 400);
+  const existing = await c.env.PLATFORM_DB.prepare(`SELECT id,space_id,project_id,provider,service_id,operation_name,model_id,region,payer_type,payer_id,agentport_agent_id,payer_mandate_id,credits,price_version,status,expires_at
+    FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`).bind(orgId, operationId)
+    .first<{ id:string;space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;region:string;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;credits:number;price_version:string;status:string;expires_at:string|null }>();
+  let existingHeld = false;
+  if (existing) {
+    const priorMandate = existing.payer_mandate_id
+      ? await c.env.PLATFORM_DB.prepare(`SELECT id,status,expires_at FROM managed_service_payer_mandates
+          WHERE id=? AND tenant_id=? AND payer_type=? AND payer_id=? AND agentport_agent_id IS ? LIMIT 1`)
+          .bind(existing.payer_mandate_id,orgId,body.payer_type,body.payer_id,body.agentport_agent_id ?? null)
+          .first<{id:string;status:string;expires_at:string|null}>()
+      : null;
+    const same = existing.id === reservationId && existing.space_id === body.space_id && existing.project_id === (body.project_id ?? null)
+      && existing.provider === body.provider && existing.service_id === body.service_id && existing.operation_name === body.operation_name
+      && existing.model_id === (body.model_id ?? null)
+      && existing.region === body.region
+      && existing.payer_type === body.payer_type && existing.payer_id === body.payer_id
+      && existing.agentport_agent_id === (body.agentport_agent_id ?? null)
+      && (body.payer_mandate_id === undefined || existing.payer_mandate_id === body.payer_mandate_id)
+      && priorMandate?.id === existing.payer_mandate_id
+      && existing.credits === credits && existing.price_version === body.price_version;
+    if (!same) return c.json({ error_code: existing.status === "settled" ? "reservation_already_settled" : "reservation_identity_conflict" }, 409);
+    // A retry after the caller lost the settlement response must be able to resume the
+    // operation. Returning the already-settled reservation is safe: settle is idempotent
+    // and the usage event has a stable ID.
+    if (existing.status === "settled" || existing.status === "uncertain")
+      return c.json({ reserved:true,reservation_id:existing.id,status:existing.status,credits,deduplicated:true });
+    if (existing.status !== "held") return c.json({ error_code:"reservation_identity_conflict" },409);
+    existingHeld = true;
+  }
+  const operationScope=`${body.provider}:${body.service_id}:${body.operation_name}`;
+  const mandate=body.payer_mandate_id
+    ? await c.env.PLATFORM_DB.prepare(`SELECT id,agentport_agent_id,max_credits_per_operation,max_credits_per_period,period_days,auto_renew FROM managed_service_payer_mandates
+        WHERE id=? AND tenant_id=? AND payer_type=? AND payer_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?)
+          AND agentport_agent_id IS ? AND EXISTS(SELECT 1 FROM json_each(operation_scopes_json) WHERE value=?) LIMIT 1`)
+        .bind(body.payer_mandate_id,orgId,body.payer_type,body.payer_id,new Date().toISOString(),body.agentport_agent_id ?? null,operationScope)
+        .first<{id:string;agentport_agent_id:string|null;max_credits_per_operation:number;max_credits_per_period:number|null;period_days:number;auto_renew:number}>()
+    : await c.env.PLATFORM_DB.prepare(`SELECT id,agentport_agent_id,max_credits_per_operation,max_credits_per_period,period_days,auto_renew FROM managed_service_payer_mandates
+        WHERE tenant_id=? AND payer_type=? AND payer_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?)
+          AND agentport_agent_id IS ? AND EXISTS(SELECT 1 FROM json_each(operation_scopes_json) WHERE value=?) LIMIT 1`)
+        .bind(orgId,body.payer_type,body.payer_id,new Date().toISOString(),body.agentport_agent_id ?? null,operationScope)
+        .first<{id:string;agentport_agent_id:string|null;max_credits_per_operation:number;max_credits_per_period:number|null;period_days:number;auto_renew:number}>();
+  if(!mandate)return c.json({error_code:"payer_mandate_required"},403);
+  if(existingHeld && existing?.payer_mandate_id !== mandate.id)return c.json({error_code:"payer_mandate_changed"},403);
+  if(credits>mandate.max_credits_per_operation)return c.json({error_code:"payer_mandate_limit_exceeded"},402);
+  if(body.operation_name==="renew"&&mandate.auto_renew!==1)return c.json({error_code:"payer_mandate_auto_renew_required"},403);
+  if(existingHeld && mandate.max_credits_per_period!==null){
+    const scopedSpend=await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits
+      FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=? AND operation_id<>?
+        AND created_at>=datetime('now','-' || ? || ' days')
+        AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
+      .bind(orgId,body.agentport_agent_id??null,mandate.id,operationId,mandate.period_days).first<{credits:number}>();
+    if((scopedSpend?.credits??0)+credits>mandate.max_credits_per_period)
+      return c.json({error_code:"payer_mandate_period_limit_exceeded",period_days:mandate.period_days},402);
+  }
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
+  const entitlement = body.model_id
+    ? await c.env.PLATFORM_DB.prepare(`SELECT capability_version,price_version,max_credits_per_operation,max_operations_per_period,credits_per_operation,valid_until
+        FROM managed_service_model_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND model_id=? AND region=?
+          AND status='active' AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND valid_until>? LIMIT 1`)
+        .bind(planTier,body.provider,body.service_id,body.operation_name,body.model_id,body.region,new Date().toISOString())
+        .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;credits_per_operation:number|null;valid_until:string}>()
+    : await c.env.PLATFORM_DB.prepare(`SELECT capability_version,price_version,max_credits_per_operation,max_operations_per_period,valid_until
+        FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=?
+          AND status='active' AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND valid_until>? LIMIT 1`)
+        .bind(planTier,body.provider,body.service_id,body.operation_name,body.region,new Date().toISOString())
+        .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;valid_until:string}>();
+  if(!entitlement)return c.json({error_code:"managed_service_not_entitled"},403);
+  if(entitlement.price_version!==body.price_version)return c.json({error_code:"managed_service_price_version_conflict"},409);
+  const modelCreditsPerOperation:number|null="credits_per_operation" in entitlement&&typeof entitlement.credits_per_operation==="number"?entitlement.credits_per_operation:null;
+  if(body.model_id&&(!Number.isSafeInteger(modelCreditsPerOperation)||modelCreditsPerOperation!<1))return c.json({error_code:"managed_service_model_price_unconfigured"},403);
+  if(body.model_id&&credits!==modelCreditsPerOperation)return c.json({error_code:"managed_service_model_price_conflict"},409);
+  if(credits>entitlement.max_credits_per_operation)return c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
+  const capability=await c.env.PLATFORM_DB.prepare(`SELECT operations_json,regions_json,account_modes_json,status,valid_until FROM managed_service_capability_versions
+    WHERE provider=? AND service_id=? AND version=?`).bind(body.provider,body.service_id,entitlement.capability_version)
+    .first<{operations_json:string;regions_json:string;account_modes_json:string;status:string;valid_until:string|null}>();
+  if(!capability||capability.status!=="verified"||!capability.valid_until||capability.valid_until<=new Date().toISOString())return c.json({error_code:"managed_service_capability_unverified"},403);
+  try {
+    if(!(JSON.parse(capability.operations_json) as unknown[]).includes(body.operation_name)
+      ||!(JSON.parse(capability.regions_json) as unknown[]).includes(body.region)
+      ||!(JSON.parse(capability.account_modes_json) as unknown[]).includes("naelao_managed"))return c.json({error_code:"managed_service_capability_unverified"},403);
+  } catch { return c.json({error_code:"managed_service_capability_unverified"},403); }
+  if(!existing&&entitlement.max_operations_per_period!==null){
+    const count=await c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS count FROM managed_service_credit_reservations WHERE org_id=? AND provider=? AND service_id=? AND operation_name=?
+      AND ((? IS NULL AND model_id IS NULL) OR model_id=?) AND region=?
+      AND operation_id<>?
+      AND created_at>=datetime('now','start of month') AND (status IN ('uncertain','settled') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
+      .bind(orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,body.region,operationId).first<{count:number}>();
+    if((count?.count??0)>=entitlement.max_operations_per_period)return c.json({error_code:"managed_service_entitlement_period_limit"},402);
+  }
+  const operation=await c.env.PLATFORM_DB.prepare(`SELECT provider,service_id,operation_name,model_id,capability_version,region,status
+    FROM managed_service_operations WHERE operation_id=? AND tenant_id=? LIMIT 1`)
+    .bind(operationId,orgId).first<{provider:string;service_id:string;operation_name:string;model_id:string|null;capability_version:number|null;region:string|null;status:string}>();
+  if(!operation||operation.provider!==body.provider||operation.service_id!==body.service_id||operation.operation_name!==body.operation_name
+    ||operation.model_id!==(body.model_id??null)||operation.region!==body.region||operation.capability_version!==entitlement.capability_version||operation.status!=="running")
+    return c.json({error_code:"managed_service_operation_not_admitted"},409);
+  const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
+  const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+  if (existingHeld) {
+    if (!existing) return c.json({error_code:"reservation_identity_conflict"},409);
+    if (!existing.expires_at || Date.parse(existing.expires_at) > Date.now())
+      return c.json({reserved:true,reservation_id:existing.id,status:"held",credits,deduplicated:true});
+    const renewed = await c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations SET expires_at=?,updated_at=?
+      WHERE id=? AND org_id=? AND operation_id=? AND status='held' AND expires_at<=?
+        AND (? IS NULL OR COALESCE((SELECT SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END)
+          FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=? AND operation_id<>?
+            AND created_at>=datetime('now','-' || ? || ' days')
+            AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))),0) + ? <= ?)
+        AND (? IS NULL OR (SELECT COUNT(*) FROM managed_service_credit_reservations WHERE org_id=? AND provider=? AND service_id=? AND operation_name=?
+          AND ((? IS NULL AND model_id IS NULL) OR model_id=?) AND region=? AND operation_id<>?
+          AND created_at>=datetime('now','start of month') AND (status IN ('uncertain','settled') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) < ?)
+        AND ? +
+          (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
+          (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) +
+          (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND operation_id<>? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?`)
+      .bind(expiresAt,new Date().toISOString(),existing.id,orgId,operationId,new Date().toISOString(),mandate.max_credits_per_period,orgId,
+        body.agentport_agent_id??null,mandate.id,operationId,mandate.period_days,credits,mandate.max_credits_per_period,
+        entitlement.max_operations_per_period,orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,
+        body.region,operationId,entitlement.max_operations_per_period,
+        credits,orgId,orgId,orgId,operationId,quota.limit).run();
+    if (renewed.meta.changes) return c.json({reserved:true,reservation_id:existing.id,status:"held",credits,deduplicated:true});
+    if (mandate.max_credits_per_period !== null) {
+      const scopedSpend = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits
+        FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=? AND operation_id<>?
+          AND created_at>=datetime('now','-' || ? || ' days')
+          AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
+        .bind(orgId,body.agentport_agent_id??null,mandate.id,operationId,mandate.period_days).first<{credits:number}>();
+      if ((scopedSpend?.credits ?? 0) + credits > mandate.max_credits_per_period)
+        return c.json({error_code:"payer_mandate_period_limit_exceeded",period_days:mandate.period_days},402);
+    }
+    return c.json({error_code:"infra_quota_exceeded",message:"Managed service credit allowance is unavailable",limit:quota.limit},402);
+  }
+  const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_credit_reservations
+    (id,org_id,space_id,project_id,region,operation_id,provider,service_id,operation_name,model_id,payer_type,payer_id,credits,price_version,agentport_agent_id,payer_mandate_id,status,expires_at,created_at,updated_at)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?,?,?
+    WHERE (? IS NULL OR COALESCE((SELECT SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END)
+      FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=?
+        AND created_at>=datetime('now','-' || ? || ' days')
+        AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))),0) + ? <= ?)
+      AND (? IS NULL OR (SELECT COUNT(*) FROM managed_service_credit_reservations WHERE org_id=? AND provider=? AND service_id=? AND operation_name=?
+        AND ((? IS NULL AND model_id IS NULL) OR model_id=?) AND region=? AND operation_id<>?
+        AND created_at>=datetime('now','start of month') AND (status IN ('uncertain','settled') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) < ?)
+      AND ? +
+      (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
+      (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) +
+      (SELECT COALESCE(SUM(credits),0) FROM managed_service_credit_reservations WHERE org_id=? AND (status='uncertain' OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))) <= ?`)
+    .bind(reservationId,orgId,body.space_id,body.project_id??null,body.region,operationId,body.provider,body.service_id,body.operation_name,body.model_id??null,
+      body.payer_type,body.payer_id,credits,body.price_version,body.agentport_agent_id??null,mandate.id,expiresAt,new Date().toISOString(),new Date().toISOString(),
+      mandate.max_credits_per_period,orgId,body.agentport_agent_id??null,mandate.id,mandate.period_days,credits,mandate.max_credits_per_period,
+      entitlement.max_operations_per_period,orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,
+      body.region,operationId,entitlement.max_operations_per_period,
+      credits,orgId,orgId,orgId,quota.limit).run();
+  if (!inserted.meta.changes) {
+    const raced = await c.env.PLATFORM_DB.prepare(`SELECT id,status,credits,space_id,project_id,region,provider,service_id,operation_name,model_id,payer_type,payer_id,agentport_agent_id,payer_mandate_id,price_version
+      FROM managed_service_credit_reservations WHERE org_id=? AND operation_id=?`)
+      .bind(orgId,operationId).first<{id:string;status:string;credits:number;space_id:string;project_id:string|null;region:string;provider:string;service_id:string;operation_name:string;model_id:string|null;payer_type:string;payer_id:string;agentport_agent_id:string|null;payer_mandate_id:string|null;price_version:string}>();
+    if (raced) {
+      const same=raced.id===reservationId&&raced.space_id===body.space_id&&raced.project_id===(body.project_id??null)&&raced.region===body.region
+        &&raced.provider===body.provider&&raced.service_id===body.service_id&&raced.operation_name===body.operation_name&&raced.model_id===(body.model_id??null)
+        &&raced.payer_type===body.payer_type&&raced.payer_id===body.payer_id
+        &&raced.agentport_agent_id===(body.agentport_agent_id??null)&&raced.payer_mandate_id===mandate.id
+        &&raced.credits===credits&&raced.price_version===body.price_version;
+      return same&&["held","uncertain","settled"].includes(raced.status)
+        ? c.json({reserved:true,reservation_id:raced.id,status:raced.status,credits,deduplicated:true})
+        : c.json({error_code:"reservation_identity_conflict"},409);
+    }
+    if (mandate.max_credits_per_period !== null) {
+      const scopedSpend = await c.env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(CASE WHEN status='settled' THEN COALESCE(settled_credits,credits) ELSE credits END),0) AS credits
+        FROM managed_service_credit_reservations WHERE org_id=? AND agentport_agent_id IS ? AND payer_mandate_id=?
+          AND created_at>=datetime('now','-' || ? || ' days')
+          AND (status IN ('settled','uncertain') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
+        .bind(orgId,body.agentport_agent_id ?? null,mandate.id,mandate.period_days).first<{credits:number}>();
+      if ((scopedSpend?.credits ?? 0) + credits > mandate.max_credits_per_period)
+        return c.json({error_code:"payer_mandate_period_limit_exceeded",period_days:mandate.period_days},402);
+    }
+    if (entitlement.max_operations_per_period !== null) {
+      const count = await c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS count FROM managed_service_credit_reservations WHERE org_id=? AND provider=? AND service_id=? AND operation_name=?
+        AND ((? IS NULL AND model_id IS NULL) OR model_id=?) AND region=? AND created_at>=datetime('now','start of month')
+        AND (status IN ('uncertain','settled') OR (status='held' AND (expires_at IS NULL OR julianday(expires_at)>julianday('now'))))`)
+        .bind(orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,body.region).first<{count:number}>();
+      if ((count?.count ?? 0) >= entitlement.max_operations_per_period)
+        return c.json({error_code:"managed_service_entitlement_period_limit"},402);
+    }
+    return c.json({error_code:"infra_quota_exceeded",message:"Managed service credit allowance is unavailable",limit:quota.limit},402);
+  }
+  return c.json({reserved:true,reservation_id:reservationId,status:"held",credits},201);
+});
+
+app.post("/internal/managed-services/credits/uncertain", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{reservation_id?:string}>().catch(()=>null);
+  if (!orgId || !body?.reservation_id || body.reservation_id.length > 200) return c.json({error_code:"bad_request"},400);
+  const updated = await c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations
+    SET status='uncertain',expires_at=NULL,updated_at=? WHERE id=? AND org_id=? AND status='held'`)
+    .bind(new Date().toISOString(),body.reservation_id,orgId).run();
+  if (updated.meta.changes) return c.json({uncertain:true,reservation_id:body.reservation_id});
+  const row = await c.env.PLATFORM_DB.prepare("SELECT status FROM managed_service_credit_reservations WHERE id=? AND org_id=?")
+    .bind(body.reservation_id,orgId).first<{status:string}>();
+  return row?.status==="uncertain" ? c.json({uncertain:true,reservation_id:body.reservation_id,deduplicated:true})
+    : row?.status==="settled" ? c.json({uncertain:false,reservation_id:body.reservation_id,settled:true})
+      : c.json({error_code:"reservation_not_held"},409);
+});
+
+app.post("/internal/managed-services/credits/release", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{reservation_id?:string;outcome?:"no_effect"}>().catch(()=>null);
+  if (!orgId || !body?.reservation_id || body.reservation_id.length > 200) return c.json({error_code:"bad_request"},400);
+  const allowed = body.outcome === "no_effect" ? ["held","uncertain"] : ["held"];
+  const placeholders = allowed.map(()=>"?").join(",");
+  const released = await c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations SET status='released',expires_at=NULL,updated_at=?
+    WHERE id=? AND org_id=? AND status IN (${placeholders})`)
+    .bind(new Date().toISOString(),body.reservation_id,orgId,...allowed).run();
+  if (released.meta.changes) return c.json({released:true,reservation_id:body.reservation_id});
+  const prior = await c.env.PLATFORM_DB.prepare("SELECT status FROM managed_service_credit_reservations WHERE id=? AND org_id=?")
+    .bind(body.reservation_id,orgId).first<{status:string}>();
+  return prior?.status==="released" ? c.json({released:true,reservation_id:body.reservation_id,deduplicated:true})
+    : c.json({error_code:prior?.status==="uncertain"?"uncertain_outcome_requires_resolution":"reservation_not_held"},409);
+});
+
+app.post("/internal/managed-services/credits/settle", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{reservation_id?:string;credits?:number}>().catch(()=>null);
+  if (!orgId || !body?.reservation_id || body.reservation_id.length>200 || !Number.isSafeInteger(body.credits) || (body.credits??-1)<0)
+    return c.json({error_code:"bad_request"},400);
+  const reservation = await c.env.PLATFORM_DB.prepare(`SELECT * FROM managed_service_credit_reservations WHERE id=? AND org_id=?`)
+    .bind(body.reservation_id,orgId).first<{space_id:string;project_id:string|null;operation_id:string;provider:string;service_id:string;operation_name:string;model_id:string|null;credits:number;price_version:string;status:string;settled_credits:number|null}>();
+  if (!reservation) return c.json({error_code:"reservation_not_found"},404);
+  if (reservation.model_id && body.credits !== reservation.credits) return c.json({error_code:"managed_service_model_price_conflict"},409);
+  if (reservation.status==="settled") return reservation.settled_credits===body.credits
+    ? c.json({settled:true,reservation_id:body.reservation_id,credits:body.credits,deduplicated:true})
+    : c.json({error_code:"settlement_identity_conflict"},409);
+  if (!["held","uncertain"].includes(reservation.status) || body.credits!>reservation.credits)
+    return c.json({error_code:"reservation_not_settleable"},409);
+  const now=new Date().toISOString();
+  const eventId=`managed-service:${orgId}:${body.reservation_id}`;
+  const eventHash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(eventId)))].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+  const statements=[c.env.PLATFORM_DB.prepare(`UPDATE managed_service_credit_reservations SET status='settled',settled_credits=?,expires_at=NULL,settled_at=?,updated_at=?
+    WHERE id=? AND org_id=? AND status IN ('held','uncertain') AND credits>=?`).bind(body.credits,now,now,body.reservation_id,orgId,body.credits)];
+  if (body.credits!>0) {
+    statements.push(c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events
+    (id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,project_id,run_id,provider,model_id,payer_kind,decision)
+    SELECT ?,?,?,'infra_credits',?,?,?,2,'credits',?,?,?,?,?,?,'plan_quota','charged'
+    WHERE EXISTS(SELECT 1 FROM managed_service_credit_reservations WHERE id=? AND org_id=? AND status='settled' AND settled_credits=?)`)
+    .bind(eventId,orgId,reservation.space_id,body.credits,now,eventHash,reservation.price_version,body.credits,reservation.project_id,reservation.operation_id,reservation.provider,reservation.model_id,body.reservation_id,orgId,body.credits));
+    statements.push(c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_meter_outbox(event_id,org_id,payload_json,status,next_attempt_at,created_at,updated_at)
+      SELECT id,org_id,json_object('type','meter','org_id',org_id,'space_id',space_id,'event_type',event_type,'quantity',quantity,
+        'event_id',id,'event_hash',event_hash,'recorded_at',recorded_at,'schema_version',schema_version,'unit',unit,
+        'rate_card_version',rate_card_version,'cost_credits',cost_credits,'run_id',run_id,'provider',provider,'model_id',model_id,
+        'project_id',project_id,'payer_kind',payer_kind,'decision',decision),'pending',?,?,?
+      FROM usage_events WHERE id=? AND org_id=? AND event_type='infra_credits'`)
+      .bind(now,now,now,eventId,orgId));
+  }
+  const batch=await c.env.PLATFORM_DB.batch(statements);
+  if (body.credits!>0 && (batch[1]?.meta.changes??0)>0) {
+    await recordUsageEvent(c.env.QUOTA_CACHE,orgId,"infra_credits");
+  }
+  const final=await c.env.PLATFORM_DB.prepare("SELECT status,settled_credits FROM managed_service_credit_reservations WHERE id=? AND org_id=?")
+    .bind(body.reservation_id,orgId).first<{status:string;settled_credits:number|null}>();
+  if(final?.status!=="settled" || final.settled_credits!==body.credits) return c.json({error_code:"settlement_identity_conflict"},409);
+  if(body.credits!>0) await dispatchManagedServiceMeterOutbox(c.env).catch(()=>undefined);
+  return c.json({settled:true,reservation_id:body.reservation_id,credits:body.credits,deduplicated:(batch[1]?.meta.changes??0)===0});
 });
 
 /**
@@ -974,6 +1503,11 @@ async function handleQueue(
         }
 
         case "meter": {
+          if (typeof msg.event_id === "string" && msg.event_id.startsWith("managed-service:")) {
+            const inserted = await _env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_meter_deliveries(event_id,org_id,delivered_at)
+              VALUES(?,?,?)`).bind(msg.event_id,msg.org_id ?? "",new Date().toISOString()).run();
+            if (!inserted.meta.changes) { message.ack(); break; }
+          }
           // G-D07: usage-metering stub. Vendor cutover note: this used to be a planned Stripe
           // Billing Meters call; with Lemon Squeezy as the only provider, usage-based add-on
           // billing (if ever needed beyond plan tiers) would go through LS usage records
@@ -1013,6 +1547,11 @@ export default {
       return errorResponse(error, "unknown");
     }
   },
-  async scheduled(event: ScheduledController, env: BillingEnv, ctx: ExecutionContext) { ctx.waitUntil(reconcileDeveloperPayouts(env, Date.now(), event.cron === "0 0 * * *")); },
+  async scheduled(event: ScheduledController, env: BillingEnv, ctx: ExecutionContext) {
+    ctx.waitUntil(Promise.allSettled([
+      reconcileDeveloperPayouts(env, Date.now(), event.cron === "0 0 * * *"),
+      dispatchManagedServiceMeterOutbox(env),
+    ]));
+  },
   queue: handleQueue as unknown as ExportedHandlerQueueHandler<BillingEnv>,
 } satisfies ExportedHandler<BillingEnv>;

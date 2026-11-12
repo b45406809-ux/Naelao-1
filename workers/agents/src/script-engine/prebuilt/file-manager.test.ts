@@ -5,6 +5,23 @@ import type { PrebuiltOpContext } from "./index.js";
 const run = async () => undefined;
 
 describe("file-manager coordinator history", () => {
+  it("infers a JSON MIME type for append and patch when stored metadata is absent", async () => {
+    const current = new TextEncoder().encode("{\"before\":true}");
+    const publishWorkspaceChecked = vi.fn(async () => ({ hash: "b".repeat(64), revision: 9, deleted: false }));
+    const workspaceBucket = {
+      get: vi.fn(async () => ({ size: current.byteLength, arrayBuffer: async () => current.slice().buffer })),
+    } as unknown as R2Bucket;
+    const ctx = { env: {
+      spaceId: "space", projectId: "project", workspaceBranch: "main", workspaceBucket,
+      publishWorkspaceChecked,
+    }, run } as unknown as PrebuiltOpContext;
+
+    await fileManager.operations["file.append"]!({ path: "settings.json", content: "\n" + "{}", expectedHash: "a".repeat(64) }, ctx);
+    await fileManager.operations["file.patch"]!({ path: "settings.json", find: "true", replace: "false", expectedHash: "a".repeat(64) }, ctx);
+
+    expect(publishWorkspaceChecked.mock.calls.map(([input]) => input.contentType)).toEqual(["application/json; charset=utf-8", "application/json; charset=utf-8"]);
+  });
+
   it("returns bounded versions newest first with revision identity", async () => {
     const workspaceHistoryRead = vi.fn(async () => ({
       branch: "workers/child", path: "notes.txt", headRevision: 8, cursor: 8, hasMore: false, resetRequired: false,

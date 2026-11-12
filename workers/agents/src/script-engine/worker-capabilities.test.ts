@@ -167,6 +167,26 @@ describe("task-filtered default worker capabilities", () => {
     expect(missing).toEqual([]);
   });
 
+  it("selects the owner-shared Agent37 specialist computer only for a matching task", async () => {
+    const enabledPrebuilts = ["agent37-computers", "code-exec", "plan"];
+    const matching = await selectDefaultWorkerCapabilities({
+      task: "Start my shared Agent37 specialist computer and transfer one selected output file.",
+      enabledPrebuilts,
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(matching.selectedBundles).toContain("agent37_specialist_computers");
+    expect(matching.enabledPrebuilts).toContain("agent37-computers");
+
+    const unrelated = await selectDefaultWorkerCapabilities({
+      task: "Summarize the archived conversation.",
+      enabledPrebuilts,
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(unrelated.enabledPrebuilts).not.toContain("agent37-computers");
+  });
+
   it("prioritizes task-matching skill names beyond the bounded metadata scan prefix", () => {
     const names = Array.from(
       { length: 150 },

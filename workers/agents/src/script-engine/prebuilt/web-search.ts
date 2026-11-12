@@ -28,6 +28,7 @@ import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { workspacePrefix } from "../types.js";
 import { publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
+import { resolveFileContentType } from "@naelao/types";
 
 const MAX_WEB_QUERY_CHARS = 1_000;
 const MAX_WEB_URL_CHARS = 2_048;
@@ -166,14 +167,16 @@ export const webSearch: PrebuiltScript = {
           : result.content;
       const storageKey = `${workspacePrefix(ctx.env)}${path}`;
       const current = await readBytesWithHash(bucket, storageKey, 12_000_000);
+      let contentType = resolveFileContentType(filename, result.content_type);
+      if (contentType === "application/octet-stream" && result.encoding !== "base64") contentType = "text/plain; charset=utf-8";
       const publication = await publishWorkspaceBytesCas(ctx.env, bucket, storageKey, payload instanceof Uint8Array ? payload : new TextEncoder().encode(payload), current?.hash ?? null, { sourceUrl: url },
-        { contentType: result.content_type ?? (result.encoding === "base64" ? "application/octet-stream" : "text/plain; charset=utf-8") });
+        { contentType });
       const revisionMatch = /^revision:(\d+)$/.exec(publication.etag);
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return {
         ok: true, path,
         size: result.size ?? (payload instanceof Uint8Array ? payload.byteLength : payload.length),
-        content_type: result.content_type ?? null,
+        content_type: contentType,
         binary: result.encoding === "base64",
         truncated: result.truncated ?? false,
         ...(revisionMatch && ctx.env.workspaceBranch ? { workspace_branch: ctx.env.workspaceBranch, workspace_revision: Number(revisionMatch[1]) } : {}),

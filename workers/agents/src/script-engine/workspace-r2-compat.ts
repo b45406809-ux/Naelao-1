@@ -1,3 +1,5 @@
+import { inferWorkspaceContentType } from "@naelao/types";
+
 export type WorkspaceManifestRead = () => Promise<{
   head: { branch: string; revision: number; updatedAt: string };
   entries: Array<{ path: string; sha256: string; size: number; executable: boolean; objectKey: string; contentType?: string }>;
@@ -99,7 +101,7 @@ export function withWorkspaceManifestRead(
         if (!manifest) return target.get(key, options);
         const entry = manifest.entries.find((candidate) => prefix + candidate.path === key);
         if (driftOptions?.returnCanonical === false) {
-          await verifyLegacy(key, entry ? { sha256: entry.sha256, size: entry.size, executable: entry.executable, ...(entry.contentType ? { contentType: entry.contentType } : {}) } : null, manifest.head);
+          await verifyLegacy(key, entry ? { sha256: entry.sha256, size: entry.size, executable: entry.executable, contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) } : null, manifest.head);
           return target.get(key, options);
         }
         if (!entry) { await verifyLegacy(key, null, manifest.head); return null; }
@@ -110,7 +112,7 @@ export function withWorkspaceManifestRead(
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
         if (hash !== entry.sha256) throw new Error("workspace_content_integrity_failed");
-        await verifyLegacy(key, { sha256: entry.sha256, size: entry.size, executable: entry.executable, ...(entry.contentType ? { contentType: entry.contentType } : {}) }, manifest.head);
+        await verifyLegacy(key, { sha256: entry.sha256, size: entry.size, executable: entry.executable, contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }, manifest.head);
         let selected = bytes;
         const range = options?.range as { offset?: number; length?: number; suffix?: number } | undefined;
         if (range && Number.isSafeInteger(range.offset)) {
@@ -122,7 +124,7 @@ export function withWorkspaceManifestRead(
         const copy = selected.slice();
         return {
           key, version: "workspace-v1", size: entry.size, etag: entry.sha256,
-          uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
+          uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }, customMetadata: { sha256: entry.sha256,
             workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) },
           async arrayBuffer() { return copy.slice().buffer; },
           async text() { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(copy); },
@@ -137,7 +139,7 @@ export function withWorkspaceManifestRead(
         if (driftOptions?.returnCanonical === false) return target.head(key);
         const entry = manifest.entries.find((candidate) => prefix + candidate.path === key);
         if (!entry) return null;
-        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
+        return { key, version: "workspace-v1", size: entry.size, etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }, customMetadata: { sha256: entry.sha256,
           workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } } as unknown as R2Object;
       };
       if (property === "list") return async (options: R2ListOptions = {}) => {
@@ -151,7 +153,7 @@ export function withWorkspaceManifestRead(
         if (driftOptions?.returnCanonical === false) {
           if (driftOptions.enabled) {
             const boundedItems = items.slice(0, DUAL_READ_MAX_FILES);
-            for (const entry of boundedItems) await verifyLegacy(prefix + entry.path, { sha256: entry.sha256, size: entry.size, executable: entry.executable, ...(entry.contentType ? { contentType: entry.contentType } : {}) }, manifest.head);
+            for (const entry of boundedItems) await verifyLegacy(prefix + entry.path, { sha256: entry.sha256, size: entry.size, executable: entry.executable, contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }, manifest.head);
             if (items.length > boundedItems.length) {
               driftTruncated = true;
               if (!limitEventLogged) { limitEventLogged = true; await logDrift(requestedPrefix, manifest.head, null, null, "comparison_budget_exhausted"); }
@@ -171,7 +173,7 @@ export function withWorkspaceManifestRead(
         const limit = Math.max(1, Math.min(1000, options.limit ?? 1000));
         const page = items.slice(start, start + limit);
         const objects = page.map((entry) => ({ key: prefix + entry.path, version: "workspace-v1", size: entry.size,
-          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? "application/octet-stream" }, customMetadata: { sha256: entry.sha256,
+          etag: entry.sha256, uploaded: new Date(manifest.head.updatedAt), httpMetadata: { contentType: entry.contentType ?? inferWorkspaceContentType(entry.path) }, customMetadata: { sha256: entry.sha256,
             workspaceBranch: manifest.head.branch, workspaceRevision: String(manifest.head.revision) } }));
         const truncated = start + page.length < items.length;
         return { objects, delimitedPrefixes: [], ...(truncated ? { truncated: true as const, cursor: String(start + page.length) } : { truncated: false as const }) } as unknown as R2Objects;

@@ -58,6 +58,11 @@ describe("Cloudflare email ingress helpers", () => {
     expect(new TextDecoder().decode(parsed.attachments[0]!.bytes)).toBe("%PDF-1.4");
   });
 
+  it("infers known attachment types only when the email MIME part is generic", async () => {
+    const parsed = await parseCloudflareEmail(stream(MIME.replace("application/pdf; name=", "application/octet-stream; name=")));
+    expect(parsed.attachments[0]).toMatchObject({ filename: "invoice.pdf", mimeType: "application/pdf" });
+  });
+
   it("stops consuming an inbound MIME stream at the raw email byte ceiling", async () => {
     const chunk = new Uint8Array(6 * 1024 * 1024);
     chunk.set(new TextEncoder().encode("From: vendor@example.test\r\nSubject: large\r\n\r\n"));

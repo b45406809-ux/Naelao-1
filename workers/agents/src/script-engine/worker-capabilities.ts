@@ -70,6 +70,13 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
       /project|agent roster|delegate|task dag|project status|project journal|create project|manage project/i,
   },
   {
+    capability: "agent37_specialist_computers",
+    description: "Use an owner-shared Agent37 computer as an explicit specialist tool with bounded execution and selected artifact transfers.",
+    tools: ["agent37-computers"],
+    skills: [],
+    match: /agent37|specialist computer|customer-owned computer|shared external computer/i,
+  },
+  {
     capability: "external_integrations",
     description: "Use configured MCP connectors and their authorized tools.",
     tools: ["mcp-connector"],

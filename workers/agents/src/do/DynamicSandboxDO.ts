@@ -4,6 +4,7 @@ import { EntitlementsChecker } from "@naelao/entitlements";
 import { ToolSandboxDO, type ContainerRuntime } from "./ToolSandboxDO.js";
 import { parseApprovedContainerImages, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, dynamicPlanLimits, isDynamicProfile, selectDynamicProfile, type DynamicProfile } from "../script-engine/dynamic-containers.js";
+import { recordRuntimeSnapshotRetention, updateRuntimeSnapshotRetention, type RuntimeSnapshotRetentionRecord } from "../workspace/runtime-snapshot-retention.js";
 
 interface DynamicBindings {
   PLATFORM_SECRET: string;
@@ -16,7 +17,10 @@ interface DynamicBindings {
   DYNAMIC_CONTAINER_MAX_INSTANCES?: string;
   DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED?: string;
 }
-interface Selection { image: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string }
+interface Selection {
+  image: string; profile: DynamicProfile; owner: string; fingerprint: string; tier: string;
+  tenantId: string; spaceId: string; projectId?: string; projectMain: boolean;
+}
 interface SavedSnapshot {
   id: string;
   fingerprint: string;
@@ -29,6 +33,7 @@ interface SavedSnapshot {
   expiresAt?: number;
 }
 interface Capacity { holder: string; tenant: string; expiresAt: number }
+interface PendingSnapshotRetention { snapshot: SavedSnapshot; record: RuntimeSnapshotRetentionRecord }
 const SNAPSHOT_RECOVERY_TTL_MS = 29 * 24 * 60 * 60 * 1000;
 function snapshotMetadataInvalid(snapshot: SavedSnapshot): boolean {
   return snapshot.sizeBytes !== undefined && (!Number.isSafeInteger(snapshot.sizeBytes) || snapshot.sizeBytes < 0)
@@ -51,12 +56,38 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   private selected: Selection | undefined;
   private get bindings(): DynamicBindings { return this.env as DynamicBindings; }
 
+  protected override workspaceRuntimeKind(): "dynamic_sandbox" { return "dynamic_sandbox"; }
+
+  protected override async blockErasedProject(scope: { tenantId: string; spaceId: string; projectId?: string }): Promise<void> {
+    await super.blockErasedProject(scope);
+    await this.flushPendingSnapshotRetention();
+    if (scope.projectId) await updateRuntimeSnapshotRetention(this.requireDb(), {
+      tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: scope.projectId,
+      runtimeObjectSha256: await digest(this.ctx.id.toString()),
+    }, "erasure_notified");
+    // Local container state is gone. The provider snapshot API has no purge contract, so remove
+    // every local restore pointer and report that provider-side expiry/deletion remains separate.
+    for (const key of ["dynamic_snapshot", "dynamic_restored", "dynamic_snapshot_restore_candidate", "dynamic_snapshot_restored_id",
+      "dynamic_snapshot_restore_error", "dynamic_snapshot_save_error", "dynamic_selection"]) await this.ctx.storage.delete(key);
+    await this.ctx.storage.put("dynamic_snapshot_erasure_status", "provider_snapshot_purge_not_supported");
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === "/_internal/profile") {
       const scope: { tenantId?: string; reset?: boolean } = await request.json<{ tenantId?: string; reset?: boolean }>().catch(() => ({}));
       if (!scope.tenantId || !this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
         scope.tenantId, this.bindings.PLATFORM_SECRET)) return new Response(null, { status: 403 });
       if (scope.reset === true) {
+        try {
+          await this.flushPendingSnapshotRetention();
+          const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+          if (selection?.projectMain && selection.projectId) await updateRuntimeSnapshotRetention(this.requireDb(), {
+            tenantId: selection.tenantId, spaceId: selection.spaceId, projectId: selection.projectId,
+            runtimeObjectSha256: await digest(this.ctx.id.toString()),
+          }, "reference_dropped");
+        } catch {
+          return Response.json({ error_code: "dynamic_snapshot_retention_tracking_unavailable" }, { status: 503 });
+        }
         await this.stopContainer().catch(() => undefined);
         await this.ctx.storage.delete("dynamic_snapshot");
         await this.ctx.storage.delete("dynamic_restored");
@@ -67,8 +98,14 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         await this.ctx.storage.delete("dynamic_selection");
         return Response.json({ reset: true, providerSnapshotPurge: "not_supported" });
       }
-      const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
+      let snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
       const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+      let retentionTrackingError: string | undefined;
+      if (snapshot && selection?.projectMain) {
+        try { await this.trackSnapshotRetention(snapshot, selection); }
+        catch { retentionTrackingError = "dynamic_snapshot_retention_tracking_unavailable"; }
+      }
+      snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot") ?? snapshot;
       const workspaceErasure = await this.ctx.storage.get("workspace_erasure_blocked");
       const restoreError = await this.ctx.storage.get<string>("dynamic_snapshot_restore_error")
         ?? (await this.ctx.storage.get<string>("dynamic_snapshot_restore_candidate") ? "dynamic_snapshot_restore_incomplete" : undefined);
@@ -97,6 +134,8 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         checkpoint_expires_at: snapshotExpiresAt, recovery_error: recoveryError,
         workspace_erasure_blocked: Boolean(workspaceErasure),
         snapshot_save_error: saveError,
+        snapshot_retention_tracking_error: retentionTrackingError,
+        provider_snapshot_purge: snapshot ? "not_supported" : undefined,
         can_restore: canRestore });
     }
     if (new URL(request.url).pathname === "/_internal/images") {
@@ -118,7 +157,12 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (!env.PLATFORM_DB) throw new Error("container_subscription_service_unavailable");
     const tier = await new EntitlementsChecker(env.PLATFORM_DB).getTenantTier(scope.tenantId);
     let image = this.container?.images?.base;
-    const baseProfile = env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
+    const projectPreference = scope.projectId && !scope.installationId
+      ? await env.PLATFORM_DB.prepare(`SELECT profile FROM project_main_runtime_profiles
+          WHERE tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(scope.tenantId,scope.spaceId,scope.projectId).first<{profile:string}>()
+      : null;
+    const baseProfile = projectPreference?.profile ?? env.DYNAMIC_CONTAINER_BASE_PROFILE ?? "standard-1";
     if (!isDynamicProfile(baseProfile)) throw new Error("container_base_profile_invalid");
     let profile: DynamicProfile = baseProfile;
     if (scope.installationId) {
@@ -137,12 +181,16 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     // Egress-policy changes invalidate snapshots as well as warm processes.
     const fingerprint = await digest(JSON.stringify([image, profile, owner,
       await this.ctx.storage.get("container_egress_profile")]));
-    const selected: Selection = { image, profile, owner, fingerprint, tier };
+    const selected: Selection = { image, profile, owner, fingerprint, tier,
+      tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
+      projectMain: Boolean(scope.projectId && !scope.installationId && !scope.workspaceBranch?.startsWith("race/")) };
     const current = await this.ctx.storage.get<Selection>("dynamic_selection");
     if (current && current.owner !== owner) throw new Error("container_session_owner_mismatch");
     if (current && (current.image !== image || current.profile !== profile)) await this.stopContainer();
     this.selected = selected;
     await this.ctx.storage.put("dynamic_selection", selected);
+    const existingSnapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
+    if (existingSnapshot && selected.projectMain) await this.trackSnapshotRetention(existingSnapshot, selected);
   }
 
   protected override allocationCreditsPerHour(): number | undefined {
@@ -285,9 +333,20 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         imageDigest: await digest(selected.image), profile: selected.profile, allocationGeneration: generation,
         sizeBytes: snapshot.size, createdAt, expiresAt: createdAt + SNAPSHOT_RECOVERY_TTL_MS,
       };
+      if (selected.projectMain && selected.projectId) {
+        const record: RuntimeSnapshotRetentionRecord = {
+          tenantId: selected.tenantId, spaceId: selected.spaceId, projectId: selected.projectId,
+          runtimeObjectSha256: await digest(this.ctx.id.toString()), snapshotHandleSha256: await digest(snapshot.id),
+          imageSha256: await digest(selected.image), allocationGeneration: generation, sizeBytes: snapshot.size,
+          createdAt, expiresAt: verified.expiresAt!,
+        };
+        await this.ctx.storage.put("dynamic_snapshot_registry_pending", { snapshot: verified, record } satisfies PendingSnapshotRetention);
+        await this.flushPendingSnapshotRetention();
+      } else {
+        await this.ctx.storage.put("dynamic_snapshot", verified);
+      }
       // One durable pointer update keeps the previous verified snapshot usable until this
       // replacement has actually completed and its receipt is persisted.
-      await this.ctx.storage.put("dynamic_snapshot", verified);
       await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
       await this.ctx.storage.delete("dynamic_snapshot_restored_id");
       await this.ctx.storage.delete("dynamic_snapshot_restore_error");
@@ -298,5 +357,37 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       await this.ctx.storage.put("dynamic_snapshot_save_error", "dynamic_snapshot_save_failed");
     }
     finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+
+  private requireDb(): D1Database {
+    const db = this.bindings.PLATFORM_DB;
+    if (!db) throw new Error("runtime_snapshot_retention_database_unavailable");
+    return db;
+  }
+
+  private async trackSnapshotRetention(snapshot: SavedSnapshot, selection: Selection): Promise<void> {
+    if (!selection.projectMain || !selection.projectId) return;
+    const expiresAt = snapshot.expiresAt ?? snapshot.createdAt + SNAPSHOT_RECOVERY_TTL_MS;
+    if (!snapshot.id || !Number.isFinite(expiresAt) || !Number.isFinite(snapshot.createdAt)
+      || !Number.isSafeInteger(snapshot.sizeBytes) || snapshot.sizeBytes! < 0
+      || !Number.isSafeInteger(snapshot.allocationGeneration) || snapshot.allocationGeneration! < 0) {
+      throw new Error("runtime_snapshot_retention_record_invalid");
+    }
+    const record: RuntimeSnapshotRetentionRecord = {
+      tenantId: selection.tenantId, spaceId: selection.spaceId, projectId: selection.projectId,
+      runtimeObjectSha256: await digest(this.ctx.id.toString()), snapshotHandleSha256: await digest(snapshot.id),
+      imageSha256: snapshot.imageDigest ?? await digest(selection.image), allocationGeneration: snapshot.allocationGeneration!,
+      sizeBytes: snapshot.sizeBytes!, createdAt: snapshot.createdAt, expiresAt,
+    };
+    await this.ctx.storage.put("dynamic_snapshot_registry_pending", { snapshot, record } satisfies PendingSnapshotRetention);
+    await this.flushPendingSnapshotRetention();
+  }
+
+  private async flushPendingSnapshotRetention(): Promise<void> {
+    const pending = await this.ctx.storage.get<PendingSnapshotRetention>("dynamic_snapshot_registry_pending");
+    if (!pending) return;
+    await recordRuntimeSnapshotRetention(this.requireDb(), pending.record);
+    await this.ctx.storage.put("dynamic_snapshot", pending.snapshot);
+    await this.ctx.storage.delete("dynamic_snapshot_registry_pending");
   }
 }

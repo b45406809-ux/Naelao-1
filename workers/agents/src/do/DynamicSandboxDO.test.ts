@@ -19,16 +19,23 @@ function capacityService() {
     slots.set(holder, Date.now() + ttl); return Response.json({ granted: true });
   } }) } };
 }
-function runtime(options: { tier?: string; cpu?: number; memory?: number; capacity?: ReturnType<typeof capacityService>; enabled?: boolean; snapshots?: boolean; erased?: boolean } = {}) {
+function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean; snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean } = {}) {
   const records = new Map<string, any>();
+  const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string; fencingToken: number; activeBranch: string; state: string }>();
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
+  const snapshotRetentionWrites: string[] = [];
   let running = false;
   let info: any;
   let alarmAt = 0;
   let task: Promise<Response> | undefined;
+  let markTaskStarted: (() => void) | undefined;
+  let releaseTask: ((response: Response) => void) | undefined;
+  let taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; });
+  let transactionTail = Promise.resolve();
   let controlReady = true;
   let workspaceErased = options.erased ?? false;
+  let loseMainClaimAck = options.loseMainClaimAck ?? false;
   const transport = {
     images: { base: image, tool: image }, get running() { return running; },
     start: vi.fn((args: any) => { running = true; info = { image: args.containerSnapshot ? "" : args.image, labels: args.labels }; }),
@@ -36,49 +43,205 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
     inspect: vi.fn(async () => running ? info : null),
     snapshotContainer: vi.fn(async () => ({ id: "snapshot-one", size: 1024 })),
     getTcpPort: () => ({ fetch: async (request: Request) => {
-      if (new URL(request.url).pathname === "/build" && task) return task;
+      if (["/build", "/exec"].includes(new URL(request.url).pathname) && task) { markTaskStarted?.(); return task; }
       if (new URL(request.url).pathname === "/control/init" && !controlReady) return Response.json({ ok: false }, { status: 503 });
       return Response.json({ ok: true });
     } }),
   };
-  const ctx = { container: transport, storage: {
+  const ctx = { id: { toString: () => "test-durable-object-id" }, container: transport, storage: {
     get: async (key: string) => structuredClone(records.get(key)), put: async (key: string, v: any) => { records.set(key, structuredClone(v)); },
     delete: async (key: string) => records.delete(key), setAlarm: async (at: number) => { alarmAt = at; },
+    transaction: async (operation: (tx: any) => Promise<unknown>) => {
+      if (options.writerAdmissionFails) throw new Error("storage_transaction_unavailable");
+      const previous = transactionTail;
+      let release!: () => void;
+      transactionTail = new Promise<void>(resolve => { release = resolve; });
+      await previous;
+      try { return await operation({ get: async (key: string) => structuredClone(records.get(key)),
+        put: async (key: string, value: unknown) => { records.set(key, structuredClone(value)); },
+        delete: async (key: string) => records.delete(key) }); }
+      finally { release(); }
+    },
     list: async ({ prefix = "" }: { prefix?: string } = {}) => new Map([...records.entries()].filter(([key]) => key.startsWith(prefix))),
   } };
   const env = { PLATFORM_SECRET: "secret", DYNAMIC_CONTAINERS_ENABLED: options.enabled === false ? "false" : "true",
     DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false", CONCURRENCY_DO: capacity.namespace,
-    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () =>
-      sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" } : sql.includes("workspace_erasure_tombstones")
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({
+      first: async () => sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
+        : sql.includes("SELECT profile FROM project_main_runtime_profiles") ? options.profile ? { profile: options.profile } : null
+        : sql.includes("workspace_erasure_tombstones")
         ? workspaceErased ? { erased: 1 } : null : sql.includes("config_json")
-        ? { config_json: JSON.stringify({ compliance: { airGappedOnly: true } }) } : { id: "space" } }) }) },
+        ? { config_json: JSON.stringify({ compliance: { airGappedOnly: true } }) } : { id: "space" },
+      run: async () => {
+        if (sql.includes("workspace_runtime_snapshot_retention")) {
+          snapshotRetentionWrites.push(sql);
+          return { meta: { changes: 1 } };
+        }
+        if (sql.includes("INSERT INTO project_main_runtime_registry")) {
+          const [tenantId, spaceId, projectId, runtimeObjectName, generation, branch] = values as [string, string, string, string, number, string];
+          const key = [tenantId, spaceId, projectId].join(":");
+          const prior = projectMainRegistry.get(key);
+          if (prior && (prior.runtimeObjectName !== runtimeObjectName || prior.allocationGeneration !== generation || prior.state === "erased")) return { meta: { changes: 0 } };
+          projectMainRegistry.set(key, { runtimeObjectName, allocationGeneration: generation, allocationToken: prior?.allocationToken,
+            fencingToken: (prior?.fencingToken ?? 0) + (prior && prior.activeBranch !== branch ? 1 : 0), activeBranch: branch, state: prior?.state ?? "registered" });
+          return { meta: { changes: 1 } };
+        }
+        if (sql.includes("UPDATE project_main_runtime_registry")) {
+          const row = [...projectMainRegistry.values()][0];
+          if (!row) return { meta: { changes: 0 } };
+          if (sql.includes("recover-project-main-generation")) {
+            const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, string, number, string, string];
+            const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
+              && row.allocationToken === token && row.activeBranch === branch;
+            return { meta: { changes: matches ? 1 : 0 } };
+          }
+          if (sql.includes("retry-project-main-generation")) {
+            const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, string, number, string, string];
+            const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
+              && row.allocationToken === token && row.activeBranch === branch && row.state !== "erased";
+            if (matches) row.state = "recovery_required";
+            return { meta: { changes: matches ? 1 : 0 } };
+          }
+          if (sql.includes("claim-project-main-generation")) {
+            const [generation, token, , , , , objectName, expectedGeneration, branch] = values as [number, string, string, string, string, string, string, number, string];
+            const matches = row.runtimeObjectName === objectName && row.allocationGeneration === expectedGeneration
+              && row.activeBranch === branch && row.state !== "erased";
+            if (!matches) return { meta: { changes: 0 } };
+            row.allocationGeneration = generation; row.allocationToken = token; row.state = "recovery_required";
+            if (loseMainClaimAck) { loseMainClaimAck = false; throw new Error("simulated_lost_d1_ack"); }
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes("activate-project-main-generation")) {
+            const [, , , , objectName, generation, branch] = values as [string, string, string, string, string, number, string];
+            const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
+              && row.activeBranch === branch && row.state !== "erased";
+            if (matches) row.state = "active";
+            return { meta: { changes: matches ? 1 : 0 } };
+          }
+          return { meta: { changes: 0 } };
+        }
+        return { meta: { changes: 1 } };
+      },
+    }) }) },
     CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
       cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 }]),
     BILLING_WORKER: { fetch: async (request: Request) => { billing.push({ path: new URL(request.url).pathname, ...await request.json() as any }); return Response.json({ ok: true }); } },
   };
   let sandbox = new DynamicSandboxDO(ctx as never, env as never);
-  async function invoke(path = "/prewarm", scopeChanges = {}) {
+  async function invoke(path = "/prewarm", scopeChanges: Record<string, unknown> = {}) {
+    const { mainComputer = false, ...overrides } = scopeChanges;
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "owner", agentId: "worker", runId: "run",
-      installationId: "install", installationScope: "PROJECT_SHARED", image, dynamicImage: true,
-      executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000, ...scopeChanges };
-    return sandbox.fetch(new Request("http://sandbox" + path, { method: "POST", body: "{}", headers: {
-      "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
-    } }));
+      ...(!mainComputer ? { installationId: "install", installationScope: "PROJECT_SHARED", image, dynamicImage: true } : {}),
+      executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000, ...overrides };
+    return sandbox.fetch(new Request("http://sandbox" + path, { method: "POST",
+      body: JSON.stringify(path === "/exec" ? { spaceId: scope.spaceId, projectId: scope.projectId, workspaceBranch: scope.workspaceBranch } : {}),
+      headers: {
+        "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
+        "x-naelao-runtime-object-name": "sandbox:" + scope.spaceId + ":" + scope.projectId,
+      } }));
   }
   async function profile(reset?: boolean, suppliedToken?: string) {
     const token = suppliedToken ?? await mintInternalToken("secret", "tenant");
     return sandbox.fetch(new Request("http://sandbox/_internal/profile", { method: "POST", body: JSON.stringify({ tenantId: "tenant", ...(reset ? { reset: true } : {}) }),
       headers: { "x-naelao-internal-token": token } }));
   }
-  return { invoke, profile, transport, records, capacity, env, billing, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  async function eraseProject() {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" };
+    return sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST", body: JSON.stringify({ scope, confirm: true }),
+      headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
+  }
+  return { invoke, profile, transport, records, capacity, env, billing, projectMainRegistry, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
-    setInfo: (v: any) => { info = v; }, hangBuild: () => { task = new Promise<Response>(() => undefined); },
-    setControlReady: (value: boolean) => { controlReady = value; }, setWorkspaceErased: (value: boolean) => { workspaceErased = value; },
+    setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
+    waitForExecution: () => taskStarted,
+    releaseExecution: () => { releaseTask?.(Response.json({ ok: true })); task = undefined; },
+    setControlReady: (value: boolean) => { controlReady = value; }, setWorkspaceErased: (value: boolean) => { workspaceErased = value; }, eraseProject,
     legacy: () => new ToolSandboxDO(ctx as never, env as never) };
 }
 afterEach(() => vi.restoreAllMocks());
 
 describe("Cloudflare dynamic execution", () => {
+  it("keeps one project main runtime across branch handoffs and advances its fence once", async () => {
+    const r = runtime();
+    const key = "tenant:space:project";
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({
+      runtimeObjectName: "sandbox:space:project", allocationGeneration: 1, fencingToken: 0, activeBranch: "main", state: "active",
+    });
+    const handoff = await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "feature/research" });
+    expect(handoff.status, await handoff.clone().text()).toBe(200);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({ fencingToken: 1, activeBranch: "feature/research" });
+    expect((await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "feature/research" })).status).toBe(200);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({ fencingToken: 1, activeBranch: "feature/research" });
+    expect(r.projectMainRegistry.size).toBe(1);
+  });
+
+  it("applies a persisted project main size preference at allocation time", async () => {
+    const r = runtime({ profile: "lite" });
+    const response = await r.invoke("/prewarm", { mainComputer: true });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ instance: "lite" }));
+  });
+
+  it("rejects a stale local generation before starting a replacement container", async () => {
+    const r = runtime();
+    const key = "tenant:space:project";
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    await r.transport.destroy();
+    r.records.set("workspace_runtime_generation", 0);
+    r.projectMainRegistry.get(key)!.allocationGeneration = 4;
+    r.restart();
+
+    const response = await r.invoke("/prewarm", { mainComputer: true });
+    expect(response.status).toBe(503);
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.projectMainRegistry.get(key)?.allocationGeneration).toBe(4);
+  });
+
+  it("recovers a main allocation generation when the D1 claim acknowledgement is lost", async () => {
+    const r = runtime({ loseMainClaimAck: true });
+    const key = "tenant:space:project";
+    const interrupted = await r.invoke("/prewarm", { mainComputer: true });
+    expect(interrupted.status).toBe(409);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({ allocationGeneration: 1, state: "recovery_required" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+
+    r.restart();
+    const recovered = await r.invoke("/prewarm", { mainComputer: true });
+    expect(recovered.status, await recovered.clone().text()).toBe(200);
+    expect(r.projectMainRegistry.get(key)).toMatchObject({ allocationGeneration: 1, state: "active" });
+    expect(r.transport.start).toHaveBeenCalledOnce();
+    expect(r.records.get("workspace_runtime_generation")).toBe(1);
+  });
+
+  it("serializes project-main writers across normal branches until the active run finishes", async () => {
+    const r = runtime({ tier: "growth" });
+    r.hangBuild();
+    const first = r.invoke("/build", { mainComputer: true, executionId: "writer-one", workspaceBranch: "main" });
+    const firstState = await Promise.race([
+      r.waitForExecution().then(() => "harness_started"),
+      first.then(async (response) => `request_returned_${response.status}_${(await response.clone().text()).slice(0,160)}`),
+      new Promise<string>((resolve) => setTimeout(() => resolve("request_stalled_before_harness"), 1500)),
+    ]);
+    expect(firstState).toBe("harness_started");
+    let competingCompleted = false;
+    const competing = r.invoke("/build", { mainComputer: true, executionId: "writer-two", workspaceBranch: "feature/next" })
+      .then((response) => { competingCompleted = true; return response; });
+    await Promise.resolve();
+    expect(competingCompleted).toBe(false);
+    r.releaseExecution();
+    expect((await first).status).toBe(200);
+    expect((await competing).status).toBe(200);
+  });
+
+  it("fails closed before container work when project-main writer admission storage is unavailable", async () => {
+    const r = runtime({ writerAdmissionFails: true });
+    const response = await r.invoke("/build", { mainComputer: true, workspaceBranch: "main" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "project_main_writer_admission_unavailable" });
+    expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
   it("exposes tenant-authenticated managed profile status and reset", async () => {
     let now = 2_000_000; vi.spyOn(Date, "now").mockImplementation(() => now);
     const r = runtime({ snapshots: true });
@@ -278,18 +441,31 @@ describe("Cloudflare dynamic execution", () => {
   it("does not restore a private runtime snapshot after project erasure or a database rollback", async () => {
     let now = 5500000; vi.spyOn(Date, "now").mockImplementation(() => now);
     const r = runtime({ snapshots: true });
-    expect((await r.invoke()).status).toBe(200);
-    now += 5001; await r.alarm();
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    now += 60001; await r.alarm();
     expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
+    expect(r.snapshotRetentionWrites.some(sql => sql.includes("INSERT OR IGNORE INTO workspace_runtime_snapshot_retention"))).toBe(true);
     r.restart();
     r.setWorkspaceErased(true);
     const erased = await r.invoke("/prewarm", { executionId: "after-erasure" });
     expect(erased.status).toBe(410);
     expect(await (await r.profile()).json()).toMatchObject({ workspace_erasure_blocked: true, recovery_error: "workspace_erased", can_restore: false });
-    expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
+    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.snapshotRetentionWrites.some(sql => sql.includes("UPDATE workspace_runtime_snapshot_retention"))).toBe(true);
     r.setWorkspaceErased(false);
     expect((await r.invoke("/prewarm", { executionId: "after-database-restore" })).status).toBe(410);
     expect(r.transport.start).toHaveBeenCalledOnce();
+  });
+  it("clears local checkpoint pointers after an authenticated project erasure notification", async () => {
+    const r = runtime({ snapshots: true, erased: true });
+    r.records.set("dynamic_snapshot", { id: "snapshot-1", fingerprint: "f", createdAt: Date.now() });
+    r.records.set("dynamic_selection", { image, profile: "lite", owner: "owner", fingerprint: "f", tier: "growth" });
+    const response = await r.eraseProject();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ erased: true, runtimeKind: "dynamic_sandbox", localStatePurged: true, providerSnapshotPurge: "not_supported" });
+    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.records.has("dynamic_selection")).toBe(false);
+    expect(r.records.get("dynamic_snapshot_erasure_status")).toBe("provider_snapshot_purge_not_supported");
   });
   it("destroys a timed-out dynamic execution and returns its concurrency leases", async () => {
     const r = runtime(); await r.invoke(); r.hangBuild();

@@ -1,3 +1,4 @@
+import { inferWorkspaceContentType } from "@naelao/types";
 import { sha256Bytes } from "../script-engine/r2-cas.js";
 import { validateWorkspacePath, type WorkspaceScope } from "../workspace/workspace-contract.js";
 
@@ -36,7 +37,7 @@ export async function publishProjectChatUpload(input: {
     tenantId: input.scope.tenantId, spaceId: input.scope.spaceId, projectId: input.scope.projectId,
     sessionId: input.sessionId, path, expectedHash, hash,
   })));
-  const contentType = input.contentType ?? "application/octet-stream";
+  const contentType = input.contentType ?? inferWorkspaceContentType(path);
   const result = await input.publish({ branch: "main", actorId: input.actorId, path, expectedHash, bytes: input.bytes, contentType, idempotencyKey });
   if (result.status === "conflicted") throw new Error("chat_upload_revision_conflict");
   if (!Number.isSafeInteger(result.revision) || result.revision < 1) throw new Error("chat_upload_publication_unconfirmed");

@@ -32,6 +32,7 @@ interface HubServer {
   auth_type?: string;
   enabled?: boolean | number;
 }
+interface HubAlias { alias: string; server_id: string }
 
 function hub(ctx: PrebuiltOpContext): Fetcher {
   const f = ctx.env.mcpHubWorker;
@@ -68,6 +69,8 @@ export async function hubHeaders(ctx: PrebuiltOpContext, connectorRef?: string):
     "x-naelao-tenant-id": ctx.env.tenantId,
     ...(ctx.env.userId ? { "x-naelao-user-id": ctx.env.userId } : {}),
     "x-naelao-agent-id": ctx.env.agentId,
+    ...(ctx.env.projectId ? { "x-naelao-project-id": ctx.env.projectId } : {}),
+    ...(ctx.env.runId ? { "x-naelao-run-id": ctx.env.runId } : {}),
     ...(mode ? { "x-naelao-connector-scope": mode } : {}),
     "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
   };
@@ -106,6 +109,9 @@ export async function hubFetch(
  * template the agent invented) gets the old plain error — there's nothing to prompt-install.
  */
 export async function resolveServerId(ctx: PrebuiltOpContext, ref: string): Promise<string> {
+  const aliasList = (await hubFetch(ctx, "/connector-aliases", { method: "GET" })) as { data?: HubAlias[] };
+  const alias = aliasList.data?.find((entry) => entry.alias === ref);
+  if (alias) return alias.server_id;
   const listed = (await hubFetch(ctx, "/mcp-servers", { method: "GET" })) as { data?: HubServer[] };
   const servers = listed.data ?? [];
   const match = servers.find((s) => s.id === ref) ?? servers.find((s) => s.name === ref);
@@ -127,6 +133,11 @@ export async function resolveServerId(ctx: PrebuiltOpContext, ref: string): Prom
     throw err;
   }
   throw new Error(`mcp-connector: no registered server named '${ref}'`);
+}
+
+async function resolveConnectorAlias(ctx: PrebuiltOpContext, ref: string): Promise<HubAlias | null> {
+  const listed = (await hubFetch(ctx, "/connector-aliases", { method: "GET" })) as { data?: HubAlias[] };
+  return listed.data?.find((entry) => entry.alias === ref) ?? null;
 }
 
 export const mcpConnector: PrebuiltScript = {
@@ -188,9 +199,12 @@ Verify the result after an external write. If a request times out or returns an 
       const tool = String(args["tool"] ?? "").trim();
       if (!ref || !tool) throw new Error("mcp.call requires { server, tool }");
 
-      const id = await resolveServerId(ctx, ref);
+      const alias = await resolveConnectorAlias(ctx, ref);
+      const id = alias ? alias.server_id : await resolveServerId(ctx, ref);
       const params = (args["params"] as Record<string, unknown>) ?? {};
-      return await hubFetch(ctx, `/mcp-servers/${id}/tools/call`, {
+      return await hubFetch(ctx, alias
+        ? `/connector-aliases/${encodeURIComponent(alias.alias)}/tools/call`
+        : `/mcp-servers/${id}/tools/call`, {
         method: "POST",
         body: { tool_name: tool, input: params },
       }, ref);

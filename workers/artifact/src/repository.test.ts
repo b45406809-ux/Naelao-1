@@ -387,11 +387,12 @@ describe("unified workspace transition guards", () => {
     const journalKey = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/publications/replay.json`;
     const storage = new Map<string, unknown>([["workspace_publication", { key: journalKey, scope }]]);
     const repoObjects = new Map<string, Uint8Array>();
-    const workspace = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+    const workspace = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; contentType?: string }>();
     const alreadyWritten = new TextEncoder().encode("already written");
     const alreadyHash = await sha256Text("already written");
     const replayBytes = new TextEncoder().encode("replayed file");
     const replayHash = await sha256Text("replayed file");
+    const contentTypes = new Map<string, string>();
     const replayBlob = await encodeGitObject("blob", replayBytes);
     const replayEntry = { path: "b.txt", oid: replayBlob.oid, size: replayBytes.byteLength, hash: replayHash };
     const publishedState = {
@@ -415,12 +416,14 @@ describe("unified workspace transition guards", () => {
     const workspaceBucket = {
       head: async (key: string) => { const item = workspace.get(key); return item ? { etag: item.etag, customMetadata: item.customMetadata } : null; },
       get: async (key: string) => { const item = workspace.get(key); return item ? { arrayBuffer: async () => item.bytes.slice().buffer } : null; },
-      put: async (key: string, bytes: Uint8Array, options: { onlyIf: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata: Record<string, string> }) => {
+      put: async (key: string, bytes: Uint8Array, options: { onlyIf: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata: Record<string, string>; httpMetadata?: { contentType?: string } }) => {
         const item = workspace.get(key);
         if (options.onlyIf.etagMatches !== undefined && item?.etag !== options.onlyIf.etagMatches) return null;
         if (options.onlyIf.etagDoesNotMatch === "*" && item) return null;
         putKeys.push(key);
-        workspace.set(key, { bytes: bytes.slice(), etag: `etag-${putKeys.length}`, customMetadata: options.customMetadata });
+        if (options.httpMetadata?.contentType) contentTypes.set(key, options.httpMetadata.contentType);
+        workspace.set(key, { bytes: bytes.slice(), etag: `etag-${putKeys.length}`, customMetadata: options.customMetadata,
+          ...(options.httpMetadata?.contentType ? { contentType: options.httpMetadata.contentType } : {}) });
         return {};
       },
     };
@@ -447,6 +450,7 @@ describe("unified workspace transition guards", () => {
     expect(putKeys).toEqual([prefix + "b.txt"]);
     expect(workspace.get(prefix + "a.txt")?.bytes).toEqual(alreadyWritten);
     expect(workspace.get(prefix + "b.txt")?.bytes).toEqual(replayBytes);
+    expect(contentTypes.get(prefix + "b.txt")).toBe("text/plain; charset=utf-8");
     expect(storage.has("workspace_publication")).toBe(false);
     expect(repoObjects.has(journalKey)).toBe(false);
 
@@ -653,6 +657,35 @@ describe("unified workspace transition guards", () => {
 });
 
 describe("large binary object storage", () => {
+  it("projects inferred MIME from the Git path on file reads", async () => {
+    const storage = new Map<string, unknown>();
+    const objects = new Map<string, Uint8Array>();
+    const repo = new RepositoryDO({
+      storage: {
+        get: async (key: string) => storage.get(key),
+        put: async (key: string, value: unknown) => { storage.set(key, value); },
+      },
+    } as never, {
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => objects.has(key),
+        put: async (key: string, value: Uint8Array) => { objects.set(key, value); },
+        get: async (key: string) => objects.has(key) ? {
+          arrayBuffer: async () => objects.get(key)!.buffer,
+        } : null,
+      },
+    } as never);
+    const headers = { "x-repository-scope": JSON.stringify({ tenantId: "t", spaceId: "s", projectId: "p" }) };
+    await repo.fetch(new Request("https://repo/init", { method: "POST", headers }));
+    await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers,
+      body: JSON.stringify({ path: "docs/guide.md", content: "# Guide", expected_hash: null }),
+    }));
+    await repo.fetch(new Request("https://repo/commit", { method: "POST", headers, body: JSON.stringify({ metadata, expected_head: null }) }));
+    const read = await repo.fetch(new Request("https://repo/file?path=docs/guide.md", { headers }));
+    expect(read.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    expect(await read.text()).toBe("# Guide");
+  });
+
   it("round-trips a multi-megabyte deliverable through R2 without storing its body in DO state", async () => {
     const storage = new Map<string, unknown>();
     const objects = new Map<string, Uint8Array>();

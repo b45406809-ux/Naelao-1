@@ -5,13 +5,13 @@ import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } 
 import { checkSsrf } from "@naelao/security";
 import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowserScope,
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
-import { BrowserActionJournal, discardScreenshotWithCleanupIntent, sameBrowserOwner,
+import { BrowserActionJournal, browserErasureScope, browserSessionId, discardScreenshotWithCleanupIntent, sameBrowserOwner,
   uploadScreenshotWithCleanupIntent, type BrowserSessionRecord } from "./browser-session-state.js";
 import { profileOwner, sealProfile, openProfile, type WebsiteState } from "./website-profile.js";
 import { boundedValues, collectBoundedFrameIds } from "./browser-observation-bounds.js";
 
 export interface BrowserEnv {
-  ENVIRONMENT: string; PLATFORM_SECRET: string; BROWSER?: Fetcher;
+  ENVIRONMENT: string; PLATFORM_SECRET: string; PLATFORM_DB: D1Database; BROWSER?: Fetcher;
   WEBSITE_PROFILE_DO?: DurableObjectNamespace;
   BROWSER_SESSION_DO?: DurableObjectNamespace; SPACES_WORKER?: Fetcher; BROWSER_ARTIFACTS?: R2Bucket;
 }
@@ -44,10 +44,29 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     let body: BrowserRequest;
     try { body = await request.json<BrowserRequest>(); validateBrowserScope(body.scope); }
     catch { return Response.json({ error_code: "browser_scope_invalid" }, { status: 400 }); }
+    if (body.scope.projectId) {
+      const sessionId = await browserSessionId(body.scope);
+      const at = new Date().toISOString();
+      const registered = await this.env.PLATFORM_DB.prepare(`INSERT INTO workspace_browser_session_registry
+        (session_id,tenant_id,space_id,project_id,actor_id,agent_id,run_id,browser_session_id,scope_json,first_seen_at,last_seen_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(session_id) DO UPDATE SET scope_json=excluded.scope_json,last_seen_at=excluded.last_seen_at,last_erasure_error=NULL
+        WHERE workspace_browser_session_registry.tenant_id=excluded.tenant_id
+          AND workspace_browser_session_registry.space_id=excluded.space_id
+          AND workspace_browser_session_registry.project_id=excluded.project_id
+          AND workspace_browser_session_registry.actor_id=excluded.actor_id
+          AND workspace_browser_session_registry.agent_id=excluded.agent_id
+          AND workspace_browser_session_registry.run_id=excluded.run_id
+          AND workspace_browser_session_registry.browser_session_id=excluded.browser_session_id`)
+        .bind(sessionId, body.scope.tenantId, body.scope.spaceId, body.scope.projectId, body.scope.actorId,
+          body.scope.agentId, body.scope.runId, body.scope.sessionId, JSON.stringify(browserErasureScope(body.scope)), at, at).run();
+      if (!registered.meta.changes) return Response.json({ error_code: "browser_session_registry_conflict" }, { status: 503 });
+    }
     const method = new URL(request.url).pathname.split("/").pop() ?? "";
     // Cancellation must interrupt work, rather than sit behind the running navigation.
     if (method === "close" || method === "cancel") {
       const record = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
+      if (!record && await this.ctx.storage.get("closed")) return Response.json({ ok: true, session_id: body.scope.sessionId, status: "closed" });
       if (!record || !sameBrowserOwner(record.scope, body.scope)) return Response.json({ error_code: "browser_session_not_found" }, { status: 404 });
       await this.closeSession(record);
       return Response.json({ ok: true, session_id: body.scope.sessionId, status: "closed" });
@@ -57,6 +76,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     this.pending = new Promise<void>(resolve => { unlock = resolve; });
     await before;
     try {
+      if (await this.ctx.storage.get("closed")) throw new Error("browser_session_closed");
       await this.authorize(body.scope, method === "act", body.humanLogin);
       const existing = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
       if (existing && (!sameBrowserOwner(existing.scope, body.scope) || existing.status !== "open" || existing.scope.expiresAt <= Date.now())) throw new Error("browser_session_closed");
@@ -374,8 +394,15 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     if (record.screenshots.length && this.env.BROWSER_ARTIFACTS) await this.env.BROWSER_ARTIFACTS.delete(record.screenshots);
     if (record.observation) await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
     if (record.scope.connectionId) await this.profile(record.scope, "/release").catch(() => undefined);
-    await this.ctx.storage.delete("secret-redactions");
+    // Browser action records may contain prior page observations, and element handles are
+    // provider-local state. After provider/R2 cleanup succeeds, purge every key and retain only
+    // a non-sensitive tombstone so a stale session cannot be reopened under the same ID.
+    const closedAt = new Date().toISOString();
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put("closed", true);
     await this.ctx.storage.deleteAlarm();
+    if (record.scope.projectId) await this.env.PLATFORM_DB.prepare(`UPDATE workspace_browser_session_registry SET closed_at=?,last_seen_at=?
+      WHERE session_id=? AND project_id=?`).bind(closedAt, closedAt, await browserSessionId(record.scope), record.scope.projectId).run();
   }
   override async alarm(): Promise<void> {
     const record = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);

@@ -32,6 +32,7 @@ Read these sources and current code before implementing:
 - AGENTS.md
 - docs/research/managed-services-and-sidecar-runtime-plan.md, every section including 18–19
 - docs/research/managed-services-and-sidecar-implementation-progress.md
+- docs/operations/managed-services-acceptance.md
 - docs/research/naelao-unified-platform-deep-plan.md
 - docs/research/unified-platform-implementation-progress.md
 - docs/research/unified-workspace-requirements.md

@@ -59,9 +59,19 @@ export function requiresNativeCompilation(command: string): boolean {
 
 /** Classifies ordinary shell intent without revealing tier mechanics to the model. */
 export function classifyExecutionRoute(command: string): { tier: ExecutionTier; engine: ExecutionEngine; reason: string } {
+  let parsed: ReturnType<typeof parseShell>;
+  try { parsed = parseShell(command); }
+  catch (error) {
+    // The parser rejects command substitution because nested commands cannot be included in
+    // the ordinary shell AST. Preserve the Tier 6 ceiling while code-exec returns a structured
+    // capability error instead of failing before admission.
+    if (error instanceof Error && error.message === "shell_substitution_not_supported")
+      return { tier: 6, engine: EXECUTION_ENGINES[6], reason: "dynamic_execution_admission_required" };
+    throw error;
+  }
   const local = new Set(["cat", "head", "tail", "grep", "sed", "awk", "find", "jq", "diff", "sort", "uniq", "wc", "pwd", "echo", "printf", "ls", "true", "false", "touch", "rm", "cp", "mv", "naelao"]);
   let selected: { tier: ExecutionTier; reason: string } = { tier: 1, reason: "virtual_posix" };
-  for (const { argv } of parseShell(command).flatMap((pipeline) => pipeline.commands)) {
+  for (const { argv } of parsed.flatMap((pipeline) => pipeline.commands)) {
     const name = argv[0];
     if (!name) continue;
     let route: typeof selected;
@@ -72,8 +82,11 @@ export function classifyExecutionRoute(command: string): { tier: ExecutionTier; 
     else if (isDeclaredNativeCommand(name)) route = { tier: 6, reason: "declared_native_command" };
     else if (name === "runtime") route = { tier: 1, reason: "runtime_discovery" };
     else if (["stripe", "gh", "r2", "resend", "twilio"].includes(name) || /^(ext|auto):/.test(name)) route = { tier: 2, reason: "registered_capability" };
-    else return { tier: 1, engine: EXECUTION_ENGINES[1], reason: "command_not_found" };
-    if (route.tier > selected.tier) selected = route;
+    // An unknown executable may resolve to an explicitly installed sidecar binary. Reserve the
+    // native ceiling during admission so a miss cannot run under a weaker project tier; the Bash
+    // handler resolves that one exact command or returns a structured capability error.
+    else route = { tier: 6, reason: "command_capability_discovery_required" };
+    if (route.reason === "command_capability_discovery_required" || route.tier > selected.tier) selected = route;
   }
   return { ...selected, engine: EXECUTION_ENGINES[selected.tier] };
 }
@@ -87,7 +100,7 @@ export async function classifyExecutionRouteWithSentry(
   sentry?: Pick<FastDecisionGateway, "noul">
 ): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "openrouter"; confidence?: number; model?: string } }> {
   const baseline = classifyExecutionRoute(command);
-  if (!sentry || baseline.tier === 6 || baseline.reason === "command_not_found" || baseline.tier === 1) return baseline;
+  if (!sentry || baseline.tier === 6 || baseline.reason === "command_capability_discovery_required" || baseline.tier === 1) return baseline;
   try {
     const decision = await sentry.noul({
       state: { command },

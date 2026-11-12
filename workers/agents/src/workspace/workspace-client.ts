@@ -35,8 +35,8 @@ export async function workspaceCoordinatorRequest(
   options: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal },
 ): Promise<Response> {
   if (!bindings.WORKSPACE_COORDINATOR || !bindings.PLATFORM_SECRET) throw new Error("workspace_coordinator_unavailable");
-  const isErase = path.split("?", 1)[0] === "/v1/erase";
-  if (!isErase && await workspaceScopeErased(bindings, scope)) return erasedResponse();
+  const isErasureControl = ["/v1/erase", "/v1/erase/admission"].includes(path.split("?", 1)[0]!);
+  if (!isErasureControl && await workspaceScopeErased(bindings, scope)) return erasedResponse();
   const resource = `${scope.spaceId}:${scope.projectId}`;
   const name = await getDOName("workspace", resource, scope.tenantId, bindings.PLATFORM_SECRET);
   const stub = bindings.WORKSPACE_COORDINATOR.get(bindings.WORKSPACE_COORDINATOR.idFromName(name));
@@ -54,7 +54,7 @@ export async function workspaceCoordinatorRequest(
   // Close the race where erasure commits while an authorized workspace read or write is in
   // flight. The coordinator tombstone fences writes; this second check also withholds a late
   // read response after the durable erasure ledger has advanced.
-  if (!isErase && await workspaceScopeErased(bindings, scope)) {
+  if (!isErasureControl && await workspaceScopeErased(bindings, scope)) {
     await response.body?.cancel().catch(() => undefined);
     return erasedResponse();
   }

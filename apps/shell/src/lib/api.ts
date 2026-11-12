@@ -1448,6 +1448,57 @@ export function getManagedRuntimeProfile(spaceId: string, projectId: string, ins
 export function resetManagedRuntimeProfile(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials, branch?: string) {
   return apiFetch<{ reset: true }>(`${managedRuntimeProfilePath(spaceId, projectId, installationId, containerId)}/reset`, { method: "POST", session, body: JSON.stringify(branch ? { branch } : {}) });
 }
+export interface SidecarRuntimeExecutionProfile {
+  maxExecutionSeconds: number;
+  maximumSeconds: number;
+  version: number;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+  changed?: boolean;
+}
+function sidecarRuntimeExecutionProfilePath(spaceId: string, projectId: string, installationId: string, containerId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime-installations/${encodeURIComponent(installationId)}/containers/${encodeURIComponent(containerId)}/execution-profile`;
+}
+export function getSidecarRuntimeExecutionProfile(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials) {
+  return apiFetch<SidecarRuntimeExecutionProfile>(sidecarRuntimeExecutionProfilePath(spaceId, projectId, installationId, containerId), { session, cache: "no-store" });
+}
+export function saveSidecarRuntimeExecutionProfile(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials,
+  input: { max_execution_seconds: number; expected_version: number }) {
+  return apiFetch<SidecarRuntimeExecutionProfile>(sidecarRuntimeExecutionProfilePath(spaceId, projectId, installationId, containerId), {
+    method: "PUT", session, body: JSON.stringify(input),
+  });
+}
+export interface ProjectMainRuntimeProfile {
+  profile: "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
+  source: "project" | "deployment_default";
+  version: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  allowedProfiles: Array<ProjectMainRuntimeProfile["profile"]>;
+  runtimeEnabled: boolean;
+  provider: "cloudflare";
+  snapshotRetention: {
+    state: "retained" | "reference_dropped" | "erasure_notified" | "ttl_elapsed_unverified";
+    createdAt: string;
+    expiresAt: string;
+    erasureNotifiedAt: string | null;
+    providerPurgeSupported: false;
+  } | null;
+  changed?: boolean;
+}
+function projectMainRuntimeProfilePath(spaceId: string, projectId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/main-runtime-profile`;
+}
+export function getProjectMainRuntimeProfile(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<ProjectMainRuntimeProfile>(projectMainRuntimeProfilePath(spaceId, projectId), { session, cache: "no-store" });
+}
+export function saveProjectMainRuntimeProfile(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  profile: ProjectMainRuntimeProfile["profile"]; expected_version: number;
+}) {
+  return apiFetch<ProjectMainRuntimeProfile>(projectMainRuntimeProfilePath(spaceId, projectId), {
+    method: "PUT", session, body: JSON.stringify(input),
+  });
+}
 export function setProjectExtensionEnabled(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
@@ -2695,6 +2746,10 @@ export interface ConnectorAlias {
   server_id: string;
   granted_scopes_json: string;
   updated_at: string;
+  agentport_status?: "pending" | "active" | "revoked" | "sync_required" | null;
+  agentport_owner_link_id?: string | null;
+  agentport_owner_link_status?: "active" | "revoked" | null;
+  agentport_operations?: string[];
 }
 
 export async function getConnectorAliases(spaceId: string, session: SessionCredentials): Promise<ConnectorAlias[]> {
@@ -2899,3 +2954,33 @@ export function saveAssistantVoice(spaceId:string,session:SessionCredentials,pre
 export interface AssistantMailbox {identity:{id:string;email_address:string|null;email_status:string;kind:string;provider:string}|null;preferences:import("@naelao/agent-sdk").AssistantChannelPreferences;autonomy?:{mode:"approve"|"standing";recipients:string[];dailySendLimit:number}}
 export interface AssistantMailMessage {id:string;direction:string;channel:string;sender:string;recipient:string;subject:string;status:string;created_at:string}
 export function assistantMailApi<T>(spaceId:string,session:SessionCredentials,input:{action?:string;projectId?:string;[key:string]:unknown},write=false){const{projectId,action,...body}=input;const query=new URLSearchParams({...projectId?{project_id:projectId}:{},...!write?{action:action??"identity",...Object.fromEntries(Object.entries(body).map(([k,v])=>[k,String(v??"")]))}:{}});return apiFetch<T>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant-communications?${query}`,{session,...write?{method:"POST",body:JSON.stringify({action,...body})}:{}});}
+
+export interface ManagedServiceDashboard {
+  planTier: string;
+  generatedAt: string;
+  higgsfieldByoEnabled: boolean;
+  managedModels: Array<{ provider:string;serviceId:string;operation:string;modelId:string;region:string;priceVersion:string;
+    creditsPerOperation:number;maxCreditsPerOperation:number;maxOutputTokens:number;maxOperationsPerPeriod:number|null;validUntil:string }>;
+  capabilities: Array<{
+    provider: string; serviceId: string; category: string; version: number; state: string; validUntil: string | null;
+    operations: string[]; regions: string[]; accountModes: string[]; isolationModel: string;
+    metering: Record<string, unknown>; configuredRegion: string | null;
+    entitlements: Array<{ operation: string; region: string; priceVersion: string; maxCreditsPerOperation: number;
+      maxOperationsPerPeriod: number | null; validUntil: string; eligibleForConfiguredRegion: boolean }>;
+    providerConfiguration: { ready: boolean };
+  }>;
+  accounts: Array<{ id: string; projectId:string|null; provider: string; serviceId: string; connectionMode: string; ownerType: string; ownerLinkId:string|null; agentPortLinkStatus:string|null;
+    providerPayerType: string; agentPortFeePayerType: string | null; creditPayerType: string | null;
+    region: string | null; assistantId: string | null; wakeEnabled: boolean; status: string; createdAt: string; updatedAt: string }>;
+  operations: Array<{ id: string; accountId: string | null; provider: string; serviceId: string; operation: string;
+    region: string | null; modelId: string | null; status: string; priceVersion: string | null;
+    reservedCredits: number | null; errorCode: string | null; createdAt: string; updatedAt: string }>;
+  usage30d: Array<{ provider: string; serviceId: string; heldCredits: number; settledCredits: number; operations: number }>;
+  providerCosts30d: Array<{ provider: string; serviceId: string; usageKind: string; currency: string; providerCostMicros: number;
+    receiptCount: number; provenance: "operator_imported" | "provider_api_observed" }>;
+  providerCostBudgets30d: Array<{ provider: string; serviceId: string; provenance: "operator_imported" | "provider_api_observed";
+    currency: string; limitProviderCostMicros: number; updatedAt: string; observedProviderCostMicros: number; thresholdReached: boolean }>;
+  providerCostAlerts: Array<{ id:string;provider:string;serviceId:string;provenance:"operator_imported"|"provider_api_observed";currency:string;
+    observedProviderCostMicros:number;limitProviderCostMicros:number;windowStart:string;windowEnd:string;createdAt:string;
+    pushDeliveryStatus:"pending"|"running"|"delivered"|"no_subscription"|"suppressed"|null }>;
+}

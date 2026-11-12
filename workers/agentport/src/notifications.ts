@@ -1,4 +1,5 @@
 import { validInboundWebhookUrl } from "./email.js";
+import { parseThreadSessionBinding } from "./core/thread-session-binding.js";
 
 const encoder = new TextEncoder();
 function base64url(bytes: Uint8Array) {
@@ -38,7 +39,10 @@ export async function deliverEventNotifications(env: { PLATFORM_DB: D1Database; 
     JOIN agentport_event_subscriptions s ON s.id=d.subscription_id AND s.tenant_id=d.tenant_id
     WHERE d.status='pending' AND s.status='active' AND s.delivery_mode='webhook'
       AND NOT EXISTS (SELECT 1 FROM agentport_event_notifications n WHERE n.delivery_id=d.id) LIMIT 500`).bind(now).run();
-  const rows = await db.prepare(`SELECT n.delivery_id,d.tenant_id,d.subscription_id,d.agent_id,e.id AS event_id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,s.routing_json
+  const rows = await db.prepare(`SELECT n.delivery_id,d.tenant_id,d.subscription_id,d.agent_id,e.id AS event_id,e.service_id,e.account_id,e.event_type,e.thread_ref,e.payload_ref,
+      s.routing_json,s.consumer_group,(SELECT CASE WHEN COUNT(*)=1 THEN MAX(t.session_binding_json) ELSE NULL END FROM agentport_channels ch
+        JOIN agentport_threads t ON t.tenant_id=ch.tenant_id AND t.channel_id=ch.id AND t.status='active'
+        WHERE ch.tenant_id=e.tenant_id AND ch.account_id=e.account_id AND t.provider_thread_id=e.thread_ref) AS session_binding_json
     FROM agentport_event_notifications n JOIN agentport_event_deliveries d ON d.id=n.delivery_id
     JOIN agentport_event_subscriptions s ON s.id=d.subscription_id AND s.tenant_id=d.tenant_id
     JOIN agentport_events e ON e.id=d.event_id AND e.tenant_id=d.tenant_id
@@ -51,6 +55,7 @@ export async function deliverEventNotifications(env: { PLATFORM_DB: D1Database; 
     ORDER BY n.available_at LIMIT 50`).bind(now, now, now).all<{
       delivery_id: string; tenant_id: string; subscription_id: string; agent_id: string; event_id: string; service_id: string;
       account_id: string | null; event_type: string; thread_ref: string | null; payload_ref: string | null; routing_json: string;
+      consumer_group: string; session_binding_json: string | null;
     }>();
   for (const row of rows.results ?? []) {
     const at = new Date().toISOString(), lease = new Date(Date.now() + 60_000).toISOString();
@@ -62,9 +67,10 @@ export async function deliverEventNotifications(env: { PLATFORM_DB: D1Database; 
     try {
       const routing = JSON.parse(row.routing_json) as { webhookUrl?: unknown };
       if (typeof routing.webhookUrl !== "string" || !validInboundWebhookUrl(routing.webhookUrl)) throw new Error("invalid_webhook_url");
+      const sessionBinding = parseThreadSessionBinding(row.session_binding_json, row.consumer_group);
       const payload = JSON.stringify({ id: row.event_id, deliveryId: row.delivery_id, subscriptionId: row.subscription_id,
         agentId: row.agent_id, serviceId: row.service_id, accountId: row.account_id, type: row.event_type,
-        threadRef: row.thread_ref, dataRef: row.payload_ref });
+        threadRef: row.thread_ref, dataRef: row.payload_ref, ...(sessionBinding ? { sessionBinding } : {}) });
       const timestamp = String(Math.floor(Date.now() / 1000));
       const secret = await eventWebhookSecret(env.AGENTPORT_JWT_SECRET, row.tenant_id, row.subscription_id);
       const response = await fetcher(routing.webhookUrl, { method: "POST", redirect: "error", signal: AbortSignal.timeout(5000),

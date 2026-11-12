@@ -10,6 +10,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+import { isInlineTextContentType } from "@naelao/types";
 
 function reqWorker(ctx: PrebuiltOpContext): Fetcher {
   if (!ctx.env.artifactWorker) {
@@ -32,7 +33,7 @@ export const artifacts: PrebuiltScript = {
   domain: "workspace",
   requires_tier: 1,
   paramHints: {
-    "artifacts.create": "{filename: string, content: string, content_type?: string} — content_type defaults to 'text/plain'; use 'text/html' for a page, 'text/markdown' for a report.",
+    "artifacts.create": "{filename: string, content: string, content_type?: string} — MIME is inferred from a known filename extension when omitted; unknown extensions default to UTF-8 text/plain.",
     "artifacts.list": "{limit?:1..200, cursor?:next_cursor} — returns one bounded page; pass next_cursor to continue.",
     "artifacts.get": "{artifact_id: string} — the id returned by artifacts.create or artifacts.list.",
     "artifacts.delete": "{artifact_id: string}",
@@ -43,12 +44,11 @@ export const artifacts: PrebuiltScript = {
       const content = String(args["content"] ?? "");
       if (!filename) throw new Error("artifacts.create requires a non-empty 'filename'");
       if (!content) throw new Error("artifacts.create requires non-empty 'content'");
-      const contentType = typeof args["content_type"] === "string" ? args["content_type"] : "text/plain";
       const resp = await reqWorker(ctx).fetch(
         new Request(`http://artifact-worker/spaces/${ctx.env.spaceId}/artifacts`, {
           method: "POST",
           headers: await internalHeaders(ctx, { "content-type": "application/json" }),
-          body: JSON.stringify({ filename, content, content_type: contentType }),
+          body: JSON.stringify({ filename, content, ...(typeof args["content_type"] === "string" ? { content_type: args["content_type"] } : {}) }),
         })
       );
       if (!resp.ok) {
@@ -87,7 +87,7 @@ export const artifacts: PrebuiltScript = {
       try { filename = decodeURIComponent(encodedFilename); } catch { /* keep the safe encoded name */ }
       // Text content types come back readable; anything else reports metadata only (a script's
       // own return value is JSON — raw binary bytes have nowhere useful to go in this contract).
-      if (/^text\/|json|xml/.test(contentType)) {
+      if (isInlineTextContentType(contentType)) {
         return { artifact_id: artifactId, filename, content_type: contentType, content: await readBoundedResponseText(resp, 2 * 1024 * 1024) };
       }
       return { artifact_id: artifactId, filename, content_type: contentType, binary: true };

@@ -15,6 +15,7 @@ describe("workflow budget v2 settlement", () => {
       readFileSync(join(__dirname, "../../infra/migrations/0081_workflow_budget_reservations.sql"), "utf8"),
       readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
       readFileSync(join(__dirname, "../../infra/migrations/0110_workflow_usage_dimensions.sql"), "utf8"),
+      readFileSync(join(__dirname, "../../infra/migrations/0180_managed_service_credit_reservations.sql"), "utf8"),
     ]);
     const metered: Array<Record<string, unknown>> = [];
     const token = await mintInternalToken(SECRET, "tenant-a");

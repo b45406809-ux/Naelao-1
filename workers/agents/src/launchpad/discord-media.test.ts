@@ -22,6 +22,15 @@ describe("Discord attachment ingress", () => {
     expect((fetcher.mock.calls[0]![1] as RequestInit).redirect).toBe("manual");
   });
 
+  it("infers known filename types when Discord metadata is absent or generic", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    await expect(downloadDiscordAttachments({ attachments: [{ ...raw.attachments[0], content_type: "application/octet-stream" }] }, { fetcher }))
+      .resolves.toMatchObject([{ filename: "_scan.pdf", mimeType: "application/pdf" }]);
+    const opaque = { attachments: [{ ...raw.attachments[0], filename: "scan.unknown", content_type: undefined }] };
+    const opaqueFetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    await expect(downloadDiscordAttachments(opaque, { fetcher: opaqueFetcher })).resolves.toMatchObject([{ mimeType: "application/octet-stream" }]);
+  });
+
   it("rejects non-ephemeral attachments, non-CDN URLs, and size mismatches", async () => {
     await expect(downloadDiscordAttachments({ attachments: [{ ...raw.attachments[0], ephemeral: false }] })).rejects.toThrow("discord_non_ephemeral_media_unavailable_from_workers");
     const hostile = { attachments: [{ ...raw.attachments[0], url: "https://attacker.example/file" }] };

@@ -1,5 +1,6 @@
 import { readBoundedProviderJson } from "./bounded-provider-json.js";
 import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
+import { resolveFileContentType } from "@naelao/types";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
@@ -157,13 +158,7 @@ export async function downloadTelegramAttachments(
       typeof item.file_name === "string"
         ? item.file_name
         : `${kind}-${String(item.file_unique_id ?? files.length + 1)}`;
-    const mimeType =
-      typeof item.mime_type === "string" &&
-      /^[\w.+-]+\/[\w.+-]+$/.test(item.mime_type)
-        ? item.mime_type.toLowerCase()
-        : kind === "photo"
-          ? "image/jpeg"
-          : "application/octet-stream";
+    const mimeType = resolveFileContentType(rawName, item.mime_type ?? (kind === "photo" ? "image/jpeg" : undefined));
     files.push({ filename: safeFilename(rawName), mimeType, bytes });
     totalBytes += bytes.byteLength;
   }

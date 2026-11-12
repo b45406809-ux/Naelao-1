@@ -6,6 +6,7 @@
  * (file.lock / file.unlock are declared but use R2 conditional writes; kept minimal here.)
  */
 
+import { inferWorkspaceContentType } from "@naelao/types";
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
 import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas } from "../r2-cas.js";
@@ -81,7 +82,7 @@ export const fileManager: PrebuiltScript = {
       const existing = await bucket(ctx).get(k);
       const prior = await readWorkspaceFile(existing);
       const content = prior + reqStr(args, "content");
-      const write = await casWrite(ctx, k, content, requiredExpectedHash(args), existing?.httpMetadata?.contentType ?? "text/plain; charset=utf-8");
+      const write = await casWrite(ctx, k, content, requiredExpectedHash(args), existing?.httpMetadata?.contentType ?? inferWorkspaceContentType(path));
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return { ok: true, size: content.length, ...write };
     },
@@ -102,15 +103,16 @@ export const fileManager: PrebuiltScript = {
 
     async "file.patch"(args, ctx) {
       // Apply a simple find/replace patch: { path, find, replace }.
-      const k = key(ctx, reqStr(args, "path"));
+      const path = reqStr(args, "path");
+      const k = key(ctx, path);
       const obj = await bucket(ctx).get(k);
       if (!obj) throw new Error("file not found");
       const before = await readWorkspaceFile(obj);
       const find = reqStr(args, "find");
       const replace = reqStr(args, "replace");
       const after = before.split(find).join(replace);
-      const write = await casWrite(ctx, k, after, requiredExpectedHash(args), obj.httpMetadata?.contentType ?? "text/plain; charset=utf-8");
-      await ctx.env.onWorkspaceChange?.({ path: reqStr(args, "path"), operation: "write" });
+      const write = await casWrite(ctx, k, after, requiredExpectedHash(args), obj.httpMetadata?.contentType ?? inferWorkspaceContentType(path));
+      await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return { ok: true, changed: before !== after, ...write };
     },
 
@@ -145,7 +147,7 @@ export const fileManager: PrebuiltScript = {
         const hash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
         if (hash !== historical.sha256) throw new Error("workspace_revision_content_integrity_failed");
         const write = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, historical.bytes, expectedHash, {}, {
-          contentType: historical.contentType ?? "application/octet-stream",
+          contentType: historical.contentType ?? inferWorkspaceContentType(path),
         });
         const revisionMatch = /^revision:(\d+)$/.exec(write.etag);
         restored = { ...(revisionMatch ? { revision: Number(revisionMatch[1]) } : {}), deleted: false, hash: write.hash };

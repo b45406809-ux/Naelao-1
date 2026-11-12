@@ -1,4 +1,5 @@
 import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
+import { inferWorkspaceContentType } from "@naelao/types";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
 import { workspaceCoordinatorRequest, type WorkspaceCoordinatorBindings } from "../workspace/workspace-client.js";
 import { restoreWorkspaceErasureTombstone } from "../workspace/phase6-erasure.js";
@@ -152,16 +153,17 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
         const legacy = await readBytesWithHash(env.SCRIPTS_R2, workspacePrefix(fs) + item.path, MAX_FILE_BYTES).catch(() => null);
         const mismatchClass = !legacy ? "legacy_missing"
           : legacy.hash !== item.sha256 || legacy.bytes.byteLength !== item.size ? "hash_or_size_mismatch"
-          : (legacy.contentType ?? "application/octet-stream") !== (item.contentType ?? "application/octet-stream") ? "content_type_mismatch" : null;
+          : (legacy.contentType ?? inferWorkspaceContentType(item.path)) !== (item.contentType ?? inferWorkspaceContentType(item.path)) ? "content_type_mismatch" : null;
         if (mismatchClass) {
           mismatches.push({ pathHash: await sha256(new TextEncoder().encode(item.path)), manifestHash: item.sha256, legacyHash: legacy?.hash ?? null, mismatchClass });
         }
         const blobId = `swb_${crypto.randomUUID()}`;
         const key = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${blobId}`;
-        await env.SCRIPTS_R2.put(key, canonical.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: canonical.hash, filesystemId: fs.id, executable: String(item.executable) }, ...(item.contentType ? { httpMetadata: { contentType: item.contentType } } : {}) });
+        const contentType = item.contentType ?? inferWorkspaceContentType(item.path);
+        await env.SCRIPTS_R2.put(key, canonical.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: canonical.hash, filesystemId: fs.id, executable: String(item.executable) }, httpMetadata: { contentType } });
         staged.push(key);
         totalBytes += canonical.bytes.byteLength;
-        entries.push({ path: item.path, sha256: canonical.hash, size: canonical.bytes.byteLength, executable: item.executable, blobId, ...(item.contentType ? { contentType: item.contentType } : {}) });
+        entries.push({ path: item.path, sha256: canonical.hash, size: canonical.bytes.byteLength, executable: item.executable, blobId, contentType });
       }
       const legacyPage = await env.SCRIPTS_R2.list({ prefix: workspacePrefix(fs), limit: MAX_FILES + 1, include: ["customMetadata"] } as R2ListOptions & { include: string[] });
       if (legacyPage.objects.length > MAX_FILES || legacyPage.truncated) {
@@ -199,10 +201,11 @@ async function snapshot(request: Request, env: BridgeEnv, actor: { tenantId: str
         const blobId = `swb_${crypto.randomUUID()}`;
         const key = `sandbox-workspace-bridge/${actor.tenantId}/${fs.id}/${blobId}`;
         const executable = source.metadata.executable === "true";
-        await env.SCRIPTS_R2.put(key, source.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: source.hash, filesystemId: fs.id, executable: String(executable) }, ...(source.contentType ? { httpMetadata: { contentType: source.contentType } } : {}) });
+        const contentType = source.contentType ?? inferWorkspaceContentType(path);
+        await env.SCRIPTS_R2.put(key, source.bytes, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { sha256: source.hash, filesystemId: fs.id, executable: String(executable) }, httpMetadata: { contentType } });
         staged.push(key);
         totalBytes += source.bytes.byteLength;
-        entries.push({ path, sha256: source.hash, size: source.bytes.byteLength, executable, blobId, ...(source.contentType ? { contentType: source.contentType } : {}) });
+        entries.push({ path, sha256: source.hash, size: source.bytes.byteLength, executable, blobId, contentType });
       }
       cursor = page.truncated ? page.cursor : undefined;
       } while (cursor);
@@ -379,7 +382,8 @@ async function publish(request: Request, env: BridgeEnv, actor: { tenantId: stri
       if (!content || content.hash !== staged.sha256) return fail("blob_integrity_failed", 409);
       encodedBytes += Math.ceil(content.bytes.byteLength * 4 / 3);
       if (encodedBytes > MAX_STAGE_REQUEST_BYTES) return fail("workspace_publication_limit", 413);
-      coordinatorChanges.push({ path: change.path, expectedHash: change.expectedHash, contentBase64: b64(content.bytes), executable: change.executable ?? modes.get(change.path) ?? staged.executable === 1, ...(content.contentType ? { contentType: content.contentType } : {}) });
+      coordinatorChanges.push({ path: change.path, expectedHash: change.expectedHash, contentBase64: b64(content.bytes), executable: change.executable ?? modes.get(change.path) ?? staged.executable === 1,
+        contentType: content.contentType ?? inferWorkspaceContentType(change.path) });
     }
     const opened = await coordinatorRequest(env, scope, "/v1/open", { body: { scope, branch: fs.branch, actorId: actor.userId, runtimeId: "sandbox-workspace-bridge", allocationGeneration: 1, mode: "checked_handoff" } });
     if (!opened.ok) return new Response(opened.body, { status: opened.status, headers: { "content-type": "application/json" } });

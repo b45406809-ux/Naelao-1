@@ -6,6 +6,7 @@ import type { AssistantPhoneBinding } from "./phones.js";
 import type { LiveCall } from "./live-calls.js";
 import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { TelnyxTelephony } from "../voice/telnyx-telephony.js";
+import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 
 function positiveConfig(value: string | undefined, max = 100_000): number | null {
   if (!value || !/^\d{1,6}$/.test(value)) return null;
@@ -193,6 +194,14 @@ export async function sweepManagedTelnyxInboundSmsCosts(env: AgentsEnv, now = Ma
         return;
       }
       if (typeof cost.amount !== "string" || !/^[0-9]+(?:\.[0-9]{1,12})?$/.test(cost.amount) || cost.currency !== "USD") throw new Error("managed_telnyx_inbound_cost_invalid");
+      if (typeof receipt.completed_at !== "string" || receipt.completed_at.length > 64 || !Number.isFinite(Date.parse(receipt.completed_at)))
+        throw new Error("managed_telnyx_inbound_cost_invalid");
+      await recordProviderApiCostObservation(env.PLATFORM_DB, {
+        tenantId: identity.tenant_id, spaceId: identity.space_id, projectId: identity.project_id,
+        provider: "telnyx", serviceId: "phone-number", operationRef: provider_message_id,
+        accountRef: row.provider_number_sid, usageKind: "sms", quantityUnit: "message", quantityMicros: 1_000_000,
+        providerCost: cost.amount, currency: cost.currency, periodStart: receipt.completed_at, sourceApi: "telnyx.messages.get",
+      });
       const credits = carrierUsdToCredits(cost.amount);
       if (credits > row.reserved_credits) throw new Error("managed_telnyx_inbound_cost_exceeds_reservation");
       await settleManagedCarrierCredits(env, { tenantId: identity.tenant_id, spaceId: identity.space_id, userId: identity.owner_user_id,

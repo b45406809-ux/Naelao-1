@@ -9,6 +9,7 @@ function harness(initial?: BrowserSessionRecord) {
     async get<T>(key: string) { return values.get(key) as T | undefined; },
     async put<T>(key: string, value: T) { values.set(key, value); },
     async delete(key: string | string[]) { for (const item of Array.isArray(key) ? key : [key]) values.delete(item); },
+    async deleteAll() { values.clear(); },
     async transaction<T>(callback: (storage: { get<T>(key: string): Promise<T | undefined>; put<T>(key: string, value: T): Promise<void> }) => Promise<T>) { return callback(storage); },
     async setAlarm() {},
     async deleteAlarm() {},
@@ -44,5 +45,18 @@ describe("BrowserSessionDO authorization edge cases", () => {
     const response = await instance.fetch(request("cancel", { ...scope, actorId: "member-b" }));
     expect(response.status).toBe(404);
     expect(values.get("browser-session")).toMatchObject({ status: "open", scope: { actorId: "member-a" } });
+  });
+
+  it("erases session observations and action records on close while retaining a non-sensitive tombstone", async () => {
+    const record: BrowserSessionRecord = { scope, status: "open", engine: "kitesurf", url: "https://example.com", actions: 1,
+      screenshots: [], lastUsedAt: Date.now(), observation: { schema: 1, sessionId: scope.sessionId, revision: "rev-a", engine: "kitesurf",
+        url: "https://example.com", title: "private title", text: "private page contents", elements: [], untrusted: true,
+        capturedAt: Date.now(), expiresAt: Date.now() + 60_000, features: { interactive: false, pixelAccurate: false, persistentLogin: false } } };
+    const { instance, values } = harness(record);
+    values.set("action:action-a", { status: "committed", result: record.observation });
+    const response = await instance.fetch(request("cancel", scope));
+    expect(response.status).toBe(200);
+    expect([...values.keys()]).toEqual(["closed"]);
+    expect(JSON.stringify([...values.values()])).not.toContain("private page contents");
   });
 });

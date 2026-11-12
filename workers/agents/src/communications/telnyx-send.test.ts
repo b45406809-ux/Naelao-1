@@ -27,6 +27,12 @@ describe("approved Telnyx SMS", () => {
     await observeTelnyxSmsCost(f.env, identity, binding, "action-1");
     const receipts = await f.db.prepare("SELECT amount FROM assistant_telnyx_usage_receipts WHERE action_id='action-1' ORDER BY amount").all<{ amount: string }>();
     expect(receipts.results).toEqual([{ amount: "0.004500" }, { amount: "0.005000" }]);
+    const observations = await f.db.prepare("SELECT provider_cost_micros,source_api FROM managed_service_provider_cost_observations ORDER BY provider_cost_micros")
+      .all<{ provider_cost_micros: number; source_api: string }>();
+    expect(observations.results).toEqual([
+      { provider_cost_micros: 4500, source_api: "telnyx.messages.get" },
+      { provider_cost_micros: 5000, source_api: "telnyx.messages.get" },
+    ]);
   });
   it("keeps an uncertain send indeterminate and never sends it a second time", async () => {
     const f = fixture(), identity = await ensureIdentity(f.env, scope);
