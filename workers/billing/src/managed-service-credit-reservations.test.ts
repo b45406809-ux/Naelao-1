@@ -272,7 +272,7 @@ describe("managed service credit reservations", () => {
     expect((await h.post("/internal/managed-services/credits/reserve",renewal)).status).toBe(403);
   });
 
-  it("requires an exact AgentMail price and a consumed owner quote bound to the operation",async()=>{
+  it("requires an exact AgentMail quote and replays it after active price changes",async()=>{
     const h=harness();allowAgentMailPayer(h.db.db);createOperation(h.db.db,reservation);
     const noQuote=await h.post("/internal/managed-services/credits/reserve",{...reservation,quote_id:undefined,requester_user_id:undefined});
     expect(noQuote.status).toBe(400);
@@ -282,6 +282,11 @@ describe("managed service credit reservations", () => {
     expect(await underpriced.json()).toMatchObject({error_code:"managed_service_price_conflict"});
     const admitted=await h.post("/internal/managed-services/credits/reserve",reservation);
     expect(admitted.status).toBe(201);
+    h.db.db.prepare(`UPDATE managed_service_plan_entitlements SET price_version='agentmail-rental-v3',credits_per_operation=250
+      WHERE plan_tier='free' AND provider='agentmail' AND service_id='agentmail' AND operation_name='provision'`).run();
+    const replay=await h.post("/internal/managed-services/credits/reserve",reservation);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({reserved:true,status:"held",credits:300,deduplicated:true});
   });
 
   it("binds reservations to the delegated AgentPort agent and enforces its rolling spend cap", async () => {

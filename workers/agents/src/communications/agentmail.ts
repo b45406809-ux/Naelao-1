@@ -949,10 +949,36 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
       await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
         .bind(updated,account.id,account.tenant_id).run();held++;return;
     }
+    const quoteDigest=await hashString(`agentmail-renew:${operationId}`);const quoteId=`msq_${quoteDigest.slice(0,32)}`;
+    const consumedQuote=await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,
+        region,capability_version,price_version,credits,request_sha256,status,operation_id
+      FROM managed_service_operation_quotes WHERE quote_id=?`).bind(quoteId)
+      .first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;provider:string;service_id:string;operation_name:string;
+        region:string;capability_version:number;price_version:string;credits:number;request_sha256:string|null;status:string;operation_id:string|null}>();
+    const existingOperation=await env.PLATFORM_DB.prepare(`SELECT quote_id,request_sha256,capability_version FROM managed_service_operations
+      WHERE operation_id=? AND tenant_id=?`).bind(operationId,account.tenant_id)
+      .first<{quote_id:string|null;request_sha256:string;capability_version:number|null}>();
+    if(consumedQuote?.status==="consumed"&&consumedQuote.operation_id===operationId){
+      const acceptedSpec={accountId:account.id,nextBillingAt:next,credits:consumedQuote.credits,priceVersion:consumedQuote.price_version,
+        capabilityVersion:consumedQuote.capability_version,region:registry.region};
+      const acceptedHash=await hashString(JSON.stringify(acceptedSpec));
+      if(consumedQuote.tenant_id!==account.tenant_id||consumedQuote.space_id!==account.space_id
+        ||consumedQuote.project_id!==(account.project_id??null)||consumedQuote.requester_user_id!==account.owner_user_id
+        ||consumedQuote.plan_tier!==price.planTier||consumedQuote.provider!=="agentmail"||consumedQuote.service_id!=="agentmail"
+        ||consumedQuote.operation_name!=="renew"||consumedQuote.region!==registry.region
+        ||consumedQuote.capability_version!==price.capabilityVersion||consumedQuote.credits>price.maxCredits
+        ||consumedQuote.request_sha256!==acceptedHash||existingOperation?.quote_id!==quoteId
+        ||existingOperation.request_sha256!==acceptedHash||existingOperation.capability_version!==consumedQuote.capability_version){
+        await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_operation_quote_conflict',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
+          .bind(updated,account.id).run();
+        await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
+          .bind(updated,account.id,account.tenant_id).run();held++;return;
+      }
+      price={...price,capabilityVersion:consumedQuote.capability_version,priceVersion:consumedQuote.price_version,credits:consumedQuote.credits};
+    }
     const requestSpec={accountId:account.id,nextBillingAt:next,credits:price.credits,priceVersion:price.priceVersion,
       capabilityVersion:price.capabilityVersion,region:registry.region};
     const requestHash=await hashString(JSON.stringify(requestSpec));
-    const quoteDigest=await hashString(`agentmail-renew:${operationId}`);const quoteId=`msq_${quoteDigest.slice(0,32)}`;
     const quoteExpiry=new Date(now.getTime()+180_000).toISOString();
     await env.PLATFORM_DB.batch([env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
       operation_id,tenant_id,space_id,project_id,account_id,provider,service_id,capability_version,operation_name,region,idempotency_key,
