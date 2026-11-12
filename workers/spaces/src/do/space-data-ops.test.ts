@@ -42,6 +42,46 @@ function mockR2() {
 }
 
 describe("SpaceDO owner data operations", () => {
+  it("purges local Space data, keeps a durable erasure tombstone, and rejects later writes and restores", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const dataOps = (action: string) => space.fetch(new Request("https://space/data-ops", {
+      method: "POST", headers, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", action, request_id: "erasure-archive" }),
+    }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec("INSERT INTO sessions (id,space_id,tenant_id) VALUES (?,?,?)", "session-a", "space-a", "tenant-a");
+    storage.sql.exec("INSERT INTO messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)", "message-a", "session-a", "user", "personal content", "2026-01-01T00:00:00.000Z");
+    const archived = await dataOps("export");
+    expect(archived.status).toBe(201);
+    const archive = await archived.json() as { archive_id: string };
+    const archiveKey = `space-archives/tenant-a/space-a/${archive.archive_id}.enc`;
+    expect(r2.objects.has(archiveKey)).toBe(true);
+
+    const erase = (requestId: string) => space.fetch(new Request("https://space/internal/data-erasure", {
+      method: "DELETE", headers, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", request_id: requestId }),
+    }));
+    const response = await erase("erase-request-a");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ erased: true, tenant_id: "tenant-a", space_id: "space-a", request_id: "erase-request-a", replayed: false });
+    expect(storage.sql.exec("SELECT id FROM messages").toArray()).toHaveLength(0);
+    expect(storage.sql.exec("SELECT id FROM sessions").toArray()).toHaveLength(0);
+    expect(storage.sql.exec("SELECT archive_id FROM space_archive_records").toArray()).toHaveLength(0);
+    expect(storage.sql.exec("SELECT tenant_id,space_id,request_id FROM space_erasure_tombstones").toArray()).toEqual([
+      { tenant_id: "tenant-a", space_id: "space-a", request_id: "erase-request-a" },
+    ]);
+    expect(r2.objects.has(archiveKey)).toBe(true); // The workflow performs the retryable prefix sweep after this tombstone.
+
+    expect((await dataOps("preview_restore")).status).toBe(410);
+    const directWriter = await space.fetch(new Request("https://space/internal/domain-glossary?space_id=space-a", {
+      method: "POST", headers, body: JSON.stringify({ space_id: "space-a", actor_id: "owner-a", entry: { term: "x", meaning: "y" } }),
+    }));
+    expect(directWriter.status).toBe(410);
+    expect(await erase("erase-request-a").then(result => result.json())).toMatchObject({ replayed: true });
+    expect((await erase("different-request")).status).toBe(409);
+  });
+
   it("previews retention, requires an exact archive when configured, then deletes only selected messages", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough";
     const r2 = mockR2();

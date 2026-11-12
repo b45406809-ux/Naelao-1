@@ -473,6 +473,36 @@ export async function eraseSpaceR2Prefixes(
   // Remove its manifests, canonical content, staged uploads, and branch artifacts with the same
   // space erasure operation while preserving every sibling space in the tenant.
   await deleteR2Prefix(workspaceBucket, `workspace-v1/${tenantId}/${spaceId}/`);
+  // Encrypted SpaceDO archives are still personal data. The local SpaceDO tombstone is written
+  // first by the workflow so an interrupted R2 sweep cannot make an old archive restorable.
+  await deleteR2Prefix(workspaceBucket, `space-archives/${tenantId}/${spaceId}/`);
+}
+
+/** Tombstone and purge the exact SpaceDO after workspace project enumeration is complete. */
+export async function eraseSpaceDurableState(input: {
+  tenantId: string;
+  spaceId: string;
+  requestId: string;
+  platformSecret: string;
+  spacesWorker: Fetcher;
+}): Promise<{ replayed: boolean }> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.tenantId) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(input.spaceId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(input.requestId)) {
+    throw new Error("Invalid SpaceDO erasure scope");
+  }
+  const token = await mintInternalToken(input.platformSecret, input.tenantId);
+  const response = await input.spacesWorker.fetch(new Request(
+    `http://spaces/internal/tenant/${encodeURIComponent(input.tenantId)}/spaces/${encodeURIComponent(input.spaceId)}/data-erasure`,
+    { method: "DELETE", headers: { "content-type": "application/json", "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": token },
+      body: JSON.stringify({ request_id: input.requestId }) },
+  ));
+  if (!response.ok) throw new Error(`SpaceDO erasure failed with status ${response.status}`);
+  const result = await readBoundedResponseJson<{ erased?: unknown; tenant_id?: unknown; space_id?: unknown; request_id?: unknown; replayed?: unknown }>(response, 8 * 1024);
+  if (result.erased !== true || result.tenant_id !== input.tenantId || result.space_id !== input.spaceId || result.request_id !== input.requestId) {
+    throw new Error("SpaceDO erasure returned an invalid receipt");
+  }
+  return { replayed: result.replayed === true };
 }
 
 export async function eraseTenantExportKeys(

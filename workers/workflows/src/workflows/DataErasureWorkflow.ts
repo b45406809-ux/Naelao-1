@@ -28,6 +28,7 @@ import {
   erasureAuditId,
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
+  eraseSpaceDurableState,
   eraseSpaceKnowledgeDocumentResources,
   eraseSpaceKnowledgePrefixes,
   invalidateSpaceKnowledgeCaches,
@@ -195,6 +196,14 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           workspacePage++;
           if (!page.hasMore) break;
         } while (true);
+
+        await step.do(`erase-space-do-${spaceId.slice(0, 48)}`, () => eraseSpaceDurableState({
+          tenantId: params.orgId,
+          spaceId,
+          requestId: params.requestId,
+          platformSecret: this.env.PLATFORM_SECRET,
+          spacesWorker: this.env.SPACES_WORKER,
+        }));
 
         await eraseSpaceR2Prefixes(params.orgId, spaceId, this.env.ARTIFACT_R2_BUCKET,
           this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);

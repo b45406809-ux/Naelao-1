@@ -2330,6 +2330,18 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_agent_activity_root_run ON agent_activity_log(space_id,root_run_id,created_at DESC);
     `,
   },
+  {
+    version: 109,
+    description: "retain a Space erasure tombstone after purging local Durable Object data",
+    up: `CREATE TABLE space_erasure_tombstones (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      erased_at TEXT NOT NULL,
+      PRIMARY KEY (tenant_id,space_id)
+    );
+    CREATE INDEX idx_space_erasure_tombstones_request ON space_erasure_tombstones(request_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2549,6 +2561,54 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ deleted: result.rowsWritten > 0 });
   }
 
+  /** Delete the per-Space Durable Object state after the organization erasure CAS succeeds.
+   * The tombstone is committed in the same SQLite transaction as the purge and is excluded from
+   * all Space archives, so a retained or replayed archive cannot make this Space writable again. */
+  private async eraseSpaceData(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; request_id?: unknown }>().catch(() => null);
+    if (!tenantId || body?.tenant_id !== tenantId || typeof body.space_id !== "string" || !body.space_id ||
+        typeof body.request_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.request_id)) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+
+    const sql = this.ctx.storage.sql as never;
+    let replayed = false;
+    let requestConflict = false;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ request_id: string }>(sql,
+          "SELECT request_id FROM space_erasure_tombstones WHERE tenant_id=? AND space_id=?", tenantId, body.space_id);
+        if (existing) {
+          requestConflict = existing.request_id !== body.request_id;
+          replayed = !requestConflict;
+          return;
+        }
+
+        this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
+        const tables = queryAll<{ name: string }>(sql,
+          "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name!='space_erasure_tombstones' ORDER BY name");
+        const virtualTables = queryAll<{ name: string }>(sql,
+          "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
+        const applicationTables = tables.filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
+        this.ctx.storage.sql.exec(
+          "INSERT INTO space_erasure_tombstones(tenant_id,space_id,request_id,erased_at) VALUES(?,?,?,?)",
+          tenantId, body.space_id, body.request_id, new Date().toISOString());
+        // A SpaceDO is addressed by the exact (tenant,space) HMAC name. Its SQLite rows have no
+        // surviving cross-Space authority once this exact object is erased; defer FKs so cyclic
+        // legacy schemas are removed atomically rather than leaving readable children behind.
+        for (const table of applicationTables) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table.name)) throw new Error("space_erasure_table_name_invalid");
+          this.ctx.storage.sql.exec(`DELETE FROM "${table.name}"`);
+        }
+      });
+    } catch {
+      return Response.json({ error_code: "space_erasure_transaction_failed" }, { status: 503 });
+    }
+    if (requestConflict) return Response.json({ error_code: "space_erasure_request_conflict" }, { status: 409 });
+    return Response.json({ erased: true, tenant_id: tenantId, space_id: body.space_id, request_id: body.request_id, replayed });
+  }
+
   private async spaceDataOps(request: Request): Promise<Response> {
     const body: Record<string, unknown> = request.method === "POST" ? await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)) : {};
     const tenantId = String(body.tenant_id ?? new URL(request.url).searchParams.get("tenant_id") ?? "");
@@ -2556,6 +2616,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const actorId = String(body.actor_id ?? "");
     if (!tenantId || !spaceId || (request.method === "POST" && !actorId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
     const sql = this.ctx.storage.sql as never;
+    if (queryOne(sql, "SELECT 1 AS erased FROM space_erasure_tombstones WHERE tenant_id=? AND space_id=?", tenantId, spaceId)) {
+      return Response.json({ error_code: "space_erased" }, { status: 410 });
+    }
     const now = new Date().toISOString();
     const insertEvent = (action: string, details: Record<string, unknown>) => execute(sql,
       "INSERT INTO space_retention_events (id,tenant_id,space_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
@@ -2700,7 +2763,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         rowCounts.messages = messages.length;
       } else {
         const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
-        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_archive_uploads','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
+        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_archive_uploads','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events','space_erasure_tombstones') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
         for (const { name } of list) {
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) continue;
           const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", name).map(row => row.name));
@@ -2872,7 +2935,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
       for (const table of Object.keys(payload.tableRows)) {
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_archive_uploads","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_archive_uploads","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events","space_erasure_tombstones"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
         const exists = queryOne<{ name: string; sql: string | null }>(sql, "SELECT name,sql FROM sqlite_master WHERE type='table' AND name=?", table);
         if (!exists || exists.sql?.startsWith("CREATE VIRTUAL TABLE")) return Response.json({ error_code: "archive_table_schema_incompatible", table }, { status: 409 });
         const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", table).map(row => row.name));
@@ -2954,6 +3017,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const url = new URL(request.url);
     const method = request.method;
 
+    // Organization erasure is a terminal state for this SpaceDO. Keep only the
+    // idempotent erasure receipt route reachable; every old writer and archive
+    // restore path must stay fenced even if an internal caller bypasses the Worker
+    // level D1 status checks or a later database restore replays old rows.
+    if (!(method === "DELETE" && url.pathname === "/internal/data-erasure") &&
+        queryOne(this.ctx.storage.sql as never, "SELECT 1 AS erased FROM space_erasure_tombstones LIMIT 1")) {
+      return Response.json({ error_code: "space_erased" }, { status: 410 });
+    }
+
     // Product sessions authenticate the customer at the router, which forwards their verified
     // identity as end_user_id. Enforce ownership before dispatching ANY session-local endpoint,
     // including state and connector preferences that do not themselves return transcript rows.
@@ -2974,6 +3046,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     try {
       if (method === "POST" && url.pathname === "/internal/user-budget/debit") return this.debitUserDailyBudget(request);
+      if (method === "DELETE" && url.pathname === "/internal/data-erasure") {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) {
+          return Response.json({ error_code: "forbidden" }, { status: 403 });
+        }
+        return this.eraseSpaceData(request);
+      }
       if (url.pathname === "/data-ops" && (method === "GET" || method === "POST")) {
         const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
         if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) return Response.json({ error_code: "forbidden" }, { status: 403 });

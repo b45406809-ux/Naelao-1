@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, eraseWorkspaceCoordinatorsForSpace, invalidateSpaceKnowledgeCaches, SPACE_ERASURE_TABLES, validateBlueprintExportKey } from "./erasure-cleanup.js";
+import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceDurableState, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, eraseWorkspaceCoordinatorsForSpace, invalidateSpaceKnowledgeCaches, SPACE_ERASURE_TABLES, validateBlueprintExportKey } from "./erasure-cleanup.js";
 
 describe("erasure workflow audit idempotency", () => {
   it("uses stable request-scoped identifiers for retried workflow audit steps", () => {
@@ -282,8 +282,30 @@ describe("space R2 erasure", () => {
 
     expect(artifactPrefixes).toEqual(["tenant-a/space-a/"]);
     expect(repositoryPrefixes).toEqual(["repositories/tenant-a/space-a/"]);
-    expect(workspacePrefixes).toEqual(["spaces/space-a/", "workspace-v1/tenant-a/space-a/"]);
+    expect(workspacePrefixes).toEqual(["spaces/space-a/", "workspace-v1/tenant-a/space-a/", "space-archives/tenant-a/space-a/"]);
     expect(deleted).toEqual(["conformance-jobs/tenant-a/export-a.json"]);
+  });
+
+  it("tombstones the exact SpaceDO before archive-prefix cleanup and validates replay receipts", async () => {
+    const requests: Request[] = [];
+    const spacesWorker = { fetch: vi.fn(async (request: Request) => {
+      requests.push(request);
+      return Response.json({ erased: true, tenant_id: "tenant-a", space_id: "space-a", request_id: "erase-request-a", replayed: true });
+    }) } as never;
+    await expect(eraseSpaceDurableState({ tenantId: "tenant-a", spaceId: "space-a", requestId: "erase-request-a", platformSecret: "secret", spacesWorker }))
+      .resolves.toEqual({ replayed: true });
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe("/internal/tenant/tenant-a/spaces/space-a/data-erasure");
+    expect(requests[0]!.method).toBe("DELETE");
+    expect(requests[0]!.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
+    expect(requests[0]!.headers.get("x-naelao-internal-token")).toBeTruthy();
+    expect(await requests[0]!.json()).toEqual({ request_id: "erase-request-a" });
+
+    const mismatchedReceipt = { fetch: vi.fn(async () => Response.json({ erased: true, tenant_id: "tenant-b", space_id: "space-a", request_id: "erase-request-a" })) } as never;
+    await expect(eraseSpaceDurableState({ tenantId: "tenant-a", spaceId: "space-a", requestId: "erase-request-a", platformSecret: "secret", spacesWorker: mismatchedReceipt }))
+      .rejects.toThrow("SpaceDO erasure returned an invalid receipt");
+    await expect(eraseSpaceDurableState({ tenantId: "../tenant", spaceId: "space-a", requestId: "erase-request-a", platformSecret: "secret", spacesWorker }))
+      .rejects.toThrow("Invalid SpaceDO erasure scope");
   });
 
   it("bounds exact export deletion batches and rejects keys outside the tenant namespace", async () => {

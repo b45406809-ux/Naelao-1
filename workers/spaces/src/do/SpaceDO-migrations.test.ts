@@ -177,6 +177,6 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(108);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(109);
   });
 });

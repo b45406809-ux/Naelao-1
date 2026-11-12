@@ -263,6 +263,50 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/domains/erase", async (c)
   });
   return c.json({ erased: true, space_id: spaceId, provider_domains_deleted: deleted });
 });
+app.use("/internal/tenant/:tenantId/spaces/:spaceId/data-erasure", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.delete("/internal/tenant/:tenantId/spaces/:spaceId/data-erasure", async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const spaceId = c.req.param("spaceId");
+  if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  const body = await c.req.json<{ request_id?: unknown }>().catch(() => null);
+  if (typeof body?.request_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.request_id)) {
+    return c.json({ error_code: "invalid_erasure_request" }, 400);
+  }
+  const request = await c.env.PLATFORM_DB.prepare(
+    `SELECT id FROM gdpr_requests WHERE id=? AND tenant_id=? AND request_type='erasure' AND status='processing' LIMIT 1`,
+  ).bind(body.request_id, tenantId).first<{ id: string }>();
+  const org = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM orgs WHERE id=? AND status='suspended' AND suspension_reason='erasure'",
+  ).bind(tenantId).first<{ id: string }>();
+  if (!request || !org) return c.json({ error_code: "erasure_request_not_claimed" }, 409);
+
+  // Fence all public Space callers before the local Durable Object purge. A failed purge is
+  // retried by the claimed erasure Workflow; the suspended tenant cannot resume normal access.
+  const marked = await c.env.PLATFORM_DB.prepare(
+    `UPDATE spaces SET status='deleted',suspension_reason='erasure',updated_at=datetime('now')
+      WHERE id=? AND tenant_id=? AND status!='deleted'`,
+  ).bind(spaceId, tenantId).run();
+  const existing = marked.meta.changes === 0
+    ? await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='deleted' AND suspension_reason='erasure'")
+      .bind(spaceId, tenantId).first<{ id: string }>()
+    : { id: spaceId };
+  if (!existing) return c.json({ error_code: "space_not_found" }, 404);
+
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const response = await stub.fetch(new Request("http://space-do/internal/data-erasure", {
+    method: "DELETE",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+    body: JSON.stringify({ tenant_id: tenantId, space_id: spaceId, request_id: body.request_id }),
+  }));
+  if (!response.ok) return response;
+  const result = await response.json<{ erased?: unknown; tenant_id?: unknown; space_id?: unknown; request_id?: unknown; replayed?: unknown }>()
+    .catch(() => ({} as { erased?: unknown; tenant_id?: unknown; space_id?: unknown; request_id?: unknown; replayed?: unknown }));
+  if (result.erased !== true || result.tenant_id !== tenantId || result.space_id !== spaceId || result.request_id !== body.request_id) {
+    return c.json({ error_code: "space_erasure_receipt_invalid" }, 503);
+  }
+  return c.json({ erased: true, tenant_id: tenantId, space_id: spaceId, request_id: body.request_id, replayed: result.replayed === true });
+});
 
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
