@@ -15,10 +15,19 @@ owner-confirmed transition inspection, and prebuilt execution/artifact reconcili
 Exact next task: continue S3 at U04 by auditing MIME and byte-preservation across the current
 remaining readable/writable callers, implement any concrete local gap, then continue S3/U04–U12.
 The U04 audit confirmed existing caller coverage; focused Agents/Artifact/Spaces MIME and file-response
-tests pass **42/42** locally. Exact next task: continue U05 by tracing the authority-backed candidate
-search and operator-observation routes to their caller/configuration, close any safe independent
-integration gap without manufacturing provider evidence, then continue U05–U12. Keep rollout disabled
-and preserve `infra/scripts/__pycache__/`.
+tests pass **42/42** locally. U05's coordinator reaches the configured internal candidate verifier
+when live single-writer mode is requested; operator observation/revocation routes are separately
+reachable with the operator secret. Focused verifier/route/runtime-control/coordinator suites pass
+**72/72**, Agents typecheck passes, and disposable smoke-worker isolation tests pass **3/3**. The
+verifier is bound in default, staging and production config; live workspace rollout is false in all
+three. No product caller creates a trusted runtime allocation/reservation or emits mount/sync/flush
+observations, so U05 remains PARTIAL. U06's coordinator journal is implemented, but
+`LIVE_RUNTIME_AGENT` has no configured binding and the pinned experimental Container/daemon contract
+does not promise authenticated writer admission, drain/flush receipts, generation-fenced reconnect or
+handoff receipts. That is an unsupported platform contract, not a credential blocker. Exact next
+task: continue U07's scheduler/recovery source-to-caller audit for any independent safe code gap, then
+continue U08–U12 and the managed-services S4–S9 audit. Preserve `infra/scripts/__pycache__/`; keep all
+rollouts disabled.
 
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code
