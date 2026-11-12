@@ -14,8 +14,11 @@ start/sleep/execute, allocation and execution journals, scheduled read-only allo
 owner-confirmed transition inspection, and prebuilt execution/artifact reconciliation are reachable.
 Exact next task: continue S3 at U04 by auditing MIME and byte-preservation across the current
 remaining readable/writable callers, implement any concrete local gap, then continue S3/U04–U12.
-Keep rollout
-disabled and preserve `infra/scripts/__pycache__/`.
+The U04 audit confirmed existing caller coverage; focused Agents/Artifact/Spaces MIME and file-response
+tests pass **42/42** locally. Exact next task: continue U05 by tracing the authority-backed candidate
+search and operator-observation routes to their caller/configuration, close any safe independent
+integration gap without manufacturing provider evidence, then continue U05–U12. Keep rollout disabled
+and preserve `infra/scripts/__pycache__/`.
 
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code
