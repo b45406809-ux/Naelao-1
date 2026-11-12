@@ -20,6 +20,8 @@ import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import { ensureLaunchpad } from "./launchpad-bootstrap.js";
 import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
+import { dispatchPendingProductAccountSecurityOutbox } from "./product-account-security-outbox.js";
+import { dispatchPendingProductAuthEmails } from "./product-auth-email-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireSpaceMembership, resolveEndUserSpaceRole } from "./space-auth.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
@@ -285,8 +287,12 @@ registerDeskDropRoutes(app, {
     if (!root) return null;
     const product = await env.PLATFORM_DB.prepare("SELECT product_slug FROM products WHERE id = ? AND status = 'active'").bind(root.id).first<{ product_slug: string | null }>();
     if (!product?.product_slug) return null;
+    const account = await env.PLATFORM_DB.prepare(
+      "SELECT security_generation FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+    ).bind(root.id, userId).first<{ security_generation: number }>();
+    const securityGeneration = account?.security_generation ?? 0;
     const response = await (await productUserDoStub(env, root.id, userId, root.tenant_id)).fetch(new Request("http://do/sessions", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ auth_provider: "verified-mobile-desk-drop" }),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ auth_provider: "verified-mobile-desk-drop", security_generation: securityGeneration }),
     }));
     if (!response.ok) return null;
     const session = await response.json<{ session_token: string; expires_at: string }>();
@@ -297,8 +303,12 @@ registerDeskDropRoutes(app, {
     if (!await resolveEndUserSpaceRole(env.PLATFORM_DB, session.spaceId, session.userId)) return false;
     const root = await resolveProductIdentity(env, session.spaceId);
     if (!root || root.id !== session.productId) return false;
+    const account = await env.PLATFORM_DB.prepare(
+      "SELECT security_generation FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+    ).bind(root.id, session.userId).first<{ security_generation: number }>();
+    const securityGeneration = account?.security_generation ?? 0;
     const response = await (await productUserDoStub(env, root.id, session.userId, root.tenant_id)).fetch(new Request("http://do/sessions/verify", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token, security_generation: securityGeneration }),
     }));
     return response.ok && (await response.json<{ valid: boolean }>()).valid;
   },
@@ -306,10 +316,27 @@ registerDeskDropRoutes(app, {
     const env = rawEnv as Env;
     const root = await resolveProductIdentity(env, session.spaceId);
     if (!root || root.id !== session.productId) return;
+    const account = await env.PLATFORM_DB.prepare(
+      "SELECT security_generation FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(root.id, session.userId).first<{ security_generation: number }>();
+    const securityGeneration = account?.security_generation ?? 0;
     const stub = await productUserDoStub(env, root.id, session.userId, root.tenant_id);
-    const verify = await stub.fetch(new Request("http://do/sessions/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }) }));
+    const verify = await stub.fetch(new Request("http://do/sessions/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token, security_generation: securityGeneration }) }));
     const verified = await verify.json<{ valid: boolean; session_id?: string }>();
-    if (verified.valid && verified.session_id) await stub.fetch(new Request("http://do/sessions/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: verified.session_id }) }));
+    if (!verified.valid || !verified.session_id) return;
+    if (account) {
+      // Cookie-backed product logout advances the account epoch, so a lost DO response cannot
+      // leave a copied cookie bearer usable. The D1 trigger journals cleanup atomically.
+      await env.PLATFORM_DB.prepare(
+        `UPDATE product_end_users SET security_generation = security_generation + 1
+          WHERE product_space_id = ? AND end_user_id = ? AND security_generation = ?`
+      ).bind(root.id, session.userId, securityGeneration).run();
+      return;
+    }
+    const revoked = await stub.fetch(new Request("http://do/sessions/revoke", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: verified.session_id }),
+    }));
+    if (!revoked.ok) throw new Error("desk_drop_session_revoke_failed");
   },
 });
 registerGraduationRoutes(app);
@@ -1932,13 +1959,33 @@ async function resolveProductScope(
     "SELECT tenant_id, product_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(resourceId).first<{ tenant_id: string; product_id: string | null }>();
   if (!space) return null;
-  const productId = space.product_id;
-  if (!productId) return null;
-  const product = await env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id FROM products WHERE id = ? AND status = 'active'"
-  ).bind(productId).first<{ id: string; tenant_id: string }>();
-  if (!product || product.tenant_id !== space.tenant_id) return null;
-  return { ...product, resource_tenant_id: space.tenant_id };
+  if (space.product_id) {
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT id, tenant_id FROM products WHERE id = ? AND status = 'active'"
+    ).bind(space.product_id).first<{ id: string; tenant_id: string }>();
+    // A direct Space-to-Product reference is only valid within the Space's tenant.
+    if (!product || product.tenant_id !== space.tenant_id) return null;
+    return { ...product, resource_tenant_id: space.tenant_id };
+  }
+
+  // Child businesses can be nested below the Product root. Resolve only through live parent
+  // rows and cap traversal so corrupt/cyclic hierarchies cannot turn session verification into
+  // unbounded work. A parent link is the existing business hierarchy authority; the caller's
+  // tenant remains the resource tenant returned to Router, while the Product tenant names the DO.
+  const ancestor = await env.PLATFORM_DB.prepare(
+    `WITH RECURSIVE product_ancestors(id, parent_space_id, status, depth) AS (
+       SELECT id, parent_space_id, status, 0 FROM spaces WHERE id = ? AND status != 'deleted'
+       UNION ALL
+       SELECT parent.id, parent.parent_space_id, parent.status, child.depth + 1
+         FROM spaces parent JOIN product_ancestors child ON parent.id = child.parent_space_id
+        WHERE parent.status != 'deleted' AND child.depth < 32
+     )
+     SELECT p.id, p.tenant_id
+       FROM product_ancestors a JOIN products p ON p.id = a.id
+      WHERE a.depth > 0 AND p.status = 'active'
+      ORDER BY a.depth LIMIT 1`
+  ).bind(resourceId).first<{ id: string; tenant_id: string }>();
+  return ancestor ? { ...ancestor, resource_tenant_id: space.tenant_id } : null;
 }
 
 async function resolveProductIdentity(env: Env, spaceId: string): Promise<{ id: string; tenant_id: string } | null> {
@@ -1946,24 +1993,26 @@ async function resolveProductIdentity(env: Env, spaceId: string): Promise<{ id: 
   return scope ? { id: scope.id, tenant_id: scope.tenant_id } : null;
 }
 
-async function isActiveProductUser(env: Env, productId: string, tenantId: string, userId: string): Promise<boolean> {
+async function isActiveProductUser(env: Env, productId: string, tenantId: string, userId: string): Promise<number | null> {
   const row = await env.PLATFORM_DB.prepare(
-    `SELECT 1 FROM products p JOIN product_end_users u ON u.product_space_id = p.id
+    `SELECT u.security_generation FROM products p JOIN product_end_users u ON u.product_space_id = p.id
       WHERE p.id = ? AND p.tenant_id = ? AND p.status = 'active' AND u.end_user_id = ?
         AND u.suspended_at IS NULL AND u.deleted_at IS NULL`
-  ).bind(productId, tenantId, userId).first();
-  return !!row;
+  ).bind(productId, tenantId, userId).first<{ security_generation: number }>();
+  return row && Number.isSafeInteger(row.security_generation) && row.security_generation >= 0 ? row.security_generation : null;
 }
 
-async function verifyProductSession(env: Env, resourceId: string, userId: string, token: string): Promise<{ tenant_id: string } | null> {
+async function verifyProductSession(env: Env, resourceId: string, userId: string, token: string): Promise<{ tenant_id: string; security_generation: number } | null> {
   const scope = await resolveProductScope(env, resourceId);
-  if (!scope || !await isActiveProductUser(env, scope.id, scope.tenant_id, userId)) return null;
+  if (!scope) return null;
+  const securityGeneration = await isActiveProductUser(env, scope.id, scope.tenant_id, userId);
+  if (securityGeneration === null) return null;
   const stub = await productUserDoStub(env, scope.id, userId, scope.tenant_id);
   const response = await stub.fetch(new Request("http://do/sessions/verify", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: token }),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: token, security_generation: securityGeneration }),
   }));
   if (!response.ok || !(await response.json<{ valid?: boolean }>()).valid) return null;
-  return { tenant_id: scope.resource_tenant_id };
+  return { tenant_id: scope.resource_tenant_id, security_generation: securityGeneration };
 }
 
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
@@ -5609,7 +5658,7 @@ app.post("/internal/stream-tickets/issue", async (c) => {
   if (!verified) return c.json({ error: "invalid_session" }, 401);
   const ticket = crypto.randomUUID();
   const key = `stream-ticket:${productId}:${endUserId}:${ticket}`;
-  await c.env.NAELAO_CONFIG_KV.put(key, verified.tenant_id, { expirationTtl: 60 });
+  await c.env.NAELAO_CONFIG_KV.put(key, JSON.stringify({ tenant_id: verified.tenant_id, security_generation: verified.security_generation }), { expirationTtl: 60 });
   return c.json({ ticket, expires_in: 60 });
 });
 
@@ -5620,13 +5669,19 @@ app.post("/internal/stream-tickets/consume", async (c) => {
   const { productId, endUserId, ticket } = await c.req.json<{ productId: string; endUserId: string; ticket: string }>();
   if (!productId || !endUserId || !ticket) return c.json({ valid: false }, 400);
   const key = `stream-ticket:${productId}:${endUserId}:${ticket}`;
-  const tenantId = await c.env.NAELAO_CONFIG_KV.get(key);
-  if (tenantId === null) return c.json({ valid: false }); // expired or already consumed
+  const encoded = await c.env.NAELAO_CONFIG_KV.get(key);
+  if (encoded === null) return c.json({ valid: false }); // expired or already consumed
+  let ticketPayload: { tenant_id: string; security_generation: number };
+  try {
+    ticketPayload = JSON.parse(encoded) as typeof ticketPayload;
+    if (!ticketPayload.tenant_id || !Number.isSafeInteger(ticketPayload.security_generation) || ticketPayload.security_generation < 0) return c.json({ valid: false });
+  } catch { return c.json({ valid: false }); }
   // Single-use: delete immediately after reading.
   await c.env.NAELAO_CONFIG_KV.delete(key);
   // Suspension or deletion after ticket issue takes effect before it can be redeemed.
   const scope = await resolveProductScope(c.env, productId);
-  if (!scope || scope.resource_tenant_id !== tenantId || !await isActiveProductUser(c.env, scope.id, scope.tenant_id, endUserId))
+  const securityGeneration = scope ? await isActiveProductUser(c.env, scope.id, scope.tenant_id, endUserId) : null;
+  if (!scope || scope.resource_tenant_id !== ticketPayload.tenant_id || securityGeneration !== ticketPayload.security_generation)
     return c.json({ valid: false });
   return c.json({ valid: true, tenant_id: scope.resource_tenant_id });
 });
@@ -6006,5 +6061,9 @@ export default {
       const erasures = await dispatchPendingErasureOutbox(env.PLATFORM_DB, env.EVENTS_QUEUE);
       console.log(`[erasure-outbox] sent=${erasures.sent} deferred=${erasures.deferred}`);
     }
+    const accountSecurity = await dispatchPendingProductAccountSecurityOutbox(env.PLATFORM_DB, env);
+    console.log(`[product-account-security-outbox] completed=${accountSecurity.completed} deferred=${accountSecurity.deferred}`);
+    const authEmails = await dispatchPendingProductAuthEmails(env.PLATFORM_DB, env);
+    console.log(`[product-auth-email-outbox] accepted=${authEmails.accepted} deferred=${authEmails.deferred}`);
   },
 } satisfies ExportedHandler<Env>;

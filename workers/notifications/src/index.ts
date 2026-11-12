@@ -785,6 +785,7 @@ app.post("/internal/notify", async (c) => {
     message?: string;
     actions?: Array<{ id: string; label: string }>;
     user_id?: string;
+    notification_id?: string;
     installation_id?: string;
     provider_connection_id?: string;
     thread_ts?: string;
@@ -820,7 +821,9 @@ app.post("/internal/notify", async (c) => {
       subject: body.subject ?? "(no subject)",
       html: body.html ?? body.body ?? "",
       ...(body.reply_to ? { replyTo: body.reply_to } : {}),
-    });
+    }, typeof body.notification_id === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(body.notification_id)
+      ? body.notification_id
+      : undefined);
     if (!result.ok) {
       return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
     }

@@ -28,6 +28,14 @@ function store(token: string, user: AccountUser): void {
   try { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(USER_KEY, JSON.stringify(user)); } catch { /* ignore */ }
 }
 export function logout(): void {
+  const token = getToken();
+  if (token) {
+    void fetch(`${API_URL}/v1/auth/revoke`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      keepalive: true,
+    }).catch(() => {});
+  }
   try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
 }
 export function isAuthenticated(): boolean { return !!getToken(); }

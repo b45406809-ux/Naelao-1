@@ -21,20 +21,36 @@ describe("ProductUserDO sessions and stored-value retirement", () => {
     }));
 
     expect((await post("/sessions", "{" )).status).toBe(400);
-    expect((await post("/sessions", JSON.stringify({ auth_provider: "x".repeat(65) }))).status).toBe(400);
-    for (let i = 0; i < 100; i++) expect((await post("/sessions", "{}" )).status).toBe(201);
-    expect((await post("/sessions", "{}" )).status).toBe(429);
+    expect((await post("/sessions", JSON.stringify({ auth_provider: "x".repeat(65), security_generation: 0 }))).status).toBe(400);
+    expect((await post("/sessions", "{}" )).status).toBe(400);
+    for (let i = 0; i < 100; i++) expect((await post("/sessions", JSON.stringify({ security_generation: 0 }) )).status).toBe(201);
+    expect((await post("/sessions", JSON.stringify({ security_generation: 0 }) )).status).toBe(429);
   });
 
   it("enforces the active-session ceiling under parallel session creation", async () => {
     const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
     const responses = await Promise.all(Array.from({ length: 120 }, () => user.fetch(new Request("https://user/sessions", {
-      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }),
     }))));
     expect(responses.filter((response) => response.status === 201)).toHaveLength(100);
     expect(responses.filter((response) => response.status === 429)).toHaveLength(20);
     const rows = await Promise.all(responses.filter((response) => response.status === 201).map((response) => response.json()));
     expect(new Set(rows.map((row) => (row as { session_id: string }).session_id)).size).toBe(100);
+  });
+
+  it("rejects copied sessions after the authoritative account generation advances", async () => {
+    const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const created = await user.fetch(new Request("https://user/sessions", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth_provider: "naelao-native", security_generation: 4 }),
+    }));
+    const session = await created.json() as { session_token: string; session_id: string };
+    const verify = (generation: number) => user.fetch(new Request("https://user/sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_token: session.session_token, security_generation: generation }),
+    }));
+    expect((await verify(4).then((response) => response.json()) as { valid: boolean }).valid).toBe(true);
+    expect((await verify(5).then((response) => response.json()) as { valid: boolean }).valid).toBe(false);
   });
 
   it("paginates conversation metadata and bounds user-controlled stored values", async () => {

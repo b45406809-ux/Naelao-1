@@ -91,7 +91,7 @@ describe("interactive mobile approval delivery", () => {
     const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
-      body: JSON.stringify({ channel: "email", space_id: "space", to: "customer@example.net", subject: "Hello", body: "World", reply_to: "reply-a1@example.test" }),
+      body: JSON.stringify({ channel: "email", space_id: "space", to: "customer@example.net", subject: "Hello", body: "World", reply_to: "reply-a1@example.test", notification_id: "product-auth:operation-1" }),
     }), { ...env(), RESEND_FROM_ADDRESS: "team@example.org" }, {} as ExecutionContext);
 
     expect(response.status).toBe(200);
@@ -99,6 +99,7 @@ describe("interactive mobile approval delivery", () => {
     const payload = JSON.parse((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
     expect(payload.from).toBe("team@example.org");
     expect(payload.reply_to).toBe("reply-a1@example.test");
+    expect(new Headers((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].headers).get("Idempotency-Key")).toBe("product-auth:operation-1");
     expect((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].signal).toBeInstanceOf(AbortSignal);
     expect((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe("error");
   });

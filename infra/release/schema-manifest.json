@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0226_marketplace_license_refund_cases",
+  "requiredSchemaVersion": "0227_product_account_recovery_generation_and_email_outbox",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -907,6 +907,10 @@
     {
       "filename": "0226_marketplace_license_refund_cases.sql",
       "sha256": "950d7f66a5012da457a2f8e6a0ca47b4c07ecc894c14362ea1336d5a6b4c1121"
+    },
+    {
+      "filename": "0227_product_account_recovery_generation_and_email_outbox.sql",
+      "sha256": "48a859c652eba1b42d7f234a534ffaa6968abf5a7a222345860067c0fa963c41"
     }
   ]
 }

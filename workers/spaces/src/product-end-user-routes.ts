@@ -14,10 +14,12 @@ import type { Hono } from "hono";
 import { hashPassword, verifyPassword } from "@naelao/crypto";
 import type { HashedPassword } from "@naelao/crypto";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
+import { requireInternalHmac } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
+import { dispatchProductAuthEmailOutboxEntry, encryptProductAuthEmailPayload, type ProductAuthEmailDispatcherEnv } from "./product-auth-email-outbox.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 
-export interface ProductEndUserRoutesEnv {
+export interface ProductEndUserRoutesEnv extends ProductAuthEmailDispatcherEnv {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
   PRODUCT_USER_DO: DurableObjectNamespace;
@@ -25,10 +27,8 @@ export interface ProductEndUserRoutesEnv {
   NAELAO_CONFIG_KV: KVNamespace;
   NOTIFICATIONS_WORKER?: Fetcher;
   /** Public base URL of apps/shell (e.g. "https://app.naelao.com"), used to build a clickable
-   *  verification link ("${base}/p/{slug}/verify-email?token=..."). Deliberately left unset by
-   *  default rather than guessing a production domain — when unset, the email still carries the
-   *  raw token, and the shell's verify-email page accepts a manually pasted token, so signup
-   *  verification works either way, not just when this happens to be configured correctly. */
+   *  verification link with the token in the URL fragment. Fragments are not sent in HTTP
+   *  requests, access logs, or referrer headers; the shell removes the fragment after reading it. */
   PRODUCT_SHELL_URL?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
@@ -53,6 +53,49 @@ const DUMMY_PASSWORD_HASH: HashedPassword = {
   salt: "0".repeat(64),
   hash: "0".repeat(64),
 };
+
+async function createProductSession(
+  env: ProductEndUserRoutesEnv,
+  productId: string,
+  endUserId: string,
+  tenantId: string,
+  authProvider: string,
+  securityGeneration: number,
+): Promise<{ session_id: string; session_token: string; expires_at: string } | null> {
+  const stub = await productUserDoStub(env, productId, endUserId, tenantId);
+  const response = await stub.fetch(new Request("http://do/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ auth_provider: authProvider, security_generation: securityGeneration }),
+  }));
+  if (!response.ok) return null;
+  const session = await response.json<{ session_id: string; session_token: string; expires_at: string }>();
+  const current = await env.PLATFORM_DB.prepare(
+    `SELECT security_generation, suspended_at, deleted_at FROM product_end_users
+      WHERE product_space_id = ? AND end_user_id = ?`
+  ).bind(productId, endUserId).first<{ security_generation: number; suspended_at: string | null; deleted_at: string | null }>();
+  if (!current || current.suspended_at || current.deleted_at || current.security_generation !== securityGeneration) {
+    try {
+      await stub.fetch("http://do/sessions/revoke", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: session.session_id }),
+      });
+    } catch { /* generation is authoritative even if cleanup is temporarily unavailable */ }
+    return null;
+  }
+  return session;
+}
+
+async function recipientHash(email: string): Promise<string> {
+  return sha256Hex(email.trim().toLowerCase());
+}
+
+async function encryptedEmailPayload(env: ProductEndUserRoutesEnv, token: string, recipient: string, verifyUrl?: string): Promise<string> {
+  return encryptProductAuthEmailPayload(env.PLATFORM_SECRET, {
+    token,
+    recipient: recipient.trim().toLowerCase(),
+    ...(verifyUrl ? { verify_url: verifyUrl } : {}),
+  });
+}
 
 function isValidEmail(email: string): boolean {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -100,30 +143,41 @@ export async function sendWhatsApp(env: ProductEndUserRoutesEnv, spaceId: string
   return false;
 }
 
-async function sendEmail(env: ProductEndUserRoutesEnv, tenantId: string, spaceId: string, to: string, subject: string, body: string): Promise<void> {
-  if (!env.NOTIFICATIONS_WORKER) return;
-  try {
-    await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-      body: JSON.stringify({ channel: "email", space_id: spaceId, to, subject, body }),
-    }));
-  } catch { /* best-effort — never blocks the caller's own response */ }
-}
-
 async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string, email: string, slug: string | null): Promise<void> {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const tokenHash = await sha256Hex(token);
   const expiresAt = new Date(Date.now() + VERIFY_TOKEN_TTL_MS).toISOString();
-  await env.PLATFORM_DB.prepare(
-    `INSERT INTO email_verification_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).bind(crypto.randomUUID(), productId, endUserId, tokenHash, expiresAt).run();
-  const link = env.PRODUCT_SHELL_URL && slug
-    ? `\n\nOr click this link: ${env.PRODUCT_SHELL_URL}/p/${slug}/verify-email?token=${token}`
-    : "";
-  await sendEmail(env, tenantId, productId, email, "Verify your email",
-    `Verification token: ${token}${link}\n\nThis token expires in 24 hours. Verifying helps secure your account and confirm email ownership.`);
+  const tokenId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const verifyUrl = env.PRODUCT_SHELL_URL && slug
+    ? `${env.PRODUCT_SHELL_URL.replace(/\/$/, "")}/p/${encodeURIComponent(slug)}/verify-email#token=${encodeURIComponent(token)}`
+    : undefined;
+  const encryptedPayload = await encryptedEmailPayload(env, token, email, verifyUrl);
+  await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(
+      `UPDATE email_verification_tokens SET used_at = datetime('now')
+        WHERE product_space_id = ? AND end_user_id = ? AND used_at IS NULL`
+    ).bind(productId, endUserId),
+    env.PLATFORM_DB.prepare(
+      `UPDATE product_auth_email_outbox SET status = 'cancelled', updated_at = datetime('now'),
+         lease_token = NULL, lease_until = NULL, last_error_code = NULL
+        WHERE product_space_id = ? AND end_user_id = ? AND message_kind = 'email_verification'
+          AND status IN ('pending', 'sending')`
+    ).bind(productId, endUserId),
+    env.PLATFORM_DB.prepare(
+      `INSERT INTO email_verification_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(tokenId, productId, endUserId, tokenHash, expiresAt),
+    env.PLATFORM_DB.prepare(
+      `INSERT INTO product_auth_email_outbox
+        (operation_id, tenant_id, product_space_id, end_user_id, token_id, message_kind, recipient_hash, encrypted_payload)
+       VALUES (?, ?, ?, ?, ?, 'email_verification', ?, ?)`
+    ).bind(operationId, tenantId, productId, endUserId, tokenId, await recipientHash(email), encryptedPayload),
+  ]);
+  // The durable dispatcher composes the message at send time. The token stays encrypted in D1;
+  // when present, its URL fragment is never sent to the web server or included in request logs.
+  try { await dispatchProductAuthEmailOutboxEntry(env.PLATFORM_DB, env, operationId); }
+  catch { /* the durable scheduled dispatcher will retry */ }
 }
 
 interface ProductRow {
@@ -207,12 +261,11 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       throw err;
     }
 
-    const stub = await productUserDoStub(env, productId, endUserId, resolved.product.tenant_id);
-    const sessionRes = await stub.fetch(new Request("http://do/sessions", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ auth_provider: "naelao-native" }),
-    }));
-    const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
+    // Product behavior remains explicit: signup returns a product session before email
+    // verification; verification gates the configured signup-credit grant, not all product use.
+    // This is the existing migration 0055 contract and avoids silently changing signup policy.
+    const session = await createProductSession(env, productId, endUserId, resolved.product.tenant_id, "naelao-native", 0);
+    if (!session) return c.json({ error_code: "session_unavailable", message: "Sign-up could not finish. Please try again." }, 503);
 
     try {
       await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email, resolved.product.product_slug);
@@ -238,8 +291,8 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     if (!isValidEmail(email)) return c.json({ error_code: "bad_request", message: "Incorrect email or password" }, 401);
 
     const row = await env.PLATFORM_DB.prepare(
-      "SELECT end_user_id, password_hash, suspended_at FROM product_end_users WHERE product_space_id = ? AND email = ?"
-    ).bind(productId, email).first<{ end_user_id: string; password_hash: string | null; suspended_at: string | null }>();
+      "SELECT end_user_id, password_hash, suspended_at, deleted_at, security_generation FROM product_end_users WHERE product_space_id = ? AND email = ?"
+    ).bind(productId, email).first<{ end_user_id: string; password_hash: string | null; suspended_at: string | null; deleted_at: string | null; security_generation: number }>();
     // Constant-shape response whether the email doesn't exist or the password is wrong — never
     // reveal which one it was.
     let storedPassword = DUMMY_PASSWORD_HASH;
@@ -253,7 +306,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     // Do one PBKDF2 verification for missing, malformed, suspended, and normal accounts so the
     // public login endpoint does not reveal roster membership through a cheap timing branch.
     const ok = await verifyPassword(body.password, storedPassword);
-    if (!row || !row.password_hash || !ok || row.suspended_at) {
+    if (!row || !row.password_hash || !ok || row.suspended_at || row.deleted_at) {
       return c.json({ error_code: "invalid_credentials", message: "Incorrect email or password" }, 401);
     }
 
@@ -261,14 +314,42 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       "UPDATE product_end_users SET last_seen_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(productId, row.end_user_id).run();
 
-    const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
-    const sessionRes = await stub.fetch(new Request("http://do/sessions", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ auth_provider: "naelao-native" }),
-    }));
-    const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
+    const session = await createProductSession(env, productId, row.end_user_id, resolved.product.tenant_id, "naelao-native", row.security_generation);
+    if (!session) return c.json({ error_code: "invalid_credentials", message: "Incorrect email or password" }, 401);
 
     return c.json({ end_user_id: row.end_user_id, session_token: session.session_token, expires_at: session.expires_at });
+  });
+
+  // Product logout is global for the account: advancing the authoritative generation makes
+  // every copied token fail immediately, while the outbox retries physical DO cleanup.
+  app.post("/spaces/:spaceId/end-users/logout", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const body = await c.req.json<{ end_user_id?: string; session_token?: string }>().catch(() => ({} as { end_user_id?: string; session_token?: string }));
+    if (!body.end_user_id || body.end_user_id.length > 256 || typeof body.session_token !== "string" || body.session_token.length < 32 || body.session_token.length > 256) {
+      return c.body(null, 204);
+    }
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (!resolved) return c.body(null, 204);
+    const account = await env.PLATFORM_DB.prepare(
+      `SELECT security_generation FROM product_end_users
+        WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL`
+    ).bind(productId, body.end_user_id).first<{ security_generation: number }>();
+    if (!account) return c.body(null, 204);
+    const stub = await productUserDoStub(env, productId, body.end_user_id, resolved.product.tenant_id);
+    const verifiedResponse = await stub.fetch(new Request("http://do/sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_token: body.session_token, security_generation: account.security_generation }),
+    }));
+    if (!verifiedResponse.ok || !(await verifiedResponse.json<{ valid?: boolean }>()).valid) return c.body(null, 204);
+
+    await env.PLATFORM_DB.prepare(
+      `UPDATE product_end_users SET security_generation = security_generation + 1
+        WHERE product_space_id = ? AND end_user_id = ? AND security_generation = ?
+          AND suspended_at IS NULL AND deleted_at IS NULL`
+    ).bind(productId, body.end_user_id, account.security_generation).run();
+    // Migration 0227's generation trigger journals cleanup atomically with this update.
+    return c.body(null, 204);
   });
 
   // Passwordless WhatsApp login. The request response is deliberately constant so it cannot be
@@ -373,12 +454,12 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
          last_seen_at = datetime('now')`
     ).bind(productId, row.end_user_id, row.phone_e164).run();
 
-    const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
-    const sessionRes = await stub.fetch(new Request("http://do/sessions", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ auth_provider: "whatsapp" }),
-    }));
-    const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
+    const account = await env.PLATFORM_DB.prepare(
+      "SELECT security_generation FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+    ).bind(productId, row.end_user_id).first<{ security_generation: number }>();
+    if (!account) return c.json({ error_code: "invalid_challenge", message: "That code or link is invalid or has expired" }, 400);
+    const session = await createProductSession(env, productId, row.end_user_id, resolved.product.tenant_id, "whatsapp", account.security_generation);
+    if (!session) return c.json({ error_code: "session_unavailable", message: "Sign-in could not finish. Please try again." }, 503);
     return c.json({ end_user_id: row.end_user_id, session_token: session.session_token, expires_at: session.expires_at });
   });
 
@@ -401,23 +482,41 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     if (!email) return ALWAYS_OK;
 
     const row = await env.PLATFORM_DB.prepare(
-      "SELECT end_user_id FROM product_end_users WHERE product_space_id = ? AND email = ? AND password_hash IS NOT NULL"
+      "SELECT end_user_id FROM product_end_users WHERE product_space_id = ? AND email = ? AND password_hash IS NOT NULL AND deleted_at IS NULL"
     ).bind(productId, email).first<{ end_user_id: string }>();
     if (!row) return ALWAYS_OK; // never reveal whether the email exists
 
     const token = crypto.randomUUID() + crypto.randomUUID();
     const tokenHash = await sha256Hex(token);
     const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO password_reset_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(crypto.randomUUID(), productId, row.end_user_id, tokenHash, expiresAt).run();
-
-    // Best-effort — same precedent as every other notify() call in this codebase: a delivery
-    // failure must never leak whether the account exists via a different response shape, so
-    // this can't be allowed to change ALWAYS_OK's response.
-    await sendEmail(env, resolved.product.tenant_id, productId, email, "Reset your password",
-      `Reset token: ${token}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`);
+    const tokenId = crypto.randomUUID();
+    const operationId = crypto.randomUUID();
+    try {
+      const encryptedPayload = await encryptedEmailPayload(env, token, email);
+      await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare(
+          `UPDATE password_reset_tokens SET used_at = datetime('now')
+            WHERE product_space_id = ? AND end_user_id = ? AND used_at IS NULL`
+        ).bind(productId, row.end_user_id),
+        env.PLATFORM_DB.prepare(
+          `UPDATE product_auth_email_outbox SET status = 'cancelled', updated_at = datetime('now'),
+             lease_token = NULL, lease_until = NULL, last_error_code = NULL
+            WHERE product_space_id = ? AND end_user_id = ? AND message_kind = 'password_reset'
+              AND status IN ('pending', 'sending')`
+        ).bind(productId, row.end_user_id),
+        env.PLATFORM_DB.prepare(
+          `INSERT INTO password_reset_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
+           VALUES (?, ?, ?, ?, ?)`
+        ).bind(tokenId, productId, row.end_user_id, tokenHash, expiresAt),
+        env.PLATFORM_DB.prepare(
+          `INSERT INTO product_auth_email_outbox
+            (operation_id, tenant_id, product_space_id, end_user_id, token_id, message_kind, recipient_hash, encrypted_payload)
+           VALUES (?, ?, ?, ?, ?, 'password_reset', ?, ?)`
+        ).bind(operationId, resolved.product.tenant_id, productId, row.end_user_id, tokenId, await recipientHash(email), encryptedPayload),
+      ]);
+      try { await dispatchProductAuthEmailOutboxEntry(env.PLATFORM_DB, env, operationId); }
+      catch { /* a durable scheduled retry preserves the neutral public response */ }
+    } catch { /* account-specific storage failures must not change the neutral public response */ }
 
     return ALWAYS_OK;
   });
@@ -443,24 +542,19 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
 
     const hashed = await hashPassword(body.new_password);
     const consumed = await env.PLATFORM_DB.prepare(
-      "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')"
-    ).bind(row.id).run();
+      `UPDATE password_reset_tokens
+          SET used_at = datetime('now'), pending_password_hash = ?
+        WHERE id = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')
+          AND EXISTS (SELECT 1 FROM product_end_users u WHERE u.product_space_id = password_reset_tokens.product_space_id
+            AND u.end_user_id = password_reset_tokens.end_user_id AND u.deleted_at IS NULL)`
+    ).bind(JSON.stringify(hashed), row.id).run();
     if ((consumed.meta.changes ?? 0) !== 1) {
       return c.json({ error_code: "invalid_token", message: "This reset link is invalid or has expired" }, 400);
     }
-    await env.PLATFORM_DB.prepare(
-      "UPDATE product_end_users SET password_hash = ? WHERE product_space_id = ? AND end_user_id = ?"
-    ).bind(JSON.stringify(hashed), productId, row.end_user_id).run();
-
-    // Revoke ALL existing sessions — a stolen session must not survive a password reset.
-    // Best-effort: failure must not block the reset itself (the password is already changed).
-    try {
-      const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?").bind(productId).first<{ tenant_id: string }>();
-      if (space) {
-        const stub = await productUserDoStub(env, productId, row.end_user_id, space.tenant_id);
-        await stub.fetch("http://do/sessions/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
-      }
-    } catch { /* ignore — password is already updated */ }
+    // Migration 0227's SQLite trigger updates the password, advances security_generation and
+    // inserts the durable DO cleanup operation inside this same token-consumption statement.
+    // Every protected request compares the session's generation against D1, so a failed DO revoke
+    // cannot preserve the old session's access.
 
     return c.json({ ok: true, message: "Password updated. Sign in with your new password." });
   });
@@ -488,10 +582,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     if ((consumed.meta.changes ?? 0) !== 1) {
       return c.json({ error_code: "invalid_token", message: "This verification link is invalid or has expired" }, 400);
     }
-    await env.PLATFORM_DB.prepare(
-      "UPDATE product_end_users SET email_verified_at = COALESCE(email_verified_at, datetime('now')) WHERE product_space_id = ? AND end_user_id = ?"
-    ).bind(productId, row.end_user_id).run();
-
+    // Migration 0227's trigger applies verified state inside the same token-consumption statement.
     return c.json({ ok: true, message: "Email verified." });
   });
 
@@ -517,7 +608,39 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     // Never reveal whether the account exists or is already verified — constant response.
     if (!row || row.email_verified_at) return ALWAYS_OK;
 
-    await issueVerificationToken(env, productId, row.end_user_id, resolved.product.tenant_id, email, resolved.product.product_slug);
+    try {
+      await issueVerificationToken(env, productId, row.end_user_id, resolved.product.tenant_id, email, resolved.product.product_slug);
+    } catch { /* preserve the non-enumerating public response; durable rows retry independently */ }
     return ALWAYS_OK;
+  });
+
+  app.use("/internal/product-auth-email-operations", requireInternalHmac((c) => (c as unknown as { env: ProductEndUserRoutesEnv }).env.PLATFORM_SECRET));
+  app.get("/internal/product-auth-email-operations", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+    const rawLimit = Number(c.req.query("limit") ?? 25);
+    const limit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(100, rawLimit)) : 25;
+    const status = c.req.query("status");
+    if (status && !["pending", "sending", "accepted", "failed", "cancelled"].includes(status)) {
+      return c.json({ error_code: "invalid_status" }, 400);
+    }
+    const rows = await env.PLATFORM_DB.prepare(
+      `SELECT operation_id, message_kind, status, attempt_count, next_attempt_at,
+              last_error_code, created_at, updated_at, accepted_at
+         FROM product_auth_email_outbox
+        WHERE tenant_id = ? AND (? IS NULL OR status = ?)
+        ORDER BY created_at DESC, operation_id LIMIT ?`
+    ).bind(tenantId, status ?? null, status ?? null, limit).all<{
+      operation_id: string;
+      message_kind: string;
+      status: string;
+      attempt_count: number;
+      next_attempt_at: string;
+      last_error_code: string | null;
+      created_at: string;
+      updated_at: string;
+      accepted_at: string | null;
+    }>();
+    return c.json({ operations: rows.results ?? [] });
   });
 }

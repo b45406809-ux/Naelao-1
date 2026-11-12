@@ -6,7 +6,11 @@ import { registerDeskDropRoutes } from "../../workers/spaces/src/routes/desk-dro
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 async function harness() {
-  const db = createFakeD1(["CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, parent_space_id TEXT, product_id TEXT); INSERT INTO spaces VALUES ('space','tenant','active',NULL,NULL);", readFileSync(new URL("../../infra/migrations/0085_desk_drop.sql", import.meta.url), "utf8")]);
+  const db = createFakeD1([
+    "CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, parent_space_id TEXT, product_id TEXT); INSERT INTO spaces VALUES ('space','tenant','active',NULL,NULL);",
+    "CREATE TABLE products (id TEXT PRIMARY KEY, status TEXT NOT NULL); INSERT INTO products VALUES ('space','active');",
+    readFileSync(new URL("../../infra/migrations/0085_desk_drop.sql", import.meta.url), "utf8"),
+  ]);
   let authorized = true; let opened = 0; let revoked = 0;
   const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "secret", PRODUCT_SHELL_URL: "https://shell.example" };
   const app = new Hono<{ Bindings: typeof env }>();

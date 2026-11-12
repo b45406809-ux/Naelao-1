@@ -30,6 +30,7 @@ interface SessionRow {
   auth_provider: string;
   created_at: string;
   expires_at: string;
+  security_generation: number;
   revoked_at: string | null;
 }
 
@@ -169,6 +170,11 @@ const MIGRATIONS: Migration[] = [
     up: `DROP TABLE IF EXISTS personal_plan_entitlements;
       DROP TABLE IF EXISTS plan_state;`,
   },
+  {
+    version: 8,
+    description: "bind product sessions to authoritative account security generation",
+    up: `ALTER TABLE session_state ADD COLUMN security_generation INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 
@@ -199,9 +205,9 @@ export class ProductUserDO extends DurableObject {
     // POST /sessions — open a product-scoped session. Caller has already verified the end user's
     // identity via the product's auth_provider; this mints an opaque token, stores only its hash.
     if (method === "POST" && url.pathname === "/sessions") {
-      const body = await request.json<{ auth_provider?: string }>().catch(() => null);
+      const body = await request.json<{ auth_provider?: string; security_generation?: number }>().catch(() => null);
       if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
-      if (!validOptionalText(body.auth_provider, 64)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
+      if (!validOptionalText(body.auth_provider, 64) || !Number.isSafeInteger(body.security_generation) || (body.security_generation ?? -1) < 0) return Response.json({ error_code: "session_invalid" }, { status: 400 });
       const now = new Date();
       const sessionId = crypto.randomUUID();
       const rawToken = `nps_${crypto.randomUUID().replace(/-/g, "")}${crypto.randomUUID().replace(/-/g, "")}`;
@@ -214,9 +220,9 @@ export class ProductUserDO extends DurableObject {
         const active = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM session_state WHERE expires_at > ? AND revoked_at IS NULL", now.toISOString()).toArray() as Array<{ count: number }>;
         if ((active[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS) return false;
         this.ctx.storage.sql.exec(
-          `INSERT INTO session_state (session_id, token_hash, auth_provider, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?)`,
-          sessionId, tokenHash, body.auth_provider ?? "naelao-native", now.toISOString(), expiresAt
+          `INSERT INTO session_state (session_id, token_hash, auth_provider, created_at, expires_at, security_generation)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          sessionId, tokenHash, body.auth_provider ?? "naelao-native", now.toISOString(), expiresAt, body.security_generation
         );
         return true;
       });
@@ -232,17 +238,19 @@ export class ProductUserDO extends DurableObject {
 
     // POST /sessions/verify — resolve a session token (sliding-window refresh on success).
     if (method === "POST" && url.pathname === "/sessions/verify") {
-      const body = await request.json<{ session_token: string }>().catch(() => ({ session_token: "" }));
-      if (typeof body.session_token !== "string" || !body.session_token || body.session_token.length > 256) return Response.json({ valid: false }, { status: 400 });
+      const body = await request.json<{ session_token: string; security_generation?: number }>().catch(() => ({ session_token: "", security_generation: undefined }));
+      if (typeof body.session_token !== "string" || !body.session_token || body.session_token.length > 256 ||
+          !Number.isSafeInteger(body.security_generation) || (body.security_generation ?? -1) < 0) return Response.json({ valid: false }, { status: 400 });
       const tokenHash = await sha256Hex(body.session_token);
       const rows = this.ctx.storage.sql
         .exec(
-          "SELECT session_id, expires_at, revoked_at FROM session_state WHERE token_hash = ?",
+          "SELECT session_id, expires_at, security_generation, revoked_at FROM session_state WHERE token_hash = ?",
           tokenHash
         )
-        .toArray() as unknown as { session_id: string; expires_at: string; revoked_at: string | null }[];
+        .toArray() as unknown as { session_id: string; expires_at: string; security_generation: number; revoked_at: string | null }[];
       const row = rows[0];
       if (!row || row.revoked_at) return Response.json({ valid: false });
+      if (row.security_generation !== body.security_generation) return Response.json({ valid: false });
       if (new Date(row.expires_at) <= new Date()) return Response.json({ valid: false });
       // Sliding-window: extend the session on active use.
       const newExpiry = new Date(Date.now() + SESSION_TTL_MS).toISOString();

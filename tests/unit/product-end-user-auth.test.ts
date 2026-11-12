@@ -36,9 +36,10 @@ const WHATSAPP_AUTH_MIGRATION = readFileSync(join(__dirname, "../../infra/migrat
 const WEBSITE_CONNECTIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0129_website_connections.sql"), "utf8");
 const ASSISTANT_COMMUNICATIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0130_assistant_communications.sql"), "utf8");
 const PRODUCT_REGISTRY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0156_product_registry.sql"), "utf8");
+const PRODUCT_ACCOUNT_RECOVERY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0227_product_account_recovery_generation_and_email_outbox.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION, WEBSITE_CONNECTIONS_MIGRATION, ASSISTANT_COMMUNICATIONS_MIGRATION, PRODUCT_REGISTRY_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION, WEBSITE_CONNECTIONS_MIGRATION, ASSISTANT_COMMUNICATIONS_MIGRATION, PRODUCT_REGISTRY_MIGRATION, PRODUCT_ACCOUNT_RECOVERY_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -182,10 +183,13 @@ describe("POST /spaces/:spaceId/end-users/login", () => {
     expect(res.status).toBe(401);
   });
 
-  it("a session minted at login verifies against the product's internal verify endpoint", async () => {
+  it("allows the unverified signup session under the existing product-credit verification policy", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     const signup = await (await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx)).json() as { end_user_id: string; session_token: string };
+    const verificationState = await env.PLATFORM_DB.prepare("SELECT email_verified_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?")
+      .bind("prod-1", signup.end_user_id).first<{ email_verified_at: string | null }>();
+    expect(verificationState?.email_verified_at).toBeNull();
 
     const verifyRes = await spacesWorker.fetch(
       new Request("https://spaces.naelao.com/internal/product-sessions/verify", {
@@ -215,7 +219,7 @@ describe("password reset (security audit follow-up: end users had no recovery pa
   it("issues a token by email and the token resets the password", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
-    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    const signup = await (await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx)).json() as { end_user_id: string; session_token: string };
 
     const reqRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
     expect(reqRes.status).toBe(200);
@@ -225,11 +229,36 @@ describe("password reset (security audit follow-up: end users had no recovery pa
 
     const resetRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "newhunter99" }), env as never, execCtx);
     expect(resetRes.status).toBe(200);
+    const oldSession = await spacesWorker.fetch(new Request("https://spaces.naelao.com/internal/product-sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": "test-platform-secret" },
+      body: JSON.stringify({ productId: "prod-1", endUserId: signup.end_user_id, sessionToken: signup.session_token }),
+    }), env as never, execCtx);
+    expect(await oldSession.json()).toMatchObject({ valid: false });
 
     const oldLogin = await spacesWorker.fetch(req("/spaces/prod-1/end-users/login", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
     expect(oldLogin.status).toBe(401);
     const newLogin = await spacesWorker.fetch(req("/spaces/prod-1/end-users/login", { email: "jane@acme.com", password: "newhunter99" }), env as never, execCtx);
     expect(newLogin.status).toBe(200);
+    const newSession = await newLogin.json() as { end_user_id: string; session_token: string };
+    const newSessionCheck = await spacesWorker.fetch(new Request("https://spaces.naelao.com/internal/product-sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": "test-platform-secret" },
+      body: JSON.stringify({ productId: "prod-1", endUserId: newSession.end_user_id, sessionToken: newSession.session_token }),
+    }), env as never, execCtx);
+    expect(await newSessionCheck.json()).toMatchObject({ valid: true });
+  });
+
+  it("logout advances the account generation and invalidates every copied product session", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const signup = await (await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx)).json() as { end_user_id: string; session_token: string };
+    const logout = await spacesWorker.fetch(req("/spaces/prod-1/end-users/logout", { end_user_id: signup.end_user_id, session_token: signup.session_token }), env as never, execCtx);
+    expect(logout.status).toBe(204);
+    const check = await spacesWorker.fetch(new Request("https://spaces.naelao.com/internal/product-sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": "test-platform-secret" },
+      body: JSON.stringify({ productId: "prod-1", endUserId: signup.end_user_id, sessionToken: signup.session_token }),
+    }), env as never, execCtx);
+    expect(await check.json()).toMatchObject({ valid: false });
+    expect(await env.PLATFORM_DB.prepare("SELECT security_generation FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?").bind("prod-1", signup.end_user_id).first()).toEqual({ security_generation: 1 });
   });
 
   it("never reveals whether the email exists — same response either way", async () => {
@@ -295,13 +324,13 @@ describe("email verification", () => {
   });
 
 
-  it("shell UX follow-up: includes a clickable verify-email link when PRODUCT_SHELL_URL and the product's slug are both known", async () => {
+  it("shell UX follow-up: places the clickable verify token in a fragment instead of an HTTP query", async () => {
     const env = { ...makeEnv(), PRODUCT_SHELL_URL: "https://app.naelao.com" };
     await seedProduct(env, "prod-1", "tenant-1", undefined, "acme-store");
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
-    expect(env.__notifyCalls[0]!.body).toContain("https://app.naelao.com/p/acme-store/verify-email?token=");
-    // Raw token is still present too — the shell's verify-email page accepts manual entry as a
-    // fallback, so a broken/misconfigured link never fully strands a legitimate user.
+    expect(env.__notifyCalls[0]!.body).toContain("https://app.naelao.com/p/acme-store/verify-email#token=");
+    expect(env.__notifyCalls[0]!.body).not.toContain("verify-email?token=");
+    // Manual entry remains available, so a broken/misconfigured link never strands a user.
     expect(env.__notifyCalls[0]!.body).toContain("Verification token:");
   });
 

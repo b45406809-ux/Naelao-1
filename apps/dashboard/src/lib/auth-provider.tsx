@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { NaelaoJwtClaims } from "@naelao/types";
-import { getBillingSubscription, login as apiLogin, register as apiRegister } from "./api";
+import { getApiBase, getBillingSubscription, login as apiLogin, register as apiRegister } from "./api";
 import {
   storeToken,
   clearToken,
@@ -121,6 +121,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   );
 
   const logout = useCallback(() => {
+    const currentToken = token;
+    if (currentToken) {
+      void fetch(`${getApiBase()}/v1/auth/revoke`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${currentToken}` },
+        keepalive: true,
+      }).catch(() => {});
+    }
     clearToken();
     setToken(null);
     setClaims(null);
@@ -128,7 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     if (typeof window !== "undefined") {
       window.location.href = "/login";
     }
-  }, []);
+  }, [token]);
 
   const value: AuthContextValue = {
     token,

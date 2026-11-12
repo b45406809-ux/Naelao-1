@@ -2,8 +2,8 @@
 
 
 // This page lets a new user verify account ownership before signing in. It is reachable two ways:
-// (1) the emailed link, when
-// PRODUCT_SHELL_URL is configured server-side, carries ?token= and this auto-verifies on load;
+// (1) the emailed link carries #token= (a URL fragment, so it is not sent in HTTP requests) and
+// this page removes it from browser history before verifying;
 // (2) either from the shell's "Verify now" banner or a stale/manually-typed token, a paste-in
 // form covers the case where no link was ever sent. Deliberately NOT gated behind
 // isAuthenticated — a person may open the emailed link on a different device/browser than the
@@ -25,9 +25,8 @@ export default function VerifyEmailPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isHydrated, isAuthenticated } = useProductAuth();
-  const urlToken = searchParams.get("token");
-
-  const [status, setStatus] = React.useState<Status>(urlToken ? "checking-token" : "idle");
+  const [urlToken, setUrlToken] = React.useState<string | null>(null);
+  const [status, setStatus] = React.useState<Status>("idle");
   const [message, setMessage] = React.useState<string | null>(null);
   const [manualToken, setManualToken] = React.useState("");
   const [resendEmail, setResendEmail] = React.useState("");
@@ -35,6 +34,20 @@ export default function VerifyEmailPage() {
   const [resendSent, setResendSent] = React.useState(false);
 
   const creds = useSessionCredentials();
+
+  React.useEffect(() => {
+    const url = new URL(window.location.href);
+    const fragmentToken = new URLSearchParams(url.hash.slice(1)).get("token");
+    const token = url.searchParams.get("token") ?? fragmentToken;
+    if (!token) return;
+    setStatus("checking-token");
+    // Remove legacy query tokens as well as new fragment tokens before making the verification
+    // request. New email links use fragments so proxies and request logs never receive the token.
+    url.searchParams.delete("token");
+    url.hash = "";
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+    setUrlToken(token);
+  }, [searchParams]);
 
   // If already signed in, pre-fill the resend email from the account's own profile — no need to
   // ask a signed-in user to retype the address they already gave at signup.

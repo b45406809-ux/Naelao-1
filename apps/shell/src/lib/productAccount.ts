@@ -103,6 +103,15 @@ export async function verifyWhatsAppLogin(
 }
 
 export function logOut(spaceId: string): void {
+  const session = getProductSession(spaceId);
+  if (session?.end_user_id && session.session_token) {
+    void fetch(`${API_URL}/v1/spaces/${encodeURIComponent(spaceId)}/end-users/logout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ end_user_id: session.end_user_id, session_token: session.session_token }),
+      keepalive: true,
+    }).catch(() => {});
+  }
   clearProductSession(spaceId);
 }
 

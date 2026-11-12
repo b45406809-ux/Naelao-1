@@ -29,7 +29,7 @@ const SPACES_TABLE_SQL = `
 function makeEnv() {
   const productMigration = readFileSync(new URL("../../infra/migrations/0156_product_registry.sql", import.meta.url), "utf8");
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, productMigration,
-    "CREATE TABLE product_end_users (product_space_id TEXT, end_user_id TEXT, suspended_at TEXT, deleted_at TEXT)"]);
+    "CREATE TABLE product_end_users (product_space_id TEXT, end_user_id TEXT, suspended_at TEXT, deleted_at TEXT, security_generation INTEGER NOT NULL DEFAULT 0)"]);
   return {
     PLATFORM_SECRET: "test-platform-secret",
     ENVIRONMENT: "test",
@@ -68,7 +68,7 @@ describe("POST /internal/product-sessions/verify", () => {
     const { getDOName } = await import("@naelao/crypto");
     const name = await getDOName("produser", "product-only:user-42", "tenant-1", "test-platform-secret");
     const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
-    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
     const response = await spacesWorker.fetch(verifyReq({ productId: "product-only", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"), env as never, execCtx);
     expect(await response.json()).toMatchObject({ valid: true, tenant_id: "tenant-1", end_user_id: "user-42" });
   });
@@ -85,7 +85,7 @@ describe("POST /internal/product-sessions/verify", () => {
     const { getDOName } = await import("@naelao/crypto");
     const name = await getDOName("produser", "prod-1:user-42", "tenant-1", "test-platform-secret");
     const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
-    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
     const call = (path: string, body: object) => spacesWorker.fetch(new Request(`https://spaces.naelao.com${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": "test-platform-secret" }, body: JSON.stringify(body),
     }), envWithKv as never, execCtx);
@@ -105,7 +105,7 @@ describe("POST /internal/product-sessions/verify", () => {
     const { getDOName } = await import("@naelao/crypto");
     const name = await getDOName("produser", "prod-1:user-42", "tenant-a", "test-platform-secret");
     const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
-    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
     const response = await spacesWorker.fetch(verifyReq({ productId: "foreign-space", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"), env as never, execCtx);
     expect(await response.json()).toEqual({ valid: false });
   });
@@ -142,7 +142,7 @@ describe("POST /internal/product-sessions/verify", () => {
     const { getDOName } = await import("@naelao/crypto");
     const doName = await getDOName("produser", "prod-1:user-42", "tenant-1", "test-platform-secret");
     const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(doName));
-    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
 
     const res = await spacesWorker.fetch(
       verifyReq({ productId: "prod-1", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"),
@@ -161,7 +161,7 @@ describe("POST /internal/product-sessions/verify", () => {
 
     const doNameA = await getDOName("produser", "prod-1:user-a", "tenant-1", "test-platform-secret");
     const stubA = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(doNameA));
-    const opened = await (await stubA.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stubA.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
 
     // Attempt to verify user A's token but claiming to be user B — resolves a DIFFERENT
     // ProductUserDO instance (produser:prod-1:user-b) which has never seen this token.
@@ -190,7 +190,7 @@ describe("POST /internal/product-sessions/verify — Phase B parent-walk for chi
     const { getDOName } = await import("@naelao/crypto");
     const doName = await getDOName("produser", "prod-root:user-42", "root-tenant", "test-platform-secret");
     const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(doName));
-    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await stub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
 
     // Verify against the BUSINESS's id (what the URL/router actually sees).
     const res = await spacesWorker.fetch(
@@ -214,7 +214,7 @@ describe("POST /internal/product-sessions/verify — Phase B parent-walk for chi
     // Wrong: opened under the business id instead of the product root.
     const wrongDoName = await getDOName("produser", "biz-1:user-42", "biz-tenant", "test-platform-secret");
     const wrongStub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(wrongDoName));
-    const opened = await (await wrongStub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).json() as { session_token: string };
+    const opened = await (await wrongStub.fetch(new Request("http://do/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ security_generation: 0 }) }))).json() as { session_token: string };
 
     const res = await spacesWorker.fetch(
       verifyReq({ productId: "biz-1", endUserId: "user-42", sessionToken: opened.session_token }, "test-platform-secret"),
