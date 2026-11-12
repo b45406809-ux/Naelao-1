@@ -25,6 +25,7 @@ import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
 import { isDevelopmentCheckoutAllowed } from "./checkout-policy.js";
+import { isDunningEventMessage } from "@naelao/types";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
@@ -1566,16 +1567,7 @@ async function handleQueue(
     try {
       switch (msg.type) {
         case "dunning": {
-          const scopeValid = msg.scope === "platform_subscription"
-            ? typeof msg.orgId === "string" && Boolean(msg.orgId) && msg.orgId.length <= 256
-            : msg.scope === "product_user_subscription" && typeof msg.productId === "string" && Boolean(msg.productId) &&
-              msg.productId.length <= 256 && typeof msg.endUserId === "string" && Boolean(msg.endUserId) && msg.endUserId.length <= 256;
-          if (typeof msg.workflow_id !== "string" || !/^dunning-[a-f0-9]{64}$/.test(msg.workflow_id) ||
-              !scopeValid ||
-              (msg.provider !== "lemon_squeezy" && msg.provider !== "whop") ||
-              typeof msg.subscriptionId !== "string" || !msg.subscriptionId || msg.subscriptionId.length > 256 ||
-              !(msg.providerEventId === null || (typeof msg.providerEventId === "string" && msg.providerEventId.length <= 256)) ||
-              !(msg.providerUpdatedAt === null || (typeof msg.providerUpdatedAt === "string" && Number.isFinite(Date.parse(msg.providerUpdatedAt))))) {
+          if (!isDunningEventMessage(msg)) {
             throw new Error("billing_dunning_message_invalid");
           }
           await _env.DUNNING_EVENTS.send(msg);

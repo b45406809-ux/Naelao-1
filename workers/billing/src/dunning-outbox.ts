@@ -1,3 +1,5 @@
+import { isDunningEventMessage, type DunningEventMessage } from "@naelao/types";
+
 export interface DunningOutboxEnv {
   PLATFORM_DB: D1Database;
   DUNNING_EVENTS: Queue;
@@ -10,19 +12,10 @@ interface DunningOutboxRow {
   attempt_count: number;
 }
 
-function validDunningPayload(value: unknown, row: DunningOutboxRow): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const body = value as Record<string, unknown>;
-  const identityValid = body.scope === "platform_subscription"
-    ? body.orgId === row.tenant_id && typeof body.orgId === "string" && body.orgId.length > 0
-    : body.scope === "product_user_subscription" && typeof body.productId === "string" && body.productId.length > 0 &&
-      typeof body.endUserId === "string" && body.endUserId.length > 0;
-  return body.type === "dunning" && identityValid &&
-    body.workflow_id === row.workflow_id && typeof body.workflow_id === "string" && /^dunning-[a-f0-9]{64}$/.test(body.workflow_id) &&
-    typeof body.subscriptionId === "string" && body.subscriptionId.length > 0 &&
-    (body.provider === "lemon_squeezy" || body.provider === "whop") &&
-    (body.providerEventId === null || typeof body.providerEventId === "string") &&
-    (body.providerUpdatedAt === null || typeof body.providerUpdatedAt === "string");
+function validDunningPayload(value: unknown, row: DunningOutboxRow): value is DunningEventMessage {
+  if (!isDunningEventMessage(value)) return false;
+  const scopeMatchesOutbox = value.scope === "platform_subscription" ? value.orgId === row.tenant_id : true;
+  return scopeMatchesOutbox && value.workflow_id === row.workflow_id;
 }
 
 /** Lease and retry committed dunning intents. A stable workflow ID makes an ambiguous Queue send

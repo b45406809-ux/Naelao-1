@@ -1,4 +1,6 @@
 // ── Core identity types ──────────────────────────────────────────────────────
+export * from "./managed-billing-events.js";
+
 export type TenantId = string & { readonly _brand: "TenantId" };
 export type SpaceId = string & { readonly _brand: "SpaceId" };
 export type SpaceTypeId = string & { readonly _brand: "SpaceTypeId" };

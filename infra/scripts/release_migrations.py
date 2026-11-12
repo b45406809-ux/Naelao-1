@@ -329,6 +329,14 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     expected = {"workflow_id", "tenant_id", "status", "next_attempt_at", "updated_at"}
     if not expected.issubset(columns):
         raise ReleaseError("required schema check failed for billing_dunning_outbox")
+    queue_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('queue_health_checks')")
+        if isinstance(row.get("name"), str)
+    }
+    queue_expected = {"triggered_at", "observed_at", "source", "status", "unavailable_reason", "metrics_json", "alert_count", "alerts_json"}
+    if not queue_expected.issubset(queue_columns):
+        raise ReleaseError("required schema check failed for queue_health_checks")
     d1.execute_file(
         f"INSERT INTO {META_TABLE}(key,value) VALUES('current_schema_version',{sql_quote(manifest['requiredSchemaVersion'])}) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value;\n"

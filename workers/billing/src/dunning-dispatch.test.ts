@@ -40,7 +40,7 @@ describe("platform payment failure persistence", () => {
     expect(context.statements[1]?.values[2]).toBe("lemon_squeezy");
     expect(context.statements[1]?.values[3]).toBe("subscription-1");
     expect(JSON.parse(String(context.statements[1]?.values[6]))).toMatchObject({
-      type: "dunning", scope: "platform_subscription", orgId: "org-1", provider: "lemon_squeezy",
+      type: "dunning", version: 1, scope: "platform_subscription", orgId: "org-1", provider: "lemon_squeezy",
       subscriptionId: "subscription-1", providerEventId: "payment-1",
     });
   });
@@ -70,7 +70,7 @@ describe("platform payment failure persistence", () => {
     expect(context.statements[0]?.query).toContain("UPDATE product_user_subscriptions SET status='past_due'");
     expect(context.statements[1]?.query).toContain("SELECT ?,p.tenant_id");
     expect(JSON.parse(String(context.statements[1]?.values[5]))).toMatchObject({
-      type: "dunning", scope: "product_user_subscription", productId: "product-1", endUserId: "end-user-1",
+      type: "dunning", version: 1, scope: "product_user_subscription", productId: "product-1", endUserId: "end-user-1",
       provider: "lemon_squeezy", subscriptionId: "subscription-1",
     });
   });

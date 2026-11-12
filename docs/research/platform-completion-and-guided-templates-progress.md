@@ -8,17 +8,19 @@ integrated in this branch. Findings in that plan were researched against an olde
 statuses below reflect the current source where inspected. This file is additive to the managed
 services progress record; reuse its U01–U12 and S1–S9 ledgers rather than duplicating their evidence.
 The P01 deployment manifest, staging dependency gate, tests and runbook are pushed to
-`origin/Mcbt5s-Backup-2` as `749f9c95`.
+`origin/Mcbt5s-Backup-2` as `749f9c95`. The current P03/P11–P13 implementation and evidence below
+are locally verified and will be tied to their recovery-branch checkpoint after push.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
-Current code already provides an ordered 229-file migration SHA-256 manifest, a Python release
+Current code already provides an ordered 230-file migration SHA-256 manifest, a Python release
 runner with an atomic D1 migration ledger and concurrency lock, checksum drift checks, a resumable
 execution owner after interruption, fail-closed handling for non-idempotent legacy migration 0164,
 pre-deploy required-schema probes, and staging/production workflows that run migrations before
 consumers. Source tests passed locally: resource receipt validator **6/6**, Wrangler environment
-isolation **6/6**, migration runner **7/7**, release manifest **5/5**; the manifest reports required
-schema `0229_agentport_sender_principal_refs`. These are local tests. No D1 database was inspected.
+isolation **6/6**, migration runner **8/8**, release manifest **5/5**; the manifest now reports
+required schema `0230_queue_health_observations`. These are local tests. No D1 database was
+inspected.
 
 Added `infra/release/deployment-manifest.json`, a validator wired into both preflights, and
 `docs/operations/release-and-environment-safety.md`. The validator checks tag/commit versioning,
@@ -55,10 +57,10 @@ blocked until source configuration and operator-observed receipts satisfy the va
 
 - `python3 -m unittest discover -s infra/scripts -p 'test_validate_environment_resources.py'`: **6/6**.
 - `python3 -m unittest discover -s infra/scripts -p 'test_validate_wrangler_env_isolation.py'`: **6/6**.
-- `python3 -m unittest discover -s infra/scripts -p 'test_release_migrations.py'`: **7/7**.
+- `python3 -m unittest discover -s infra/scripts -p 'test_release_migrations.py'`: **8/8**.
 - `python3 -m unittest discover -s infra/scripts -p 'test_validate_release_manifest.py'`: **5/5**.
-- `python3 infra/scripts/validate_release_manifest.py`: 229 migration files; required schema
-  `0229_agentport_sender_principal_refs`; no deployed schema inspected.
+- `python3 infra/scripts/validate_release_manifest.py`: 230 migration files; required schema
+  `0230_queue_health_observations`; no deployed schema inspected.
 - `python3 infra/scripts/validate_environment_resources.py` and
   `python3 infra/scripts/validate_wrangler_env_isolation.py`: correctly fail closed on current
   resource sharing, missing ownership/receipts and shared mutable bindings.
@@ -66,20 +68,82 @@ blocked until source configuration and operator-observed receipts satisfy the va
 - P01 implementation verification: deployment-manifest tests **5/5**, manifest validator passes,
   staging frontends are job-gated on successful Worker deployment, and `git diff --check` passes.
 
+### P03 — payment failure lifecycle: PARTIAL, durable notification path present; policy unresolved
+
+Current Lemon Squeezy and Whop `payment.failed` handling updates the exact subscription to
+`past_due` and records a stable dunning event in `billing_dunning_outbox`. Billing lease/retry
+dispatches it to the `DUNNING_EVENTS` queue. The Workflows consumer validates the common v1 event,
+creates a stable `DunningWorkflow`, and confirms an existing instance after ambiguous create
+responses before acknowledging redelivery. The workflow rechecks the exact current subscription and
+event timestamp before queueing a notice to the verified product email or current organization
+owner/admin. Payment recovery and expiry are handled by provider subscription transitions.
+
+There is no approved grace-period length, activity restriction matrix, escalation policy, or manual
+intervention contract. Paid access remains until the provider reports expiry; this is current
+behavior, not a policy claim. Provider retries and actual Notifications delivery are not verified.
+
+### P11/P12 — checkout and dunning contracts: local behavior reconciled
+
+P11's current `checkout-policy` limits simulated checkout to explicit local/development/test config.
+Staging/production config disables it, and tests cover missing providers, upstream failure and
+production/staging rejection. Provider success, webhook delivery, and entitlement application still
+need authorized staging acceptance.
+
+P12's duplicated permissive payload checks were consolidated in
+`packages/types/src/managed-billing-events.ts` as strict versioned `DunningEventV1`. Billing writes
+version 1; Billing dispatch, compatibility queue handling and Workflow queue consumption share the
+validator. Legacy pending payloads without a version remain readable as v1 for recovery; explicit
+unknown versions are rejected. Local evidence: Billing/workflow dunning, checkout and queue suites
+**31/31**; Billing, Workflows and shared-types typechecks. Email/provider delivery and platform
+access restrictions remain separate acceptance/policy gates.
+
+### P13 — queue health: PARTIAL, honest telemetry and durable alerts implemented
+
+The old behavior used interval queue totals as current depth, reported oldest age as zero, treated
+interval dead-letter totals as current DLQ depth, fell back to unrelated `usage_events`, and swallowed
+history-write failures. The current workflow explicitly represents current backlog, age and DLQ
+depth as unavailable; missing credentials, GraphQL errors and no rows produce `unknown`, while
+partial interval evidence is `incomplete` and a high measured interval error rate is `degraded`.
+Migration `0230_queue_health_observations.sql` persists every report; alert rows use the existing
+operator-visible `platform_failures` review inbox, written atomically with the report. The migration
+is required by release schema probes. Local evidence: model suite **7/7**, SQLite migration
+constraints **3/3**, release runner **8/8**, both manifests validate. No Cloudflare account was
+queried. Current depth/age/DLQ and live telemetry acceptance still need a supported provider API or
+operator inspector.
+
+### P18/P20/P21 — current-source reconciliation
+
+P18 reset consumes a one-time token and atomically applies the password, advances account
+`security_generation`, and journals session cleanup via migration 0227 triggers. Protected requests
+compare the persisted generation before accepting a ProductUserDO session; the scheduled dispatcher
+retries downstream DO cleanup. P21 email delivery stores encrypted token/recipient payloads in a
+bounded outbox, keeps public responses neutral, retries using a stable notification ID, cancels
+superseded reset tokens, and exposes HMAC-scoped tenant diagnostics. Signup currently issues a
+session before verification; access policy for unverified users and real email delivery remain open.
+Current local verification: Spaces auth/reset/security/email suites **24/24** and Spaces typecheck.
+
+P20 handles signed Lemon Squeezy marketplace refund events in a durable idempotent review journal,
+matches them against observed purchases, validates currency/amount/tenant, reconciles late-arriving
+purchase matches, and exposes scoped review listing. Exact refund/access reversal, author earnings
+clawback, payout recovery, dispute ingestion and case resolution are not implemented because the
+product/accounting policy is not decided. Local settlement/refund tests pass **6/6**. No provider
+sandbox or live transaction was used.
+
 ## Requirement queue
 
-The new plan's source findings P03–P10, P11–P24, guided templates, voice extension dashboards, and
-Shared-Space coordination have not yet been reconciled in this checkout. The old-checkout claims are
-not treated as evidence. Continue in the plan's dependency order:
+The platform plan's P01–P03, P11–P13 and P18/P20/P21 have now been reconciled against current source.
+P02 remains fail-closed as recorded above. Continue in dependency order:
 
 1. Preserve the P01/P02 preflight gates until distinct Cloudflare resources, service ownership,
    read-only resource receipts, and per-database baselines are verified. Do not invent them.
-2. Continue independent commercial/operator work at P03, then reconcile P11–P13, P18–P21 against Billing, queue health,
-   notification, and marketplace callers; reuse the S2/S7 ledgers.
+2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
+   product contracts; advance only independent code while they are unresolved.
 3. Reconcile P04 and P22 recovery/data lifecycle against current archive, object, index, tombstone,
    and erasure callers; preserve the U01/U10 retention limits.
-4. Continue the remaining assistant quality, extension, voice/dashboard, guided-template, and
-   Shared-Space requirements only after dependencies are recorded with source evidence.
+4. Reconcile P14–P19 and P23–P24 against current sessions, queues, notifications and package
+   lifecycle, then continue P05–P10 and guided template authoring, voice dashboards, and Shared-Space
+   requirements in their dependency order. Maintain one owner/evidence record for overlapping S/U
+   requirements rather than building parallel ledgers.
 
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and

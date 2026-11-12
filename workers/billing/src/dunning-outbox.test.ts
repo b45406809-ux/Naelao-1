@@ -12,12 +12,12 @@ const row = {
   attempt_count: 1,
 };
 
-function env(send = vi.fn(async () => undefined)) {
+function env(send = vi.fn(async () => undefined), payloadJson = row.payload_json) {
   const updates: Array<{ query: string; values: unknown[] }> = [];
   const db = {
     prepare(query: string) {
       return { bind: (...values: unknown[]) => ({
-        async all() { return { results: [row] }; },
+        async all() { return { results: [{ ...row, payload_json: payloadJson }] }; },
         async run() { updates.push({ query, values }); return { meta: { changes: 1 } }; },
       }) };
     },
@@ -43,6 +43,21 @@ describe("durable dunning outbox", () => {
     expect(context.updates[0]?.query).toContain("status='pending'");
     expect(context.updates[0]?.values[0]).toBe("2026-11-12T15:00:30.000Z");
     expect(context.updates[0]?.values[1]).toBe("dispatch_failed");
+  });
+
+  it("keeps legacy version-one payloads readable but defers malformed versioned events", async () => {
+    const legacy = env();
+    expect(await dispatchDunningOutbox(legacy, new Date("2026-11-12T15:00:00.000Z")))
+      .toEqual({ claimed: 1, sent: 1, deferred: 0 });
+
+    const invalidPayload = JSON.stringify({
+      ...JSON.parse(row.payload_json), version: 2, providerUpdatedAt: "not-a-timestamp",
+    });
+    const invalid = env(vi.fn(async () => undefined), invalidPayload);
+    expect(await dispatchDunningOutbox(invalid, new Date("2026-11-12T15:00:00.000Z")))
+      .toEqual({ claimed: 1, sent: 0, deferred: 1 });
+    expect(invalid.send).not.toHaveBeenCalled();
+    expect(invalid.updates[0]?.query).toContain("status='pending'");
   });
 
   it("rejects invalid batch bounds before touching storage", async () => {

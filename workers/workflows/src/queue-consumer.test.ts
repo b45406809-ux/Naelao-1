@@ -118,3 +118,34 @@ describe("data erasure queue dispatch", () => {
     }
   });
 });
+
+describe("versioned dunning queue dispatch", () => {
+  const dunning = {
+    type: "dunning", version: 1, workflow_id: `dunning-${"a".repeat(64)}`,
+    scope: "platform_subscription", orgId: "tenant-a", provider: "lemon_squeezy",
+    subscriptionId: "subscription-a", providerEventId: "event-a", providerUpdatedAt: "2026-11-12T12:00:00Z",
+  };
+
+  it("starts a deterministic workflow for the shared versioned billing contract", async () => {
+    const msg = message(dunning);
+    const create = vi.fn(async () => undefined);
+    await queue({ messages: [msg] } as never, { DUNNING: { create } } as never);
+    expect(create).toHaveBeenCalledWith({ id: dunning.workflow_id, params: dunning });
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("accepts old unversioned v1 outbox events during recovery and rejects unknown versions", async () => {
+    const create = vi.fn(async () => undefined);
+    const legacy = message(Object.fromEntries(Object.entries(dunning).filter(([key]) => key !== "version")));
+    await queue({ messages: [legacy] } as never, { DUNNING: { create } } as never);
+    expect(create).toHaveBeenCalledOnce();
+    expect(legacy.ack).toHaveBeenCalledOnce();
+
+    const invalid = message({ ...dunning, version: 2 });
+    await queue({ messages: [invalid] } as never, { DUNNING: { create } } as never);
+    expect(invalid.retry).toHaveBeenCalledOnce();
+    expect(invalid.ack).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+  });
+});

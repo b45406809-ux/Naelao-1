@@ -20,6 +20,8 @@ class MemoryD1:
         self.fail_on_migration = fail_on_migration
         self.failed = False
         self.applied_sql = []
+        self.queue_health_columns = ("triggered_at", "observed_at", "source", "status", "unavailable_reason", "metrics_json", "alert_count", "alerts_json")
+        self.queue_health_columns = ("triggered_at", "observed_at", "source", "status", "unavailable_reason", "metrics_json", "alert_count", "alerts_json")
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -37,6 +39,10 @@ class MemoryD1:
             return [{"name": match.group(1)}] if match and match.group(1) in self.tables else []
         if sql.startswith("PRAGMA table_info('billing_dunning_outbox')"):
             return [{"name": name} for name in ("workflow_id", "tenant_id", "status", "next_attempt_at", "updated_at")]
+        if sql.startswith("PRAGMA table_info('queue_health_checks')"):
+            return [{"name": name} for name in self.queue_health_columns]
+        if sql.startswith("PRAGMA table_info('queue_health_checks')"):
+            return [{"name": name} for name in self.queue_health_columns]
         return []
 
     def execute_file(self, sql):
@@ -154,6 +160,30 @@ class ReleaseMigrationTests(unittest.TestCase):
         altered["migrations"] = [dict(first, sha256="f" * 64), *self.entries[1:]]
         with self.assertRaisesRegex(release.ReleaseError, "checksum drift"):
             release.validate_ledger([row], altered)
+
+    def test_required_schema_probe_checks_durable_queue_health_history(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        d1 = MemoryD1()
+        release._required_schema_check(d1, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+        self.assertIn("current_schema_version", d1.meta)
+
+        incomplete = MemoryD1()
+        incomplete.queue_health_columns = ("triggered_at", "status")
+        with self.assertRaisesRegex(release.ReleaseError, "queue_health_checks"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_durable_queue_health_history(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        d1 = MemoryD1()
+        release._required_schema_check(d1, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+        self.assertIn("current_schema_version", d1.meta)
+
+        incomplete = MemoryD1()
+        incomplete.queue_health_columns = ("triggered_at", "status")
+        with self.assertRaisesRegex(release.ReleaseError, "queue_health_checks"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_interrupted_run_resumes_from_next_atomic_migration(self):
         small = {

@@ -1,11 +1,5 @@
 import type { Env } from "../env.js";
-
-export interface DunningEventIdentity {
-  provider: "lemon_squeezy" | "whop";
-  subscriptionId: string;
-  providerEventId: string | null;
-  providerUpdatedAt: string | null;
-}
+import type { DunningEventIdentity } from "@naelao/types";
 
 export interface PlatformDunningEvent extends DunningEventIdentity { orgId: string }
 export interface ProductUserDunningEvent extends DunningEventIdentity { productId: string; endUserId: string }

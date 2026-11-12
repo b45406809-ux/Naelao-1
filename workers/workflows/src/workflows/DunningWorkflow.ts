@@ -2,12 +2,10 @@
 
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import type { Env } from "../env.js";
-import { notifyCurrentPaymentFailure, type PlatformDunningEvent, type ProductUserDunningEvent } from "./dunning-recovery.js";
+import { notifyCurrentPaymentFailure } from "./dunning-recovery.js";
+import type { DunningEventMessage } from "@naelao/types";
 
-export type DunningParams = (
-  | (PlatformDunningEvent & { scope: "platform_subscription" })
-  | (ProductUserDunningEvent & { scope: "product_user_subscription" })
-) & { workflow_id: string };
+export type DunningParams = DunningEventMessage;
 
 export class DunningWorkflow extends WorkflowEntrypoint<Env, DunningParams> {
   async run(event: WorkflowEvent<DunningParams>, step: WorkflowStep): Promise<void> {

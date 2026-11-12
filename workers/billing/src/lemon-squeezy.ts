@@ -106,6 +106,7 @@ export async function recordPlatformPlanSubscription(
     ]));
     const payload = {
       type: "dunning",
+      version: 1,
       workflow_id: `dunning-${workflowHash}`,
       scope: "platform_subscription",
       orgId,
@@ -226,6 +227,7 @@ export async function recordProductUserPlanSubscription(event: NormalizedBilling
     ]));
     const payload = {
       type: "dunning",
+      version: 1,
       workflow_id: `dunning-${workflowHash}`,
       scope: "product_user_subscription",
       productId,

@@ -2,32 +2,35 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12, P01 code pushed as `749f9c95`): S2 is
-IMPLEMENTED_LOCAL for currently supported provider lanes. U11's source-to-caller audit confirms
-durable metering, scoped 30-day cost thresholds, owner dashboard alerts, browser-push retry and
-revocation handling, and visible delivery status. Supported OpenRouter, Agent37, Telnyx and Twilio
-observations remain distinct from operator imports, invoices and Naelao credits. Email alerts,
-provider invoice and billed-idle/CPU-size feeds, and approved spend enforcement are unsupported or
-policy gated. U12's pinned esbuild staging is called by the Agents build and both relevant CI
-workflows; prior Docker dry-run evidence is recorded, while future CI event execution and deployed
-image parity are unverified. The managed-services S2–S9/U01–U12 source/caller inventory is
-reconciled; its partial requirements remain explicit in the progress ledger. No deployed/live
-acceptance is claimed.
+Current continuation checkpoint (2026-11-12; P03/P11–P13 code is locally verified and awaiting its
+checkpoint push): the active branch remains `autonomous-managed-services-20261111` in
+`/workspace/Naelao-1-managed-services`; preserve its dirty work and `infra/scripts/__pycache__/`.
+P03's Billing event handling, durable dunning outbox, versioned shared event contract and recovery
+notification workflow are reachable. P11 checkout simulation is already limited to explicit
+development/local/test configuration. P12 now has one strict v1 contract shared by Billing and
+Workflows while retaining pending legacy v1 outbox compatibility. P13 no longer treats interval
+analytics as current backlog/age/DLQ or reports false healthy state: observations persist as
+unknown/incomplete/degraded and alert through the existing operator failure inbox. Migration 0230
+is now the required schema. Focused dunning/checkout/queue suites pass **31/31**; queue migration
+tests **3/3**; release runner **8/8**; release/deployment manifest tests **5/5** each; validators
+accept the 230-migration source inventory. Billing, Workflows and shared-types typechecks pass.
+Product reset/security/email outbox suites pass **24/24**, and marketplace refund review tests pass
+**6/6**. No provider delivery, deployed D1, or live acceptance is claimed.
 
-Platform plan P01/P02 inspection confirms the ordered 229-file SHA-256 migration manifest, durable
-D1 ledger/lock, resumable migration ownership, required-schema checks, and fail-closed environment
-validators already exist. Local checks pass: environment-resource tests **6/6**, isolation tests
-**6/6**, migration-runner tests **7/7**, schema-manifest tests **5/5**, and deployment-manifest
-tests **5/5**; the deployment-manifest tests and source validator pass. The source-derived inventory is refreshed.
-Staging and production still use the same `PLATFORM_DB` and 11 mutable KV IDs; `naelao-calls` has no
-named Worker owner; Cloudflare resource receipts and operator-attested D1 baselines are absent.
-Preflight correctly rejects this configuration. Eval Worker source selects distinct staging and
-production Agents service names, but deployed bindings have not been inspected. Staging dashboard,
-portal, marketplace and widget jobs now wait for successful Worker deployment. Exact next task:
-reconcile P03 dunning/payment recovery and commercial integrity against current Billing queue,
-entitlement, notification and operator callers; implement independent code gaps and continue
-P11–P13/P18–P21. Do not deploy, invent resource IDs/owners/receipts, or enable rollout; preserve
-`infra/scripts/__pycache__/` and all uncommitted work.
+P03 remains PARTIAL because there is no approved grace-period, activity restriction, or manual
+intervention policy; provider retry/real notification acceptance is also unverified. P13 remains
+PARTIAL because the available GraphQL source has interval totals only; current queue/DLQ depth and
+oldest age need a supported live inspector. P20 refund evidence is durably reviewable, but the
+license-access, author-clawback and operator-resolution policy is undecided. P18/P21 implementation
+is present in current source: reset atomically advances the account security generation and queues
+session cleanup; encrypted auth-email operations retry and expose scoped diagnostics. Next exact
+task: record this verified slice, then reconcile P04/P22 archive, restore, object, index and tombstone
+callers against current code, closing independent recovery gaps before moving to assistant quality
+and guided templates. P01/P02 remain partial: staging and production share `PLATFORM_DB` and 11
+mutable KV IDs, `naelao-calls` has no named Worker owner, resource receipts and operator-attested D1
+baselines are absent, and deployed bindings were not inspected. Keep rollout disabled. Fetch before
+every push and safely integrate remote advances; never reset, clean, switch away, overwrite history,
+deploy or purchase.
 
 Historical checkpoint (2026-11-12, code `4b5990b6`, superseded by the current checkpoint above): S2 is IMPLEMENTED_LOCAL for currently supported
 provider lanes; account-specific provider enablement, approved commercial terms and unsupported

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0229_agentport_sender_principal_refs",
+  "requiredSchemaVersion": "0230_queue_health_observations",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -919,6 +919,10 @@
     {
       "filename": "0229_agentport_sender_principal_refs.sql",
       "sha256": "7aff30f401afa455c7578fe2452ecf0819c480cbece04a1bc5439fc1ed99dbd1"
+    },
+    {
+      "filename": "0230_queue_health_observations.sql",
+      "sha256": "ac46adb99a43ee3ce912bd807d57024d624570743bcc1304d0fc1f2c11f76400"
     }
   ]
 }
