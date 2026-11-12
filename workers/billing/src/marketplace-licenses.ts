@@ -11,10 +11,131 @@ interface LicenseListing {
   status: string; pricing_model: string; price_cents: number; ls_license_variant_id: string | null;
 }
 interface LicenseSettlementEnv { PLATFORM_DB: D1Database; PLATFORM_SECRET: string }
+interface MarketplaceLicenseRefundCase {
+  id: string;
+  provider_order_id: string;
+  purchase_id: string | null;
+  tenant_id: string;
+  listing_id: string;
+  order_amount_cents: number | null;
+  refund_amount_cents: number | null;
+  currency: string;
+  state: "review_required" | "unmatched_purchase" | "policy_conflict";
+  review_reason: string;
+  created_at: string;
+}
+
+async function attachPendingRefundCases(env: LicenseSettlementEnv, providerOrderId: string, tenantId: string, listingId: string, purchaseId: string): Promise<void> {
+  await env.PLATFORM_DB.prepare(`UPDATE marketplace_license_refund_cases
+    SET purchase_id = ?, state = CASE
+      WHEN currency = 'USD'
+        AND (order_amount_cents IS NULL OR order_amount_cents = (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?))
+        AND (refund_amount_cents IS NULL OR refund_amount_cents <= (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?))
+        THEN 'review_required'
+      ELSE 'policy_conflict' END,
+      review_reason = CASE
+        WHEN currency <> 'USD' THEN 'unsupported_currency'
+        WHEN order_amount_cents IS NOT NULL AND order_amount_cents <> (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?) THEN 'order_amount_mismatch'
+        WHEN refund_amount_cents > (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?) THEN 'refund_exceeds_purchase'
+        ELSE 'policy_pending' END,
+      updated_at = datetime('now')
+    WHERE provider_order_id = ? AND tenant_id = ? AND listing_id = ? AND purchase_id IS NULL AND state = 'unmatched_purchase'`)
+    .bind(purchaseId, purchaseId, purchaseId, purchaseId, purchaseId, providerOrderId, tenantId, listingId).run();
+}
+
+/** Record a signed marketplace refund without choosing license access or author-clawback policy. */
+export async function recordMarketplaceLicenseRefundEvent(
+  event: NormalizedBillingEvent,
+  webhookBodySha256: string,
+  env: LicenseSettlementEnv,
+): Promise<boolean> {
+  if (event.type !== "refund.issued" || event.metadata?.kind !== "marketplace_license") return false;
+  const listingId = event.metadata.listing_id;
+  const tenantId = event.metadata.buyer_tenant_id;
+  if (event.provider !== "lemon_squeezy" || !event.providerEventId ||
+      !/^[a-f0-9]{64}$/.test(webhookBodySha256) || !listingId || !tenantId) {
+    throw new Error("marketplace license refund metadata is invalid");
+  }
+
+  const orderAmount = Number.isSafeInteger(event.amountCents) && event.amountCents > 0 ? event.amountCents : null;
+  const refundAmount = event.refundAmountCents === undefined ? null :
+    Number.isSafeInteger(event.refundAmountCents) && event.refundAmountCents > 0 ? event.refundAmountCents : null;
+  const invalidRefundAmount = event.refundAmountCents !== undefined && refundAmount === null;
+  const currency = typeof event.currency === "string" && /^[A-Za-z]{3}$/.test(event.currency)
+    ? event.currency.toUpperCase() : "UNKNOWN";
+  const purchase = await env.PLATFORM_DB.prepare(`SELECT id, tenant_id, listing_id, amount_cents
+    FROM marketplace_license_purchases WHERE provider_event_id = ?`)
+    .bind(event.providerEventId)
+    .first<{ id: string; tenant_id: string; listing_id: string; amount_cents: number }>();
+  const overpayment = await env.PLATFORM_DB.prepare(`SELECT purchase_id, tenant_id, listing_id, amount_cents
+    FROM marketplace_license_overpayments WHERE provider_event_id = ?`)
+    .bind(event.providerEventId)
+    .first<{ purchase_id: string; tenant_id: string; listing_id: string; amount_cents: number }>();
+  const matchedPurchase = purchase ?? (overpayment ? await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id, listing_id, amount_cents FROM marketplace_license_purchases WHERE id = ?",
+  ).bind(overpayment.purchase_id).first<{ id: string; tenant_id: string; listing_id: string; amount_cents: number }>() : null);
+  const purchaseMatches = !!matchedPurchase && matchedPurchase.tenant_id === tenantId && matchedPurchase.listing_id === listingId &&
+    (!overpayment || (overpayment.tenant_id === tenantId && overpayment.listing_id === listingId));
+  const amountConflict = (!!matchedPurchase && orderAmount !== null && orderAmount !== matchedPurchase.amount_cents) ||
+    (!!overpayment && orderAmount !== null && orderAmount !== overpayment.amount_cents);
+  const refundExceedsPurchase = !!matchedPurchase && refundAmount !== null && refundAmount > matchedPurchase.amount_cents;
+  const reviewReason: MarketplaceLicenseRefundCase["review_reason"] = event.spaceId !== tenantId ? "tenant_mismatch"
+    : ((!!purchase || !!overpayment) && !purchaseMatches) ? "purchase_identity_mismatch"
+    : amountConflict ? "order_amount_mismatch"
+    : invalidRefundAmount ? "refund_amount_invalid"
+    : refundExceedsPurchase ? "refund_exceeds_purchase"
+    : currency !== "USD" ? "unsupported_currency"
+    : purchaseMatches ? "policy_pending" : "purchase_not_observed";
+  const state: MarketplaceLicenseRefundCase["state"] = reviewReason === "purchase_not_observed" ? "unmatched_purchase"
+    : reviewReason === "policy_pending" ? "review_required" : "policy_conflict";
+  const purchaseId = purchaseMatches ? matchedPurchase!.id : null;
+
+  await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_refund_cases
+    (id, provider, provider_order_id, webhook_body_sha256, purchase_id, tenant_id, listing_id,
+      order_amount_cents, refund_amount_cents, currency, state, review_reason)
+    VALUES (?, 'lemon_squeezy', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), event.providerEventId, webhookBodySha256, purchaseId, tenantId, listingId,
+      orderAmount, refundAmount, currency, state, reviewReason).run();
+
+  const recorded = await env.PLATFORM_DB.prepare(`SELECT id, provider_order_id, purchase_id, tenant_id, listing_id,
+      order_amount_cents, refund_amount_cents, currency, state, review_reason, created_at
+    FROM marketplace_license_refund_cases WHERE provider = 'lemon_squeezy' AND webhook_body_sha256 = ?`)
+    .bind(webhookBodySha256).first<MarketplaceLicenseRefundCase>();
+  if (!recorded) throw new Error("marketplace license refund case could not be recorded");
+
+  if (overpayment && purchaseMatches && recorded.state === "review_required" && refundAmount === overpayment.amount_cents) {
+    // An exact full refund of a separately recorded overpayment closes only that refund task.
+    // The primary license or author earning is left unchanged until policy is approved.
+    await env.PLATFORM_DB.prepare(`UPDATE marketplace_license_overpayments SET status = 'refunded'
+      WHERE provider_event_id = ? AND tenant_id = ? AND listing_id = ? AND amount_cents = ? AND status = 'refund_required'`)
+      .bind(event.providerEventId, tenantId, listingId, refundAmount).run();
+  }
+  return true;
+}
 
 /** Platform-owned billing and durable licensing for paid, certified marketplace blueprints. */
 export function registerMarketplaceLicenseRoutes(app: Hono<{ Bindings: BillingEnv }>): void {
   app.use("/internal/marketplace/license-checkout", requireInternalHmac(c => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+  app.use("/internal/marketplace/license-refund-cases", requireInternalHmac(c => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+  app.get("/internal/marketplace/license-refund-cases", async c => {
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+    if (!tenantId) return c.json({ error_code: "tenant_required" }, 400);
+    const state = c.req.query("state");
+    if (state && !["review_required", "unmatched_purchase", "policy_conflict"].includes(state)) {
+      return c.json({ error_code: "invalid_refund_case_state" }, 400);
+    }
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return c.json({ error_code: "invalid_limit" }, 400);
+    const rows = await c.env.PLATFORM_DB.prepare(`SELECT id, provider_order_id, purchase_id, tenant_id, listing_id,
+        order_amount_cents, refund_amount_cents, currency, state, review_reason, created_at
+      FROM marketplace_license_refund_cases
+      WHERE tenant_id = ? AND (? IS NULL OR state = ?)
+      ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .bind(tenantId, state ?? null, state ?? null, limit)
+      .all<MarketplaceLicenseRefundCase>();
+    return c.json({ cases: rows.results ?? [], policy: "review_only_no_automatic_license_or_earning_reversal" });
+  });
   app.post("/internal/marketplace/license-checkout", async c => {
     const buyerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const body = await c.req.json<{ listing_id?: string; buyer_tenant_id?: string }>();
@@ -95,12 +216,16 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
   const prior = await env.PLATFORM_DB.prepare("SELECT id, provider_event_id FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ?")
     .bind(tenantId, listing.id).first<{ id: string; provider_event_id: string }>();
   if (prior) {
-    if (prior.provider_event_id === event.providerEventId) return true;
+    if (prior.provider_event_id === event.providerEventId) {
+      await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, prior.id);
+      return true;
+    }
     // A second provider charge must not create another license or earning. Record a concrete
     // refund task so it is visible to operations instead of retrying the webhook forever.
     await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_overpayments
       (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)`)
       .bind(event.providerEventId, prior.id, tenantId, listing.id, event.amountCents).run();
+    await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, prior.id);
     return true;
   }
   const purchaseId = crypto.randomUUID();
@@ -116,19 +241,24 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
       SELECT ?, p.id, ?, p.amount_cents FROM marketplace_license_purchases p WHERE p.provider_event_id = ? AND p.tenant_id = ? AND p.listing_id = ?`)
       .bind(crypto.randomUUID(), listing.developer_user_id, event.providerEventId, tenantId, listing.id),
   ]);
-  const purchase = await env.PLATFORM_DB.prepare("SELECT id FROM marketplace_license_purchases WHERE provider_event_id = ? AND tenant_id = ? AND listing_id = ?")
-    .bind(event.providerEventId, tenantId, listing.id).first();
-  if (!purchase) {
+  const settledPurchase = await env.PLATFORM_DB.prepare("SELECT id FROM marketplace_license_purchases WHERE provider_event_id = ? AND tenant_id = ? AND listing_id = ?")
+    .bind(event.providerEventId, tenantId, listing.id).first<{ id: string }>();
+  if (!settledPurchase) {
     // Another distinct payment may have won the tenant/listing unique constraint after the
     // initial read. Treat that race like an overpayment, rather than failing the webhook forever.
     const existing = await env.PLATFORM_DB.prepare("SELECT id, provider_event_id FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ?")
       .bind(tenantId, listing.id).first<{ id: string; provider_event_id: string }>();
     if (!existing) throw new Error("marketplace license purchase could not be recorded");
-    if (existing.provider_event_id === event.providerEventId) return true;
+    if (existing.provider_event_id === event.providerEventId) {
+      await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, existing.id);
+      return true;
+    }
     await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_overpayments
       (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)`)
       .bind(event.providerEventId, existing.id, tenantId, listing.id, event.amountCents).run();
+    await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, existing.id);
     return true;
   }
+  await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, settledPurchase.id);
   return true;
 }

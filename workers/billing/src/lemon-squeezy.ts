@@ -21,7 +21,7 @@ import type { NormalizedBillingEvent } from "@naelao/billing-core";
 import { readBoundedRequestText } from "@naelao/http";
 import { invalidateQuotaCache } from "./quota.js";
 import { settleTemplateSubscriptionPayment } from "./settlement.js";
-import { settleMarketplaceLicenseEvent } from "./marketplace-licenses.js";
+import { recordMarketplaceLicenseRefundEvent, settleMarketplaceLicenseEvent } from "./marketplace-licenses.js";
 
 function requiredMetadataString(metadata: Record<string, unknown>, key: string, context: string): string {
   const value = metadata[key];
@@ -445,17 +445,19 @@ export async function handleLemonSqueezyWebhook(
   }
 
   // Marketplace license purchases are platform-native one-time sales, not a business's
-  // userland order. Grant the tenant fork and developer earning before the generic space flow.
+  // userland order. Capture payments and refund evidence before the generic space flow.
   if (topCustom["kind"] === "marketplace_license") {
-    const licenseEventId = `body:${await sha256Hex(rawBody)}`;
+    const webhookBodySha256 = await sha256Hex(rawBody);
+    const licenseEventId = `body:${webhookBodySha256}`;
     const firstDelivery = await markEventProcessedOnce("lemon_squeezy", licenseEventId, event.type, env.PLATFORM_DB);
     if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "marketplace_license" });
     try {
-      await settleMarketplaceLicenseEvent(event, env);
+      if (event.type === "refund.issued") await recordMarketplaceLicenseRefundEvent(event, webhookBodySha256, env);
+      else await settleMarketplaceLicenseEvent(event, env);
     } catch (err) {
-      console.error("[billing/ls] marketplace license settlement failed:", (err as Error).message);
+      console.error("[billing/ls] marketplace license event failed:", (err as Error).message);
       await unmarkEventProcessed("lemon_squeezy", licenseEventId, env.PLATFORM_DB);
-      return Response.json({ error: "processing_failed", failed: ["marketplace license settlement"] }, { status: 500 });
+      return Response.json({ error: "processing_failed", failed: ["marketplace license event"] }, { status: 500 });
     }
     return Response.json({ ok: true, kind: "marketplace_license" });
   }
