@@ -1,0 +1,904 @@
+{
+  "formatVersion": 1,
+  "migrationDirectory": "infra/migrations",
+  "requiredSchemaVersion": "0224_sandbox_agentport_revoke_recovery",
+  "legacyBaselinePolicy": "operator_verified_only",
+  "migrations": [
+    {
+      "filename": "0001_users.sql",
+      "sha256": "23de805e6991d5d80ca711b11a5b8e3d0ac863d468e4c7f004b25c11b81b7575"
+    },
+    {
+      "filename": "0002_orgs.sql",
+      "sha256": "8f3d04b5e44417c7619339fdbc9a6147a188165cbae88e70dea158ac730428c4"
+    },
+    {
+      "filename": "0003_spaces.sql",
+      "sha256": "a1c1728f7b6282501ce762fcb6a8883e1ab3207aa88f8e77d154132db8070f87"
+    },
+    {
+      "filename": "0004_billing.sql",
+      "sha256": "197302cefdc16691dc3f6beddcb79eb44d3f324eb8f4d0197adc990e85bf5c0b"
+    },
+    {
+      "filename": "0005_audit.sql",
+      "sha256": "b55885af8ccead93999081e36c8a423640b2247eb5686cb8b9ab965107768b77"
+    },
+    {
+      "filename": "0006_kb_documents.sql",
+      "sha256": "582e5dd84bf578eb40c305a25735ad6ffdf67e01f646a56d352700bd12fd058e"
+    },
+    {
+      "filename": "0007_billing_meters.sql",
+      "sha256": "fc02ca86642fe957c7f3ce261dfe39cac8af6b4668b7363ca9b685cd1e58e49a"
+    },
+    {
+      "filename": "0008_events_queue_log.sql",
+      "sha256": "548fa6460c3bc95c81f4a0eecae5d21fe8c21b8a1037c0d15f3c543759f0e163"
+    },
+    {
+      "filename": "0009_audit_log_v2.sql",
+      "sha256": "5a51b7d641ff74e76c9fde2fc98d3cff003c454bda1b3e8870a8a40ddd87d608"
+    },
+    {
+      "filename": "0010_notifications.sql",
+      "sha256": "c7423e006dd56d6db2b527d46b09923ae36fdc050c5900def189b271323282d0"
+    },
+    {
+      "filename": "0011_triggers.sql",
+      "sha256": "83ae0507a882605975eca818c143947c7bd076f87a4e501f7c7e7760a488b36f"
+    },
+    {
+      "filename": "0012_mcp_servers.sql",
+      "sha256": "e65d8125a3b86f3b8c7441e5b3c45c27e7f18ca7ce13bd06f487433523ab1a43"
+    },
+    {
+      "filename": "0013_space_type_tools.sql",
+      "sha256": "20cc00b9c35e7f18d2930227de466ccb7f2372e9cb95cf212acbffd3ba91e0fc"
+    },
+    {
+      "filename": "0014_eval.sql",
+      "sha256": "07af0adc4b3504cdca954b097f3c1cb15f1184e6f7efd3a288f9c4279669fa6d"
+    },
+    {
+      "filename": "0015_artifacts.sql",
+      "sha256": "9e8ebb3f86ce9956775531ec0617fecab05ee4ec62ab70e7954c2ad44e2dcc89"
+    },
+    {
+      "filename": "0016_webhook_subscriptions.sql",
+      "sha256": "6fd4a85c2d8a8ffe8ac48784fdb3d47905446020e4f0db50a9899afb6c14ba18"
+    },
+    {
+      "filename": "0017_idempotency_keys.sql",
+      "sha256": "71ba07add00061c513113f111fab32da3e3c3bfc9daef8042f525b8a047e6b26"
+    },
+    {
+      "filename": "0018_active_sessions.sql",
+      "sha256": "8f20af94b1850de046daa478802793bea974dbe68a41f20056c93ff63e4f82cd"
+    },
+    {
+      "filename": "0019_oauth_providers.sql",
+      "sha256": "e07e5c0fb2c0ed5c1815b07cfb9fdb51d2b0d22c617f04e314552a1c55972ce3"
+    },
+    {
+      "filename": "0020_service_accounts.sql",
+      "sha256": "93a44da7d03c630e5d5cf43a36cb8a32fb3d659a32c5e318bf57399f1d13eaf9"
+    },
+    {
+      "filename": "0021_space_members.sql",
+      "sha256": "324409c69f4622945db7d8805e3a3f16c1aa2e282466aff90fa831f6d166dc04"
+    },
+    {
+      "filename": "0022_api_key_scopes.sql",
+      "sha256": "278fc14de39db6f414b2457d4c4ef9e2bf2860b9b33e219c77ba434607487f9b"
+    },
+    {
+      "filename": "0023_feature_flags.sql",
+      "sha256": "794f437e558bb720e5e86c4db8edc68d9abcca5749e842c4d79b98b4ec0f14de"
+    },
+    {
+      "filename": "0024_do_registry.sql",
+      "sha256": "c8a8aef939488e640dfe045ca65242a1e9153477d5260fdfb026eca5b7a6e566"
+    },
+    {
+      "filename": "0025_gdpr_requests.sql",
+      "sha256": "6d30b40ed59a14c6a5e08e6a38133c031f85b449fa09cc5c45ce63489fa11938"
+    },
+    {
+      "filename": "0026_marketplace.sql",
+      "sha256": "f94040d04393938e4864bf5d211ccf388174ba0ad0a998033cbcb6199de17b14"
+    },
+    {
+      "filename": "0027_threads.sql",
+      "sha256": "03375e568c3f432a7cd6e386696736cea4eed339e9a2f13b14bb9cc480d905bf"
+    },
+    {
+      "filename": "0028_agi_runs.sql",
+      "sha256": "0bcb76aac2fd87fe4ac636a08e2d9ff345e894327102d67987a0e0cf8e4afe63"
+    },
+    {
+      "filename": "0029_thread_sessions.sql",
+      "sha256": "6e6fda42d2d46d80ad5ec86a684f767261fae7505b1556259283093c4f402568"
+    },
+    {
+      "filename": "0030_token_version.sql",
+      "sha256": "c2500eec5ad1a5b4eb335d7efe92086d0f605406eb60a76cc5c4729f4354f57c"
+    },
+    {
+      "filename": "0031_platform_failures.sql",
+      "sha256": "4a493b4b1b7c2dbd3dd0a482373bdaad6cf4e759c916e86f8fa75a700db4951f"
+    },
+    {
+      "filename": "0032_usage_events_idempotency.sql",
+      "sha256": "21a259a696d165dc74dde07200b754493d292a4dc9b7da902f37d353dade732a"
+    },
+    {
+      "filename": "0033_reseller_accounts.sql",
+      "sha256": "ae9acaef9c1764d8b835f53ccb4c36efb3f5338122e100b462f02e0e01592549"
+    },
+    {
+      "filename": "0034_space_hierarchy.sql",
+      "sha256": "926330155490199b93e6ca73b9953b3e98702084ee06b47f28c3bcb787672eef"
+    },
+    {
+      "filename": "0035_commerce.sql",
+      "sha256": "7f1ab1813d8fbb28874a8218819e74bbaac1beac440b5f413253cc933793f811"
+    },
+    {
+      "filename": "0036_ls_product_id.sql",
+      "sha256": "1532f3a3836ae03c8607c701522b73e3f37a90a1c952e8a578813a1b112f53aa"
+    },
+    {
+      "filename": "0037_mcp_servers_auth.sql",
+      "sha256": "1801434503b33f04ec86bb1daeaf776617a637cb7102edb23e464f5fb277e713"
+    },
+    {
+      "filename": "0038_channel_links.sql",
+      "sha256": "9bb00b2a81130ec1e4a3be89e82421beda3faa62f83ba8d174555702520f6be1"
+    },
+    {
+      "filename": "0039_channel_links_project.sql",
+      "sha256": "3a4000eaad5e776f6dd65bc93715baa3dc9f67917c543b848c92862daa15ec8a"
+    },
+    {
+      "filename": "0040_space_credentials.sql",
+      "sha256": "aaa16219e93b4e57e67afac2b5439a531628edf7d1ed03fc85c80cc4d7a41396"
+    },
+    {
+      "filename": "0041_scheduled_jobs.sql",
+      "sha256": "5cd66e696dba8a9f0bf2340c51fab6ecdf27790afbda372d763277e761d143bd"
+    },
+    {
+      "filename": "0042_scheduled_jobs_failures.sql",
+      "sha256": "591aaabeb697bf553d28f59aeeb9a524fb0ae4d6a91d5b4ae830ccfa9ca63152"
+    },
+    {
+      "filename": "0043_scheduled_jobs_agent_goal.sql",
+      "sha256": "7bc7a7a7cd2e80c2cbe14a12e2dad15800ef8a5f13293651b445f58fe74ac40e"
+    },
+    {
+      "filename": "0044_naelao_product.sql",
+      "sha256": "43fc48eff6439f8ec1d4f832e498491a3ef8923df6d4d280cc95ea8e2c98ee39"
+    },
+    {
+      "filename": "0045_builder_dashboard_api.sql",
+      "sha256": "4b73b8a32f9b3d97c615f742cc766106f39495a17b9b5b76f52f5241cc01dd16"
+    },
+    {
+      "filename": "0046_product_end_user_credentials.sql",
+      "sha256": "22642261e76d21a6dc18851b4b61dddc96574f337ef2b11071eb53f56f974b03"
+    },
+    {
+      "filename": "0047_business_memberships.sql",
+      "sha256": "c18876e55f071ec605d30b2b1ae841057fc8db7861b98fb32ce76337454a1251"
+    },
+    {
+      "filename": "0048_admin_schema_fixes.sql",
+      "sha256": "068a1d5845fb667dced3ac3cd2141882cf77320c6aa73a52fcc1261fea98e024"
+    },
+    {
+      "filename": "0049_business_subscriptions.sql",
+      "sha256": "8c276066fa0d18f5f27ad0901d69452976050fd307b48951a5bd55a675a9ec28"
+    },
+    {
+      "filename": "0050_webhook_idempotency.sql",
+      "sha256": "d7abdf2ab0c1cbe047f06b13c6877e84cfa5613be619c0762abda3031d01dcf1"
+    },
+    {
+      "filename": "0051_kb_documents_project.sql",
+      "sha256": "ae81c6d9b035638814e1b2779085670ffef1aa2058795f6570581548974d4f58"
+    },
+    {
+      "filename": "0052_webhook_idempotency_event_type.sql",
+      "sha256": "c774c41cc12858acda74d2f061ab6e892e9c3a56d68040a83f517e84c892afae"
+    },
+    {
+      "filename": "0053_payout_requests.sql",
+      "sha256": "21199fff0430a793a267ac324843ecabafb49fa6f284a078cc9cf761b8c6c161"
+    },
+    {
+      "filename": "0054_password_reset_tokens.sql",
+      "sha256": "2c8e6097b4900685b78b99fd8a29b1fe637f32eae2aa5557f64b2aa79289c0a9"
+    },
+    {
+      "filename": "0055_email_verification.sql",
+      "sha256": "e1004866f652a357178f0f9b0a92e0e73ce3e836b27aae9aab45d9d3b0c6bedb"
+    },
+    {
+      "filename": "0056_bizsvc_custom_domain_index.sql",
+      "sha256": "c943f065b3409a8946e5ac2abf749914f660b2c75f5cb7128df03b35301763b9"
+    },
+    {
+      "filename": "0057_builder_password_reset_tokens.sql",
+      "sha256": "d5078ed9dfabd8f4326591c05b153b2e85c8a4c0b806b3b99c9659778eb6f673"
+    },
+    {
+      "filename": "0058_product_end_users_deleted_at.sql",
+      "sha256": "711aa726694c57cef6f3cf917677f25a0290648910a31ccd8c01ffecf55b07fc"
+    },
+    {
+      "filename": "0059_spaces_last_digest_sent_at.sql",
+      "sha256": "dc065b01d32ada9cb08d621f9e7b0e7b25295d09ddd89029e3d4b5221a07d2ae"
+    },
+    {
+      "filename": "0060_mcp_server_connector_provider.sql",
+      "sha256": "c60f59e9099bceed31ecb63e0249d73c3b081b8af2d8b2498b937a2db2897c26"
+    },
+    {
+      "filename": "0061_reseller_ledger_kind.sql",
+      "sha256": "6c963bbb4e59b5563087f6e087274baebaceae7e2af050bd04c55745887bcdf5"
+    },
+    {
+      "filename": "0062_subscriptions_lemon_squeezy.sql",
+      "sha256": "fcc7afb183f7956e32a22caf8ac9c17516c6deb5c7873a4cf5b3cae31a1ae684"
+    },
+    {
+      "filename": "0063_payment_connections.sql",
+      "sha256": "727ff3e0b36eb5c86f3e3eed2a5f492b4199578a584ee81bc426be6b466e0912"
+    },
+    {
+      "filename": "0064_whop_sub_merchants.sql",
+      "sha256": "c972ea8229794b324ddfadbf3c9d9e191392bc171116e89172e341a648bba38f"
+    },
+    {
+      "filename": "0065_whop_kyc_onboarding.sql",
+      "sha256": "6691184c81268214ca1a04c012ac7a73adef134d1527df44b55ac91eee319db1"
+    },
+    {
+      "filename": "0066_payout_request_expiry.sql",
+      "sha256": "f95536c19f3a8433b4245f222a530fd515cb0208db37262e81c4bb908fe65de0"
+    },
+    {
+      "filename": "0067_subscriptions_whop_platform_plan.sql",
+      "sha256": "b8417d788a261e3be334e31576fdeeda169f4e9a78328873b2ba174ed63c35c1"
+    },
+    {
+      "filename": "0068_eval_run_model.sql",
+      "sha256": "db0aa231e1a00801852aeebca50bfcbe1d19866e61023245c42ce203fc75ad6b"
+    },
+    {
+      "filename": "0069_credential_sharing_and_product_tier.sql",
+      "sha256": "d38c964751a46bcfb51773af407119817bca85c22ed0d02788752f36d82f029f"
+    },
+    {
+      "filename": "0070_channel_pairings.sql",
+      "sha256": "f9041cb0b990a50e4a4470edc8e1e7e6b273ec176c01c8f04f66f7c147c2b67d"
+    },
+    {
+      "filename": "0071_scheduled_job_runs.sql",
+      "sha256": "351415335a53ceebd59edbd5c4a2be34085fb3357c8664e5d0e11ede4e0b1421"
+    },
+    {
+      "filename": "0072_org_quota_overage.sql",
+      "sha256": "89b4bb74331c18b051aaf970443e3749923ecb78782930d429da3753a9c753e3"
+    },
+    {
+      "filename": "0073_project_scoped_automation.sql",
+      "sha256": "e3511471a554b9b037a7478a8ba674bed381b001778188bccecc89b2058d4cd5"
+    },
+    {
+      "filename": "0074_items_45_87_security_models.sql",
+      "sha256": "949281e4ac6fb1dc6837a067d3dbb605a6f3b4353393175e5ed70d79d1ee8d2b"
+    },
+    {
+      "filename": "0075_phase1_runtime_security.sql",
+      "sha256": "af621976b274fdfd9a5e5be92b3e55bd357bf8805b1819fad5edefa6e7024732"
+    },
+    {
+      "filename": "0076_connector_alias_hardening.sql",
+      "sha256": "c9dd4891c30ad75fbb0519f842357b0a9dc3a276feecd7ffd6d93c99fca30821"
+    },
+    {
+      "filename": "0077_three_tier_connector_scopes.sql",
+      "sha256": "0c25dbd9d227a1b4227f07dc0bfa4b4ae5864909c86da91085dd23812397cc81"
+    },
+    {
+      "filename": "0078_template_subscriptions.sql",
+      "sha256": "d1cec07b71f3b3f1dbfd8d3522f3cba316af108637ccadae7dc9b7817825fe08"
+    },
+    {
+      "filename": "0079_fde_graduation.sql",
+      "sha256": "e8ffc7f720453f4112bb400837946a1874c47c033b07de5938e6bae8f6646559"
+    },
+    {
+      "filename": "0080_whatsapp_passwordless_auth.sql",
+      "sha256": "e3d6c404cb764053101748eccb89f015b6cc75064cdb177ee3fba29e3ffca7ef"
+    },
+    {
+      "filename": "0081_workflow_budget_reservations.sql",
+      "sha256": "05647d46028440281c546f40dd26fba403ccb24a29a0a4edd1bcd45a3839cde0"
+    },
+    {
+      "filename": "0082_project_bound_credentials.sql",
+      "sha256": "cbe3164ba24bba118b6a6e878fb10cda8139ebe8b1393316ff533c427b24949c"
+    },
+    {
+      "filename": "0083_marketplace_conformance_receipts.sql",
+      "sha256": "4cc0e6e0110e7b40f3afcefff5cc3553b3c9324bc9ef3de78122dd18a23f2601"
+    },
+    {
+      "filename": "0084_marketplace_forks.sql",
+      "sha256": "0866ed5a9eb3a45747255c67bb01dd299ec4850feabf53ebbd8359664bd2bb94"
+    },
+    {
+      "filename": "0085_desk_drop.sql",
+      "sha256": "2d4380b55d9ba1e7512d19201df14a1c1808b5edfc1ef850b52c3f969bd989be"
+    },
+    {
+      "filename": "0086_developer_settlement.sql",
+      "sha256": "701722eecadf3dbbc3b2de185dd096db1a291a6c0c2af927bbff8e08737eef0e"
+    },
+    {
+      "filename": "0087_blueprint_export_jobs.sql",
+      "sha256": "305f152d573869b9f9e25d22e20ed6c17f2790b89b9ea9641348228242faf485"
+    },
+    {
+      "filename": "0088_fde_royalty_events.sql",
+      "sha256": "fe68f9d3974526db412e673c58dd9114651565018e719ac2cf92722d07991a67"
+    },
+    {
+      "filename": "0089_marketplace_license_sales.sql",
+      "sha256": "55a6f77a64cff760eb122e5754c7abfc8bc6ba752d087a70e7aa2ad9665a2927"
+    },
+    {
+      "filename": "0090_marketplace_license_overpayments.sql",
+      "sha256": "9596ccb9340e9eb5873acd627f785d938e1ce7d5bd60f574e9f7fc4f86f3e0dd"
+    },
+    {
+      "filename": "0091_template_royalty_provider_refs.sql",
+      "sha256": "8cede12a4d92067d8866eee87891af79e0f13a5ae3c8db8623ffccef31a7c9d2"
+    },
+    {
+      "filename": "0092_marketplace_template_subscriptions.sql",
+      "sha256": "d1c4b12878d9a1ad175cfb9de03aeecee6b89d2c52b5554bf69cc9c426158097"
+    },
+    {
+      "filename": "0092_mcp_connector_provider_pin.sql",
+      "sha256": "22e32872adf50219f15ac7738b7f49547e9898fc0fc66a0c10c0a88036e38dbd"
+    },
+    {
+      "filename": "0093_email_reply_routes.sql",
+      "sha256": "6c6e71ea6bc4cd213df211127aef340ae2fc548a0345e4503963a37eb3e907ee"
+    },
+    {
+      "filename": "0094_agent_email_addresses.sql",
+      "sha256": "aa94f79113728b43fd14f7e34d058397adcac50bcfc16a8b22dc53f226c4ef94"
+    },
+    {
+      "filename": "0095_web_push_subscriptions.sql",
+      "sha256": "c2323f1d9f0a0f338ab5866ef8d9b1a49757ea6f03483ddf2a6eb528638cf0ea"
+    },
+    {
+      "filename": "0096_product_end_user_language.sql",
+      "sha256": "801ce79006cd5c88f83e47519a4e19bf93ec2dc0f4ec583fc145e9a37b3a8695"
+    },
+    {
+      "filename": "0097_customer_voice_telephony.sql",
+      "sha256": "6eed4a78acea24f981dd455beb77753797a8d97bd40a7f7c4b5003091802a0c4"
+    },
+    {
+      "filename": "0098_llm_token_reservations.sql",
+      "sha256": "351a43614697ead1e860a1cc8b184fa72ad3ee50d26f7c9ad9a0206dd6fb1c92"
+    },
+    {
+      "filename": "0099_channel_model_overrides.sql",
+      "sha256": "ec1af173a5fd1d7679cc2b14e35ad92234a2c80f50d1b80b343a83cc4b4243ad"
+    },
+    {
+      "filename": "0100_email_attachment_ocr_usage.sql",
+      "sha256": "8f1bfaf54a5457d0fca65550ef8ffa0715241e4b81dad8aaf1584c6c7133d184"
+    },
+    {
+      "filename": "0101_customer_voice_purchase_quotes.sql",
+      "sha256": "22ea256f97dd30d260b0a6a1a34443a45fd1bab2a22b844426491addbb065219"
+    },
+    {
+      "filename": "0102_channel_attachments.sql",
+      "sha256": "4d2b2f2a33523a5da6f09d0bdf8dec1d2475e4cd62f3f2b7f8e56d77bb37eeab"
+    },
+    {
+      "filename": "0103_channel_extension_bindings.sql",
+      "sha256": "170d9dfbf94d1e2699ae6aef82720d5284cbb462ec1e44d52ce6d0c134114f81"
+    },
+    {
+      "filename": "0104_kb_external_publications.sql",
+      "sha256": "ba1db6ec47da3257d6378df6df8ad3705e8a529c46ab3ed3971d9bf69fcbdd9e"
+    },
+    {
+      "filename": "0105_scheduled_job_dispatch_claims.sql",
+      "sha256": "52473e0670ec40e70d42a650a26ef031c3412088e970a02be8d57ae13fa9fd46"
+    },
+    {
+      "filename": "0106_scheduled_job_quiet_hours.sql",
+      "sha256": "4741049e3af58f9773dcde380ff147f9f2eebe7fc3ade22fc749e41567d0aa58"
+    },
+    {
+      "filename": "0107_project_steward_daily_runs.sql",
+      "sha256": "50b9923d51031bd25ab4f25e7dbaaeb6871f85180ad12d156b1efd281f9501e8"
+    },
+    {
+      "filename": "0108_project_steward_decisions.sql",
+      "sha256": "1fb5629b27b03b04e67171a938b9225ff9f5763bbca57f3c68463422c94f6871"
+    },
+    {
+      "filename": "0109_usage_events_v2.sql",
+      "sha256": "7ca8e3bf70f9ac52dd59fd5260da6fffd37618ffef2f5545bade7c508e79749c"
+    },
+    {
+      "filename": "0110_workflow_usage_dimensions.sql",
+      "sha256": "9835b4a983fe61006d9ee143a9e4103e5b42e040d6b13a35c5ab2a391f9fa71b"
+    },
+    {
+      "filename": "0111_extension_publisher_keys.sql",
+      "sha256": "cbcdac46a32ebee3a0ce300e156d42545d21a70f4971560b57c5cb3747fb27c8"
+    },
+    {
+      "filename": "0112_extension_provider_connections.sql",
+      "sha256": "f55c0355d91b1943eb00d70ba3b9f0adbc73a6322a0117be5a00d241ca6dc87d"
+    },
+    {
+      "filename": "0113_whatsapp_extension_phone_routing.sql",
+      "sha256": "65eacf26b7e4192d1a91c701436872f52fd2982b9697d3a52a8fc6c06eb4b534"
+    },
+    {
+      "filename": "0114_thread_last_active_at.sql",
+      "sha256": "13969920c1e075778e20871fd788074620aae94d721dbe52eb604aac4b26586e"
+    },
+    {
+      "filename": "0115_sweeper_fairness_cursors.sql",
+      "sha256": "984add378cc38483875560f90a42035c002dbed66e201e514ee665bdff2f0226"
+    },
+    {
+      "filename": "0116_space_suspension_reason.sql",
+      "sha256": "c03bf4f4b05938f733fb5e7ffccf355163d688548633fa1641e14e5a6d19d0bc"
+    },
+    {
+      "filename": "0117_org_suspension_reason.sql",
+      "sha256": "a2727e0af150859db6b6f3e57b5456ae3d32d60e5d4c7ea543af6899c0e3a5fb"
+    },
+    {
+      "filename": "0118_gdpr_erasure_outbox.sql",
+      "sha256": "52fa015217d7124af684ffd2887ab4467103fc7d82fe55456a6c3e25d171715b"
+    },
+    {
+      "filename": "0119_portal_domains.sql",
+      "sha256": "076d0bc4193adb817b9f64cdcdec69741115bd0a83da83264c3c4b788d85daf4"
+    },
+    {
+      "filename": "0120_synthetics_storage.sql",
+      "sha256": "3fed1ba818bde2c670c8c2e69e0f653fa927a8e405240455bda6117c771103cc"
+    },
+    {
+      "filename": "0121_space_provisioning_leases.sql",
+      "sha256": "1c23cfafa985f55a4427e88a1d3ba807fc5553735b6859f851ffc40895c489ec"
+    },
+    {
+      "filename": "0122_platform_assistant_sessions.sql",
+      "sha256": "7ce40b5db4cf328e088b659cbd0deffc36c237705ef4cc5d9039a0e9f5d2c6d3"
+    },
+    {
+      "filename": "0123_builder_reset_token_expiry_index.sql",
+      "sha256": "649011c3039e14b137e4332ba78ea955238acfcb5edc9a901d9f989c37712480"
+    },
+    {
+      "filename": "0124_project_scoped_agent_email_addresses.sql",
+      "sha256": "29c27dfefd24b37b68eba8da1cdb6eadd44417564e24b76ea6103806cdca4ce6"
+    },
+    {
+      "filename": "0125_subscription_event_ordering.sql",
+      "sha256": "9629348c043725a40324aa36bc81bb318c00b6a53d05c3a9c034395d17a48f62"
+    },
+    {
+      "filename": "0126_space_provisioning_outbox.sql",
+      "sha256": "bb6f3a0d39178dc59bb85e597dc3e8f3b381a0d234261cb227f94998750889a8"
+    },
+    {
+      "filename": "0127_launchpad_order_seat_user_id.sql",
+      "sha256": "3aeb9d6a2e1aef52d37dda13dddd8bfe586eeb948b56f1cda3f4daa317296f11"
+    },
+    {
+      "filename": "0128_space_workspace_cleanup_marker.sql",
+      "sha256": "d4713ed296ba8185f4f837cf75887dc1aa372aeb3a296d245ae92965dc4d4dbc"
+    },
+    {
+      "filename": "0129_website_connections.sql",
+      "sha256": "8a40a227fed5cf784421d122b703cd289bf0a47125c0665250dbc058561b853e"
+    },
+    {
+      "filename": "0130_assistant_communications.sql",
+      "sha256": "6a89c27263d60ffd0a9eaf05bc2eae27629176147e58037efd493c7f666578a4"
+    },
+    {
+      "filename": "0131_assistant_phones.sql",
+      "sha256": "fd35786232267954cfc7376cf053e95fc1daaed881fa1c17c2299c87d595e7bb"
+    },
+    {
+      "filename": "0132_assistant_sms_verification.sql",
+      "sha256": "f08fb5dfbd9f0f2853f225774ff81e60626438031597463f4974705261e2d3f1"
+    },
+    {
+      "filename": "0133_phone_extension_handlers.sql",
+      "sha256": "769fefd61f9942f0ec7fa3a93ec2968b6be615226be333248f49f65a6bf45739"
+    },
+    {
+      "filename": "0134_assistant_live_calls.sql",
+      "sha256": "bb977332eff848692a1769c6be7075547148a34e8c0e632e5c24d23ad937fb2d"
+    },
+    {
+      "filename": "0135_assistant_coordination.sql",
+      "sha256": "db780864395e7b1db0f01a17a2b9317278a48cc5517edbf4e9cea0997d07f465"
+    },
+    {
+      "filename": "0136_phone_provider_identity.sql",
+      "sha256": "aaad0448cd051677d19f9ebe33e6a11e12f9fd565d80e9e4f7b49020c3051e9f"
+    },
+    {
+      "filename": "0137_telnyx_ingress_receipts.sql",
+      "sha256": "287cad3710916eee347ad7765b5dc246f1f6dd13e7fe57565a64156a4b52b284"
+    },
+    {
+      "filename": "0138_telnyx_usage_receipts.sql",
+      "sha256": "1345ba82d25a097cb90b71fa08a45ec76570a3eb666c6dede5bccc6ebc5d9429"
+    },
+    {
+      "filename": "0139_telnyx_cost_polling.sql",
+      "sha256": "d3be1b194c8c8000c8ef174953f766cd069509fb94851aa699affecfe733fbbf"
+    },
+    {
+      "filename": "0140_telnyx_live_calls.sql",
+      "sha256": "cbfb241ee690499c778e16aa7729aca3ecedfad85005149804c492cb58fba3cc"
+    },
+    {
+      "filename": "0141_managed_carrier_billing.sql",
+      "sha256": "8df61043367b9cb64f415f89741f5f538c20856d78b2d9bb26c033b40b73ea4f"
+    },
+    {
+      "filename": "0142_managed_phone_rentals.sql",
+      "sha256": "ccc1f8985b7913efed2015fcb9d29812c5344dc11191aac0cb4e9e0c01d73d1f"
+    },
+    {
+      "filename": "0143_managed_telnyx_inbound_costs.sql",
+      "sha256": "712e2b273709c4132cd1f01068259b824acd3127dbe7c626418ced3041612d03"
+    },
+    {
+      "filename": "0144_space_blackboard.sql",
+      "sha256": "7f603c5cf7159433c4e48c69160be8e1d4842b5e6ba260f7a66822857981440b"
+    },
+    {
+      "filename": "0145_blackboard_requests.sql",
+      "sha256": "92d57498b0ead8759f62d7cbb3e1f8e3268c966ea4ce0c69bd40aeab62b284c2"
+    },
+    {
+      "filename": "0146_blackboard_events.sql",
+      "sha256": "1d97bcbbfa653ca01e1b8e8935923e5312e1f47bb562a89eda39cc4742466b8a"
+    },
+    {
+      "filename": "0147_blackboard_event_receipts.sql",
+      "sha256": "9f8401c3a17ab1a17fe9665e0c163c4170e585ee0a99e5445a2608409a040f13"
+    },
+    {
+      "filename": "0148_blackboard_delivery.sql",
+      "sha256": "69367369d7523d3491919ab5854d8f351c0fa0d469f3fa97003a90128ca361d7"
+    },
+    {
+      "filename": "0149_blackboard_wake.sql",
+      "sha256": "4ae3548425816c5323168a4788fc17abfe2007f95173acbda824b205c7d1e250"
+    },
+    {
+      "filename": "0150_blackboard_sharing_policy.sql",
+      "sha256": "2ccb53f490fc6b0ebb4e8136e3a914794df7375517cbb40b0b3cdf9c42ab3fe4"
+    },
+    {
+      "filename": "0151_retire_business_commerce.sql",
+      "sha256": "fb05b82fa118474270358dc8ac16adbe1bab6a303583b7cd47c27b24ddc77eed"
+    },
+    {
+      "filename": "0152_decision_call_reservations.sql",
+      "sha256": "981c3d2878e112dad56d65fdaf77a77d736aa864ab15fd300e3f3a917d1af0aa"
+    },
+    {
+      "filename": "0153_decision_provider_usage_receipts.sql",
+      "sha256": "bf5855206e765e913dd8565dea139e2d596ce6c4bbf70ed1ced9fd11bae34e0e"
+    },
+    {
+      "filename": "0154_blackboard_wake_acceptance.sql",
+      "sha256": "59f18857185b200a9857be1cbcf99ecfde057ad8d2861c6a1a9020626ac2a554"
+    },
+    {
+      "filename": "0155_telnyx_extension_calls.sql",
+      "sha256": "98247b844b4ab6a2969ad094391079513a94adecba20dcf75e4723cd1fb76732"
+    },
+    {
+      "filename": "0156_product_registry.sql",
+      "sha256": "8ec7075ed10ba555230dc2de697d643d3bf75aba0f7555119ed1f2ef5392b427"
+    },
+    {
+      "filename": "0157_product_registry_cutover.sql",
+      "sha256": "685179d835b9f52c31a86d19198e1e57aba663ebd5340af78a6c6ee23fce0e3f"
+    },
+    {
+      "filename": "0158_agentport_registry.sql",
+      "sha256": "1b26c4c8b05e984763e7f0da7cb75445b875eeaa304e9e0242a9e165440fdd59"
+    },
+    {
+      "filename": "0159_agentport_api_keys.sql",
+      "sha256": "6abfc87ea2300a9b6c3e1d420127b4116eddb9b07104c5ef39c4f07d02256a00"
+    },
+    {
+      "filename": "0160_agentport_developer_identity.sql",
+      "sha256": "f285d0e710f8a920fa9e0e0e182b2892aa349955933024b923e9626ba29f371b"
+    },
+    {
+      "filename": "0161_agentport_channels_threads.sql",
+      "sha256": "3e84af1f78a5873f4ae5e267b698f14406e645b398ce9150c084bfd37b92c25c"
+    },
+    {
+      "filename": "0162_agentport_signed_identity.sql",
+      "sha256": "5f82922a178bbc10bd7ada259a7b438d3ba785f43f92997c29a21e9fab1c5bbe"
+    },
+    {
+      "filename": "0163_agentport_provider_auth.sql",
+      "sha256": "6ada757f373d6c52020c2be046caf4fd288bac4d18d0928b46d583c062c20367"
+    },
+    {
+      "filename": "0164_agentport_channel_message_refs.sql",
+      "sha256": "a7aa2d6e6eff1beda7754fd1833d18d1b7921c48a76418093f9f8ae642982661"
+    },
+    {
+      "filename": "0165_agentport_oauth.sql",
+      "sha256": "6a03a95e9bc43fc02203d0712eba06a66a474dceb8381d46396240a17425f8ed"
+    },
+    {
+      "filename": "0166_drop_agentport_message_store.sql",
+      "sha256": "280be8f90daf2599189b0130671db66d1d1e455f0e5eea43919e77cff7ac09a3"
+    },
+    {
+      "filename": "0167_agentport_apps_capabilities.sql",
+      "sha256": "939dabe9e6fe404eea1dcd735c817c77d4f1ebec896caec412484075b28e702e"
+    },
+    {
+      "filename": "0168_agentport_client_neutral_host_resources.sql",
+      "sha256": "784aaba22934813d0a82fdbe62b11145f701018b161a5a692ec5f9e3163b82b4"
+    },
+    {
+      "filename": "0169_agentport_email_accounts.sql",
+      "sha256": "153d910e7628b53b73cc14aa26fd5222ae74f6650b4c224c85aae49d3fd3041a"
+    },
+    {
+      "filename": "0170_agentport_email_channels.sql",
+      "sha256": "744116002ffd527d7ed747c4af6097d232c9f4f4f37e34957fd86740baa67a3f"
+    },
+    {
+      "filename": "0171_agentport_event_notifications.sql",
+      "sha256": "63c1c27a26e489c2e8abf06f00ff7a17114b40d97e92216361a26b46851a41f0"
+    },
+    {
+      "filename": "0172_assistant_agentmail_accounts.sql",
+      "sha256": "419e6a4efe96a14c8750255d9001f2499996e5d6e2fbce54c86f321e3dc610c0"
+    },
+    {
+      "filename": "0173_sandboxes_platform.sql",
+      "sha256": "ee22133dcdc9411105c3ac6a40d0f54916918e1f8cb0fbc610d05f82062f7564"
+    },
+    {
+      "filename": "0174_sandbox_workspace_bridge.sql",
+      "sha256": "f76331320af83c7af0c3ddde2604a25947f6c1e7637a4c732c29783e24f4d995"
+    },
+    {
+      "filename": "0175_sandbox_workspace_revision.sql",
+      "sha256": "7733d1cc7f3426d9db755f1e1913b08ab7cff864467e59b4ec7c3d6bc4cef863"
+    },
+    {
+      "filename": "0176_phase6_erasure_reconciliation.sql",
+      "sha256": "1eef18bcd0e3abbca119977dc920c476d43165bc3a2c8b9b2435da423cce6dda"
+    },
+    {
+      "filename": "0177_provider_deletion_manual_receipts.sql",
+      "sha256": "95787bf26a4c01025f939cd203ab9db9a7991b4e624eb79ef2e4dad6c57df711"
+    },
+    {
+      "filename": "0178_workspace_erasure_backup_exports.sql",
+      "sha256": "6335a817b07089e789da23879956c17f52d3a0e36c6c50964d7417ea65a7330f"
+    },
+    {
+      "filename": "0179_managed_services_control_plane.sql",
+      "sha256": "0dda23c290c890f5c9376a468bd26ff5e624166925b2dabc1d52931f84bf2e0b"
+    },
+    {
+      "filename": "0180_managed_service_credit_reservations.sql",
+      "sha256": "1bb4246aeacfeae01dcb2fd7557c5e68a270d13120f96e66ae75429fcc179143"
+    },
+    {
+      "filename": "0181_managed_service_ownership_and_audit.sql",
+      "sha256": "ace8dffcf872ea23588605fa5d3b90f4843c870577e31af8f6bdb0003abbddd3"
+    },
+    {
+      "filename": "0182_managed_service_plan_entitlements.sql",
+      "sha256": "d8c78fa505200e72c1cd9b5162047552efc1fcb7fa20bf5c28bcf37cf63ea19b"
+    },
+    {
+      "filename": "0183_managed_service_reconciliation_schedule.sql",
+      "sha256": "8dbfdd9a5f243705ca546b88e101f95ac8ad00b8ff547c7e1d5688848f4ac902"
+    },
+    {
+      "filename": "0184_sandbox_connection_verification.sql",
+      "sha256": "864c016d8b0e9f48a5d920d7d378e361836d9fa5af7cbd13de4752391a8ccf61"
+    },
+    {
+      "filename": "0185_sandbox_agent37_lifecycle.sql",
+      "sha256": "f3af636a0875b6fa0ea227dae28e9bbef1039a5af1d8f0bfe8f874b08bc7a4df"
+    },
+    {
+      "filename": "0186_workspace_live_runtime_authority.sql",
+      "sha256": "890ea17518f31684fd5ceb059d5da349b0bcd920e1fc3cd3031131a00703f494"
+    },
+    {
+      "filename": "0187_workspace_runtime_erasure_registry.sql",
+      "sha256": "775504fde87568771c26d02c9f08a07ef169162938e416afdb0cea61647cea4a"
+    },
+    {
+      "filename": "0188_managed_service_model_entitlements.sql",
+      "sha256": "f9a1b4bdbf8f10bf60ced5bf05bab0a77613a9d1a68160ac44d988b8d3c5d9ee"
+    },
+    {
+      "filename": "0189_project_main_runtime_registry.sql",
+      "sha256": "ac5be6875c0d8041d806adf2d6d85fdccfbc4c6f78b6b240e7efe0f438bfa7da"
+    },
+    {
+      "filename": "0191_sandbox_provider_cost_receipts.sql",
+      "sha256": "7025cd7bae60a204651ecc13257ee0a11a61ed67d32429f20a677c63ec86fbfb"
+    },
+    {
+      "filename": "0192_managed_service_provider_cost_receipts.sql",
+      "sha256": "656b08b28febc77ca1f50291f7df2a1e8e6d19d1b8787346c750d5902e72f4ea"
+    },
+    {
+      "filename": "0193_agentport_assistant_routing.sql",
+      "sha256": "585fe3950ceb1fae908128e244fb5b5597d4ddc2406003a9d9b27e5defbd4b16"
+    },
+    {
+      "filename": "0194_agentport_scoped_managed_service_spend.sql",
+      "sha256": "a96e43b561983b3d18330f3b8c0075a372ba8643e06cbd6c68dd83f290f25b77"
+    },
+    {
+      "filename": "0195_telnyx_number_order_journal.sql",
+      "sha256": "696b310be0f2068f7e105a97802e3ecf99131a7d46e60fbd087759565bdea75d"
+    },
+    {
+      "filename": "0196_higgsfield_customer_owned_media.sql",
+      "sha256": "6f9a13889d00a48dd43ed85d5b5192308f4a6f6c63d16e7cd08ffc5dbbffab9f"
+    },
+    {
+      "filename": "0197_project_main_runtime_allocation_tokens.sql",
+      "sha256": "fbc441d8c76949fd64855ccfd010d34a720690afcb93c4de7b680a2ced9be44a"
+    },
+    {
+      "filename": "0198_project_main_runtime_profiles.sql",
+      "sha256": "d0ca2e6f94111106165a1d1da0ab3fd36af89eb872308559cc4e7c83b3d55041"
+    },
+    {
+      "filename": "0199_sidecar_runtime_execution_profiles.sql",
+      "sha256": "dc122c77f85cd3fa91876e33d6a70663a78cfd66c43409ae9ba98b76dc0cc24c"
+    },
+    {
+      "filename": "0200_telnyx_number_order_reconciliation.sql",
+      "sha256": "1a8856727e2df4f4c90f5db331fa37863f523042edae50e05d82f7b6e1d568ae"
+    },
+    {
+      "filename": "0201_managed_service_meter_outbox.sql",
+      "sha256": "8e81b65d676167b33815c233ff932c8f7c3f8edc76b51734ffb567ec451de08d"
+    },
+    {
+      "filename": "0202_telnyx_managed_service_account_registry.sql",
+      "sha256": "9718a2214b26b5d07ea7c92cb97081f6fee34ae59262553be15aa33266114234"
+    },
+    {
+      "filename": "0203_telnyx_number_release_reconciliation.sql",
+      "sha256": "0c56f7b96db72c3d7ba84c5e3ede67191de518a1618ce308bd5fec7239b3fa6d"
+    },
+    {
+      "filename": "0204_workspace_browser_profile_erasure_registry.sql",
+      "sha256": "0f134ac29f931c88093da28e1f0960c9f53fe200250f266eae5573db3ecfdadc"
+    },
+    {
+      "filename": "0205_workspace_browser_session_erasure_registry.sql",
+      "sha256": "ae52addef3404f06220485572980485a10a86a4d7a17802825b0b4fcbfe23b06"
+    },
+    {
+      "filename": "0206_workspace_runtime_snapshot_retention.sql",
+      "sha256": "db26c168961eff820f1e28a82108d05963ebef8feaaa72f1546ae3074b717796"
+    },
+    {
+      "filename": "0207_managed_service_provider_cost_observations.sql",
+      "sha256": "67ed5b138b3808ae058b099b26aea1b162d4701d807199c0bf4c2550496227d4"
+    },
+    {
+      "filename": "0208_managed_service_agentport_link_state.sql",
+      "sha256": "eb5328e874063ef4a8617d2532fc298a501deb00ce071c96892c3423c19cbb2c"
+    },
+    {
+      "filename": "0209_managed_service_model_price_contract.sql",
+      "sha256": "1c755fe53f05dc6624df918abe4975b37f4940cc3072bb0e52ffb3a9da4e0240"
+    },
+    {
+      "filename": "0210_managed_model_operation_results.sql",
+      "sha256": "3a97834289ddd963aa9b844896f9aa08346f89f600cf3d1f1e91d671eea0b8bd"
+    },
+    {
+      "filename": "0211_managed_service_cost_budgets.sql",
+      "sha256": "01a0422041100b49bff569457e2952b022a02322af7700d812e7b894466ab31c"
+    },
+    {
+      "filename": "0212_userport_agentport_connector_sync.sql",
+      "sha256": "f038bb9caddaf2dbfa5cf9de20842fde4f41bfa7a2b0bb918dbff15174ab4c24"
+    },
+    {
+      "filename": "0213_sandbox_agentport_computer_shares.sql",
+      "sha256": "17ff1bba5c09d5b78b616f6ae4879a8318f924451e39d2768d563c67a3375638"
+    },
+    {
+      "filename": "0214_agent37_provider_usage_snapshots.sql",
+      "sha256": "350a8fedea3562c01dd01cdcd7701f8a14d76104599d9c0055dcf5221649f122"
+    },
+    {
+      "filename": "0215_agentmail_usage_snapshots.sql",
+      "sha256": "27fdfad5cc4aca445da29f0172bd64d3269126aa2c699f5e7ade3402f3052332"
+    },
+    {
+      "filename": "0216_agentmail_connection_region.sql",
+      "sha256": "626e3b5b0a3c538508749198a1702045ff484108dc0b4a28f0e462576a7b4915"
+    },
+    {
+      "filename": "0217_managed_service_cost_budget_alerts.sql",
+      "sha256": "c3e4ccab27e421d39368237e51e5b04baad0622b4b3d7be9c5750999a003185e"
+    },
+    {
+      "filename": "0218_telnyx_voice_call_cost_receipts.sql",
+      "sha256": "b674031f90cc376ab6194e0ebbdd887bbc3a939e737d161bc9cb223e24bf9c9e"
+    },
+    {
+      "filename": "0219_managed_service_cost_budget_alert_delivery.sql",
+      "sha256": "f68b45ebf5a7fe3996adb8d59c48418a51c09a662813eea367d6b6a5fc060f25"
+    },
+    {
+      "filename": "0220_managed_service_operation_quotes.sql",
+      "sha256": "42fea9ffe0e72ae70fa657f3ef0b3d3e35923eb6fbd1a539834597b4f69e9265"
+    },
+    {
+      "filename": "0221_managed_service_exact_prices_and_quote_binding.sql",
+      "sha256": "13942ca6576ceffefbd1a1d619c080e81c732f4aae95b66d0e0d4bbd68d27a8c"
+    },
+    {
+      "filename": "0222_managed_telnyx_rate_agreements.sql",
+      "sha256": "0d6c16476f3604c8b2dedb2f2edbf8b055cc69e2c0f1a1d5e574b9413f7b22f0"
+    },
+    {
+      "filename": "0223_managed_telnyx_call_reservation_lifecycle.sql",
+      "sha256": "0c71eff725eb2a008f2be310422552046e77c21da6d8f0ca7824a8b7246378cc"
+    },
+    {
+      "filename": "0224_sandbox_agentport_revoke_recovery.sql",
+      "sha256": "b4929e35da2e565f6a2b285d93464c6d548cb62a0a1dcd8425438d283d800183"
+    }
+  ]
+}

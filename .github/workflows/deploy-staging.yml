@@ -35,6 +35,12 @@ jobs:
       - name: Test environment isolation guard
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_wrangler_env_isolation.py"
 
+      - name: Test release schema manifest
+        run: python3 -m unittest discover -s infra/scripts -p "test_validate_release_manifest.py"
+
+      - name: Validate release schema manifest
+        run: python3 infra/scripts/validate_release_manifest.py
+
       - name: Reject shared mutable staging/production bindings
         run: python3 infra/scripts/validate_wrangler_env_isolation.py
 
@@ -51,7 +57,9 @@ jobs:
     name: Deploy workers to staging
     runs-on: ubuntu-latest
     environment: staging
-    concurrency: deploy-staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
     needs: [preflight]
     steps:
       - uses: actions/checkout@v4
