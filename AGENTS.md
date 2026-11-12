@@ -21,10 +21,10 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
 remains separate and must not be switched or merged with the recovery branch. Code checkpoints
-`171a3471`, `064efff8` and `fcc26543`, plus docs checkpoints `8f9c0c15`, `7e401225` and `1c32ef26`, are pushed
-there. AgentMail provision/renewal and Cloudflare model replay preserve consumed quote terms in
-their covered recovery paths. A local AgentMail capability-version recovery change is now verified
-and awaiting its checkpoint push; exact checks and next task are recorded in the progress source.
+`171a3471`, `064efff8`, `fcc26543` and `e9df3da4`, plus docs checkpoints `8f9c0c15`, `7e401225` and
+`1c32ef26`, are pushed there. AgentMail provision/renewal and Cloudflare model replay preserve
+consumed quote terms in their covered recovery paths; exact checks and next task are recorded in the
+progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
