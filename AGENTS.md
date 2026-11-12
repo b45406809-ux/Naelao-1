@@ -21,9 +21,10 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
 remains separate and must not be switched or merged with the recovery branch. Code checkpoints
-`171a3471` and `064efff8`, plus docs checkpoint `8f9c0c15`, are pushed there. Both AgentMail
-provision and scheduled renewal recovery now reuse their consumed quote after repricing; exact push
-and fresh checks are recorded in the progress source.
+`171a3471` and `064efff8`, plus docs checkpoints `8f9c0c15` and `7e401225`, are pushed there.
+AgentMail provision/renewal and Cloudflare model replay now preserve consumed quote terms in their
+covered recovery paths. The current model replay code and progress updates are local pending the next
+coherent push; exact checks and task are recorded in the progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
@@ -123,10 +124,12 @@ U01–U12 gaps. Record subsequent checkpoints and exact pushed SHAs in the progr
 Keep every rollout flag disabled. Do not deploy or purchase services.
 
 Latest continuation: AgentMail provision and scheduled renewal recovery reuse the consumed quote and
-original credit amount after repricing, while the same capability version remains verified and
-current caps permit the amount. AgentMail tests pass 16/16; Billing reservation tests pass 17/17;
-Agents and Billing typechecks pass. The next implementation action is to audit Cloudflare model
-replay under repricing, then continue S2–S9 and U01–U12. Rollout remains disabled.
+original credit amount after repricing under the same verified capability. Cloudflare model
+completed/uncertain operations replay from their persisted quote after repricing/capability updates;
+pending inference remains gated by active ceilings and capability. Managed-model tests pass 6/6,
+AgentMail tests 16/16, Billing reservation tests 17/17, and Agents/Billing typechecks pass. Next,
+audit Billing admission/replay after capability-version changes, then continue S2–S9 and U01–U12.
+Rollout remains disabled.
 
 Migration 0209 adds exact fixed model prices and output-token caps; migration 0210 adds a draft
 Cloudflare Workers AI capability and encrypted seven-day model results. The owner-authenticated

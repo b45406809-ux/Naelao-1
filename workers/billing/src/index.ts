@@ -1100,30 +1100,31 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
         .bind(planTier,body.provider,body.service_id,body.operation_name,body.region,new Date().toISOString())
         .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;credits_per_operation:number|null;valid_until:string}>();
   if(!entitlement)return c.json({error_code:"managed_service_not_entitled"},403);
-  let acceptedAgentMailQuote=false;
-  if(agentMailOperationRequiresQuote&&body.quote_id&&body.requester_user_id){
+  let acceptedPinnedQuote=false;
+  if(operationRequiresQuote&&body.quote_id&&body.requester_user_id){
     const pinned=await c.env.PLATFORM_DB.prepare(`SELECT q.quote_id FROM managed_service_operation_quotes q
       JOIN managed_service_operations o ON o.operation_id=q.operation_id AND o.tenant_id=q.tenant_id
       WHERE q.quote_id=? AND q.tenant_id=? AND q.space_id=? AND q.project_id IS ? AND q.requester_user_id=? AND q.plan_tier=?
-        AND q.provider=? AND q.service_id=? AND q.operation_name=? AND q.region=? AND q.capability_version=?
+        AND q.provider=? AND q.service_id=? AND q.operation_name=? AND q.model_id IS ? AND q.region=? AND q.capability_version=?
         AND q.price_version=? AND q.credits=? AND q.status='consumed' AND q.operation_id=?
-        AND o.quote_id=q.quote_id AND o.request_sha256=q.request_sha256 AND o.status='running'
-        AND o.provider=q.provider AND o.service_id=q.service_id AND o.operation_name=q.operation_name AND o.region=q.region
+        AND o.quote_id=q.quote_id AND ((q.provider='agentmail' AND q.request_sha256 IS NOT NULL AND o.request_sha256=q.request_sha256)
+          OR (q.provider='cloudflare' AND q.request_sha256 IS NULL)) AND o.status='running'
+        AND o.provider=q.provider AND o.service_id=q.service_id AND o.operation_name=q.operation_name AND o.model_id IS q.model_id AND o.region=q.region
         AND o.capability_version=q.capability_version`).bind(body.quote_id,orgId,body.space_id,body.project_id??null,body.requester_user_id,
-          planTier,body.provider,body.service_id,body.operation_name,body.region,entitlement.capability_version,body.price_version,credits,operationId)
+          planTier,body.provider,body.service_id,body.operation_name,body.model_id??null,body.region,entitlement.capability_version,body.price_version,credits,operationId)
       .first<{quote_id:string}>();
-    acceptedAgentMailQuote=!!pinned;
+    acceptedPinnedQuote=!!pinned;
   }
-  // A consumed AgentMail quote remains the price authority for that exact running operation
-  // after repricing, but altered/unbound requests must still match the active price.
-  if(entitlement.price_version!==body.price_version&&(!agentMailOperationRequiresQuote||!acceptedAgentMailQuote))
+  // A consumed quote remains the price authority for that exact running operation after
+  // repricing, but altered/unbound requests must still match the active price.
+  if(entitlement.price_version!==body.price_version&&(!operationRequiresQuote||!acceptedPinnedQuote))
     return c.json({error_code:"managed_service_price_version_conflict"},409);
   const modelCreditsPerOperation:number|null="credits_per_operation" in entitlement&&typeof entitlement.credits_per_operation==="number"?entitlement.credits_per_operation:null;
   if(body.model_id&&(!Number.isSafeInteger(modelCreditsPerOperation)||modelCreditsPerOperation!<1))
     return c.json({error_code:"managed_service_model_price_unconfigured"},403);
-  if(body.model_id&&credits!==modelCreditsPerOperation)
+  if(body.model_id&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
     return c.json({error_code:"managed_service_model_price_conflict"},409);
-  if(agentMailOperationRequiresQuote&&credits!==modelCreditsPerOperation&&!acceptedAgentMailQuote)
+  if(agentMailOperationRequiresQuote&&credits!==modelCreditsPerOperation&&!acceptedPinnedQuote)
     return c.json({error_code:"managed_service_price_conflict"},409);
   if(credits>entitlement.max_credits_per_operation)return c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
   const capability=await c.env.PLATFORM_DB.prepare(`SELECT operations_json,regions_json,account_modes_json,status,valid_until FROM managed_service_capability_versions

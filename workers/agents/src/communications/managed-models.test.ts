@@ -72,8 +72,15 @@ describe("managed Workers AI operations", () => {
     expect(stored.envelope_json).not.toContain("managed answer");
     expect(h.db.db.prepare("SELECT request_json FROM managed_service_operations").get()).toEqual({ request_json:"{}" });
 
+    h.db.db.prepare(`INSERT INTO managed_service_capability_versions(provider,service_id,version,category,operations_json,regions_json,
+      account_modes_json,isolation_model,provisioning_json,metering_json,external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      SELECT provider,service_id,2,category,operations_json,regions_json,account_modes_json,isolation_model,provisioning_json,metering_json,
+        external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at
+      FROM managed_service_capability_versions WHERE provider='cloudflare' AND service_id='workers-ai' AND version=1`).run();
+    h.db.db.prepare(`UPDATE managed_service_model_entitlements SET capability_version=2,price_version='cf-llama-fixed-v2',credits_per_operation=60
+      WHERE plan_tier='free' AND provider='cloudflare' AND service_id='workers-ai' AND model_id=?`).run(MODEL);
     const replay = await runManagedModelOperation(h.env, scope, { ...request,quoteId:priced.quoteId });
-    expect(replay).toMatchObject({ status:"complete",output:"managed answer",deduplicated:true });
+    expect(replay).toMatchObject({ status:"complete",output:"managed answer",credits:55,priceVersion:"cf-llama-fixed-v1",deduplicated:true });
     expect(h.aiRun).toHaveBeenCalledTimes(1);
     expect(h.billingCalls.map((call) => call.action)).toEqual(["reserve","settle","settle"]);
     expect(h.billingCalls[1]?.body.reservation_id).toBe(h.billingCalls[2]?.body.reservation_id);
@@ -91,7 +98,9 @@ describe("managed Workers AI operations", () => {
     const result = await runManagedModelOperation(h.env, scope, request);
     expect(result).toMatchObject({ status:"uncertain",errorCode:"provider_timeout",credits:55 });
     expect(h.billingCalls.map((call) => call.action)).toEqual(["reserve","uncertain"]);
-    expect(await runManagedModelOperation(h.env, scope, request)).toMatchObject({ status:"uncertain",deduplicated:true });
+    h.db.db.prepare(`UPDATE managed_service_model_entitlements SET price_version='cf-llama-fixed-v2',credits_per_operation=60
+      WHERE plan_tier='free' AND provider='cloudflare' AND service_id='workers-ai' AND model_id=?`).run(MODEL);
+    expect(await runManagedModelOperation(h.env, scope, request)).toMatchObject({ status:"uncertain",credits:55,priceVersion:"cf-llama-fixed-v1",deduplicated:true });
     expect(h.aiRun).toHaveBeenCalledTimes(1);
   });
 

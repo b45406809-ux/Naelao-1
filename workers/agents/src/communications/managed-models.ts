@@ -265,9 +265,6 @@ export async function runManagedModelOperation(
 ): Promise<ManagedModelOperationResult> {
   validateModelRequest(input.modelId, input.prompt, input.idempotencyKey);
   if (!/^msq_[A-Fa-f0-9]{32}$/.test(input.quoteId)) throw new Error("managed_model_quote_invalid");
-  if (!env.AI) throw new Error("managed_model_provider_unavailable");
-
-  const { planTier, entitlement } = await resolveModelEntitlement(env, scope, input.modelId, now);
   const quote = await env.PLATFORM_DB.prepare(`SELECT quote_id,tenant_id,space_id,project_id,requester_user_id,plan_tier,
       provider,service_id,operation_name,model_id,region,capability_version,price_version,credits,max_output_tokens,status,
       operation_id,expires_at FROM managed_service_operation_quotes WHERE quote_id=? AND tenant_id=? AND space_id=?
@@ -277,25 +274,70 @@ export async function runManagedModelOperation(
       provider:string;service_id:string;operation_name:string;model_id:string;region:string;capability_version:number;
       price_version:string;credits:number;max_output_tokens:number;status:string;operation_id:string|null;expires_at:string }>();
   if (!quote) throw new Error("managed_model_quote_not_found");
-  if (quote.plan_tier !== planTier || quote.provider !== PROVIDER || quote.service_id !== SERVICE
+  if (quote.provider !== PROVIDER || quote.service_id !== SERVICE
     || quote.operation_name !== OPERATION || quote.model_id !== input.modelId || quote.region !== REGION
-    || quote.capability_version !== entitlement.capability_version || quote.price_version !== entitlement.price_version
-    || quote.credits !== entitlement.credits_per_operation || quote.max_output_tokens !== entitlement.max_output_tokens) {
+    || !Number.isSafeInteger(quote.capability_version) || quote.capability_version<1
+    || !Number.isSafeInteger(quote.credits) || quote.credits<1
+    || !Number.isSafeInteger(quote.max_output_tokens) || quote.max_output_tokens<1 || quote.max_output_tokens>4096) {
     throw new Error("managed_model_quote_terms_changed");
   }
 
-  const requestHash = await sha256(JSON.stringify({ tenant: scope.tenantId, space: scope.spaceId, project: scope.projectId ?? null,
-    user: scope.userId, model: input.modelId, prompt: input.prompt, maxOutputTokens: entitlement.max_output_tokens }));
   const idempotencyKey = `owner:${scope.spaceId}:${scope.userId}:${input.idempotencyKey}`;
   const createdAt = now.toISOString();
   let operation = await env.PLATFORM_DB.prepare(`SELECT operation_id,quote_id,request_sha256,model_id,status,lease_until,price_version,reserved_credits,error_code
     FROM managed_service_operations WHERE tenant_id=? AND provider=? AND idempotency_key=? LIMIT 1`)
     .bind(scope.tenantId, PROVIDER, idempotencyKey).first<OperationRow>();
-  if (operation && (operation.request_sha256 !== requestHash || operation.model_id !== input.modelId
-    || operation.price_version !== entitlement.price_version || operation.quote_id !== input.quoteId
-    || quote.status !== "consumed" || quote.operation_id !== operation.operation_id)) {
-    throw new Error("managed_model_idempotency_conflict");
+  let planTier:string;
+  let entitlement:ModelEntitlement;
+  let requestHash:string;
+  if (operation) {
+    requestHash = await sha256(JSON.stringify({ tenant: scope.tenantId, space: scope.spaceId, project: scope.projectId ?? null,
+      user: scope.userId, model: input.modelId, prompt: input.prompt, maxOutputTokens: quote.max_output_tokens }));
+    if (operation.request_sha256 !== requestHash || operation.model_id !== input.modelId || operation.price_version !== quote.price_version
+      || operation.quote_id !== input.quoteId || quote.status !== "consumed" || quote.operation_id !== operation.operation_id
+      || operation.quote_id !== quote.quote_id) {
+      throw new Error("managed_model_idempotency_conflict");
+    }
+    entitlement={capability_version:quote.capability_version,price_version:quote.price_version,max_credits_per_operation:quote.credits,
+      credits_per_operation:quote.credits,max_output_tokens:quote.max_output_tokens,max_operations_per_period:null};
+    const reservationId=`msmr_${operation.operation_id}`;
+    if(operation.status!=="pending"){
+      const existingResult=await readSavedResult(env,scope,operation.operation_id);
+      if(existingResult!==null)return settleSavedResult(env,scope,operation,input.modelId,reservationId,entitlement,true);
+      if(operation.status==="complete")throw new Error("managed_model_result_unavailable");
+      if(operation.status==="failed")throw new Error(operation.error_code??"managed_model_operation_failed");
+      if(operation.status==="uncertain")return {operationId:operation.operation_id,modelId:input.modelId,status:"uncertain",
+        credits:quote.credits,priceVersion:quote.price_version,maxOutputTokens:quote.max_output_tokens,
+        errorCode:operation.error_code??"managed_model_outcome_uncertain",deduplicated:true};
+      if(operation.status==="running"){
+        if(operation.lease_until&&Date.parse(operation.lease_until)>now.getTime())return {operationId:operation.operation_id,modelId:input.modelId,
+          status:"pending",credits:quote.credits,priceVersion:quote.price_version,maxOutputTokens:quote.max_output_tokens,deduplicated:true};
+        await markUncertain(env,scope,operation.operation_id,reservationId,"managed_model_worker_interrupted");
+        return {operationId:operation.operation_id,modelId:input.modelId,status:"uncertain",credits:quote.credits,priceVersion:quote.price_version,
+          maxOutputTokens:quote.max_output_tokens,errorCode:"managed_model_worker_interrupted",deduplicated:true};
+      }
+    }
+    const active=await resolveModelEntitlement(env,scope,input.modelId,now);
+    planTier=active.planTier;
+    if(quote.plan_tier!==planTier||quote.capability_version!==active.entitlement.capability_version
+      ||quote.credits>active.entitlement.max_credits_per_operation||quote.max_output_tokens>active.entitlement.max_output_tokens!){
+      await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='failed',error_code='managed_model_entitlement_changed',updated_at=?
+        WHERE operation_id=? AND tenant_id=? AND status='pending'`).bind(createdAt,operation.operation_id,scope.tenantId).run();
+      throw new Error("managed_model_entitlement_changed");
+    }
+  } else {
+    const active=await resolveModelEntitlement(env,scope,input.modelId,now);
+    planTier=active.planTier;
+    if(quote.plan_tier!==planTier||quote.capability_version!==active.entitlement.capability_version
+      ||quote.price_version!==active.entitlement.price_version||quote.credits!==active.entitlement.credits_per_operation
+      ||quote.max_output_tokens!==active.entitlement.max_output_tokens)throw new Error("managed_model_quote_terms_changed");
+    entitlement=active.entitlement;
+    if(quote.status!=="quoted")throw new Error("managed_model_quote_already_used");
+    if(Date.parse(quote.expires_at)<=now.getTime())throw new Error("managed_model_quote_expired");
+    requestHash=await sha256(JSON.stringify({tenant:scope.tenantId,space:scope.spaceId,project:scope.projectId??null,
+      user:scope.userId,model:input.modelId,prompt:input.prompt,maxOutputTokens:entitlement.max_output_tokens}));
   }
+  if(!env.AI)throw new Error("managed_model_provider_unavailable");
   if (!operation) {
     if (quote.status !== "quoted") throw new Error("managed_model_quote_already_used");
     if (Date.parse(quote.expires_at) <= now.getTime()) throw new Error("managed_model_quote_expired");

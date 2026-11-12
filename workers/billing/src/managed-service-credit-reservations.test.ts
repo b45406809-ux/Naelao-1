@@ -486,6 +486,11 @@ describe("managed service credit reservations", () => {
     expect(admitted.status).toBe(201);
     expect(h.db.db.prepare("SELECT quote_id,credits,price_version FROM managed_service_credit_reservations WHERE id='model-reservation'").get())
       .toEqual({quote_id:quoteId,credits:55,price_version:"cf-llama-fixed-v1"});
+    h.db.db.prepare(`UPDATE managed_service_model_entitlements SET price_version='cf-llama-fixed-v2',credits_per_operation=60
+      WHERE plan_tier='free' AND provider='cloudflare' AND service_id='workers-ai' AND model_id=?`).run("@cf/meta/llama-3.1-8b-instruct-fp8");
+    const replay=await h.post("/internal/managed-services/credits/reserve",{...request,quote_id:quoteId});
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({reserved:true,status:"held",credits:55,deduplicated:true});
   });
 
   it("imports provider-cost evidence with hashed references, idempotent reconciliation, and separate credit accounting", async () => {
