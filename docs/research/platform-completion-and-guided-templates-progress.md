@@ -2,6 +2,17 @@
 
 ## Active checkpoint
 
+Updated 2026-11-12 after code checkpoint `7b6942e8` was pushed to
+`origin/Mcbt5s-Backup-2`. Migration 0232 and Knowledge/Workflow/Spaces changes now provide durable
+semantic-cache entry deletion for document and whole-Space erasure, preserve in-flight erasures
+through the migration-before-Worker rollout window, and expose owner-visible cleanup status. Local
+evidence: Knowledge **79/79**, Workflows **38/38**, Spaces erasure routes **3/3**, Python
+release/migration tests **47/47**, affected typechecks, release/deployment validators, and
+`git diff --check`. No deployed D1, Vectorize, KV, provider-index deletion, or live acceptance was
+tested. The code gaps in P22 are closed; AutoRAG provider-index deletion and deployed acceptance
+remain unverified. The immediately prior P23 checkpoint `f676408a` remains pushed and locally
+verified as described below.
+
 Updated 2026-11-12 on `autonomous-managed-services-20261111`. The platform plan at
 `platform-completion-and-guided-templates-plan.md` was added by commit `9e1281ce` and is already
 integrated in this branch. Findings in that plan were researched against an older checkout; the
@@ -11,7 +22,7 @@ The P01 deployment manifest, staging dependency gate, tests and runbook are push
 `origin/Mcbt5s-Backup-2` as `749f9c95`. P03/P11–P13 code, tests, schema updates and this source
 reconciliation are pushed in code commit `2625ea3426d5ee1bc7d7dce3776553073843640d`; the current
 progress refresh is pushed as docs commit `def77078` immediately after that code checkpoint.
-Latest code checkpoint `f676408a` is pushed: stable signed webhook event identifiers, explicit
+Latest pre-P22 code checkpoint `f676408a` is pushed: stable signed webhook event identifiers, explicit
 Resend acceptance receipts persisted on the existing Product auth-email outbox, migration 0231,
 and a release schema probe for the receipt column. Local evidence: Notifications **33/33**, Product
 auth recovery **17/17**, release runner **9/9**, manifest tests **5/5**, affected typechecks, both
@@ -20,16 +31,17 @@ on general channel exhaustion and audited operator replay.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
-Current code already provides an ordered 231-file migration SHA-256 manifest, a Python release
+Current code already provides an ordered 232-file migration SHA-256 manifest, a Python release
 runner with an atomic D1 migration ledger and concurrency lock, checksum drift checks, a resumable
 execution owner after interruption, fail-closed handling for non-idempotent legacy migration 0164,
 pre-deploy required-schema probes, and staging/production workflows that run migrations before
-consumers. Migration 0231 adds the Product auth-email provider receipt column; the release runner
-probes for it before recording the schema version. Current-source validation exposed a stale
-checked-in SHA for migration 0230, which is now corrected to match its source. New-slice tests pass:
-migration runner **9/9**, release manifest tests **5/5**, required schema
-`0231_product_auth_email_provider_receipt`, and the deployment-manifest validator. These are local
-tests. No D1 database was inspected.
+consumers. Migration 0231 adds the Product auth-email provider receipt column; migration 0232 adds
+durable cache cleanup state and aggregate erasure status, which the release runner requires before
+recording the schema version. Current-source validation exposed a stale checked-in SHA for migration
+0230, which is now corrected to match its source. Current local Python release/migration suite passes
+**47/47**, including the SQLite 0232 backfill/constraint tests; release-manifest and deployment-
+manifest validators pass. Required schema is `0232_semantic_cache_cleanup_operations`. These are
+local tests. No D1 database was inspected.
 
 Added `infra/release/deployment-manifest.json`, a validator wired into both preflights, and
 `docs/operations/release-and-environment-safety.md`. The validator checks tag/commit versioning,
@@ -120,6 +132,22 @@ constraints **3/3**, release runner **8/8**, both manifests validate. No Cloudfl
 queried. Current depth/age/DLQ and live telemetry acceptance still need a supported provider API or
 operator inspector.
 
+### P22 — Knowledge deletion and indexing: PARTIAL, local cache cleanup gaps closed
+
+Code `7b6942e8` and migration 0232 extend the existing deletion journal rather than creating a
+parallel cache ledger. Each bounded Vectorize result page is persisted before both Vectorize IDs and
+matching `sc:<id>` KV payloads are deleted. Document deletion rotates the generation first; whole-
+Space erasure uses a request-scoped wildcard purge operation and retains pending work through Space
+D1 deletion. Migration seeds operations for in-flight erasures so an old Worker finishing during
+schema-first rollout cannot lose the physical cleanup; the scheduled reconciler reopens completed
+rows whose cache status remains pending. Air-gapped Spaces rotate the generation but defer external
+Vectorize cleanup until the erasure request is completed, when deletion-only cleanup can resume even
+if the Space row is gone. Owner erasure status includes `cache_cleanup_status`. Local evidence:
+Knowledge **79/79**, Workflows **38/38**, Spaces erasure route tests **3/3**, Python release/migration
+tests **47/47**, affected typechecks and both release validators. These are local mocks/SQLite/static
+checks. AutoRAG provider-index deletion, deployed data-store behavior and live acceptance remain
+unverified; retrieval remains disabled.
+
 ### P23 — notification outcomes and retry safety: PARTIAL
 
 The current email path preserves a stable caller idempotency key and now returns Resend's bounded
@@ -164,13 +192,15 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    read-only resource receipts, and per-database baselines are verified. Do not invent them.
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
-3. Continue P04/P22 recovery: trace semantic cache entry purge and whole-Space cleanup status
-   through Knowledge, Vectorize/KV and erasure callers; implement durable entry cleanup/status using
-   the existing deletion/erasure ledgers, while preserving U01/U10 retention limits.
-4. Reconcile P14–P19 and P23–P24 against current sessions, queues, notifications and package
-   lifecycle, then continue P05–P10 and guided template authoring, voice dashboards, and Shared-Space
-   requirements in their dependency order. Maintain one owner/evidence record for overlapping S/U
-   requirements rather than building parallel ledgers.
+3. P04 remains partial on backup completeness and isolated recovery drills. P22's independent local
+   cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`; retain the exact
+   provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
+4. Continue at P15: measure the current bounded Space Blackboard query against indexes, pagination,
+   and ACL-change behavior; implement a locally verifiable query improvement if the current source
+   shows a real caller gap. Then finish the remaining P16/P17/P24 dependency audit before guided
+   templates; proceed next to voice-extension dashboards and Shared-Space coordination. Reuse the
+   S/U ledgers for overlapping requirements and do not repeat completed P01/P02, P03, P18/P20/P21,
+   P23 or P22 audits without a new source change or specific evidence need.
 
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and

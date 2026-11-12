@@ -2,16 +2,17 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12): code checkpoint `f676408a` is pushed to
+Current continuation checkpoint (2026-11-12): P22 implementation checkpoint `7b6942e8` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. It adds stable signed webhook event IDs, returns bounded
-Resend acceptance receipts, persists those receipts on the existing Product auth-email outbox, and
-gates releases on migration 0231's receipt column. Local evidence: Notifications **33/33**, Product
-auth recovery **17/17**, release migration tests **9/9**, release manifest tests **5/5**, both release
-validators, Notifications/Spaces typechecks and `git diff --check`. The checked-in schema manifest
-had a stale SHA for migration 0230; it now matches the checked-in SQL. These are mocked/static
-checks only; no D1, provider, deployment or live acceptance was run. Resend acceptance does not mean
-inbox delivery. Preserve the unrelated untracked `infra/scripts/__pycache__/`.
+`/workspace/Naelao-1-managed-services`. Migration 0232 extends the existing Knowledge deletion
+journal with resumable, tenant/Space-scoped semantic-cache entry purge, retains pending cleanup rows
+through Space erasure, and exposes aggregate status in the owner erasure route. In-flight erasures
+are backfilled before Worker rollout; the scheduled reconciler reopens cache-pending rows completed
+by an older Worker. Local evidence: Knowledge **79/79**, Workflows **38/38**, Spaces erasure routes
+**3/3**, Python release/migration tests **47/47**, affected Knowledge/Workflow/Spaces typechecks,
+both release validators, and `git diff --check`. No deployed D1, Vectorize, KV, provider or live
+acceptance was exercised. AutoRAG provider-index deletion remains unverified. Preserve the unrelated
+untracked `infra/scripts/__pycache__/`.
 
 P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
 object references; workspace object bytes are references, restore merges missing rows, and no
@@ -20,7 +21,8 @@ isolated restore/RPO/RTO drill or live store verification exists. The newly inte
 shared KV namespaces, unresolved `naelao-calls` ownership and 62 missing read-only resource receipts;
 the D1 release runner requires absent operator-attested migration baselines before any remote
 mutation. P03/P12/P13, P20, P18/P21 and P22 status plus exact evidence/gaps are in the managed
-progress matrix. The S2–S9/U01–U12 source/caller audit is reconciled there; PARTIAL rows remain
+progress matrix. P22's independent semantic-cache cleanup/status code gaps are closed locally; P22
+remains partial for provider-index deletion and deployed/live evidence. The S2–S9/U01–U12 source/caller audit is reconciled there; PARTIAL rows remain
 partial for their specific missing implementation, unsupported contract, product decision or live
 evidence, and no row is accepted live. Managed-services requirements are reconciled, with the
 unsupported U05/U06 runtime contracts and other gaps kept open. P20 now has a local operator list
@@ -31,12 +33,14 @@ probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legac
 attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
 policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
 and receipt coverage outside the Product auth outbox; see
-`docs/operations/notification-delivery-contract.md`. Exact next task: continue recovery at P04/P22
-by tracing semantic cache entry purge and whole-Space cleanup status through current Knowledge,
-Vectorize/KV and erasure callers; implement durable entry cleanup/status using existing deletion and
-erasure ledgers. Then continue the platform requirement queue into guided templates, voice dashboards
-and shared-Space coordination. Keep rollouts disabled. Fetch before every push and safely integrate
-remote advances; never reset, clean, switch away, overwrite history, deploy or purchase.
+`docs/operations/notification-delivery-contract.md`. Exact next task: continue the platform plan at
+P15 by measuring current bounded Space Blackboard discovery against its query indexes, page limits,
+and ACL-change behavior; implement a verified local scaling improvement if the current caller has a
+concrete gap. Then reconcile remaining P16/P17/P24 dependencies and proceed to guided template
+authoring, voice dashboards, and Shared-Space coordination. P01/P02 remain fail-closed on actual
+resource separation, ownership/receipts, and operator-attested D1 baselines; these are evidence and
+configuration gates. Keep all rollouts disabled. Fetch before every push and safely integrate remote
+advances; never reset, clean, switch away, overwrite history, deploy or purchase.
 
 Historical checkpoint (2026-11-12, code `4b5990b6`, superseded by the current checkpoint above): S2 is IMPLEMENTED_LOCAL for currently supported
 provider lanes; account-specific provider enablement, approved commercial terms and unsupported
