@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
 import { ensureIdentity } from "./core.js";
 import { defaultPhonePolicy } from "./phones.js";
+import { sweepManagedAgentPortShareRevocations } from "./agentport-share-reconciliation.js";
 import { authorizeTelnyxSmsViaAgentPort, revokeTelnyxAgentPortShare, shareTelnyxSmsWithAgentPort } from "./telnyx-agentport.js";
 
 describe("Telnyx AgentPort account sharing", () => {
@@ -64,5 +65,48 @@ describe("Telnyx AgentPort account sharing", () => {
     const callsBefore = calls.mock.calls.length;
     await expect(shareTelnyxSmsWithAgentPort(f.env, scope, identity, "binding-managed")).rejects.toThrow("telnyx_agentport_customer_owned_only");
     expect(calls).toHaveBeenCalledTimes(callsBefore);
+  });
+
+  it("journals and retries an uncertain AgentPort revoke against the exact account", async () => {
+    const f = fixture();
+    const identity = await ensureIdentity(f.env, scope);
+    await f.db.prepare(`INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,
+      phone_number,policy_json,status) VALUES('binding-retry',?,'assistant','byo','telnyx','account-1','number-1','+14155550100',?,'active')`)
+      .bind(identity.id, JSON.stringify(defaultPhonePolicy)).run();
+    let serviceExists = false;
+    let failRevoke = true;
+    f.env.AGENTPORT_WORKER.fetch = vi.fn(async (request: Request) => {
+      const path = new URL(request.url).pathname.replace("/internal/agentport", "");
+      const method = request.method;
+      const body = method === "GET" ? {} : await request.clone().json().catch(() => ({})) as Record<string,unknown>;
+      if (path === "/agents" && method === "POST") return Response.json({ agent: { id: "naelao_agent", status: "active" } }, { status: 201 });
+      if (path === "/principals") return Response.json({ principal: { id: body.id, external_id: scope.userId } }, { status: 201 });
+      if (path === "/services/telnyx-v2%3Atenant" && !serviceExists) return Response.json({ error_code: "service_unavailable" }, { status: 404 });
+      if (path === "/services/telnyx-v2%3Atenant") return Response.json({ service: { id: "telnyx-v2:tenant", status: "active", account_models: ["agent_native"], capabilities: ["phone.sms.send"] } });
+      if (path === "/services") { serviceExists = true; return Response.json({ service: { id: "telnyx-v2:tenant" } }, { status: 201 }); }
+      if (path === "/accounts" && method === "POST") return Response.json({ account: { id: "ap_telnyx_retry", status: "pending" } }, { status: 201 });
+      if (path.endsWith("/activate")) return Response.json({ active: true });
+      if (path.endsWith("/grants")) return Response.json({ grant: { id: "grant-retry" } }, { status: 201 });
+      if (path.endsWith("/revoke")) {
+        if (failRevoke) return Response.json({ error_code: "temporary_failure" }, { status: 503 });
+        return Response.json({ revoked: true });
+      }
+      return Response.json({ error_code: "unexpected_route" }, { status: 404 });
+    }) as unknown as Fetcher;
+
+    await shareTelnyxSmsWithAgentPort(f.env, scope, identity, "binding-retry");
+    await expect(revokeTelnyxAgentPortShare(f.env, scope, identity, "binding-retry")).rejects.toThrow("agentport_temporary_failure");
+    const journal = await f.db.prepare(`SELECT status,next_reconcile_at,request_json FROM managed_service_operations
+      WHERE operation_name='agentport_revoke' AND account_id='telnyx-binding-retry'`).first<{status:string;next_reconcile_at:string|null;request_json:string}>();
+    expect(journal).toMatchObject({ status: "uncertain", next_reconcile_at: expect.any(String) });
+    expect(journal?.request_json).toContain("ap_telnyx_retry");
+    await f.db.prepare("UPDATE managed_service_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE operation_name='agentport_revoke'").run();
+    failRevoke = false;
+    await expect(sweepManagedAgentPortShareRevocations(f.env, new Date("2026-11-12T12:00:00Z"), 5))
+      .resolves.toMatchObject({ checked: 1, reconciled: 1, deferred: 0, failed: 0 });
+    expect(await f.db.prepare(`SELECT agentport_link_status FROM managed_service_accounts WHERE id='telnyx-binding-retry'`)
+      .first<{agentport_link_status:string}>()).toEqual({ agentport_link_status: "revoked" });
+    expect(await f.db.prepare(`SELECT status,next_reconcile_at FROM managed_service_operations WHERE operation_name='agentport_revoke'`)
+      .first<{status:string;next_reconcile_at:string|null}>()).toEqual({ status: "complete", next_reconcile_at: null });
   });
 });

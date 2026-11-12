@@ -26,26 +26,30 @@ async function stableId(prefix: string, input: string) {
 async function recordAgentPortOperation(env: AgentsEnv, scope: CommunicationScope, bindingId: string,
   kind: "sync" | "revoke", status: "running" | "complete" | "uncertain", errorCode: string | null = null) {
   const accountId = `telnyx-${bindingId}`;
-  const account = await env.PLATFORM_DB.prepare(`SELECT provider,service_id,capability_version FROM managed_service_accounts
+  const account = await env.PLATFORM_DB.prepare(`SELECT provider,service_id,capability_version,agentport_account_id FROM managed_service_accounts
     WHERE id=? AND tenant_id=? AND space_id=?`).bind(accountId, scope.tenantId, scope.spaceId)
-    .first<{provider:string;service_id:string;capability_version:number|null}>();
+    .first<{provider:string;service_id:string;capability_version:number|null;agentport_account_id:string|null}>();
   if (!account) throw new Error("telnyx_agentport_account_record_unavailable");
   const operation = `agentport_${kind}`;
+  const requestJson = JSON.stringify({ managedAccountId: accountId, agentportAccountId: account.agentport_account_id });
   const requestHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([accountId,operation,SERVICE_CAPABILITY]))))]
     .map(byte => byte.toString(16).padStart(2, "0")).join("");
   const operationId = await stableId("telnyx_ap", `${bindingId}:${kind}`);
   const at = new Date().toISOString();
   await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(operation_id,tenant_id,space_id,project_id,account_id,
-      provider,service_id,capability_version,operation_name,idempotency_key,request_sha256,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)`)
+      provider,service_id,capability_version,operation_name,idempotency_key,request_sha256,status,request_json,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)`)
     .bind(operationId,scope.tenantId,scope.spaceId,scope.projectId??null,accountId,account.provider,account.service_id,account.capability_version,
-      operation,operationId,requestHash,at,at).run();
+      operation,operationId,requestHash,requestJson,at,at).run();
   const existing = await env.PLATFORM_DB.prepare("SELECT request_sha256,provider,service_id,account_id,operation_name FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
     .bind(operationId,scope.tenantId).first<{request_sha256:string;provider:string;service_id:string;account_id:string;operation_name:string}>();
   if (!existing || existing.request_sha256 !== requestHash || existing.provider !== account.provider || existing.service_id !== account.service_id
     || existing.account_id !== accountId || existing.operation_name !== operation) throw new Error("telnyx_agentport_operation_identity_conflict");
-  await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status=?,error_code=?,lease_until=NULL,updated_at=? WHERE operation_id=? AND tenant_id=?")
-    .bind(status,errorCode,at,operationId,scope.tenantId).run();
+  const nextReconcileAt = status === "uncertain" ? new Date(Date.now() + 60_000).toISOString() : null;
+  const leaseUntil = status === "running" ? new Date(Date.now() + 120_000).toISOString() : null;
+  await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status=?,error_code=?,lease_until=?,
+      next_reconcile_at=?,request_json=?,updated_at=? WHERE operation_id=? AND tenant_id=?`)
+    .bind(status,errorCode,leaseUntil,nextReconcileAt,requestJson,at,operationId,scope.tenantId).run();
   return operationId;
 }
 
@@ -68,6 +72,11 @@ async function ownedBinding(env: AgentsEnv, scope: CommunicationScope, identity:
 export async function shareTelnyxSmsWithAgentPort(env: AgentsEnv, scope: CommunicationScope, identity: CommunicationIdentity, bindingId: string) {
   const binding = await ownedBinding(env, scope, identity, bindingId);
   if (binding.payer !== "byo") throw new Error("telnyx_agentport_customer_owned_only");
+  const pendingRevoke = await env.PLATFORM_DB.prepare(`SELECT 1 AS pending FROM managed_service_operations
+    WHERE tenant_id=? AND account_id=? AND operation_name='agentport_revoke' AND status IN ('pending','running','uncertain','held')
+      AND json_extract(request_json,'$.agentportAccountId')=? LIMIT 1`)
+    .bind(scope.tenantId,binding.managed_id,binding.agentport_account_id).first<{pending:number}>();
+  if (pendingRevoke) throw new Error("telnyx_agentport_revoke_reconciliation_required");
   await recordAgentPortOperation(env,scope,bindingId,"sync","running");
   await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET agentport_link_status='pending',updated_at=? WHERE id=? AND tenant_id=?")
     .bind(new Date().toISOString(),binding.managed_id,scope.tenantId).run();

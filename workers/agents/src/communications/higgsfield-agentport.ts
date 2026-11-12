@@ -24,15 +24,16 @@ async function digest(value: string) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function ownerAccount(env: AgentsEnv, scope: CommunicationScope, identity: CommunicationIdentity, accountId: string) {
+async function ownerAccount(env: AgentsEnv, scope: CommunicationScope, identity: CommunicationIdentity, accountId: string, allowInactive = false) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(accountId)) throw new Error("higgsfield_account_unavailable");
-  const account = await env.PLATFORM_DB.prepare(`SELECT h.id FROM assistant_higgsfield_accounts h
+  const account = await env.PLATFORM_DB.prepare(`SELECT h.id,h.status,m.lifecycle_state FROM assistant_higgsfield_accounts h
     JOIN managed_service_accounts m ON m.id=h.id AND m.tenant_id=h.tenant_id
     WHERE h.id=? AND h.tenant_id=? AND h.space_id=? AND h.project_id IS ? AND h.owner_user_id=?
-      AND h.assistant_identity_id=? AND h.status='active' AND m.lifecycle_state='active'`)
+      AND h.assistant_identity_id=?`)
     .bind(accountId, scope.tenantId, scope.spaceId, scope.projectId ?? null, scope.userId, identity.id)
-    .first<{ id: string }>();
-  if (!account) throw new Error("higgsfield_account_unavailable");
+    .first<{ id: string;status:string;lifecycle_state:string }>();
+  if (!account || (!allowInactive && (account.status !== "active" || account.lifecycle_state !== "active"))
+    || (allowInactive && ["erased","deleted"].includes(account.lifecycle_state))) throw new Error("higgsfield_account_unavailable");
   return account.id;
 }
 
@@ -75,6 +76,12 @@ export async function shareHiggsfieldWithAgentPort(env: AgentsEnv, scope: Commun
     .first<{agentport_agent_id:string|null;agentport_account_id:string|null;agentport_link_status:string|null;owner_link_id:string|null}>();
   if (stored?.agentport_link_status === "active" && stored.agentport_account_id && stored.agentport_agent_id)
     return { shared: true, accountId: stored.agentport_account_id, actions: [...ACTIONS], idempotent: true };
+  if (stored?.agentport_link_status === "revoking") throw new Error("higgsfield_agentport_revoke_reconciliation_required");
+  const pendingRevoke = await env.PLATFORM_DB.prepare(`SELECT 1 AS pending FROM managed_service_operations
+    WHERE tenant_id=? AND account_id=? AND operation_name='agentport_revoke' AND status IN ('pending','running','uncertain','held')
+      AND json_extract(request_json,'$.agentportAccountId')=? LIMIT 1`)
+    .bind(scope.tenantId,ownedId,stored?.agentport_account_id??null).first<{pending:number}>();
+  if (pendingRevoke) throw new Error("higgsfield_agentport_revoke_reconciliation_required");
   const at = new Date().toISOString();
   const serviceId = `higgsfield_v2_${(await digest(scope.tenantId)).slice(0, 40)}`;
   const operationId = `hfa_sync_${(await digest(`${scope.tenantId}:${ownedId}:${serviceId}`)).slice(0, 40)}`;
@@ -129,18 +136,43 @@ export async function shareHiggsfieldWithAgentPort(env: AgentsEnv, scope: Commun
 
 export async function revokeHiggsfieldAgentPortShare(env: AgentsEnv, scope: CommunicationScope,
   identity: CommunicationIdentity, accountId: string) {
-  const ownedId = await ownerAccount(env, scope, identity, accountId);
-  const stored = await env.PLATFORM_DB.prepare(`SELECT agentport_agent_id,agentport_account_id,agentport_link_status FROM managed_service_accounts
+  const ownedId = await ownerAccount(env, scope, identity, accountId, true);
+  const stored = await env.PLATFORM_DB.prepare(`SELECT agentport_agent_id,agentport_account_id,agentport_link_status,provider,service_id,capability_version FROM managed_service_accounts
     WHERE id=? AND tenant_id=? AND space_id=?`).bind(ownedId,scope.tenantId,scope.spaceId)
-    .first<{agentport_agent_id:string|null;agentport_account_id:string|null;agentport_link_status:string|null}>();
+    .first<{agentport_agent_id:string|null;agentport_account_id:string|null;agentport_link_status:string|null;provider:string;service_id:string;capability_version:number|null}>();
   if (!stored) throw new Error("higgsfield_account_unavailable");
   if (!stored.agentport_account_id) {
     if (stored.agentport_link_status === null || stored.agentport_link_status === "revoked") return { revoked:true,alreadyUnlinked:true };
     throw new Error("higgsfield_agentport_link_reconciliation_required");
   }
   const at=new Date().toISOString();
-  await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET agentport_link_status='revoking',updated_at=? WHERE id=? AND tenant_id=?")
-    .bind(at,ownedId,scope.tenantId).run();
+  const pending=await env.PLATFORM_DB.prepare(`SELECT operation_id,status,lease_until FROM managed_service_operations
+    WHERE tenant_id=? AND account_id=? AND operation_name='agentport_revoke' AND status IN ('pending','running','uncertain','held')
+      AND json_extract(request_json,'$.agentportAccountId')=?
+    ORDER BY created_at DESC LIMIT 1`).bind(scope.tenantId,ownedId,stored.agentport_account_id)
+    .first<{operation_id:string;status:string;lease_until:string|null}>();
+  if(pending?.status==="held")throw new Error("higgsfield_agentport_revoke_reconciliation_required");
+  if(pending?.status==="running"&&pending.lease_until&&pending.lease_until>at)return {revoked:false,pending:true,alreadyUnlinked:false};
+  const operationId=pending?.operation_id??`hfa_revoke_${(await digest(`${scope.tenantId}:${ownedId}:${stored.agentport_account_id}:${crypto.randomUUID()}`)).slice(0,40)}`;
+  const requestJson=JSON.stringify({managedAccountId:ownedId,agentportAccountId:stored.agentport_account_id});
+  const requestHash=await digest(requestJson);
+  await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
+      operation_id,tenant_id,space_id,project_id,account_id,provider,service_id,capability_version,operation_name,idempotency_key,
+      request_sha256,status,request_json,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)`)
+    .bind(operationId,scope.tenantId,scope.spaceId,scope.projectId??null,ownedId,stored.provider,stored.service_id,stored.capability_version,
+      "agentport_revoke",operationId,requestHash,requestJson,at,at).run();
+  const operation=await env.PLATFORM_DB.prepare(`SELECT request_sha256,status FROM managed_service_operations
+    WHERE operation_id=? AND tenant_id=?`).bind(operationId,scope.tenantId).first<{request_sha256:string;status:string}>();
+  if(!operation||operation.request_sha256!==requestHash)throw new Error("higgsfield_agentport_revoke_operation_conflict");
+  const link=await env.PLATFORM_DB.prepare(`UPDATE managed_service_accounts SET agentport_link_status='revoking',updated_at=?
+    WHERE id=? AND tenant_id=? AND agentport_account_id=? AND COALESCE(agentport_link_status,'active') IN ('active','unknown','revoking')`)
+    .bind(at,ownedId,scope.tenantId,stored.agentport_account_id).run();
+  if(!link.meta.changes)throw new Error("higgsfield_agentport_revoke_target_changed");
+  const claimed=await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='running',lease_until=?,next_reconcile_at=NULL,
+      last_reconciled_at=?,error_code=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status IN ('pending','uncertain','running')`)
+    .bind(new Date(Date.now()+120_000).toISOString(),at,at,operationId,scope.tenantId).run();
+  if(!claimed.meta.changes)return {revoked:false,pending:true,alreadyUnlinked:false};
   try {
     const { result }=await agentPort(env,scope.tenantId,`/accounts/${encodeURIComponent(stored.agentport_account_id)}/revoke`,"POST",{});
     if(result.revoked!==true)throw new Error("higgsfield_agentport_revoke_unconfirmed");
@@ -148,10 +180,19 @@ export async function revokeHiggsfieldAgentPortShare(env: AgentsEnv, scope: Comm
       WHERE id=? AND tenant_id=? AND agentport_account_id=? AND agentport_link_status='revoking'`)
       .bind(new Date().toISOString(),ownedId,scope.tenantId,stored.agentport_account_id).run();
     if(saved.meta.changes!==1)throw new Error("higgsfield_agentport_revoke_persistence_failed");
+    await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='complete',lease_until=NULL,provider_operation_ref=?,
+        error_code=NULL,next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
+      .bind(stored.agentport_account_id,new Date().toISOString(),operationId,scope.tenantId).run();
     return {revoked:true,alreadyUnlinked:false};
   } catch(error) {
-    await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET agentport_link_status='unknown',updated_at=? WHERE id=? AND tenant_id=?")
-      .bind(new Date().toISOString(),ownedId,scope.tenantId).run().catch(()=>undefined);
+    const failedAt=new Date();
+    const message=error instanceof Error?error.message:"higgsfield_agentport_revoke_uncertain";
+    const code=/^[a-z][a-z0-9_:-]{1,120}$/.test(message)?message:"higgsfield_agentport_revoke_uncertain";
+    await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET agentport_link_status='unknown',updated_at=? WHERE id=? AND tenant_id=? AND agentport_account_id=?")
+      .bind(failedAt.toISOString(),ownedId,scope.tenantId,stored.agentport_account_id).run().catch(()=>undefined);
+    await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='uncertain',lease_until=NULL,error_code=?,
+        next_reconcile_at=?,last_reconciled_at=?,updated_at=? WHERE operation_id=? AND tenant_id=?`)
+      .bind(code,new Date(failedAt.getTime()+60_000).toISOString(),failedAt.toISOString(),failedAt.toISOString(),operationId,scope.tenantId).run().catch(()=>undefined);
     throw error;
   }
 }

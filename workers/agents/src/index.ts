@@ -9846,6 +9846,12 @@ export default {
       ])).then(result=>{
         if(result.deferred||result.failed)console.warn("Managed service operation reconciliation attention",result);
       }).catch(()=>{console.warn("AgentMail managed operation reconciliation postponed");}));
+      _ctx.waitUntil(import("./communications/agentport-share-reconciliation.js")
+        .then(module=>module.sweepManagedAgentPortShareRevocations(env))
+        .then(result=>{
+          if(result.reconciled)console.log("AgentPort share revocations reconciled",{count:result.reconciled});
+          if(result.deferred||result.failed)console.warn("AgentPort share revocation reconciliation attention",result);
+        }).catch(()=>{console.warn("AgentPort share revocation reconciliation postponed");}));
       _ctx.waitUntil(Promise.all([
         (await import("./communications/phones.js")).sweepTelnyxNumberOrders(env),
         (await import("./communications/phones.js")).sweepTelnyxNumberReleases(env),

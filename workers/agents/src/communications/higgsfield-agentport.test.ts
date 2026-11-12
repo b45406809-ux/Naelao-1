@@ -6,11 +6,13 @@ import type { AgentsEnv } from "../index.js";
 import { ensureIdentity } from "./core.js";
 import { connectHiggsfieldAccount } from "./higgsfield.js";
 import { authorizeHiggsfieldAgentOperation, revokeHiggsfieldAgentPortShare, shareHiggsfieldWithAgentPort } from "./higgsfield-agentport.js";
+import { sweepManagedAgentPortShareRevocations } from "./agentport-share-reconciliation.js";
 import { registerCommunicationRoutes } from "./routes.js";
 
 function port(env: ReturnType<typeof fixture>["env"]) {
   const calls: Array<{ path:string; method:string; body:Record<string,unknown> }> = [];
   let allow=true;
+  let failRevoke=false;
   const fetch=vi.fn(async (request:Request) => {
     const path=new URL(request.url).pathname.replace("/internal/agentport","");
     const method=request.method;
@@ -22,11 +24,11 @@ function port(env: ReturnType<typeof fixture>["env"]) {
     if(path==="/principals")return Response.json({principal:{id:body.id,external_id:body.externalId,principal_type:"individual"}},{status:201});
     if(path==="/accounts")return Response.json({account:{id:"higgs-account",status:"pending"}},{status:201});
     if(path.endsWith("/actions/authorize"))return Response.json({decision:allow?"allow":"deny"});
-    if(path.endsWith("/revoke"))return Response.json({revoked:true});
+    if(path.endsWith("/revoke"))return failRevoke?Response.json({error_code:"temporary_failure"},{status:503}):Response.json({revoked:true});
     return Response.json({active:true,grant:{id:"grant-1"}});
   });
   env.AGENTPORT_WORKER={fetch} as unknown as Fetcher;
-  return {calls,fetch,setAllow:(value:boolean)=>{allow=value;}};
+  return {calls,fetch,setAllow:(value:boolean)=>{allow=value;},setFailRevoke:(value:boolean)=>{failRevoke=value;}};
 }
 
 describe("Higgsfield AgentPort owner share",()=>{
@@ -71,6 +73,31 @@ describe("Higgsfield AgentPort owner share",()=>{
     agentPort.setAllow(false);
     await expect(authorizeHiggsfieldAgentOperation(f.env,scope,connected.id,actualAgentId,"estimate","request-hash"))
       .rejects.toThrow("higgsfield_agentport_action_denied");
+  });
+
+  it("journals Higgsfield revocation before egress and retries the exact AgentPort account",async()=>{
+    const f=fixture();
+    (f.env as unknown as {HIGGSFIELD_BYO_ENABLED:string}).HIGGSFIELD_BYO_ENABLED="true";
+    const identity=await ensureIdentity(f.env,scope);
+    const connected=await connectHiggsfieldAccount(f.env,scope,identity,{apiKey:"key-id:secret-value-0123456789"});
+    const agentPort=port(f.env);
+    await shareHiggsfieldWithAgentPort(f.env,scope,identity,connected.id);
+    agentPort.setFailRevoke(true);
+    await expect(revokeHiggsfieldAgentPortShare(f.env,scope,identity,connected.id)).rejects.toThrow("agentport_temporary_failure");
+    const journal=f.db.db.prepare(`SELECT status,next_reconcile_at,request_json FROM managed_service_operations
+      WHERE operation_name='agentport_revoke' AND account_id=?`).get<{status:string;next_reconcile_at:string|null;request_json:string}>(connected.id);
+    expect(journal).toMatchObject({status:"uncertain",next_reconcile_at:expect.any(String)});
+    expect(journal?.request_json).toContain("higgs-account");
+    expect(agentPort.calls.filter(call=>call.path.endsWith("/revoke")).map(call=>call.path)).toEqual(["/accounts/higgs-account/revoke"]);
+
+    f.db.db.prepare("UPDATE managed_service_operations SET next_reconcile_at='2000-01-01T00:00:00.000Z' WHERE operation_name='agentport_revoke'").run();
+    agentPort.setFailRevoke(false);
+    await expect(sweepManagedAgentPortShareRevocations(f.env,new Date("2026-11-12T12:00:00Z"),5))
+      .resolves.toMatchObject({checked:1,reconciled:1,deferred:0,failed:0});
+    expect(f.db.db.prepare("SELECT agentport_link_status FROM managed_service_accounts WHERE id=?")
+      .get(connected.id)).toEqual({agentport_link_status:"revoked"});
+    expect(f.db.db.prepare("SELECT status,next_reconcile_at FROM managed_service_operations WHERE operation_name='agentport_revoke'")
+      .get()).toEqual({status:"complete",next_reconcile_at:null});
   });
 
   it("routes owner share and agent generation through the authenticated actions before provider egress",async()=>{
