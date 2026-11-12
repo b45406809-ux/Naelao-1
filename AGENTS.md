@@ -2,11 +2,13 @@
 
 ## Active mission and checkpoint
 
-The active mission supersedes the historical transcript-batch task. Implement the entire
-`docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan
-code gaps in section 18 and the execution workflow in section 19. Continue autonomously through
-all milestones once the user authorizes implementation. The S0 handoff was documentation-only;
-current local implementation status is recorded in the progress source below.
+The active mission supersedes the historical transcript-batch task. Finish
+`docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code
+gaps U01–U12, then continue through `docs/research/platform-completion-and-guided-templates-plan.md`.
+The platform plan was added by remote commit `9e1281ce` and fast-forwarded onto the active
+implementation branch at the user's direction. Preserve completed managed-service work and reuse
+its ledgers, operation journals, UI and provider adapters; reconcile each new finding against current
+source before changing it. Continue autonomously through both missions.
 
 Progress source of truth:
 `docs/research/managed-services-and-sidecar-implementation-progress.md`.
@@ -15,21 +17,22 @@ Bootstrap and next-session prompt:
 Local verification commands and future gated acceptance matrix:
 `docs/operations/managed-services-acceptance.md`.
 
-Handoff was prepared against `origin/Mcbt5s-Backup-2` at `700c3fe0`; the authorized implementation
-run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on branch
-`autonomous-managed-services-20261111` in `/workspace/Naelao-1-managed-services`; preserve this
-original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
-The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
-remains separate and must not be switched or merged with the recovery branch. Code checkpoints
-`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e`, `daca80bd`, `6046eebc` and `f6abe44b`, plus docs checkpoints `8f9c0c15`,
-`7e401225`, `1c32ef26`, `ece794ec` and `69fdb152`, are pushed there. AgentMail provision/renewal and Cloudflare model replay
+Implementation is on branch `autonomous-managed-services-20261111` in
+`/workspace/Naelao-1-managed-services`; preserve this original worktree and do not reset, clean,
+replace or switch branches. The user selected `origin/Mcbt5s-Backup-2` as the recovery branch and
+authorized coherent checkpoint commits/pushes there. Fetch before each push. If the remote is ahead
+and its tip is an ancestor of the implementation branch, fast-forward safely before continuing. If
+the active branch is an ancestor of a newly requested remote plan commit, fast-forward the active
+branch to integrate it. If histories diverge, preserve both histories and resolve with a non-force
+integration; never reset, rebase away work or force-push. Code checkpoints
+`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e`, `daca80bd`, `6046eebc`, `f6abe44b` and `80cf3893`, plus docs checkpoints `8f9c0c15`,
+`7e401225`, `1c32ef26`, `ece794ec` and `69fdb152`, are pushed there. The recovery branch also contains requested plan commit `9e1281ce`. AgentMail provision/renewal and Cloudflare model replay
 preserve consumed quote terms in their covered recovery paths. Managed Telnyx now persists the
 owner-confirmed line rate version and exact rental/SMS/call prices, binds reservations and cost
 receipts to those terms, and retries release of unused call holds. Telnyx/Higgsfield AgentPort share
 revocations now persist exact account references and retry on the scheduled path; exact checks and
 next task are recorded in the progress source.
-Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
-Code checkpoints `6046eebc` and `f6abe44b`, plus docs checkpoints `ece794ec` and `69fdb152`, are pushed to `origin/Mcbt5s-Backup-2`. S2/MS01d includes migration 0224 and a scheduled, leased Agent37 AgentPort revocation reconciler with exact-target retry. S3/U02 now reads settled Tier 5 credits from Billing's tenant/Space/project-scoped ledger into the Project Computers panel; operator-imported idle receipts are reported separately and have an explicit unknown state when none exist. Sandboxes passes 72/72; Sandboxes and Shell typechecks and `git diff --check` pass. Exact next task: continue the S2/MS01/MS02 caller audit across provider synchronization, unlink, grant propagation and reachable payer-selection flows; implement any independent code gap and record only precise remaining product/payment gates, then continue S3–S9/U01–U12. Keep all rollout disabled; managed Telnyx remains restricted to already assigned inventory pending approved entitlement, rates, recurring payer mandate and live acceptance.
+Checkpoint (2026-11-12): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.** Platform plan `9e1281ce` is integrated. Code checkpoint `80cf3893` adds a TOML environment-isolation guard to both deployment preflights; three tests pass. It reports 136 shared mutable staging/production bindings in current config, so CI blocks deployment until resources are separated. The S2 audit confirms reachable owner-authorized discovery/sync/revoke/grant flows for currently supported AgentMail, Telnyx BYO SMS, Agent37, Higgsfield and UserPort providers; independent user/agent funding remains a product/payment gate. S3/U02 reports settled Tier 5 credits from Billing's tenant/Space/project ledger and separately labels operator-imported idle receipts. Exact next task: continue S3/U05–U07 and U01–U12 caller audit, implement any independent reachable gap, and record runtime contract gates precisely; then finish S4–S9 before advancing the platform plan beyond its protective release guard. Keep every rollout disabled and do not deploy or purchase services.
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
 organization quota, owner-authorized AgentMail link repair/revocation and capability-specific provider action receipts,
