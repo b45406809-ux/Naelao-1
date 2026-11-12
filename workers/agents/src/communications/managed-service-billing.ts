@@ -59,6 +59,7 @@ export function reserveManagedServiceCredits(
     || (request.modelId!==undefined&&!/^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(request.modelId))
     || (request.quoteId!==undefined&&!/^msq_[A-Fa-f0-9]{32}$/.test(request.quoteId))
     || (request.modelId!==undefined&&request.quoteId===undefined)
+    || (request.provider==="agentmail"&&request.serviceId==="agentmail"&&(request.operationName==="provision"||request.operationName==="renew")&&request.quoteId===undefined)
     || (request.payerMandateId!==undefined&&!/^[A-Za-z0-9._:-]{1,200}$/.test(request.payerMandateId))
     || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(request.region)
     || (request.agentPortAgentId!==undefined&&!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.agentPortAgentId))

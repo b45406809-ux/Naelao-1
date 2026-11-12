@@ -2,7 +2,7 @@ import { afterEach,describe,expect,it,vi } from "vitest";
 import { Hono } from "hono";
 import { mintInternalToken } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
-import { connectUserAgentMail,callAgentMailTool,provisionManagedAgentMail,getAssistantAgentMailStatus,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant } from "./agentmail.js";
+import { connectUserAgentMail,callAgentMailTool,createManagedAgentMailQuote,provisionManagedAgentMail,getAssistantAgentMailStatus,receiveAgentPortNotification,sweepManagedAgentMailRentals,sweepManagedAgentMailReconciliations,stopManagedAgentMailRenewal,revokeAgentPortOwnerLink,setAgentPortEventAssistant } from "./agentmail.js";
 import { ensureIdentity,ensureAgentPortAssistantIdentity } from "./core.js";
 import { registerCommunicationRoutes } from "./routes.js";
 import { fixture,scope } from "../../../../tests/fixtures/assistant-communications.js";
@@ -10,6 +10,20 @@ import { fixture,scope } from "../../../../tests/fixtures/assistant-communicatio
 async function verifyTestAgentMailCapability(f:ReturnType<typeof fixture>){
   await f.db.prepare(`UPDATE managed_service_capability_versions SET status='verified',verified_by='test-operator',verified_at=?,valid_until='2099-01-01T00:00:00.000Z',regions_json='["us"]'
     WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).bind(new Date().toISOString()).run();
+  for(const operation of ["provision","renew"])await f.db.prepare(`INSERT INTO managed_service_plan_entitlements(
+    plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,credits_per_operation,
+    max_operations_per_period,status,verified_by,verified_at,valid_until,created_at,updated_at)
+    VALUES('free','agentmail','agentmail',1,?,'us','agentmail-rental-v2',300,300,20,'active','test-operator',?,'2099-01-01T00:00:00.000Z',datetime('now'),datetime('now'))
+    ON CONFLICT(plan_tier,provider,service_id,operation_name,region) DO UPDATE SET price_version=excluded.price_version,
+      max_credits_per_operation=excluded.max_credits_per_operation,credits_per_operation=excluded.credits_per_operation,
+      max_operations_per_period=excluded.max_operations_per_period,status='active',verified_by=excluded.verified_by,
+      verified_at=excluded.verified_at,valid_until=excluded.valid_until,updated_at=excluded.updated_at`)
+    .bind(operation,new Date().toISOString()).run();
+}
+
+async function quoteAgentMailProvision(f:ReturnType<typeof fixture>,identity:Awaited<ReturnType<typeof ensureIdentity>>,displayName?:string){
+  const quote=await createManagedAgentMailQuote(f.env,scope,identity,{...(displayName?{displayName}:{})});
+  return quote.quoteId;
 }
 
 describe("AgentMail provider account boundary",()=>{
@@ -381,8 +395,9 @@ describe("AgentMail provider account boundary",()=>{
       if(url.pathname.endsWith("/webhooks"))return Response.json({webhook_id:"managed-hook",secret:"whsec_dGVzdA=="});
       return Response.json({error:"not_found"},{status:404});
     });vi.stubGlobal("fetch",providerFetch);
-    const first=await provisionManagedAgentMail(f.env,scope,identity);const second=await provisionManagedAgentMail(f.env,scope,identity);
-    expect(first).toMatchObject({address:"assistant@mail.example.test",status:"active",priceCredits:300});
+    const quoteId=await quoteAgentMailProvision(f,identity);
+    const first=await provisionManagedAgentMail(f.env,scope,identity,undefined,quoteId);const second=await provisionManagedAgentMail(f.env,scope,identity);
+    expect(first).toMatchObject({address:"assistant@mail.example.test",status:"active",priceCredits:300,priceVersion:"agentmail-rental-v2",renewalCredits:300,autoRenew:true});
     expect(second).toMatchObject({connectionId:first.connectionId,status:"active"});
     expect(billing).toHaveBeenCalledTimes(3);
     expect(await f.db.prepare("SELECT COUNT(*) AS n FROM assistant_agentmail_accounts WHERE mode='naelao_managed'").first<{n:number}>()).toMatchObject({n:1});
@@ -393,9 +408,12 @@ describe("AgentMail provider account boundary",()=>{
       .first<Record<string,string>>()).toMatchObject({owner_type:"organization",owner_id:"tenant",linked_by_user_id:"user",consent_source:"agentmail_managed_provision",status:"active"});
     expect(await f.db.prepare("SELECT payer_type,payer_id,authorized_by_user_id,operation_scopes_json,max_credits_per_operation,auto_renew,status,agentport_agent_id,max_credits_per_period,period_days FROM managed_service_payer_mandates WHERE mandate_key=?")
       .bind(`agentmail:${first.agentId}`).first<Record<string,unknown>>()).toMatchObject({payer_type:"organization",payer_id:"tenant",authorized_by_user_id:"user",operation_scopes_json:'["agentmail:agentmail:provision","agentmail:agentmail:renew"]',max_credits_per_operation:300,auto_renew:1,status:"active",agentport_agent_id:first.agentId,max_credits_per_period:600,period_days:30});
-    expect(billingRequests.find((item)=>item.path.endsWith("/reserve"))?.body).toMatchObject({payer_type:"organization",payer_id:"tenant",agentport_agent_id:first.agentId,credits:300});
-    expect(await f.db.prepare("SELECT provider,operation_name,status,reservation_id,reserved_credits,price_version,provider_operation_ref FROM managed_service_operations WHERE operation_id LIKE 'naelao_%'")
-      .first<Record<string,unknown>>()).toMatchObject({provider:"agentmail",operation_name:"provision",status:"complete",reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v1",provider_operation_ref:"managed-inbox"});
+    expect(billingRequests.find((item)=>item.path.endsWith("/reserve"))?.body).toMatchObject({payer_type:"organization",payer_id:"tenant",agentport_agent_id:first.agentId,credits:300,quote_id:quoteId,requester_user_id:"user",price_version:"agentmail-rental-v2"});
+    expect(await f.db.prepare("SELECT status,operation_name,credits,price_version,request_sha256,renewal_credits,renewal_price_version,renewal_max_credits_per_operation FROM managed_service_operation_quotes WHERE quote_id=?")
+      .bind(quoteId).first<Record<string,unknown>>()).toMatchObject({status:"consumed",operation_name:"provision",credits:300,price_version:"agentmail-rental-v2",
+        request_sha256:expect.stringMatching(/^[a-f0-9]{64}$/),renewal_credits:300,renewal_price_version:"agentmail-rental-v2",renewal_max_credits_per_operation:300});
+    expect(await f.db.prepare("SELECT provider,operation_name,status,reservation_id,reserved_credits,price_version,quote_id,provider_operation_ref FROM managed_service_operations WHERE operation_id LIKE 'naelao_%'")
+      .first<Record<string,unknown>>()).toMatchObject({provider:"agentmail",operation_name:"provision",status:"complete",reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v2",quote_id:quoteId,provider_operation_ref:"managed-inbox"});
     const stopped=await stopManagedAgentMailRenewal(f.env,scope,first.connectionId);
     expect(stopped).toMatchObject({connectionId:first.connectionId,renewalStopped:true,revoked:true});
     const stoppedAccount=await f.db.prepare("SELECT retire_after,next_billing_at,delete_at_period_end FROM assistant_agentmail_accounts WHERE id=?").bind(first.connectionId)
@@ -404,6 +422,24 @@ describe("AgentMail provider account boundary",()=>{
     expect(stoppedAccount?.delete_at_period_end).toBe(1);
     expect(await f.db.prepare("SELECT action,actor_user_id FROM managed_service_payer_mandate_audit WHERE action='revoked'").first<Record<string,string>>())
       .toMatchObject({action:"revoked",actor_user_id:"user"});
+  });
+  it("exposes owner quote and separate confirmation actions for managed AgentMail",async()=>{
+    const f=fixture();await ensureIdentity(f.env,scope);await verifyTestAgentMailCapability(f);
+    (f.env as unknown as {AGENTMAIL_DEFAULT_DOMAIN:string;AGENTMAIL_REGION:string}).AGENTMAIL_DEFAULT_DOMAIN="mail.example.test";
+    (f.env as unknown as {AGENTMAIL_REGION:string}).AGENTMAIL_REGION="us";
+    const app=new Hono<{Bindings:AgentsEnv}>();registerCommunicationRoutes(app);
+    const headers={"content-type":"application/json","x-naelao-tenant-id":scope.tenantId,"x-naelao-user-id":scope.userId,
+      "x-naelao-role":scope.role,"x-naelao-internal-token":await mintInternalToken("secret",scope.tenantId)};
+    const quoted=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({action:"agentmail-quote",display_name:"Care Assistant"})},f.env);
+    expect(quoted.status).toBe(200);
+    const quote=await quoted.json() as {quoteId:string;credits:number;renewalCredits:number;maxCreditsPerOperation:number;maxCreditsPerPeriod:number};
+    expect(quote).toMatchObject({credits:300,renewalCredits:300,maxCreditsPerOperation:300,maxCreditsPerPeriod:600});
+    const unconfirmed=await app.request("/spaces/space/assistant-communications",{method:"POST",headers,
+      body:JSON.stringify({action:"agentmail-provision",display_name:"Care Assistant"})},f.env);
+    expect(unconfirmed.status).toBe(400);
+    expect(await unconfirmed.json()).toEqual({error_code:"managed_service_quote_required"});
+    expect(await f.db.prepare("SELECT COUNT(*) AS count FROM managed_service_operations WHERE provider='agentmail'").first<{count:number}>()).toEqual({count:0});
   });
   it("reconciles an uncertain create from provider state without dispatching a second inbox creation",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billing=vi.fn(async()=>Response.json({reserved:true,settled:true}));
@@ -424,7 +460,8 @@ describe("AgentMail provider account boundary",()=>{
       if(url.pathname.endsWith("/webhooks"))return Response.json({webhook_id:"managed-hook",secret:"whsec_dGVzdA=="});
       return Response.json({error:"not_found"},{status:404});
     });vi.stubGlobal("fetch",providerFetch);
-    await expect(provisionManagedAgentMail(f.env,scope,identity)).rejects.toThrow("agentmail_provider_500");
+    const quoteId=await quoteAgentMailProvision(f,identity);
+    await expect(provisionManagedAgentMail(f.env,scope,identity,undefined,quoteId)).rejects.toThrow("agentmail_provider_500");
     expect(await f.db.prepare("SELECT status,next_reconcile_at,request_json FROM managed_service_operations WHERE operation_name='provision'").first<{status:string;next_reconcile_at:string;request_json:string}>()).toMatchObject({status:"uncertain",next_reconcile_at:expect.any(String)});
     expect((await f.db.prepare("SELECT request_json FROM managed_service_operations WHERE operation_name='provision'").first<{request_json:string}>())?.request_json).not.toContain("managed-provider-key");
     expect(await getAssistantAgentMailStatus(f.env,scope)).toMatchObject({lastManagedOperation:{status:"uncertain",reconciliationRequired:true}});
@@ -455,6 +492,7 @@ describe("AgentMail provider account boundary",()=>{
   it("renews managed mailboxes through the shared reservation and usage ledger path",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billingActions:string[]=[];
     const billing=vi.fn(async(request:Request)=>{billingActions.push(new URL(request.url).pathname.split("/").at(-1)??"");return Response.json({reserved:true,settled:true});});
+    await verifyTestAgentMailCapability(f);
     (f.env as unknown as {BILLING_WORKER:{fetch:typeof billing}}).BILLING_WORKER={fetch:billing};
     const activated="2026-01-31T00:00:00.000Z",due="2026-02-28T00:00:00.000Z";
     await f.db.prepare(`INSERT INTO assistant_agentmail_accounts(
@@ -471,8 +509,11 @@ describe("AgentMail provider account boundary",()=>{
     const result=await sweepManagedAgentMailRentals(f.env,new Date("2026-03-01T00:00:00.000Z"));
     expect(result).toMatchObject({checked:1,billed:1,held:0});
     expect(billingActions).toEqual(["reserve","settle"]);
-    expect(await f.db.prepare("SELECT operation_name,status,reservation_id,reserved_credits,price_version,provider_operation_ref FROM managed_service_operations WHERE operation_name='renew'")
-      .first<Record<string,unknown>>()).toMatchObject({operation_name:"renew",status:"complete",reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v1",provider_operation_ref:"inbox-renew"});
+    expect(await f.db.prepare("SELECT operation_name,status,reservation_id,reserved_credits,price_version,quote_id,provider_operation_ref FROM managed_service_operations WHERE operation_name='renew'")
+      .first<Record<string,unknown>>()).toMatchObject({operation_name:"renew",status:"complete",reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v2",quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/),provider_operation_ref:"inbox-renew"});
+    expect(billing.mock.calls[0]?.[0]&&await (billing.mock.calls[0]![0] as Request).clone().json()).toMatchObject({quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/),requester_user_id:"user"});
+    expect(await f.db.prepare("SELECT status,request_sha256,operation_id FROM managed_service_operation_quotes WHERE operation_name='renew'")
+      .first<Record<string,unknown>>()).toMatchObject({status:"consumed",request_sha256:expect.stringMatching(/^[a-f0-9]{64}$/),operation_id:expect.stringMatching(/^agentmail_renew_/) });
     expect(await f.db.prepare("SELECT status,next_billing_at FROM assistant_agentmail_accounts WHERE id='amc-renew'").first<Record<string,string>>())
       .toMatchObject({status:"active",next_billing_at:"2026-03-31T00:00:00.000Z"});
   });

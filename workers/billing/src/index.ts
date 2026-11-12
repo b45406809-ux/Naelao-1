@@ -840,7 +840,7 @@ app.post("/internal/managed-services/entitlements/verify",async c=>{
   if(!operatorKeyMatches(c.env.MANAGED_SERVICES_OPERATOR_SECRET,c.req.header("x-managed-services-operator-key")??""))return c.json({error_code:"forbidden"},403);
   const body=await readBoundedRequestText(c.req.raw,64*1024).then(value=>JSON.parse(value) as {
     plan_tier?:string;provider?:string;service_id?:string;operation_name?:string;region?:string;price_version?:string;
-    max_credits_per_operation?:number;max_operations_per_period?:number|null;valid_until?:string;reason?:string;
+    credits_per_operation?:number;max_credits_per_operation?:number;max_operations_per_period?:number|null;valid_until?:string;reason?:string;
   }).catch(()=>null);
   const actorId=c.req.header("x-managed-services-operator-id")??"";
   const allowedTiers=["free","growth","business","enterprise"];
@@ -848,6 +848,8 @@ app.post("/internal/managed-services/entitlements/verify",async c=>{
   if(!body||!allowedTiers.includes(body.plan_tier??"")||! /^[a-z][a-z0-9_-]{1,63}$/.test(body.provider??"")
     ||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.service_id??"")||! /^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name??"")
     ||! /^[a-z0-9][a-z0-9-]{0,31}$/.test(body.region??"")||! /^[A-Za-z0-9._:-]{1,100}$/.test(body.price_version??"")
+    ||(body.credits_per_operation!==undefined&&(!Number.isSafeInteger(body.credits_per_operation)||body.credits_per_operation<1||body.credits_per_operation>body.max_credits_per_operation!))
+    ||(body.provider==="agentmail"&&body.service_id==="agentmail"&&["provision","renew"].includes(body.operation_name??"")&&body.credits_per_operation===undefined)
     ||!Number.isSafeInteger(body.max_credits_per_operation)||body.max_credits_per_operation!<1||body.max_credits_per_operation!>10_000_000
     ||(body.max_operations_per_period!==undefined&&body.max_operations_per_period!==null&&(!Number.isSafeInteger(body.max_operations_per_period)||body.max_operations_per_period<1||body.max_operations_per_period>100_000))
     ||!Number.isFinite(validUntil)||validUntil<=now.getTime()||validUntil>now.getTime()+180*86_400_000
@@ -868,20 +870,22 @@ app.post("/internal/managed-services/entitlements/verify",async c=>{
   const result=await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_plan_entitlements(
       plan_tier,provider,service_id,capability_version,operation_name,region,price_version,max_credits_per_operation,max_operations_per_period,
-      status,verified_by,verified_at,valid_until,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?, ?,?)
+      credits_per_operation,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,?,?, ?,?)
       ON CONFLICT(plan_tier,provider,service_id,operation_name,region) DO UPDATE SET capability_version=excluded.capability_version,
         price_version=excluded.price_version,max_credits_per_operation=excluded.max_credits_per_operation,max_operations_per_period=excluded.max_operations_per_period,
+        credits_per_operation=excluded.credits_per_operation,
         status='active',verified_by=excluded.verified_by,verified_at=excluded.verified_at,valid_until=excluded.valid_until,updated_at=excluded.updated_at`)
       .bind(body.plan_tier,body.provider,body.service_id,capability.version,body.operation_name,body.region,body.price_version,body.max_credits_per_operation,
-        body.max_operations_per_period??null,actorId,at,new Date(validUntil).toISOString(),at,at),
+        body.max_operations_per_period??null,body.credits_per_operation??null,actorId,at,new Date(validUntil).toISOString(),at,at),
     c.env.PLATFORM_DB.prepare(`INSERT INTO managed_service_entitlement_audit(id,plan_tier,provider,service_id,operation_name,region,action,actor_id,reason,created_at)
       SELECT ?,?,?,?,?,?,'verified',?,?,? WHERE EXISTS(SELECT 1 FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=? AND status='active' AND verified_at=?)`)
       .bind(auditId,body.plan_tier,body.provider,body.service_id,body.operation_name,body.region,actorId,body.reason.trim(),at,
         body.plan_tier,body.provider,body.service_id,body.operation_name,body.region,at),
   ]);
   if(!result[0]?.meta.changes||!result[1]?.meta.changes)return c.json({error_code:"managed_service_entitlement_verification_conflict"},409);
-  return c.json({verified:true,planTier:body.plan_tier,provider:body.provider,serviceId:body.service_id,operation:body.operation_name,region:body.region,capabilityVersion:capability.version,validUntil:new Date(validUntil).toISOString()});
+  return c.json({verified:true,planTier:body.plan_tier,provider:body.provider,serviceId:body.service_id,operation:body.operation_name,region:body.region,
+    ...(body.credits_per_operation!==undefined?{creditsPerOperation:body.credits_per_operation}:{}),capabilityVersion:capability.version,validUntil:new Date(validUntil).toISOString()});
 });
 
 app.post("/internal/managed-services/entitlements/disable",async c=>{
@@ -1009,6 +1013,9 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
   const reservationId = body?.reservation_id ?? "", operationId = body?.operation_id ?? "";
   const credits = body?.credits ?? 0, expiresIn = body?.expires_in_seconds ?? 172800;
   const modelOperationRequiresQuote = body?.provider === "cloudflare" && body?.service_id === "workers-ai";
+  const agentMailOperationRequiresQuote = body?.provider === "agentmail" && body?.service_id === "agentmail"
+    && (body?.operation_name === "provision" || body?.operation_name === "renew");
+  const operationRequiresQuote = modelOperationRequiresQuote || agentMailOperationRequiresQuote;
   if (!orgId || !/^[A-Za-z0-9._:-]{1,200}$/.test(reservationId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(operationId)
     || typeof body?.space_id !== "string" || body.space_id.length < 1 || body.space_id.length > 160
     || (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || body.project_id.length > 128))
@@ -1016,8 +1023,8 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
     || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(body.operation_name ?? "")
     || (body.model_id !== undefined && !/^@?[A-Za-z0-9][A-Za-z0-9@._:/-]{0,198}$/.test(body.model_id))
     || (body.quote_id !== undefined && !/^msq_[A-Fa-f0-9]{32}$/.test(body.quote_id))
-    || (modelOperationRequiresQuote && body.quote_id === undefined)
-    || (modelOperationRequiresQuote && (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.requester_user_id ?? "")))
+    || (operationRequiresQuote && body.quote_id === undefined)
+    || (operationRequiresQuote && (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.requester_user_id ?? "")))
     || (body.agentport_agent_id !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.agentport_agent_id))
     || (body.payer_mandate_id !== undefined && !/^[A-Za-z0-9._:-]{1,200}$/.test(body.payer_mandate_id))
     || body.payer_type !== "organization" || body.payer_id !== orgId
@@ -1087,16 +1094,18 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
           AND status='active' AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND valid_until>? LIMIT 1`)
         .bind(planTier,body.provider,body.service_id,body.operation_name,body.model_id,body.region,new Date().toISOString())
         .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;credits_per_operation:number|null;valid_until:string}>()
-    : await c.env.PLATFORM_DB.prepare(`SELECT capability_version,price_version,max_credits_per_operation,max_operations_per_period,valid_until
+    : await c.env.PLATFORM_DB.prepare(`SELECT capability_version,price_version,max_credits_per_operation,max_operations_per_period,credits_per_operation,valid_until
         FROM managed_service_plan_entitlements WHERE plan_tier=? AND provider=? AND service_id=? AND operation_name=? AND region=?
           AND status='active' AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND valid_until>? LIMIT 1`)
         .bind(planTier,body.provider,body.service_id,body.operation_name,body.region,new Date().toISOString())
-        .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;valid_until:string}>();
+        .first<{capability_version:number;price_version:string;max_credits_per_operation:number;max_operations_per_period:number|null;credits_per_operation:number|null;valid_until:string}>();
   if(!entitlement)return c.json({error_code:"managed_service_not_entitled"},403);
   if(entitlement.price_version!==body.price_version)return c.json({error_code:"managed_service_price_version_conflict"},409);
   const modelCreditsPerOperation:number|null="credits_per_operation" in entitlement&&typeof entitlement.credits_per_operation==="number"?entitlement.credits_per_operation:null;
-  if(body.model_id&&(!Number.isSafeInteger(modelCreditsPerOperation)||modelCreditsPerOperation!<1))return c.json({error_code:"managed_service_model_price_unconfigured"},403);
-  if(body.model_id&&credits!==modelCreditsPerOperation)return c.json({error_code:"managed_service_model_price_conflict"},409);
+  if((body.model_id||agentMailOperationRequiresQuote)&&(!Number.isSafeInteger(modelCreditsPerOperation)||modelCreditsPerOperation!<1))
+    return c.json({error_code:agentMailOperationRequiresQuote?"managed_service_price_unconfigured":"managed_service_model_price_unconfigured"},403);
+  if((body.model_id||agentMailOperationRequiresQuote)&&credits!==modelCreditsPerOperation)
+    return c.json({error_code:agentMailOperationRequiresQuote?"managed_service_price_conflict":"managed_service_model_price_conflict"},409);
   if(credits>entitlement.max_credits_per_operation)return c.json({error_code:"managed_service_entitlement_limit_exceeded"},402);
   const capability=await c.env.PLATFORM_DB.prepare(`SELECT operations_json,regions_json,account_modes_json,status,valid_until FROM managed_service_capability_versions
     WHERE provider=? AND service_id=? AND version=?`).bind(body.provider,body.service_id,entitlement.capability_version)
@@ -1115,26 +1124,27 @@ app.post("/internal/managed-services/credits/reserve", async (c) => {
       .bind(orgId,body.provider,body.service_id,body.operation_name,body.model_id??null,body.model_id??null,body.region,operationId).first<{count:number}>();
     if((count?.count??0)>=entitlement.max_operations_per_period)return c.json({error_code:"managed_service_entitlement_period_limit"},402);
   }
-  const operation=await c.env.PLATFORM_DB.prepare(`SELECT space_id,project_id,provider,service_id,operation_name,model_id,quote_id,capability_version,region,status
+  const operation=await c.env.PLATFORM_DB.prepare(`SELECT space_id,project_id,provider,service_id,operation_name,model_id,quote_id,capability_version,region,request_sha256,status
     FROM managed_service_operations WHERE operation_id=? AND tenant_id=? LIMIT 1`)
-    .bind(operationId,orgId).first<{space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;quote_id:string|null;capability_version:number|null;region:string|null;status:string}>();
+    .bind(operationId,orgId).first<{space_id:string;project_id:string|null;provider:string;service_id:string;operation_name:string;model_id:string|null;quote_id:string|null;capability_version:number|null;region:string|null;request_sha256:string;status:string}>();
   if(!operation||operation.space_id!==body.space_id||operation.project_id!==(body.project_id??null)
     ||operation.provider!==body.provider||operation.service_id!==body.service_id||operation.operation_name!==body.operation_name
     ||operation.model_id!==(body.model_id??null)||operation.quote_id!==(body.quote_id??null)
     ||operation.region!==body.region||operation.capability_version!==entitlement.capability_version||operation.status!=="running")
     return c.json({error_code:"managed_service_operation_not_admitted"},409);
-  if (modelOperationRequiresQuote) {
+  if (operationRequiresQuote) {
     const quote = await c.env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,
-        service_id,operation_name,model_id,region,capability_version,price_version,credits,status,operation_id
+        service_id,operation_name,model_id,region,capability_version,price_version,credits,request_sha256,status,operation_id
       FROM managed_service_operation_quotes WHERE quote_id=? LIMIT 1`)
       .bind(body.quote_id).first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;
-        provider:string;service_id:string;operation_name:string;model_id:string;region:string;capability_version:number;
-        price_version:string;credits:number;status:string;operation_id:string|null}>();
+        provider:string;service_id:string;operation_name:string;model_id:string|null;region:string;capability_version:number;
+        price_version:string;credits:number;request_sha256:string|null;status:string;operation_id:string|null}>();
     if (!quote || quote.status!=="consumed" || quote.operation_id!==operationId || quote.tenant_id!==orgId
       || quote.space_id!==body.space_id || quote.project_id!==(body.project_id??null) || quote.requester_user_id!==body.requester_user_id || quote.plan_tier!==planTier
       || quote.provider!==body.provider || quote.service_id!==body.service_id || quote.operation_name!==body.operation_name
-      || quote.model_id!==body.model_id || quote.region!==body.region || quote.capability_version!==entitlement.capability_version
-      || quote.price_version!==body.price_version || quote.credits!==credits)
+      || quote.model_id!==(body.model_id??null) || quote.region!==body.region || quote.capability_version!==entitlement.capability_version
+      || quote.price_version!==body.price_version || quote.credits!==credits
+      || (agentMailOperationRequiresQuote&&(!quote.request_sha256||quote.request_sha256!==operation.request_sha256)))
       return c.json({error_code:"managed_service_operation_quote_required"},409);
   }
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);

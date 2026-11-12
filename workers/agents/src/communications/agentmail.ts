@@ -404,7 +404,60 @@ async function deferManagedOperationReconciliation(env:AgentsEnv,operationId:str
     WHERE operation_id=? AND tenant_id=? AND status IN ('running','uncertain')`)
     .bind(errorCode,attempts,at.toISOString(),new Date(at.getTime()+delayMs).toISOString(),at.toISOString(),operationId,tenantId).run();
 }
-export async function provisionManagedAgentMail(env:AgentsEnv,scope:CommunicationScope,identity:CommunicationIdentity,displayName?:string){
+type ManagedAgentMailPrice={planTier:string;capabilityVersion:number;priceVersion:string;credits:number;maxCredits:number;maxOperationsPerPeriod:number|null};
+async function resolveManagedAgentMailPrice(env:AgentsEnv,scope:CommunicationScope,operation:"provision"|"renew",region:string,now=new Date()):Promise<ManagedAgentMailPrice>{
+  const org=await env.PLATFORM_DB.prepare("SELECT plan_tier FROM orgs WHERE id=? AND status='active'").bind(scope.tenantId).first<{plan_tier:string}>();
+  if(!org)throw new Error("managed_service_tenant_unavailable");
+  const entitlement=await env.PLATFORM_DB.prepare(`SELECT e.capability_version,e.price_version,e.credits_per_operation,e.max_credits_per_operation,e.max_operations_per_period
+    FROM managed_service_plan_entitlements e JOIN managed_service_capability_versions c
+      ON c.provider=e.provider AND c.service_id=e.service_id AND c.version=e.capability_version
+    WHERE e.plan_tier=? AND e.provider='agentmail' AND e.service_id='agentmail' AND e.operation_name=? AND e.region=?
+      AND e.status='active' AND e.verified_by IS NOT NULL AND e.verified_at IS NOT NULL AND e.valid_until>?
+      AND e.credits_per_operation IS NOT NULL AND e.credits_per_operation>0 AND e.credits_per_operation<=e.max_credits_per_operation
+      AND c.status='verified' AND c.valid_until>? AND c.version=(SELECT MAX(latest.version) FROM managed_service_capability_versions latest
+        WHERE latest.provider=c.provider AND latest.service_id=c.service_id)
+      AND EXISTS(SELECT 1 FROM json_each(c.operations_json) WHERE value=e.operation_name)
+      AND EXISTS(SELECT 1 FROM json_each(c.regions_json) WHERE value=e.region)
+      AND EXISTS(SELECT 1 FROM json_each(c.account_modes_json) WHERE value='naelao_managed') LIMIT 1`)
+    .bind(org.plan_tier,operation,region,now.toISOString(),now.toISOString())
+    .first<{capability_version:number;price_version:string;credits_per_operation:number|null;max_credits_per_operation:number;max_operations_per_period:number|null}>();
+  if(!entitlement)throw new Error("managed_service_price_unconfigured");
+  return {planTier:org.plan_tier,capabilityVersion:entitlement.capability_version,priceVersion:entitlement.price_version,
+    credits:entitlement.credits_per_operation!,maxCredits:entitlement.max_credits_per_operation,maxOperationsPerPeriod:entitlement.max_operations_per_period};
+}
+async function resolveOptionalAgentMailRenewalPrice(env:AgentsEnv,scope:CommunicationScope,region:string,now=new Date()){
+  try{return await resolveManagedAgentMailPrice(env,scope,"renew",region,now);}
+  catch(error){if(error instanceof Error&&error.message==="managed_service_price_unconfigured")return null;throw error;}
+}
+export async function createManagedAgentMailQuote(env:AgentsEnv,scope:CommunicationScope,identity:CommunicationIdentity,input:{displayName?:string},now=new Date()){
+  const {agentId}=await platformIdentity(env,scope,identity);
+  const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",connectionMode:"naelao_managed",...(env.AGENTMAIL_REGION?{region:env.AGENTMAIL_REGION}:{})});
+  const region=env.AGENTMAIL_REGION;if(!region)throw new Error("managed_service_region_not_verified");providerRegion(region);
+  const display=input.displayName??"Naelao Assistant";
+  if(display.length<1||display.length>120||/[\u0000-\u001f\u007f]/.test(display))throw new Error("agentmail_display_name_invalid");
+  const price=await resolveManagedAgentMailPrice(env,scope,"provision",region,now);
+  if(price.capabilityVersion!==capability.version)throw new Error("managed_service_capability_changed");
+  const inboxClient=await stableClientId(`naelao:managed-inbox:${scope.tenantId}:${agentId}`);
+  const requestSpec={tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,agentId,domain:env.AGENTMAIL_DEFAULT_DOMAIN??"",display,capabilityVersion:capability.version,region};
+  const requestSha256=await hashString(JSON.stringify(requestSpec));
+  const quoteId=`msq_${crypto.randomUUID().replaceAll("-","")}`;
+  const expiresAt=new Date(now.getTime()+180_000).toISOString();
+  const renewal=await resolveOptionalAgentMailRenewalPrice(env,scope,region,now);
+  await env.PLATFORM_DB.prepare(`INSERT INTO managed_service_operation_quotes(
+    quote_id,tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,region,
+    capability_version,price_version,credits,request_sha256,renewal_credits,renewal_price_version,renewal_capability_version,
+    renewal_max_credits_per_operation,status,expires_at,created_at)
+    VALUES(?,?,?,?,?,?,'agentmail','agentmail','provision',?,?,?,?,?,?,?,?,?,'quoted',?,?)`)
+    .bind(quoteId,scope.tenantId,scope.spaceId,scope.projectId??null,scope.userId,price.planTier,region,price.capabilityVersion,
+      price.priceVersion,price.credits,requestSha256,renewal?.credits??null,renewal?.priceVersion??null,renewal?.capabilityVersion??null,
+      renewal?.maxCredits??null,expiresAt,now.toISOString()).run();
+  return {quoteId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,creditUnit:"naelao_credit",
+    priceVersion:price.priceVersion,maxCreditsPerOperation:price.maxCredits,renewalCredits:renewal?.credits??null,
+    renewalPriceVersion:renewal?.priceVersion??null,renewalMaxCreditsPerOperation:renewal?.maxCredits??null,
+    maxCreditsPerPeriod:Math.min(10_000_000,Math.max(price.maxCredits,renewal?.maxCredits??price.maxCredits)*2),
+    autoRenewAvailable:!!renewal,status:"quoted",expiresAt};
+}
+export async function provisionManagedAgentMail(env:AgentsEnv,scope:CommunicationScope,identity:CommunicationIdentity,displayName?:string,quoteId?:string){
   if(!env.AGENTMAIL_API_KEY||!env.AGENTMAIL_DEFAULT_DOMAIN)throw new Error("agentmail_managed_provisioning_not_configured");
   if(!env.AGENTMAIL_WEBHOOK_URL||!env.AGENTPORT_EVENT_RECEIVER_URL)throw new Error("agentmail_event_delivery_not_configured");
   const {agentId}=await platformIdentity(env,scope,identity);
@@ -414,26 +467,65 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
     await recordManagedServiceAccount(env,found,"active");
     return {connectionId:found.id,address:found.email_address,status:found.status,agentportAgentId:agentId};
   }
+  if(found&&["provisioning","billing_hold"].includes(found.status))
+    return {connectionId:found.id,address:found.email_address,status:found.status,pending:true,agentportAgentId:agentId};
   const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",connectionMode:"naelao_managed",...(env.AGENTMAIL_REGION?{region:env.AGENTMAIL_REGION}:{})});
   const region=env.AGENTMAIL_REGION;if(!region)throw new Error("managed_service_region_not_verified");
   providerRegion(region);
-  const mandateScope:CommunicationScope={...scope,role:"product_end_user"};
-  await ensureOrganizationPayerMandate(env,mandateScope,{mandateKey:`agentmail:${agentId}`,provider:"agentmail",serviceId:"agentmail",
-    maxCreditsPerOperation:300,maxCreditsPerPeriod:600,periodDays:30,allowRenewal:true,agentPortAgentId:agentId});
+  const price=await resolveManagedAgentMailPrice(env,scope,"provision",region);
+  if(price.capabilityVersion!==capability.version)throw new Error("managed_service_capability_changed");
+  if(!quoteId||!/^msq_[A-Fa-f0-9]{32}$/.test(quoteId))throw new Error("managed_service_quote_required");
   const opId=await stableClientId(`naelao:email-provision:${scope.tenantId}:${agentId}`);const now=Date.now();const timestamp=new Date(now).toISOString();
   const inboxClient=await stableClientId(`naelao:managed-inbox:${scope.tenantId}:${agentId}`);
   const display=displayName??"Naelao Assistant";
   if(display.length<1||display.length>120||/[\u0000-\u001f\u007f]/.test(display))throw new Error("agentmail_display_name_invalid");
   const requestSpec={tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,agentId,domain:env.AGENTMAIL_DEFAULT_DOMAIN,display,capabilityVersion:capability.version,region};
   const requestHash=await hashString(JSON.stringify(requestSpec));
-  await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
-    operation_id,tenant_id,space_id,project_id,provider,service_id,capability_version,operation_name,region,idempotency_key,
-    request_sha256,request_json,status,created_at,updated_at)
-    VALUES(?,?,?,?,'agentmail','agentmail',?,'provision',?,?,?,?, 'pending',?,?)`)
-    .bind(opId,scope.tenantId,scope.spaceId,scope.projectId??null,capability.version,region,opId,requestHash,JSON.stringify(requestSpec),timestamp,timestamp).run();
-  let registryOperation=await env.PLATFORM_DB.prepare("SELECT request_sha256,status,lease_until,reconcile_attempts FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
-    .bind(opId,scope.tenantId).first<{request_sha256:string;status:string;lease_until:string|null;reconcile_attempts:number}>();
-  if(!registryOperation||registryOperation.request_sha256!==requestHash)throw new Error("managed_service_operation_conflict");
+  const renewalPrice=await resolveOptionalAgentMailRenewalPrice(env,scope,region);
+  const quote=await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,
+      region,capability_version,price_version,credits,request_sha256,renewal_credits,renewal_price_version,renewal_capability_version,
+      renewal_max_credits_per_operation,status,operation_id,expires_at
+    FROM managed_service_operation_quotes WHERE quote_id=?`).bind(quoteId)
+    .first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;provider:string;service_id:string;operation_name:string;
+      region:string;capability_version:number;price_version:string;credits:number;request_sha256:string|null;renewal_credits:number|null;renewal_price_version:string|null;
+      renewal_capability_version:number|null;renewal_max_credits_per_operation:number|null;status:string;operation_id:string|null;expires_at:string}>();
+  if(!quote||quote.tenant_id!==scope.tenantId||quote.space_id!==scope.spaceId||quote.project_id!==(scope.projectId??null)
+    ||quote.requester_user_id!==scope.userId||quote.plan_tier!==price.planTier||quote.provider!=="agentmail"||quote.service_id!=="agentmail"
+    ||quote.operation_name!=="provision"||quote.region!==region||quote.capability_version!==capability.version||quote.price_version!==price.priceVersion
+    ||quote.credits!==price.credits||quote.request_sha256!==requestHash
+    ||quote.renewal_credits!==(renewalPrice?.credits??null)||quote.renewal_price_version!==(renewalPrice?.priceVersion??null)
+    ||quote.renewal_capability_version!==(renewalPrice?.capabilityVersion??null)
+    ||quote.renewal_max_credits_per_operation!==(renewalPrice?.maxCredits??null))throw new Error("managed_service_quote_terms_conflict");
+  const priorOperation=await env.PLATFORM_DB.prepare("SELECT operation_id,quote_id,status FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
+    .bind(opId,scope.tenantId).first<{operation_id:string;quote_id:string|null;status:string}>();
+  if(priorOperation&&priorOperation.quote_id!==quoteId)throw new Error("managed_service_operation_conflict");
+  if(quote.status==="consumed"&&quote.operation_id!==opId)throw new Error("managed_service_quote_already_used");
+  if(quote.status==="quoted"&&Date.parse(quote.expires_at)<=now)throw new Error("managed_service_quote_expired");
+  const mandateScope:CommunicationScope={...scope,role:"product_end_user"};
+  const mandateId=await ensureOrganizationPayerMandate(env,mandateScope,{mandateKey:`agentmail:${agentId}`,provider:"agentmail",serviceId:"agentmail",
+    maxCreditsPerOperation:Math.max(price.maxCredits,renewalPrice?.maxCredits??price.maxCredits),
+    maxCreditsPerPeriod:Math.min(10_000_000,Math.max(price.maxCredits,renewalPrice?.maxCredits??price.maxCredits)*2),
+    periodDays:30,allowRenewal:!!renewalPrice,agentPortAgentId:agentId});
+  await env.PLATFORM_DB.batch([
+    env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
+      operation_id,tenant_id,space_id,project_id,provider,service_id,capability_version,operation_name,region,idempotency_key,
+      request_sha256,request_json,status,quote_id,price_version,reserved_credits,created_at,updated_at)
+      VALUES(?,?,?,?,'agentmail','agentmail',?,'provision',?,?,?,?, 'pending',?,?,?, ?,?)`)
+      .bind(opId,scope.tenantId,scope.spaceId,scope.projectId??null,capability.version,region,opId,requestHash,JSON.stringify(requestSpec),quoteId,price.priceVersion,price.credits,timestamp,timestamp),
+    env.PLATFORM_DB.prepare(`UPDATE managed_service_operation_quotes SET status='consumed',operation_id=?,consumed_at=?
+      WHERE quote_id=? AND status='quoted' AND expires_at>? AND request_sha256=? AND tenant_id=? AND space_id=? AND project_id IS ?
+        AND requester_user_id=? AND plan_tier=? AND provider='agentmail' AND service_id='agentmail' AND operation_name='provision'
+        AND region=? AND capability_version=? AND price_version=? AND credits=? AND EXISTS(
+          SELECT 1 FROM managed_service_operations WHERE operation_id=? AND tenant_id=? AND quote_id=? AND request_sha256=?)`)
+      .bind(opId,timestamp,quoteId,timestamp,requestHash,scope.tenantId,scope.spaceId,scope.projectId??null,scope.userId,price.planTier,
+        region,capability.version,price.priceVersion,price.credits,opId,scope.tenantId,quoteId,requestHash),
+  ]);
+  const consumedQuote=await env.PLATFORM_DB.prepare("SELECT status,operation_id FROM managed_service_operation_quotes WHERE quote_id=? AND tenant_id=?")
+    .bind(quoteId,scope.tenantId).first<{status:string;operation_id:string|null}>();
+  if(consumedQuote?.status!=="consumed"||consumedQuote.operation_id!==opId)throw new Error("managed_service_quote_already_used");
+  let registryOperation=await env.PLATFORM_DB.prepare("SELECT request_sha256,quote_id,status,lease_until,reconcile_attempts FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
+    .bind(opId,scope.tenantId).first<{request_sha256:string;quote_id:string|null;status:string;lease_until:string|null;reconcile_attempts:number}>();
+  if(!registryOperation||registryOperation.request_sha256!==requestHash||registryOperation.quote_id!==quoteId)throw new Error("managed_service_operation_conflict");
   if(registryOperation.status==="running"){
     if(registryOperation.lease_until&&Date.parse(registryOperation.lease_until)>now)return {status:"provisioning",pending:true,agentportAgentId:agentId};
       await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET status='uncertain',lease_until=NULL,error_code='operation_lease_expired',next_reconcile_at=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
@@ -475,9 +567,9 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   const workflowId=`agentmail_rent_${opId}`;const scopeForBilling:CommunicationScope={...scope,role:"product_end_user"};
   let reserved=false,providerDispatched=false;
   try{
-    await reserveManagedServiceCredits(env,scopeForBilling,{reservationId:workflowId,operationId:opId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:300,priceVersion:"agentmail-rental-v1",agentPortAgentId:agentId});reserved=true;
-    await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,reserved_credits=300,price_version='agentmail-rental-v1',updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
-      .bind(workflowId,new Date().toISOString(),opId,scope.tenantId).run();
+    await reserveManagedServiceCredits(env,scopeForBilling,{reservationId:workflowId,operationId:opId,provider:"agentmail",serviceId:"agentmail",operationName:"provision",region,credits:price.credits,priceVersion:price.priceVersion,quoteId,agentPortAgentId:agentId,payerMandateId:mandateId});reserved=true;
+    await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,reserved_credits=?,price_version=?,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'")
+      .bind(workflowId,price.credits,price.priceVersion,new Date().toISOString(),opId,scope.tenantId).run();
     await markManagedServiceCreditsUncertain(env,scopeForBilling,workflowId);
     providerDispatched=true;
     let podId=recoveredInbox?.pod_id??"";
@@ -494,10 +586,10 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
     const account=await env.PLATFORM_DB.prepare("SELECT * FROM assistant_agentmail_accounts WHERE tenant_id=? AND agentport_agent_id=? AND inbox_id=? ORDER BY created_at LIMIT 1").bind(scope.tenantId,agentId,inboxId).first<AgentMailAccount>();
     if(!account)throw new Error("agentmail_connection_store_unavailable");
     const link=await linkAgentPort(env,scope,identity,account,{type:"organization",id:scope.tenantId},false);
-    await settleManagedServiceCredits(env,scopeForBilling,workflowId,300);
+    await settleManagedServiceCredits(env,scopeForBilling,workflowId,price.credits);
     const activatedAt=new Date(now).toISOString();const next=addMonthlyAnniversary(activatedAt);
-    await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='active',activated_at=?,next_billing_at=?,last_error=NULL,updated_at=? WHERE id=?")
-      .bind(activatedAt,next,activatedAt,account.id).run();
+    await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='active',activated_at=?,next_billing_at=?,retire_after=?,last_error=NULL,updated_at=? WHERE id=?")
+      .bind(activatedAt,next,renewalPrice?null:next,activatedAt,account.id).run();
     await recordManagedServiceAccount(env,{...account,status:"active"},"active",capability.version,region);
     await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_operations SET status='complete',result_ref=?,lease_until=NULL,error_code=NULL,updated_at=? WHERE operation_id=? AND status='running'")
       .bind(account.id,activatedAt,opId).run();
@@ -505,7 +597,8 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
       provider_operation_ref=?,result_ref=?,error_code=NULL,reconcile_attempts=reconcile_attempts+CASE WHEN ? THEN 1 ELSE 0 END,
       next_reconcile_at=NULL,updated_at=? WHERE operation_id=? AND tenant_id=? AND status='running'`)
       .bind(account.id,account.inbox_id,account.id,reconcileExistingEffect?1:0,activatedAt,opId,scope.tenantId).run();
-    return {connectionId:account.id,address,status:"active",priceCredits:300,...link};
+    return {connectionId:account.id,address,status:"active",priceCredits:price.credits,priceVersion:price.priceVersion,
+      renewalCredits:renewalPrice?.credits??null,renewalPriceVersion:renewalPrice?.priceVersion??null,autoRenew:!!renewalPrice,...link};
   }catch(error){
     if(reserved&&!providerDispatched)await releaseManagedServiceCredits(env,scopeForBilling,workflowId,"no_effect").catch(()=>undefined);
     const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_provisioning_failed";
@@ -518,7 +611,7 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
 }
 export async function sweepManagedAgentMailReconciliations(env:AgentsEnv,now=new Date(),limit=10){
   if(!Number.isSafeInteger(limit)||limit<1||limit>25)throw new Error("managed_service_reconciliation_limit_invalid");
-  const due=await env.PLATFORM_DB.prepare(`SELECT o.operation_id,o.tenant_id,o.space_id,o.project_id,o.request_json,
+  const due=await env.PLATFORM_DB.prepare(`SELECT o.operation_id,o.tenant_id,o.space_id,o.project_id,o.request_json,o.quote_id,
       i.id AS identity_id,i.tenant_id AS identity_tenant_id,i.space_id AS identity_space_id,i.project_id AS identity_project_id,
       i.scope_key,i.owner_user_id,i.email_address,i.address_hash,i.email_provider,i.email_status,i.status AS identity_status,i.autonomy_json
     FROM managed_service_operations o JOIN assistant_agentmail_operations a ON a.operation_id=o.operation_id
@@ -541,7 +634,7 @@ export async function sweepManagedAgentMailReconciliations(env:AgentsEnv,now=new
         scope_key:row.scope_key!,owner_user_id:row.owner_user_id,email_address:row.email_address??null,address_hash:row.address_hash??null,email_provider:row.email_provider!,
         email_status:row.email_status!,status:row.identity_status!,autonomy_json:row.autonomy_json!};
       const scope:CommunicationScope={tenantId:row.tenant_id!,spaceId:row.space_id!,...(row.project_id?{projectId:row.project_id}:{}),userId:identity.owner_user_id,role:"product_end_user"};
-      const result=await provisionManagedAgentMail(env,scope,identity,spec.display);
+      const result=await provisionManagedAgentMail(env,scope,identity,spec.display,row.quote_id??undefined);
       if(result.status==="active")reconciled++;else deferred++;
     }catch(error){
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"managed_service_reconciliation_failed";
@@ -830,15 +923,45 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
     const scope:CommunicationScope={tenantId:account.tenant_id,spaceId:account.space_id,...(account.project_id?{projectId:account.project_id}:{}),userId:account.owner_user_id,role:"product_end_user"};
     const registry=await env.PLATFORM_DB.prepare("SELECT capability_version,region FROM managed_service_accounts WHERE id=? AND tenant_id=?")
       .bind(account.id,account.tenant_id).first<{capability_version:number|null;region:string|null}>();
-    const requestHash=await hashString(JSON.stringify({accountId:account.id,nextBillingAt:next,credits:300,priceVersion:"agentmail-rental-v1",capabilityVersion:registry?.capability_version??null,region:registry?.region??null}));
-    await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
+    if(!registry?.region){
+      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_region_not_verified',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
+        .bind(updated,account.id).run();held++;return;
+    }
+    let price:ManagedAgentMailPrice;
+    try{price=await resolveManagedAgentMailPrice(env,scope,"renew",registry.region,now);}
+    catch(error){
+      const code=error instanceof Error?error.message:"managed_service_price_unconfigured";
+      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error=?,updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
+        .bind(code,updated,account.id).run();
+      await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
+        .bind(updated,account.id,account.tenant_id).run();held++;return;
+    }
+    const requestSpec={accountId:account.id,nextBillingAt:next,credits:price.credits,priceVersion:price.priceVersion,
+      capabilityVersion:price.capabilityVersion,region:registry.region};
+    const requestHash=await hashString(JSON.stringify(requestSpec));
+    const quoteDigest=await hashString(`agentmail-renew:${operationId}`);const quoteId=`msq_${quoteDigest.slice(0,32)}`;
+    const quoteExpiry=new Date(now.getTime()+180_000).toISOString();
+    await env.PLATFORM_DB.batch([env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operations(
       operation_id,tenant_id,space_id,project_id,account_id,provider,service_id,capability_version,operation_name,region,idempotency_key,
-      request_sha256,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,'agentmail','agentmail',?,'renew',?,?,?,'pending',?,?)`)
-      .bind(operationId,account.tenant_id,account.space_id,account.project_id,account.id,registry?.capability_version??null,registry?.region??null,operationId,requestHash,updated,updated).run();
-    const prior=await env.PLATFORM_DB.prepare("SELECT request_sha256,status FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
-      .bind(operationId,account.tenant_id).first<{request_sha256:string;status:string}>();
-    if(!prior||prior.request_sha256!==requestHash)return;
+      request_sha256,status,quote_id,price_version,reserved_credits,created_at,updated_at)
+      VALUES(?,?,?,?,?,'agentmail','agentmail',?,'renew',?,?,?,'pending',?,?,?, ?,?)`)
+      .bind(operationId,account.tenant_id,account.space_id,account.project_id,account.id,price.capabilityVersion,registry.region,operationId,requestHash,
+        quoteId,price.priceVersion,price.credits,updated,updated),
+      env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO managed_service_operation_quotes(
+        quote_id,tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,region,
+        capability_version,price_version,credits,request_sha256,status,operation_id,expires_at,consumed_at,created_at)
+        SELECT ?,?,?,?,?,?,'agentmail','agentmail','renew',?,?,?,?,?,'consumed',?,?,?,?
+        WHERE EXISTS(SELECT 1 FROM managed_service_operations WHERE operation_id=? AND tenant_id=? AND quote_id=? AND request_sha256=?)`)
+        .bind(quoteId,account.tenant_id,account.space_id,account.project_id,account.owner_user_id,price.planTier,registry.region,price.capabilityVersion,
+          price.priceVersion,price.credits,requestHash,operationId,quoteExpiry,updated,updated,operationId,account.tenant_id,quoteId,requestHash)]);
+    const prior=await env.PLATFORM_DB.prepare("SELECT request_sha256,status,quote_id FROM managed_service_operations WHERE operation_id=? AND tenant_id=?")
+      .bind(operationId,account.tenant_id).first<{request_sha256:string;status:string;quote_id:string|null}>();
+    if(!prior||prior.request_sha256!==requestHash||prior.quote_id!==quoteId){
+      await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_operation_conflict',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")
+        .bind(updated,account.id).run();
+      await env.PLATFORM_DB.prepare("UPDATE managed_service_accounts SET lifecycle_state='billing_hold',updated_at=? WHERE id=? AND tenant_id=?")
+        .bind(updated,account.id,account.tenant_id).run();held++;return;
+    }
     const operationClaim=await env.PLATFORM_DB.prepare(`UPDATE managed_service_operations SET status='running',lease_until=?,error_code=NULL,updated_at=?
       WHERE operation_id=? AND tenant_id=? AND (status IN ('pending','held') OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))`)
       .bind(new Date(now.getTime()+120_000).toISOString(),updated,operationId,account.tenant_id,updated).run();
@@ -860,10 +983,11 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
     let reserved=false,settled=false;
     try{
       if(!registry?.region)throw new Error("managed_service_region_not_verified");
-      await reserveManagedServiceCredits(env,scope,{reservationId:workflowId,operationId,provider:"agentmail",serviceId:"agentmail",operationName:"renew",region:registry.region,credits:300,priceVersion:"agentmail-rental-v1",agentPortAgentId:account.agentport_agent_id});reserved=true;
-      await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,reserved_credits=300,price_version='agentmail-rental-v1',updated_at=? WHERE operation_id=? AND status='running'")
-        .bind(workflowId,updated,operationId).run();
-      await settleManagedServiceCredits(env,scope,workflowId,300);settled=true;
+      await reserveManagedServiceCredits(env,scope,{reservationId:workflowId,operationId,provider:"agentmail",serviceId:"agentmail",operationName:"renew",region:registry.region,
+        credits:price.credits,priceVersion:price.priceVersion,quoteId,agentPortAgentId:account.agentport_agent_id});reserved=true;
+      await env.PLATFORM_DB.prepare("UPDATE managed_service_operations SET reservation_id=?,reserved_credits=?,price_version=?,updated_at=? WHERE operation_id=? AND status='running'")
+        .bind(workflowId,price.credits,price.priceVersion,updated,operationId).run();
+      await settleManagedServiceCredits(env,scope,workflowId,price.credits);settled=true;
       const nextBilling=addMonthlyAnniversary(next,new Date(account.activated_at??next).getUTCDate());
       await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='active',next_billing_at=?,last_error=NULL,updated_at=? WHERE id=? AND status IN ('active','billing_hold') AND next_billing_at=?")
         .bind(nextBilling,updated,account.id,next).run();

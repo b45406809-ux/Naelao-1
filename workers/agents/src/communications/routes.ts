@@ -7,7 +7,7 @@ import {
   readBoundedResponseJson,
 } from "@naelao/http";
 import { hashEmailAddress } from "../channels/cloudflare-email.js";
-import { connectUserAgentMail, callAgentMailTool, getAssistantAgentMailStatus, getAgentPortSyncIdentity, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, syncAgentPortAgentMail } from "./agentmail.js";
+import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, syncAgentPortAgentMail } from "./agentmail.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
 import { acknowledgeManagedServiceCostBudgetAlert, setManagedServiceCostBudget } from "./managed-service-cost-budgets.js";
@@ -380,8 +380,13 @@ async function handle(c: C, agent: boolean) {
           region:typeof body.region==="string"?body.region:"us"});
         return c.json({connection},201);
       }
+      if(action==="agentmail-quote"){
+        if(c.req.method!=="POST"||(body.display_name!==undefined&&typeof body.display_name!=="string"))return c.json({error_code:"agentmail_quote_invalid"},400);
+        return c.json(await createManagedAgentMailQuote(c.env,scope,connectedIdentity,{...(typeof body.display_name==="string"?{displayName:body.display_name}:{})}));
+      }
       if(action==="agentmail-provision"){
-        const result=await provisionManagedAgentMail(c.env,scope,connectedIdentity,typeof body.display_name==="string"?body.display_name:undefined);
+        if(c.req.method!=="POST"||typeof body.quote_id!=="string")return c.json({error_code:"managed_service_quote_required"},400);
+        const result=await provisionManagedAgentMail(c.env,scope,connectedIdentity,typeof body.display_name==="string"?body.display_name:undefined,body.quote_id);
         return c.json({connection:result},result.pending?202:201);
       }
       if(action==="agentmail-stop-renewal"){
@@ -402,7 +407,7 @@ async function handle(c: C, agent: boolean) {
       return c.json({error_code:"agentmail_action_unsupported"},400);
     } catch(error) {
       const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_unavailable";
-      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")?409:code.includes("invalid")?400:502);
+      return c.json({error_code:code},code.includes("not_configured")?503:code.includes("not_found")?404:code.includes("not_authorized")||code.includes("recipient_not_approved")?403:code.includes("approval_required")||code.includes("capability")||code.includes("region_not_verified")||code.includes("region_unsupported")||code.includes("revoked")||code.includes("changed")||code.includes("quote")||code.includes("price")?409:code.includes("invalid")?400:502);
     }
   }
   if(action.startsWith("higgsfield-")) {
@@ -650,17 +655,9 @@ async function handle(c: C, agent: boolean) {
     }
   }
   if (action === "identity") {
-    let managedInbox:unknown=null;
-    try {
-      const provisioning=await assistantEmailProvisioning(c.env,scope);
-      if(provisioning.provider==="agentmail"&&provisioning.defaultMode==="naelao_managed"&&provisioning.provisionOnCreate){
-        if(!(await manageIdentity(c.env,scope,identity)))return c.json({error_code:"owner_authorization_required"},403);
-        managedInbox=await provisionManagedAgentMail(c.env,scope,identity,provisioning.displayName);
-      }
-    } catch(error) {
-      const code=error instanceof Error&&/^[a-z][a-z0-9_:-]{1,100}$/.test(error.message)?error.message:"agentmail_auto_provision_failed";
-      return c.json({identity:{id:identity.id,email_address:identity.email_address,email_status:identity.email_status,kind:identity.project_id?"project_assistant":"space_assistant",provider:identity.email_provider},preferences,managedInbox:{status:"failed",error_code:code}},code.includes("not_configured")?503:502);
-    }
+    const provisioning=await assistantEmailProvisioning(c.env,scope);
+    const managedInbox=provisioning.provider==="agentmail"&&provisioning.defaultMode==="naelao_managed"&&provisioning.provisionOnCreate
+      ?{status:"quote_required"}:null;
     return c.json({
       identity: {
         id: identity.id,

@@ -2965,7 +2965,7 @@ export interface ManagedServiceDashboard {
     provider: string; serviceId: string; category: string; version: number; state: string; validUntil: string | null;
     operations: string[]; regions: string[]; accountModes: string[]; isolationModel: string;
     metering: Record<string, unknown>; configuredRegion: string | null;
-    entitlements: Array<{ operation: string; region: string; priceVersion: string; maxCreditsPerOperation: number;
+    entitlements: Array<{ operation: string; region: string; priceVersion: string; creditsPerOperation:number|null;maxCreditsPerOperation: number;
       maxOperationsPerPeriod: number | null; validUntil: string; eligibleForConfiguredRegion: boolean }>;
     providerConfiguration: { ready: boolean };
   }>;

@@ -97,6 +97,9 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
   const [busy, setBusy] = React.useState(false);
   const [refreshVersion, setRefreshVersion] = React.useState(0);
   const [displayName, setDisplayName] = React.useState("Naelao Assistant");
+  const [managedAgentMailQuote,setManagedAgentMailQuote]=React.useState<{quoteId:string;credits:number;priceVersion:string;maxCreditsPerOperation:number;
+    renewalCredits:number|null;renewalPriceVersion:string|null;renewalMaxCreditsPerOperation:number|null;maxCreditsPerPeriod:number;
+    autoRenewAvailable:boolean;expiresAt:string}|null>(null);
   const [inboxId, setInboxId] = React.useState("");
   const [agentMailApiRegion, setAgentMailApiRegion] = React.useState<"us"|"eu">("us");
   const [apiKey, setApiKey] = React.useState("");
@@ -173,8 +176,32 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
   const activeAgentMailAccounts = dashboard?.accounts.filter((account) => account.provider === "agentmail" && account.status === "active") ?? [];
   const activeAgentMailAccount = activeAgentMailAccounts.find((account) => account.id === agentMailConnectionId) ?? activeAgentMailAccounts[0] ?? null;
   const provisionEntitlement = agentMail?.entitlements.find((entitlement) => entitlement.operation === "provision" && entitlement.eligibleForConfiguredRegion);
+  const renewalEntitlement = agentMail?.entitlements.find((entitlement) => entitlement.operation === "renew" && entitlement.eligibleForConfiguredRegion);
   const managedMailboxAvailable = agentMail?.state === "verified" && agentMail.accountModes.includes("naelao_managed")
-    && !!agentMail.configuredRegion && !!provisionEntitlement && agentMail.providerConfiguration.ready;
+    && !!agentMail.configuredRegion && !!provisionEntitlement?.creditsPerOperation && agentMail.providerConfiguration.ready;
+
+  async function quoteManagedAgentMail() {
+    if(!displayName.trim())return;
+    setBusy(true);setManagedAgentMailQuote(null);setNotice("");setError("");
+    try{
+      const quote=await assistantMailApi<{quoteId:string;credits:number;priceVersion:string;maxCreditsPerOperation:number;renewalCredits:number|null;
+        renewalPriceVersion:string|null;renewalMaxCreditsPerOperation:number|null;maxCreditsPerPeriod:number;autoRenewAvailable:boolean;expiresAt:string}>(spaceId,session,
+        {action:"agentmail-quote",display_name:displayName.trim()},true);
+      setManagedAgentMailQuote(quote);
+    }catch(failure){setError(failure instanceof Error?failure.message:"Managed mailbox quote failed");}
+    finally{setBusy(false);}
+  }
+
+  async function confirmManagedAgentMailProvision() {
+    if(!managedAgentMailQuote||Date.parse(managedAgentMailQuote.expiresAt)<=Date.now())return;
+    const recurring=managedAgentMailQuote.autoRenewAvailable
+      ? ` Monthly renewal is ${managedAgentMailQuote.renewalCredits!.toLocaleString()} Naelao credits (${managedAgentMailQuote.renewalPriceVersion}); maximum renewal reservation is ${managedAgentMailQuote.renewalMaxCreditsPerOperation!.toLocaleString()}, under a 30 day mandate cap of ${managedAgentMailQuote.maxCreditsPerPeriod.toLocaleString()} credits.`
+      : " No exact monthly renewal price is active, so this mailbox will not auto-renew and will enter retirement review at the paid-period boundary.";
+    if(!window.confirm(`Provision a managed AgentMail mailbox for exactly ${managedAgentMailQuote.credits.toLocaleString()} Naelao credits (${managedAgentMailQuote.priceVersion})? Maximum reservation is ${managedAgentMailQuote.maxCreditsPerOperation.toLocaleString()} credits.${recurring}`))return;
+    await runAction("agentmail-provision",{display_name:displayName.trim(),quote_id:managedAgentMailQuote.quoteId},
+      "Managed mailbox provisioning was accepted; check account status for completion.");
+    setManagedAgentMailQuote(null);
+  }
   const higgsfield = dashboard?.capabilities.find((capability) => capability.provider === "higgsfield" && capability.serviceId === "kling-video-v4-text-to-video");
   const higgsfieldAvailable = dashboard?.higgsfieldByoEnabled === true && higgsfield?.state === "verified"
     && higgsfield.accountModes.includes("user_connected") && higgsfield.regions.includes("global")
@@ -469,9 +496,20 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
               <h4>Provision a managed inbox</h4>
               {managedMailboxAvailable && provisionEntitlement ? (
                 <>
-                  <p className="settings-row-sub">Operator-verified for {agentMail!.configuredRegion}. Maximum reservation: {provisionEntitlement.maxCreditsPerOperation.toLocaleString()} credits per provision ({provisionEntitlement.priceVersion}). Monthly renewal uses the same approved organization payer mandate.</p>
-                  <FormInput aria-label="Managed mailbox display name" maxLength={120} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-                  <div><Button size="sm" disabled={busy || !displayName.trim()} onClick={() => void runAction("agentmail-provision", { display_name: displayName.trim() }, "Managed mailbox provisioning was accepted; check account status for completion.")}>{busy ? "Provisioning…" : "Provision managed mailbox"}</Button></div>
+                  <p className="settings-row-sub">Operator-verified for {agentMail!.configuredRegion}. Provisioning requires a separate exact quote and confirmation. The maximum reservation is {provisionEntitlement.maxCreditsPerOperation.toLocaleString()} credits.</p>
+                  <FormInput aria-label="Managed mailbox display name" maxLength={120} value={displayName} onChange={(event) => {setDisplayName(event.target.value);setManagedAgentMailQuote(null);}} />
+                  {!managedAgentMailQuote ? <Button size="sm" disabled={busy || !displayName.trim()} onClick={() => void quoteManagedAgentMail()}>{busy ? "Getting quote…" : "Get managed mailbox quote"}</Button> : (
+                    <div style={{display:"grid",gap:8}}>
+                      <p className="settings-row-sub">Quote: {managedAgentMailQuote.credits.toLocaleString()} Naelao credits ({managedAgentMailQuote.priceVersion}).
+                        {managedAgentMailQuote.autoRenewAvailable ? ` Monthly renewal: ${managedAgentMailQuote.renewalCredits!.toLocaleString()} credits (${managedAgentMailQuote.renewalPriceVersion}), with a ${managedAgentMailQuote.renewalMaxCreditsPerOperation!.toLocaleString()} credit maximum reservation.` : " No exact renewal price is active; automatic renewal is unavailable."}
+                        {renewalEntitlement?.creditsPerOperation && managedAgentMailQuote.renewalCredits!==renewalEntitlement.creditsPerOperation ? " Renewal terms changed since the dashboard loaded; request a fresh quote." : ""}
+                        {Date.parse(managedAgentMailQuote.expiresAt)<=Date.now()?" Expired; request a fresh quote.":` Expires ${new Date(managedAgentMailQuote.expiresAt).toLocaleTimeString()}.`}</p>
+                      <div style={{display:"flex",gap:8}}>
+                        <Button size="sm" disabled={busy||Date.parse(managedAgentMailQuote.expiresAt)<=Date.now()} onClick={() => void confirmManagedAgentMailProvision()}>{busy ? "Provisioning…" : "Confirm and provision"}</Button>
+                        <Button size="sm" variant="secondary" disabled={busy} onClick={() => setManagedAgentMailQuote(null)}>Cancel quote</Button>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : <p className="settings-row-sub">Managed AgentMail provisioning is unavailable for this Space until the provider, region, organization plan, price and credit cap pass the operator gates.</p>}
             </div>
@@ -573,7 +611,9 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                     <ul>
                       {capability.entitlements.map((entitlement) => (
                         <li key={`${entitlement.operation}:${entitlement.region}`}>
-                          {title(entitlement.operation)} in {entitlement.region}: up to {entitlement.maxCreditsPerOperation.toLocaleString()} credits per operation
+                          {title(entitlement.operation)} in {entitlement.region}: {entitlement.creditsPerOperation
+                            ? `${entitlement.creditsPerOperation.toLocaleString()} fixed credits (maximum ${entitlement.maxCreditsPerOperation.toLocaleString()})`
+                            : `up to ${entitlement.maxCreditsPerOperation.toLocaleString()} credits per operation`}
                           {entitlement.maxOperationsPerPeriod ? `, ${entitlement.maxOperationsPerPeriod} per period` : ""}
                           {entitlement.eligibleForConfiguredRegion ? " · current region" : " · region not selected for this worker"}
                         </li>

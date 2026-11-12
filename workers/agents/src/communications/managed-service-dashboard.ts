@@ -51,13 +51,13 @@ export async function getManagedServiceDashboard(env: AgentsEnv, scope: Communic
 
   const capabilities = [];
   for (const row of capabilityRows.results) {
-    const entitlements = await env.PLATFORM_DB.prepare(`SELECT operation_name,region,price_version,max_credits_per_operation,
+    const entitlements = await env.PLATFORM_DB.prepare(`SELECT operation_name,region,price_version,credits_per_operation,max_credits_per_operation,
         max_operations_per_period,status,verified_at,valid_until
       FROM managed_service_plan_entitlements
       WHERE plan_tier=? AND provider=? AND service_id=? AND capability_version=?
         AND status='active' AND verified_at IS NOT NULL AND valid_until>? ORDER BY operation_name,region`)
       .bind(tier, row.provider, row.service_id, row.version, now.toISOString())
-      .all<{ operation_name: string; region: string; price_version: string; max_credits_per_operation: number;
+      .all<{ operation_name: string; region: string; price_version: string; credits_per_operation:number|null;max_credits_per_operation: number;
         max_operations_per_period: number | null; status: string; verified_at: string; valid_until: string }>();
     const manifestRegions = jsonList(row.regions_json);
     const configuredRegion = row.provider === "agentmail" ? env.AGENTMAIL_REGION ?? null : null;
@@ -82,6 +82,7 @@ export async function getManagedServiceDashboard(env: AgentsEnv, scope: Communic
         operation: entitlement.operation_name,
         region: entitlement.region,
         priceVersion: entitlement.price_version,
+        creditsPerOperation: entitlement.credits_per_operation,
         maxCreditsPerOperation: entitlement.max_credits_per_operation,
         maxOperationsPerPeriod: entitlement.max_operations_per_period,
         validUntil: entitlement.valid_until,
