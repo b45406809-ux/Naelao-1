@@ -25,14 +25,14 @@ and its tip is an ancestor of the implementation branch, fast-forward safely bef
 the active branch is an ancestor of a newly requested remote plan commit, fast-forward the active
 branch to integrate it. If histories diverge, preserve both histories and resolve with a non-force
 integration; never reset, rebase away work or force-push. Code checkpoints
-`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e`, `daca80bd`, `6046eebc`, `f6abe44b`, `80cf3893` and `e3afe6a2`, plus docs checkpoints `8f9c0c15`,
+`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e`, `daca80bd`, `6046eebc`, `f6abe44b`, `80cf3893`, `e3afe6a2`, `965aeb41`, `70c4fd05`, `e8aa765c` and `144c02f5`, plus docs checkpoints `8f9c0c15`,
 `7e401225`, `1c32ef26`, `ece794ec` and `69fdb152`, are pushed there. The recovery branch also contains requested plan commit `9e1281ce`. AgentMail provision/renewal and Cloudflare model replay
 preserve consumed quote terms in their covered recovery paths. Managed Telnyx now persists the
 owner-confirmed line rate version and exact rental/SMS/call prices, binds reservations and cost
 receipts to those terms, and retries release of unused call holds. Telnyx/Higgsfield AgentPort share
 revocations now persist exact account references and retry on the scheduled path; exact checks and
 next task are recorded in the progress source.
-Checkpoint (2026-11-12): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.** Platform plan `9e1281ce` is integrated. Code `80cf3893` adds a TOML environment-isolation guard to both deployment preflights; it reports 136 shared mutable staging/production bindings, so CI blocks deployment. Code `e3afe6a2` gates simulated Billing checkout to local/test; route tests, typecheck and Wrangler parity pass as recorded below. S2 supported provider sync/grant/revocation and exact-price caller audits are reconciled. Code `965aeb41` pins SHA-256 for 224 SQL migration files, validates that source inventory in both deploy preflights and keeps active deployment jobs from cancellation; five manifest tests pass. P01 is still partial because deployment uses best-effort raw SQL, no D1 checksum ledger/lock or deployed schema-version gate exists, and the existing D1 legacy baseline has not been verified. Exact next task: continue independent S3/U07 recovery and U01–U12 caller gaps, then finish S4–S9; preserve U05/U06 runtime contract gates and close any ordinary reachable code gap. Keep every rollout disabled and do not deploy or purchase services.
+Checkpoint (2026-11-12): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.** Plan commit `9e1281ce` is already an ancestor of this branch. Code `80cf3893` adds the isolation guard to both deploy preflights; this checkpoint reduces shared staging/production mutable bindings from 136 to 130, so deployment remains blocked. Code `e3afe6a2` gates simulated checkout to explicitly opted-in local/test environments. Code `965aeb41` established the source migration checksum manifest; code `144c02f5` extends it to 225 migrations and implements durable provider failure outbox, bounded retry, stable workflow creation and authorized idempotent email notifications for platform and Product-user subscriptions. Billing **96/96**, dunning recovery **10/10**, Notifications **32/32**, relevant typechecks, release manifest **5/5**, and isolation guard **3/3** pass locally. P03 remains partial because grace/restriction/reminder/refund policy is unapproved and no deployed delivery receipts exist. P01 still lacks a durable D1 migration ledger/lock and verified deployed schema gate. Exact next task: continue S3/U02's audit of documented provider usage/cost endpoints and reachable callers; implement independent local code, then proceed through remaining S3–S9/U01–U12. U05/U06 contract gates remain explicit. Rollouts remain disabled; no deployment or purchase occurred.
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
 organization quota, owner-authorized AgentMail link repair/revocation and capability-specific provider action receipts,
@@ -159,10 +159,11 @@ See the durable progress record.
   tools, credentials or running services exist in a new session. Read nested AGENTS.md files
   before modifying their paths.
 - Inspect `git remote -v`, `git branch --show-current`, and `git status --short --branch`.
-  Fetch `origin Mcbt5s-Backup-2` only to inspect the selected recovery ref. Preserve this active
-  implementation worktree and branch; do not merge or fast-forward the recovery ref over it. Before
-  pushing, verify the remote recovery tip is an ancestor of local HEAD. If it is ahead or diverged,
-  preserve both histories and stop before any overwrite, merge or rebase.
+  Fetch `origin/Mcbt5s-Backup-2` before integrating or pushing. Preserve this active implementation
+  worktree and branch. If the remote tip is an ancestor of local HEAD, push normally; if local HEAD
+  is an ancestor, fast-forward the local branch before continuing; if histories diverge, preserve
+  both sides and create a non-force merge integration after reviewing conflicts. Never reset, clean,
+  rebase away work, overwrite the remote, or force-push.
 - Read root packageManager and engines. At this baseline use Node >=22.5.0 and pnpm 9.12.0.
   Install with the pinned manager and frozen lockfile; build workspace dependencies before
   dependent checks. Diagnose stale packages separately from code errors. Do not weaken checks
@@ -174,9 +175,10 @@ See the durable progress record.
   to the user-selected recovery branch `origin/Mcbt5s-Backup-2`; this workflow is authorized, so do
   not ask again. Keep the local branch `autonomous-managed-services-20261111` active. Review and test
   the intended changes, then push with the explicit fast-forward refspec
-  `HEAD:refs/heads/Mcbt5s-Backup-2`, never force. Before each push, confirm the remote tip is an
-  ancestor of local HEAD. If not, preserve both sides and report the exact condition; do not reset,
-  rebase, merge, discard or overwrite either history.
+  `HEAD:refs/heads/Mcbt5s-Backup-2`, never force. Fetch before every push, confirm the remote tip
+  is an ancestor of local HEAD, and safely integrate any new remote commits before pushing. Use a
+  fast-forward when possible or a merge commit when histories diverged; preserve all work on both
+  sides and resolve conflicts without resetting, cleaning, rebasing away or overwriting history.
 
 ## Fixed decisions
 
