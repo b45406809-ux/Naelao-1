@@ -2,14 +2,15 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12): code checkpoint `7bf3cd0f` is pushed to
+Current continuation checkpoint (2026-11-12): code checkpoint `086675c8` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. It adds a claimed-request-gated whole-organization SpaceDO
-purge: D1 marks the Space deleted, migration 109 atomically purges application rows with a durable
-tombstone, all later DO reads/writes/restores fail with 410, and the retryable Workflow removes the
-encrypted archive prefix after tombstoning. Focused local tests pass Spaces **16/16** and Workflows
-erasure **19/19**; Spaces and Workflows typechecks and `git diff --check` pass. No deployed D1/DO/R2,
-provider, isolated restore or live acceptance is claimed. Preserve the unrelated untracked
+`/workspace/Naelao-1-managed-services`. It adds a bounded, read-only operator listing API over the
+durable marketplace refund-case ledger, protected by the dedicated operator secret, requiring an
+operator ID for audit attribution, filtering and paginating cases, and recording a minimal audit row.
+It does not mutate license access or author earnings. Focused Billing tests pass **4/4** and Billing
+typecheck plus `git diff --check` pass. The check uses local mocks; the shared-secret caller does not
+establish an independent operator identity, and there is no first-party operator UI. No provider,
+deployed database or live acceptance is claimed. Preserve the unrelated untracked
 `infra/scripts/__pycache__/`.
 
 P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
@@ -21,14 +22,18 @@ the D1 release runner requires absent operator-attested migration baselines befo
 mutation. P03/P12/P13, P20, P18/P21 and P22 status plus exact evidence/gaps are in the managed
 progress matrix. The S2–S9/U01–U12 source/caller audit is reconciled there; PARTIAL rows remain
 partial for their specific missing implementation, unsupported contract, product decision or live
-evidence, and no row is accepted live. Exact next task: close P20's independent operator-review
-surface gap by adding scoped read-only refund-case triage using the existing durable cases; do not
-change license access or author earnings while policy is undecided. Then continue P23 and the P22
-semantic-cache cleanup gap before guided templates, voice dashboards and shared-Space coordination.
-P01/P02 source controls are already coded and currently fail closed on the recorded unconfigured
-IDs/receipts; no D1/KV resource ownership or credentials will be guessed. Keep rollouts disabled.
-Fetch before every push and safely integrate remote advances; never reset, clean, switch away,
-overwrite history, deploy or purchase.
+evidence, and no row is accepted live. Managed-services requirements are reconciled, with the
+unsupported U05/U06 runtime contracts and other gaps kept open. P20 now has a local operator list
+API, but independent identity, operator UI, refund/dispute policy and author payout handling remain
+open. P01/P02 protections fail closed on the recorded unconfigured IDs/receipts; no D1/KV ownership
+or credentials will be guessed. Exact next task: continue the platform plan in dependency order by
+auditing P01 deployment workflows and the current release manifest for missing safe post-deploy
+health probes, then implement and verify any independent local release-control gap. P02 real
+resource IDs/ownership/receipts and P01 legacy baseline attestations remain external evidence gates.
+After P01/P02, proceed through commercial integrity and recovery (including P03/P11–P13/P18/P20/
+P21/P23/P04/P22), then guided templates, voice dashboards and shared-Space coordination. Keep
+rollouts disabled. Fetch before every push and safely integrate remote advances; never reset, clean,
+switch away, overwrite history, deploy or purchase.
 
 Historical checkpoint (2026-11-12, code `4b5990b6`, superseded by the current checkpoint above): S2 is IMPLEMENTED_LOCAL for currently supported
 provider lanes; account-specific provider enablement, approved commercial terms and unsupported
