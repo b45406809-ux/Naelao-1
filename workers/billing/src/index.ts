@@ -23,12 +23,15 @@ import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
 import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
+import { isDevelopmentCheckoutAllowed } from "./checkout-policy.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
   /** Optional native developer payout rail. */
   STRIPE_CONNECT_SECRET_KEY?: string;
   ENVIRONMENT: string;
+  /** Explicit local/test-only opt-in for the simulated platform-plan checkout URL. */
+  ALLOW_DEV_CHECKOUTS?: string;
   /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
    *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
   PLATFORM_SECRET: string;
@@ -250,9 +253,13 @@ app.post("/billing/checkout", async (c) => {
     }
   }
 
-  // Without LS credentials or a provisioned plan variant (local/dev) return a deterministic
-  // placeholder so the flow is testable end-to-end — the exact convention used by Naelao platform-plan checkout.
+  // A simulated checkout must never make an unavailable provider look purchasable in a shared
+  // environment. Local tests may opt in explicitly; staging and production always fail closed.
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !variantId) {
+    if (!isDevelopmentCheckoutAllowed({ environment: c.env.ENVIRONMENT, allowDevCheckouts: c.env.ALLOW_DEV_CHECKOUTS })) {
+      console.warn("billing.checkout.provider_unavailable", { environment: c.env.ENVIRONMENT });
+      return c.json({ error_code: "checkout_provider_unavailable", message: "Checkout is not configured for this environment" }, 503);
+    }
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/platform-plan/${body.plan}`,
       plan: body.plan,
