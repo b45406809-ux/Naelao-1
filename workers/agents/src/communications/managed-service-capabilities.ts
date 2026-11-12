@@ -140,7 +140,7 @@ export async function disableManagedServiceCapability(
   return { disabled: true, provider: input.provider, serviceId: input.serviceId, version: input.version };
 }
 
-/** Select the newest operator-verified manifest and fail closed on missing evidence or region. */
+/** Select the newest manifest for new actions, or a specific still-verified manifest for recovery. */
 export async function requireManagedServiceCapability(
   db: D1Database,
   input: {
@@ -148,15 +148,19 @@ export async function requireManagedServiceCapability(
     serviceId: string;
     operation: string;
     connectionMode: "naelao_managed" | "user_connected" | "provider_managed";
+    version?: number;
     region?: string;
     now?: Date;
   },
 ): Promise<ManagedServiceCapabilityManifest> {
   const row = await db.prepare(`SELECT provider,service_id,version,category,operations_json,regions_json,
       account_modes_json,isolation_model,provisioning_json,metering_json,external_effects_json,evidence_json,
-      status,verified_by,verified_at,valid_until
-    FROM managed_service_capability_versions WHERE provider=? AND service_id=? ORDER BY version DESC LIMIT 1`)
-    .bind(input.provider, input.serviceId).first<CapabilityRow>();
+      status,verified_by,verified_at,valid_until FROM managed_service_capability_versions
+    WHERE provider=? AND service_id=? AND (? IS NULL OR version=?) ORDER BY version DESC LIMIT 1`)
+    .bind(input.provider, input.serviceId, input.version ?? null, input.version ?? null).first<CapabilityRow>();
+  if (input.version !== undefined && (!Number.isSafeInteger(input.version) || input.version < 1)) {
+    throw new Error("managed_service_capability_version_invalid");
+  }
   if (!row || row.status !== "verified" || !row.verified_by || !row.verified_at) {
     throw new Error("managed_service_capability_unverified");
   }

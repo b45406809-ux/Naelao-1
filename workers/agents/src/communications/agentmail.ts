@@ -469,10 +469,12 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   }
   if(found&&["provisioning","billing_hold"].includes(found.status))
     return {connectionId:found.id,address:found.email_address,status:found.status,pending:true,agentportAgentId:agentId};
-  const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",connectionMode:"naelao_managed",...(env.AGENTMAIL_REGION?{region:env.AGENTMAIL_REGION}:{})});
   const region=env.AGENTMAIL_REGION;if(!region)throw new Error("managed_service_region_not_verified");
   providerRegion(region);
-  if(!quoteId||!/^msq_[A-Fa-f0-9]{32}$/.test(quoteId))throw new Error("managed_service_quote_required");
+  if(!quoteId||!/^msq_[A-Fa-f0-9]{32}$/.test(quoteId)){
+    await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",connectionMode:"naelao_managed",region});
+    throw new Error("managed_service_quote_required");
+  }
   const opId=await stableClientId(`naelao:email-provision:${scope.tenantId}:${agentId}`);const now=Date.now();const timestamp=new Date(now).toISOString();
   const inboxClient=await stableClientId(`naelao:managed-inbox:${scope.tenantId}:${agentId}`);
   const display=displayName??"Naelao Assistant";
@@ -485,6 +487,8 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
       region:string;capability_version:number;price_version:string;credits:number;request_sha256:string|null;renewal_credits:number|null;renewal_price_version:string|null;
       renewal_capability_version:number|null;renewal_max_credits_per_operation:number|null;status:string;operation_id:string|null;expires_at:string}>();
   const acceptedOperationQuote=quote?.status==="consumed"&&quote.operation_id===opId;
+  const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",
+    connectionMode:"naelao_managed",...(acceptedOperationQuote?{version:quote.capability_version}:{}),region});
   let price:ManagedAgentMailPrice;
   let renewalPrice:ManagedAgentMailPrice|null;
   if(acceptedOperationQuote){
@@ -962,11 +966,17 @@ export async function sweepManagedAgentMailRentals(env:AgentsEnv,now=new Date())
       const acceptedSpec={accountId:account.id,nextBillingAt:next,credits:consumedQuote.credits,priceVersion:consumedQuote.price_version,
         capabilityVersion:consumedQuote.capability_version,region:registry.region};
       const acceptedHash=await hashString(JSON.stringify(acceptedSpec));
+      let pinnedCapabilityVerified=false;
+      try{
+        await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"renew",
+          connectionMode:"naelao_managed",version:consumedQuote.capability_version,region:registry.region,now});
+        pinnedCapabilityVerified=true;
+      }catch{}
       if(consumedQuote.tenant_id!==account.tenant_id||consumedQuote.space_id!==account.space_id
         ||consumedQuote.project_id!==(account.project_id??null)||consumedQuote.requester_user_id!==account.owner_user_id
         ||consumedQuote.plan_tier!==price.planTier||consumedQuote.provider!=="agentmail"||consumedQuote.service_id!=="agentmail"
         ||consumedQuote.operation_name!=="renew"||consumedQuote.region!==registry.region
-        ||consumedQuote.capability_version!==price.capabilityVersion||consumedQuote.credits>price.maxCredits
+        ||!pinnedCapabilityVerified||consumedQuote.credits>price.maxCredits
         ||consumedQuote.request_sha256!==acceptedHash||existingOperation?.quote_id!==quoteId
         ||existingOperation.request_sha256!==acceptedHash||existingOperation.capability_version!==consumedQuote.capability_version){
         await env.PLATFORM_DB.prepare("UPDATE assistant_agentmail_accounts SET status='billing_hold',last_error='managed_service_operation_quote_conflict',updated_at=? WHERE id=? AND status IN ('active','billing_hold')")

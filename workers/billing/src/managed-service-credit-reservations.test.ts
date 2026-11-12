@@ -282,7 +282,12 @@ describe("managed service credit reservations", () => {
     expect(await underpriced.json()).toMatchObject({error_code:"managed_service_price_conflict"});
     const admitted=await h.post("/internal/managed-services/credits/reserve",reservation);
     expect(admitted.status).toBe(201);
-    h.db.db.prepare(`UPDATE managed_service_plan_entitlements SET price_version='agentmail-rental-v3',credits_per_operation=250
+    h.db.db.prepare(`INSERT INTO managed_service_capability_versions(provider,service_id,version,category,operations_json,regions_json,
+      account_modes_json,isolation_model,provisioning_json,metering_json,external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      SELECT provider,service_id,2,category,operations_json,regions_json,account_modes_json,isolation_model,provisioning_json,metering_json,
+        external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at
+      FROM managed_service_capability_versions WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).run();
+    h.db.db.prepare(`UPDATE managed_service_plan_entitlements SET capability_version=2,price_version='agentmail-rental-v3',credits_per_operation=250
       WHERE plan_tier='free' AND provider='agentmail' AND service_id='agentmail' AND operation_name='provision'`).run();
     const replay=await h.post("/internal/managed-services/credits/reserve",reservation);
     expect(replay.status).toBe(200);

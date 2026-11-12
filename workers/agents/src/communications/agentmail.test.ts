@@ -466,7 +466,12 @@ describe("AgentMail provider account boundary",()=>{
     expect((await f.db.prepare("SELECT request_json FROM managed_service_operations WHERE operation_name='provision'").first<{request_json:string}>())?.request_json).not.toContain("managed-provider-key");
     expect(await getAssistantAgentMailStatus(f.env,scope)).toMatchObject({lastManagedOperation:{status:"uncertain",reconciliationRequired:true}});
     expect(providerFetch.mock.calls.filter(([input,init])=>new URL(String(input)).pathname==="/v0/pods/pod-1/inboxes"&&new Request(input,init).method==="POST")).toHaveLength(1);
-    await f.db.prepare(`UPDATE managed_service_plan_entitlements SET price_version='agentmail-rental-v3',credits_per_operation=250,updated_at=datetime('now')
+    await f.db.prepare(`INSERT INTO managed_service_capability_versions(provider,service_id,version,category,operations_json,regions_json,
+      account_modes_json,isolation_model,provisioning_json,metering_json,external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      SELECT provider,service_id,2,category,operations_json,regions_json,account_modes_json,isolation_model,provisioning_json,metering_json,
+        external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at
+      FROM managed_service_capability_versions WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).run();
+    await f.db.prepare(`UPDATE managed_service_plan_entitlements SET capability_version=2,price_version='agentmail-rental-v3',credits_per_operation=250,updated_at=datetime('now')
       WHERE plan_tier='free' AND provider='agentmail' AND service_id='agentmail' AND operation_name IN ('provision','renew')`).run();
     const firstSweep=await sweepManagedAgentMailReconciliations(f.env,new Date(Date.now()+6*60_000));
     expect(firstSweep).toMatchObject({checked:1,reconciled:0,deferred:1,failed:0});
@@ -476,8 +481,8 @@ describe("AgentMail provider account boundary",()=>{
     expect(reconciled).toMatchObject({address:"assistant@mail.example.test",status:"active"});
     expect(providerFetch.mock.calls.filter(([input,init])=>new URL(String(input)).pathname==="/v0/pods/pod-1/inboxes"&&new Request(input,init).method==="POST")).toHaveLength(1);
     expect(await f.db.prepare("SELECT lifecycle_state FROM managed_service_accounts WHERE id=?").bind(reconciled?.id).first<{lifecycle_state:string}>()).toMatchObject({lifecycle_state:"active"});
-    expect(await f.db.prepare("SELECT status,price_version,reserved_credits,quote_id FROM managed_service_operations WHERE operation_name='provision'")
-      .first<Record<string,unknown>>()).toMatchObject({status:"complete",price_version:"agentmail-rental-v2",reserved_credits:300,quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/)});
+    expect(await f.db.prepare("SELECT status,capability_version,price_version,reserved_credits,quote_id FROM managed_service_operations WHERE operation_name='provision'")
+      .first<Record<string,unknown>>()).toMatchObject({status:"complete",capability_version:1,price_version:"agentmail-rental-v2",reserved_credits:300,quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/)});
   });
   it("fails closed until a managed AgentMail capability and region are operator verified",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billing=vi.fn(async()=>Response.json({reserved:true}));
@@ -514,13 +519,18 @@ describe("AgentMail provider account boundary",()=>{
       .bind(activated,activated).run();
     const first=await sweepManagedAgentMailRentals(f.env,new Date("2026-03-01T00:00:00.000Z"));
     expect(first).toMatchObject({checked:1,billed:0,held:1});
-    await f.db.prepare(`UPDATE managed_service_plan_entitlements SET price_version='agentmail-rental-v3',credits_per_operation=250,updated_at=datetime('now')
+    await f.db.prepare(`INSERT INTO managed_service_capability_versions(provider,service_id,version,category,operations_json,regions_json,
+      account_modes_json,isolation_model,provisioning_json,metering_json,external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at)
+      SELECT provider,service_id,2,category,operations_json,regions_json,account_modes_json,isolation_model,provisioning_json,metering_json,
+        external_effects_json,evidence_json,status,verified_by,verified_at,valid_until,created_at,updated_at
+      FROM managed_service_capability_versions WHERE provider='agentmail' AND service_id='agentmail' AND version=1`).run();
+    await f.db.prepare(`UPDATE managed_service_plan_entitlements SET capability_version=2,price_version='agentmail-rental-v3',credits_per_operation=250,updated_at=datetime('now')
       WHERE plan_tier='free' AND provider='agentmail' AND service_id='agentmail' AND operation_name IN ('provision','renew')`).run();
     const result=await sweepManagedAgentMailRentals(f.env,new Date("2026-03-01T00:00:00.000Z"));
     expect(result).toMatchObject({checked:1,billed:1,held:0});
     expect(billingActions).toEqual(["reserve","reserve","settle"]);
-    expect(await f.db.prepare("SELECT operation_name,status,reservation_id,reserved_credits,price_version,quote_id,provider_operation_ref FROM managed_service_operations WHERE operation_name='renew'")
-      .first<Record<string,unknown>>()).toMatchObject({operation_name:"renew",status:"complete",reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v2",quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/),provider_operation_ref:"inbox-renew"});
+    expect(await f.db.prepare("SELECT operation_name,status,capability_version,reservation_id,reserved_credits,price_version,quote_id,provider_operation_ref FROM managed_service_operations WHERE operation_name='renew'")
+      .first<Record<string,unknown>>()).toMatchObject({operation_name:"renew",status:"complete",capability_version:1,reservation_id:expect.stringContaining("agentmail_rent_"),reserved_credits:300,price_version:"agentmail-rental-v2",quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/),provider_operation_ref:"inbox-renew"});
     for(const [request] of billing.mock.calls.slice(0,2)){
       expect(await (request as Request).clone().json()).toMatchObject({quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/),requester_user_id:"user",credits:300,price_version:"agentmail-rental-v2"});
     }

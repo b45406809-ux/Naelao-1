@@ -21,9 +21,10 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
 remains separate and must not be switched or merged with the recovery branch. Code checkpoints
-`171a3471`, `064efff8` and `fcc26543`, plus docs checkpoints `8f9c0c15` and `7e401225`, are pushed
+`171a3471`, `064efff8` and `fcc26543`, plus docs checkpoints `8f9c0c15`, `7e401225` and `1c32ef26`, are pushed
 there. AgentMail provision/renewal and Cloudflare model replay preserve consumed quote terms in
-their covered recovery paths; exact checks and next task are recorded in the progress source.
+their covered recovery paths. A local AgentMail capability-version recovery change is now verified
+and awaiting its checkpoint push; exact checks and next task are recorded in the progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
@@ -122,13 +123,14 @@ rate; do not infer one from the current 300-credit reservation. Then continue re
 U01–U12 gaps. Record subsequent checkpoints and exact pushed SHAs in the progress source.
 Keep every rollout flag disabled. Do not deploy or purchase services.
 
-Latest continuation: AgentMail provision and scheduled renewal recovery reuse the consumed quote and
-original credit amount after repricing under the same verified capability. Cloudflare model
-completed/uncertain operations replay from their persisted quote after repricing/capability updates;
-pending inference remains gated by active ceilings and capability. Managed-model tests pass 6/6,
-AgentMail tests 16/16, Billing reservation tests 17/17, and Agents/Billing typechecks pass. Next,
-audit Billing admission/replay after capability-version changes, then continue S2–S9 and U01–U12.
-Rollout remains disabled.
+Latest continuation: AgentMail provision and scheduled renewal recovery reuse the consumed quote's
+original credit amount after repricing and a newer active capability version, when the exact pinned
+version remains verified, valid and authorized. Billing admission validates the pinned version for
+that bound running operation. Cloudflare model completed/uncertain operations replay from their
+persisted quote after repricing/capability updates; pending inference remains gated by active ceilings
+and capability. Fresh AgentMail/model tests pass 22/22 across 2 files, Billing reservation tests
+17/17, and Agents/Billing typechecks pass. Exact next task: review remaining exact-price provider
+callers and quote/reservation consistency, then continue S2–S9 and U01–U12. Rollout remains disabled.
 
 Migration 0209 adds exact fixed model prices and output-token caps; migration 0210 adds a draft
 Cloudflare Workers AI capability and encrypted seven-day model results. The owner-authenticated
