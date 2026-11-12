@@ -466,6 +466,8 @@ describe("AgentMail provider account boundary",()=>{
     expect((await f.db.prepare("SELECT request_json FROM managed_service_operations WHERE operation_name='provision'").first<{request_json:string}>())?.request_json).not.toContain("managed-provider-key");
     expect(await getAssistantAgentMailStatus(f.env,scope)).toMatchObject({lastManagedOperation:{status:"uncertain",reconciliationRequired:true}});
     expect(providerFetch.mock.calls.filter(([input,init])=>new URL(String(input)).pathname==="/v0/pods/pod-1/inboxes"&&new Request(input,init).method==="POST")).toHaveLength(1);
+    await f.db.prepare(`UPDATE managed_service_plan_entitlements SET price_version='agentmail-rental-v3',credits_per_operation=250,updated_at=datetime('now')
+      WHERE plan_tier='free' AND provider='agentmail' AND service_id='agentmail' AND operation_name IN ('provision','renew')`).run();
     const firstSweep=await sweepManagedAgentMailReconciliations(f.env,new Date(Date.now()+6*60_000));
     expect(firstSweep).toMatchObject({checked:1,reconciled:0,deferred:1,failed:0});
     const sweep=await sweepManagedAgentMailReconciliations(f.env,new Date(Date.now()+20*60_000));
@@ -474,6 +476,8 @@ describe("AgentMail provider account boundary",()=>{
     expect(reconciled).toMatchObject({address:"assistant@mail.example.test",status:"active"});
     expect(providerFetch.mock.calls.filter(([input,init])=>new URL(String(input)).pathname==="/v0/pods/pod-1/inboxes"&&new Request(input,init).method==="POST")).toHaveLength(1);
     expect(await f.db.prepare("SELECT lifecycle_state FROM managed_service_accounts WHERE id=?").bind(reconciled?.id).first<{lifecycle_state:string}>()).toMatchObject({lifecycle_state:"active"});
+    expect(await f.db.prepare("SELECT status,price_version,reserved_credits,quote_id FROM managed_service_operations WHERE operation_name='provision'")
+      .first<Record<string,unknown>>()).toMatchObject({status:"complete",price_version:"agentmail-rental-v2",reserved_credits:300,quote_id:expect.stringMatching(/^msq_[a-f0-9]{32}$/)});
   });
   it("fails closed until a managed AgentMail capability and region are operator verified",async()=>{
     const f=fixture();const identity=await ensureIdentity(f.env,scope);const billing=vi.fn(async()=>Response.json({reserved:true}));

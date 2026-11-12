@@ -472,16 +472,11 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
   const capability=await requireManagedServiceCapability(env.PLATFORM_DB,{provider:"agentmail",serviceId:"agentmail",operation:"provision",connectionMode:"naelao_managed",...(env.AGENTMAIL_REGION?{region:env.AGENTMAIL_REGION}:{})});
   const region=env.AGENTMAIL_REGION;if(!region)throw new Error("managed_service_region_not_verified");
   providerRegion(region);
-  const price=await resolveManagedAgentMailPrice(env,scope,"provision",region);
-  if(price.capabilityVersion!==capability.version)throw new Error("managed_service_capability_changed");
   if(!quoteId||!/^msq_[A-Fa-f0-9]{32}$/.test(quoteId))throw new Error("managed_service_quote_required");
   const opId=await stableClientId(`naelao:email-provision:${scope.tenantId}:${agentId}`);const now=Date.now();const timestamp=new Date(now).toISOString();
   const inboxClient=await stableClientId(`naelao:managed-inbox:${scope.tenantId}:${agentId}`);
   const display=displayName??"Naelao Assistant";
   if(display.length<1||display.length>120||/[\u0000-\u001f\u007f]/.test(display))throw new Error("agentmail_display_name_invalid");
-  const requestSpec={tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,agentId,domain:env.AGENTMAIL_DEFAULT_DOMAIN,display,capabilityVersion:capability.version,region};
-  const requestHash=await hashString(JSON.stringify(requestSpec));
-  const renewalPrice=await resolveOptionalAgentMailRenewalPrice(env,scope,region);
   const quote=await env.PLATFORM_DB.prepare(`SELECT tenant_id,space_id,project_id,requester_user_id,plan_tier,provider,service_id,operation_name,
       region,capability_version,price_version,credits,request_sha256,renewal_credits,renewal_price_version,renewal_capability_version,
       renewal_max_credits_per_operation,status,operation_id,expires_at
@@ -489,6 +484,24 @@ export async function provisionManagedAgentMail(env:AgentsEnv,scope:Communicatio
     .first<{tenant_id:string;space_id:string;project_id:string|null;requester_user_id:string;plan_tier:string;provider:string;service_id:string;operation_name:string;
       region:string;capability_version:number;price_version:string;credits:number;request_sha256:string|null;renewal_credits:number|null;renewal_price_version:string|null;
       renewal_capability_version:number|null;renewal_max_credits_per_operation:number|null;status:string;operation_id:string|null;expires_at:string}>();
+  const acceptedOperationQuote=quote?.status==="consumed"&&quote.operation_id===opId;
+  let price:ManagedAgentMailPrice;
+  let renewalPrice:ManagedAgentMailPrice|null;
+  if(acceptedOperationQuote){
+    if(quote.capability_version!==capability.version)throw new Error("managed_service_capability_changed");
+    price={planTier:quote.plan_tier,capabilityVersion:quote.capability_version,priceVersion:quote.price_version,credits:quote.credits,
+      maxCredits:Math.max(quote.credits,quote.renewal_max_credits_per_operation??quote.credits),maxOperationsPerPeriod:null};
+    renewalPrice=quote.renewal_credits!==null&&quote.renewal_price_version!==null&&quote.renewal_capability_version!==null
+      ?{planTier:quote.plan_tier,capabilityVersion:quote.renewal_capability_version,priceVersion:quote.renewal_price_version,
+        credits:quote.renewal_credits,maxCredits:quote.renewal_max_credits_per_operation??quote.renewal_credits,maxOperationsPerPeriod:null}
+      :null;
+  }else{
+    price=await resolveManagedAgentMailPrice(env,scope,"provision",region);
+    if(price.capabilityVersion!==capability.version)throw new Error("managed_service_capability_changed");
+    renewalPrice=await resolveOptionalAgentMailRenewalPrice(env,scope,region);
+  }
+  const requestSpec={tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:scope.projectId??null,agentId,domain:env.AGENTMAIL_DEFAULT_DOMAIN,display,capabilityVersion:capability.version,region};
+  const requestHash=await hashString(JSON.stringify(requestSpec));
   if(!quote||quote.tenant_id!==scope.tenantId||quote.space_id!==scope.spaceId||quote.project_id!==(scope.projectId??null)
     ||quote.requester_user_id!==scope.userId||quote.plan_tier!==price.planTier||quote.provider!=="agentmail"||quote.service_id!=="agentmail"
     ||quote.operation_name!=="provision"||quote.region!==region||quote.capability_version!==capability.version||quote.price_version!==price.priceVersion

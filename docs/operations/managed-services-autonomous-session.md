@@ -11,17 +11,15 @@ do not stop after one phase while independent implementation remains.
 
 Start with repository and remote bootstrap:
 
-1. Discover the actual checkout; do not assume the previous session's path or installed tools.
-   If a checkout exists, inspect `git remote -v`, `git branch --show-current`, and
-   `git status --short --branch`. Verify it is the intended Naelao repository. If none exists,
-   clone https://github.com/b45406809-ux/Naelao-1.git using the session's authorized Git access
-   and select Mcbt5s-Backup-2; do not ask for secrets in chat.
-2. Preserve all existing changes. In a safe checkout, select Mcbt5s-Backup-2, run
-   `git fetch origin Mcbt5s-Backup-2`, then
-   `git merge --ff-only origin/Mcbt5s-Backup-2`.
-   Do not reset, force-push, discard, stash, overwrite or silently merge divergent work.
-   If checkout or fast-forward is blocked, report the exact state, preserve it, and continue
-   safe independent inspection; ask only when a necessary action genuinely requires direction.
+1. Inspect `/workspace/Naelao-1-managed-services` first. Preserve its active branch
+   `autonomous-managed-services-20261111` and every dirty/untracked path. Do not reset, clean,
+   replace, stash, switch branches or fast-forward the selected recovery branch over this worktree.
+   Inspect `git remote -v`, `git branch --show-current`, and `git status --short --branch`.
+2. The user-selected recovery destination is `origin/Mcbt5s-Backup-2`, separate from the active
+   implementation branch. Fetch it only for inspection. Before each authorized recovery push,
+   verify the remote tip is an ancestor of local `HEAD`; then use the explicit fast-forward refspec
+   `HEAD:refs/heads/Mcbt5s-Backup-2`, without force. If histories diverge, preserve both and stop
+   before any merge, rebase or overwrite; continue independent local implementation.
 3. Read AGENTS.md and applicable nested instructions. Discover Node/package manager from the
    current root package.json; bootstrap pinned tools, install frozen-lockfile dependencies and
    build required workspace packages. Do not assume credentials, generated SDK declarations,
@@ -79,12 +77,15 @@ those files and inspect the worktree, then resume without restarting completed w
 Run meaningful tests for authorization, persistence, concurrency, recovery, billing, provider
 operations and integration; run affected typechecks, migration/config checks and connected local
 journeys. Fix relevant failures. Distinguish mocks, local emulation, real Container and deployed
-provider evidence. Do not enable rollout flags or spend money/create paid resources, deploy to
-production, run destructive remote migrations or message people without separate authorization.
+provider evidence. Commit and push every coherent verified checkpoint to `origin/Mcbt5s-Backup-2`
+using the explicit fast-forward refspec above; this workflow is authorized. Never force-push or
+reconcile divergence through reset, rebase, merge or overwrite. Do not enable rollout flags or spend
+money/create paid resources, deploy to production, run destructive remote migrations or message
+people without separate authorization.
 
 Before finishing, audit every requirement from sections 1–19 and the original phases A–G. Close
 remaining independent code gaps, integrate callers, remove stale status claims and record exact
 external/live gates. Report actual checks, any genuine remaining code and reason, credentials or
-decisions needed, branch/commit and dirty status. Do not commit or push implementation unless I
-explicitly request it. Do not pause merely because one milestone is complete.
+decisions needed, branch/commit and dirty status. Do not pause merely because one milestone is
+complete.
 ```

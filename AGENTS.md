@@ -19,6 +19,12 @@ Handoff was prepared against `origin/Mcbt5s-Backup-2` at `700c3fe0`; the authori
 run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on branch
 `autonomous-managed-services-20261111` in `/workspace/Naelao-1-managed-services`; preserve this
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
+The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
+remains separate and must not be switched or merged with the recovery branch. Code checkpoint
+`46ff858f` and the remote recovery branch both contain the initial AgentMail quote slice. The current
+worktree adds repricing-safe provision recovery and updated durable progress/bootstrap instructions;
+the exact local changes and fresh checks are recorded in the progress source and are being prepared
+for the next coherent push.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
@@ -43,7 +49,11 @@ AgentPort SDK now includes a sequential poll/claim/handler/ack helper that expec
 acceptance; provider-content fetch and consumer session storage remain in the external adapter. S2
 also has migration 0220 for durable fixed-price model quotes. An owner-only Shell caller previews the
 exact active entitlement, confirms separately, and passes a one-use quote through the managed model
-operation and Billing reservation; no active model price is currently configured. The milestone also
+operation and Billing reservation; no active model price is currently configured. Migration 0221 adds
+exact operation prices separate from maximum caps and request-hash-bound quotes. Managed AgentMail
+provisioning now has an owner quote/confirmation flow; recurring renewal is shown before activation,
+and each scheduled renewal is bound to a one-use quote and the active exact rate. Neither AgentMail nor
+model pricing is active in this environment. The milestone also
 includes provider-neutral UserPort connector discovery/sync, owner-selected Agent37 computer actions,
 customer-owned Higgsfield generation actions and Telnyx BYO SMS grants through AgentPort. UserPort
 revocation has a durable uncertain-outcome journal; held sync operations can be cleaned after
@@ -113,6 +123,12 @@ rate; do not infer one from the current 300-credit reservation. Then continue re
 U01–U12 gaps. Record subsequent checkpoints and exact pushed SHAs in the progress source.
 Keep every rollout flag disabled. Do not deploy or purchase services.
 
+Latest local continuation: AgentMail provision recovery now reuses the consumed quote and original
+credit amount after repricing, while the same capability version remains verified. Its tests pass
+16/16; Billing reservation tests pass 17/17; Agents, Billing, and Shell typechecks pass. The next
+implementation action is to make scheduled renewal retries reuse their consumed quote after
+repricing, then continue S2–S9 and U01–U12. Rollout remains disabled.
+
 Migration 0209 adds exact fixed model prices and output-token caps; migration 0210 adds a draft
 Cloudflare Workers AI capability and encrypted seven-day model results. The owner-authenticated
 model caller reaches the existing AI binding and Billing reserve/settle path with a per-request
@@ -133,11 +149,10 @@ See the durable progress record.
   tools, credentials or running services exist in a new session. Read nested AGENTS.md files
   before modifying their paths.
 - Inspect `git remote -v`, `git branch --show-current`, and `git status --short --branch`.
-  Fetch `origin Mcbt5s-Backup-2`; on the target branch use
-  `git merge --ff-only origin/Mcbt5s-Backup-2` when safe. Preserve local user work. Do not
-  reset, force-push, discard, stash, overwrite, change unrelated remotes or silently merge
-  divergence. If fast-forward is blocked, report the exact condition and continue safe
-  independent inspection; obtain direction for any necessary destructive action.
+  Fetch `origin Mcbt5s-Backup-2` only to inspect the selected recovery ref. Preserve this active
+  implementation worktree and branch; do not merge or fast-forward the recovery ref over it. Before
+  pushing, verify the remote recovery tip is an ancestor of local HEAD. If it is ahead or diverged,
+  preserve both histories and stop before any overwrite, merge or rebase.
 - Read root packageManager and engines. At this baseline use Node >=22.5.0 and pnpm 9.12.0.
   Install with the pinned manager and frozen lockfile; build workspace dependencies before
   dependent checks. Diagnose stale packages separately from code errors. Do not weaken checks
@@ -145,12 +160,13 @@ See the durable progress record.
 - Implementation authorization covers local, reversible code work and relevant tests. Paid
   purchases, production deployment, destructive remote migrations, rollout enablement and
   messages to external people require separate authorization. Do not print credentials.
-- For this autonomous implementation mission, commit and push each completed change to the
-  active task branch so the remote branch remains a recovery point. The user has authorized this
-  workflow; do not ask again. Stage and review the intended changes, run relevant checks, then push
-  without force. Never reset, rebase, discard, or force-push to reconcile divergence. If the remote
-  task branch is absent, create it under the same active branch name; if it has diverged, preserve
-  both sides and report the exact state before attempting any overwrite or history rewrite.
+- For this autonomous implementation mission, commit and push every coherent verified checkpoint
+  to the user-selected recovery branch `origin/Mcbt5s-Backup-2`; this workflow is authorized, so do
+  not ask again. Keep the local branch `autonomous-managed-services-20261111` active. Review and test
+  the intended changes, then push with the explicit fast-forward refspec
+  `HEAD:refs/heads/Mcbt5s-Backup-2`, never force. Before each push, confirm the remote tip is an
+  ancestor of local HEAD. If not, preserve both sides and report the exact condition; do not reset,
+  rebase, merge, discard or overwrite either history.
 
 ## Fixed decisions
 
