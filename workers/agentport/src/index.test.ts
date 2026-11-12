@@ -55,7 +55,7 @@ describe("standalone AgentPort API", () => {
     const toolsResponse = await app.fetch(new Request("https://agentport.test/mcp", { method: "POST", headers: { authorization: bindings.bearer, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) }), bindings);
     const toolList = await toolsResponse.json() as { result: { tools: Array<{ name: string }> } };
     expect(toolList.result.tools.map(tool => tool.name)).toContain("agentport_accounts_create");
-    expect(toolList.result.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["agentport_email_provision", "agentport_email_send", "agentport_email_revoke", "agentport_threads_bind_session"]));
+    expect(toolList.result.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["agentport_email_provision", "agentport_email_send", "agentport_email_revoke", "agentport_threads_bind_session", "agentport_trusted_senders_revoke"]));
     expect(toolList.result.tools.some(tool => tool.name.includes("apps") || tool.name.includes("capabilities_provision"))).toBe(false);
     const bound = await app.fetch(new Request("https://agentport.test/mcp", { method: "POST", headers: { authorization: bindings.bearer, "content-type": "application/json" }, body: JSON.stringify({
       jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "agentport_threads_bind_session", arguments: { threadId: "thread-1", sessionBinding: { version: 1, consumerId: "external-consumer", sessionRef: "opaque-session" } } },

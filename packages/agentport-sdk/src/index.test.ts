@@ -19,6 +19,12 @@ describe("AgentPort public SDK", () => {
     await expect(client.setThreadSessionBinding("thread-1", binding)).resolves.toMatchObject({ thread: { id: "thread-1", sessionBinding: binding } });
     expect(fetcher).toHaveBeenCalledWith("https://agentport.test/v1/threads/thread-1/session-binding", expect.objectContaining({ method: "PUT" }));
   });
+  it("revokes an owner-configured trusted sender link through the channel API", async () => {
+    const fetcher = vi.fn(async () => Response.json({ revoked: true, trustedSenderId: "sender-1", idempotent: false }));
+    const client = new AgentPortClient({ apiKey: "ap_live_test", baseUrl: "https://agentport.test", fetch: fetcher as typeof fetch });
+    await expect(client.revokeTrustedSender("channel/1", "sender-1")).resolves.toEqual({ revoked: true, trustedSenderId: "sender-1", idempotent: false });
+    expect(fetcher).toHaveBeenCalledWith("https://agentport.test/v1/channels/channel%2F1/trusted-senders/sender-1", expect.objectContaining({ method: "DELETE" }));
+  });
   it("verifies signed event bytes and rejects stale and altered notifications", async () => {
     const secret = "event-secret", timestamp = "1000", raw = new TextEncoder().encode('{"id":"evt_1"}');
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

@@ -860,11 +860,49 @@ routes.post("/channels/:channelId/trusted-senders", async (c) => {
   if (!channel) return c.json({ error_code: "channel_unavailable" }, 404);
   const at = stamp(); const senderId = id("snd");
   const actions = [...new Set((body.allowedActions ?? []).filter(x => typeof x === "string" && x.length <= 120))].slice(0, 100);
-  try { await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_trusted_senders(id,tenant_id,channel_id,provider_sender_id,role,principal_id,authentication_mode,allowed_actions_json,verified_at,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(senderId, tenantId, channelId, body.providerSenderId, body.role, body.principalId,
-      ["basic", "stepup", "strict"].includes(String(body.authenticationMode)) ? body.authenticationMode : "basic", JSON.stringify(actions), at, at).run(); }
+  const authenticationMode = ["basic", "stepup", "strict"].includes(String(body.authenticationMode)) ? body.authenticationMode : "basic";
+  let saved: { id: string; role: string; principal_id: string; authentication_mode: string; allowed_actions_json: string; status: string } | null = null;
+  let changed = 0;
+  try {
+    const result = await c.env.PLATFORM_DB.prepare(`INSERT INTO agentport_trusted_senders(id,tenant_id,channel_id,provider_sender_id,role,principal_id,authentication_mode,allowed_actions_json,verified_at,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,channel_id,provider_sender_id) DO UPDATE SET
+        role=excluded.role,principal_id=excluded.principal_id,authentication_mode=excluded.authentication_mode,
+        allowed_actions_json=excluded.allowed_actions_json,verified_at=excluded.verified_at,status='active'
+      WHERE agentport_trusted_senders.status='revoked'`).bind(senderId, tenantId, channelId, body.providerSenderId, body.role, body.principalId,
+        authenticationMode, JSON.stringify(actions), at, at).run();
+    changed = result.meta.changes;
+    saved = await c.env.PLATFORM_DB.prepare(`SELECT id,role,principal_id,authentication_mode,allowed_actions_json,status FROM agentport_trusted_senders
+      WHERE tenant_id=? AND channel_id=? AND provider_sender_id=?`).bind(tenantId, channelId, body.providerSenderId)
+      .first<{ id: string; role: string; principal_id: string; authentication_mode: string; allowed_actions_json: string; status: string }>() ?? null;
+  }
   catch { return c.json({ error_code: "trusted_sender_conflict" }, 409); }
-  return c.json({ trustedSender: { id: senderId, providerSenderId: body.providerSenderId, role: body.role, principalId: body.principalId, authenticationMode: body.authenticationMode ?? "basic", allowedActions: actions } }, 201);
+  if (!saved || saved.status !== "active") return c.json({ error_code: "trusted_sender_store_unavailable" }, 503);
+  const sameActiveLink = saved.role === body.role && saved.principal_id === body.principalId
+    && saved.authentication_mode === authenticationMode && saved.allowed_actions_json === JSON.stringify(actions);
+  if (!changed && !sameActiveLink) return c.json({ error_code: "trusted_sender_conflict" }, 409);
+  const status = { trustedSender: { id: saved.id, providerSenderId: body.providerSenderId, role: saved.role,
+    principalId: saved.principal_id, authenticationMode: saved.authentication_mode,
+    allowedActions: JSON.parse(saved.allowed_actions_json) as string[] } };
+  return c.json({ ...status, ...(changed ? {} : { idempotent: true }) }, changed ? 201 : 200);
+});
+
+routes.delete("/channels/:channelId/trusted-senders/:senderId", async (c) => {
+  if (c.req.header("x-agentport-actor-role") === "agent")
+    return channelPermissionDenied(c, "Only the channel owner or host can revoke a trusted sender.");
+  const tenantId = c.get("tenantId"), channelId = c.req.param("channelId"), senderId = c.req.param("senderId");
+  if (!await actorOwnsChannel(c, channelId)) return c.json({ error_code: "channel_unavailable" }, 404);
+  const sender = await c.env.PLATFORM_DB.prepare(`SELECT id,status FROM agentport_trusted_senders
+    WHERE id=? AND tenant_id=? AND channel_id=?`).bind(senderId, tenantId, channelId)
+    .first<{ id: string; status: string }>();
+  if (!sender) return c.json({ error_code: "trusted_sender_unavailable" }, 404);
+  const changed = sender.status === "active"
+    ? await c.env.PLATFORM_DB.prepare(`UPDATE agentport_trusted_senders SET status='revoked'
+        WHERE id=? AND tenant_id=? AND channel_id=? AND status='active'`).bind(senderId, tenantId, channelId).run()
+    : { meta: { changes: 0 } };
+  const current = await c.env.PLATFORM_DB.prepare(`SELECT status FROM agentport_trusted_senders
+    WHERE id=? AND tenant_id=? AND channel_id=?`).bind(senderId, tenantId, channelId).first<{ status: string }>();
+  if (current?.status !== "revoked") return c.json({ error_code: "trusted_sender_revoke_conflict" }, 409);
+  return c.json({ revoked: true, trustedSenderId: senderId, idempotent: changed.meta.changes === 0 });
 });
 
 routes.post("/channels/:channelId/threads", async (c) => {

@@ -336,7 +336,7 @@ describe("AgentPort internal registry API", () => {
     const { db, platformDb } = fixture(); const secret = "test-platform-secret";
     const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
     const env = { PLATFORM_SECRET: secret, PLATFORM_DB: platformDb } as never;
-    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    const call = (path: string, method: string, body?: unknown, actor: Record<string, string> = {}) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers: { ...headers, ...actor }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
     await call("/services", "POST", { id: "chat-provider", name: "Chat Provider", type: "channel", accountModels: ["agent_native"], capabilities: ["channels", "messages.read", "messages.send"], events: ["message.received", "message.send_requested"], connectionPurpose: "agent_resource" });
     const agentResponse = await call("/agents", "POST", { principalId: "owner-1", principalType: "individual", createdBy: "owner-1", hostPlatform: "external" });
     const { agent } = await agentResponse.json() as { agent: { id: string } };
@@ -347,7 +347,8 @@ describe("AgentPort internal registry API", () => {
     const channelResponse = await call("/channels", "POST", { serviceId: "chat-provider", accountId: account.id, agentId: agent.id, providerChannelId: "external-channel-1", displayName: "Support" });
     expect(channelResponse.status).toBe(201);
     const { channel } = await channelResponse.json() as { channel: { id: string } };
-    await call(`/channels/${channel.id}/trusted-senders`, "POST", { providerSenderId: "owner-handle", principalId: "owner-1", role: "owner", allowedActions: ["messages.send"] });
+    const trustedSenderResponse = await call(`/channels/${channel.id}/trusted-senders`, "POST", { providerSenderId: "owner-handle", principalId: "owner-1", role: "owner", allowedActions: ["messages.send"] });
+    const { trustedSender } = await trustedSenderResponse.json() as { trustedSender: { id: string } };
     const rejectedContent = await call(`/channels/${channel.id}/message-events/inbound`, "POST", { providerMessageId: "provider-msg-with-body", providerThreadId: "customer-1", senderId: "owner-handle", content: "Hello" });
     expect(rejectedContent.status).toBe(400);
     expect((await call("/events", "POST", { serviceId: "chat-provider", providerEventId: "body-event", eventType: "message.received", text: "Hello" })).status).toBe(400);
@@ -379,6 +380,21 @@ describe("AgentPort internal registry API", () => {
       expect.objectContaining({ providerMessageId: "provider-msg-1", senderPrincipalId: "owner-1", trustLevel: "verified" }),
       expect.objectContaining({ providerMessageId: "provider-msg-2", senderRole: "external", trustLevel: "unverified", senderPrincipalId: null }),
     ]) });
+    expect((await call(`/channels/${channel.id}/trusted-senders/${trustedSender.id}`, "DELETE", undefined, { "x-agentport-actor-role": "agent" })).status).toBe(403);
+    expect(await (await call(`/channels/${channel.id}/trusted-senders/${trustedSender.id}`, "DELETE")).json()).toMatchObject({ revoked: true, idempotent: false });
+    expect(await (await call(`/channels/${channel.id}/trusted-senders/${trustedSender.id}`, "DELETE")).json()).toMatchObject({ revoked: true, idempotent: true });
+    const revokedInbound = await call(`/channels/${channel.id}/message-events/inbound`, "POST", { providerMessageId: "provider-msg-3", providerThreadId: "customer-1", senderId: "owner-handle" });
+    expect(await revokedInbound.json()).toMatchObject({ messageReference: { providerMessageId: "provider-msg-3", senderRole: "external", trustLevel: "unverified" } });
+    const relinked = await call(`/channels/${channel.id}/trusted-senders`, "POST", { providerSenderId: "owner-handle", principalId: "owner-2", role: "delegate", allowedActions: ["messages.read"] });
+    expect(relinked.status).toBe(201);
+    const relinkInbound = await call(`/channels/${channel.id}/message-events/inbound`, "POST", { providerMessageId: "provider-msg-4", providerThreadId: "customer-1", senderId: "owner-handle" });
+    expect(await relinkInbound.json()).toMatchObject({ messageReference: { providerMessageId: "provider-msg-4", senderRole: "delegate", trustLevel: "verified" } });
+    const updatedRefs = await (await call(`/threads/${threadRows[0]!.id}/message-references?agentId=${agent.id}`, "GET")).json();
+    expect(updatedRefs).toMatchObject({ messageReferences: expect.arrayContaining([
+      expect.objectContaining({ providerMessageId: "provider-msg-1", senderPrincipalId: "owner-1", senderRole: "owner" }),
+      expect.objectContaining({ providerMessageId: "provider-msg-3", senderPrincipalId: null, senderRole: "external" }),
+      expect.objectContaining({ providerMessageId: "provider-msg-4", senderPrincipalId: "owner-2", senderRole: "delegate" }),
+    ]) });
     const authorized = await call(`/threads/${threadRows[0]!.id}/actions/authorize`, "POST", { agentId: agent.id, action: "messages.send", idempotencyKey: "send-1" });
     expect(authorized.status).toBe(200);
     expect(await authorized.json()).toMatchObject({ decision: "allow", providerChannelId: "external-channel-1", providerThreadId: "customer-1", contentLocation: "channel_provider" });
@@ -390,8 +406,8 @@ describe("AgentPort internal registry API", () => {
       .run(channel.id, threadRows[0]!.id, channel.id, threadRows[0]!.id);
     db.exec(readFileSync(new URL("../../../../infra/migrations/0164_agentport_channel_message_refs.sql", import.meta.url), "utf8"));
     db.exec(readFileSync(new URL("../../../../infra/migrations/0166_drop_agentport_message_store.sql", import.meta.url), "utf8"));
-    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_channel_message_refs WHERE provider_message_id IS NOT NULL").get()).toMatchObject({ n: 4 });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_events WHERE event_type='message.received'").get()).toMatchObject({ n: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_channel_message_refs WHERE provider_message_id IS NOT NULL").get()).toMatchObject({ n: 6 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agentport_events WHERE event_type='message.received'").get()).toMatchObject({ n: 4 });
     expect(db.prepare("SELECT payload_ref FROM agentport_events WHERE event_type='message.received' AND provider_event_id='provider-msg-1'").get()).toMatchObject({ payload_ref: "provider-msg-1" });
     expect(db.prepare("SELECT sender_role,sender_principal_id,trust_level FROM agentport_channel_message_refs WHERE provider_message_id='provider-msg-1'").get()).toMatchObject({ sender_role: "owner", sender_principal_id: "owner-1", trust_level: "verified" });
   });
