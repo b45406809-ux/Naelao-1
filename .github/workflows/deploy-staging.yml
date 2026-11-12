@@ -25,8 +25,18 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Test environment isolation guard
+        run: python3 -m unittest discover -s infra/scripts -p "test_validate_wrangler_env_isolation.py"
+
+      - name: Reject shared mutable staging/production bindings
+        run: python3 infra/scripts/validate_wrangler_env_isolation.py
 
       - name: Build workspace packages
         run: pnpm turbo run build
