@@ -6,7 +6,11 @@ import {
   readBoundedRequestText,
   readBoundedResponseJson,
 } from "@naelao/http";
-import { hashEmailAddress } from "../channels/cloudflare-email.js";
+import {
+  hashEmailAddress,
+  MAX_EMAIL_ATTACHMENT_BYTES,
+  safeFilename,
+} from "../channels/cloudflare-email.js";
 import { connectUserAgentMail, callAgentMailTool, createManagedAgentMailQuote, getAssistantAgentMailStatus, getAgentPortSyncIdentity, provisionManagedAgentMail, readAgentMailUsage, receiveAgentMailWebhook, receiveAgentPortNotification, stopManagedAgentMailRenewal, revokeAgentPortOwnerLink, setAgentPortEventAssistant, syncAgentPortAgentMail } from "./agentmail.js";
 import { disableManagedServiceCapability, verifyManagedServiceCapability } from "./managed-service-capabilities.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
@@ -23,6 +27,7 @@ import {
   scopeAccess,
   storeBody,
   readBody,
+  readAttachmentBody,
   sendDraft,
   validateAutonomy,
   type CommunicationScope,
@@ -918,6 +923,87 @@ async function handle(c: C, agent: boolean) {
     return c.json({
       data,
       next_cursor: results.length > limit ? data[data.length - 1]?.id : null,
+    });
+  }
+  if (action === "attachment") {
+    if (agent || c.req.method !== "GET")
+      return c.json({ error_code: "method_not_allowed" }, 405);
+    if (!manager)
+      return c.json({ error_code: "owner_authorization_required" }, 403);
+    const messageId = c.req.query("id") ?? "";
+    const attachmentId = c.req.query("attachment_id") ?? "";
+    if (!ID.test(messageId) || !ID.test(attachmentId))
+      return c.json({ error_code: "invalid_attachment" }, 400);
+    const message = await c.env.PLATFORM_DB.prepare(
+      "SELECT id,direction,body_key FROM assistant_communication_messages WHERE id=? AND identity_id=?"
+    )
+      .bind(messageId, identity.id)
+      .first<{ id: string; direction: string; body_key: string }>();
+    if (!message || message.direction !== "inbound")
+      return c.json({ error_code: "not_found" }, 404);
+    let parent: Record<string, unknown>;
+    try {
+      parent = await readBody(c.env, identity, message.id, message.body_key);
+    } catch {
+      return c.json({ error_code: "message_unavailable" }, 503);
+    }
+    const attachments = Array.isArray(parent.attachments) ? parent.attachments : [];
+    const metadata = attachments.find(
+      (value): value is Record<string, unknown> =>
+        !!value && typeof value === "object" &&
+        (value as Record<string, unknown>).id === attachmentId
+    );
+    if (
+      !metadata ||
+      !Number.isSafeInteger(metadata.sizeBytes) ||
+      Number(metadata.sizeBytes) < 0 ||
+      Number(metadata.sizeBytes) > MAX_EMAIL_ATTACHMENT_BYTES
+    )
+      return c.json({ error_code: "not_found" }, 404);
+    let stored: Record<string, unknown>;
+    try {
+      stored = await readAttachmentBody(
+        c.env,
+        identity,
+        attachmentId,
+        `spaces/${identity.space_id}/communications/${identity.id}/${attachmentId}.json`
+      );
+    } catch {
+      return c.json({ error_code: "attachment_unavailable" }, 404);
+    }
+    if (
+      typeof stored.data !== "string" ||
+      typeof metadata.filename !== "string" ||
+      stored.filename !== metadata.filename ||
+      stored.mimeType !== metadata.mimeType ||
+      stored.sizeBytes !== metadata.sizeBytes ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(stored.data)
+    )
+      return c.json({ error_code: "attachment_unavailable" }, 409);
+    let bytes: Uint8Array;
+    try {
+      bytes = Uint8Array.from(atob(stored.data), (character) => character.charCodeAt(0));
+    } catch {
+      return c.json({ error_code: "attachment_unavailable" }, 409);
+    }
+    if (bytes.byteLength !== metadata.sizeBytes)
+      return c.json({ error_code: "attachment_unavailable" }, 409);
+    const filename = safeFilename(metadata.filename);
+    const encodedFilename = encodeURIComponent(filename).replace(
+      /['()*]/g,
+      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    const mimeType = typeof metadata.mimeType === "string" &&
+      /^[\w.+-]+\/[\w.+-]+$/.test(metadata.mimeType)
+      ? metadata.mimeType
+      : "application/octet-stream";
+    return new Response(bytes, {
+      headers: {
+        "content-type": mimeType,
+        "content-disposition": `attachment; filename*=UTF-8''${encodedFilename}`,
+        "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+      },
     });
   }
   if (action === "message") {

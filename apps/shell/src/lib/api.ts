@@ -2977,7 +2977,18 @@ export function saveAssistantVoice(spaceId:string,session:SessionCredentials,pre
 
 export interface AssistantMailbox {identity:{id:string;email_address:string|null;email_status:string;kind:string;provider:string}|null;preferences:import("@naelao/agent-sdk").AssistantChannelPreferences;autonomy?:{mode:"approve"|"standing";recipients:string[];dailySendLimit:number}}
 export interface AssistantMailMessage {id:string;direction:string;channel:string;sender:string;recipient:string;subject:string;status:string;created_at:string}
+export interface AssistantMailAttachment {id:string;filename:string;mimeType:string;sizeBytes:number}
 export function assistantMailApi<T>(spaceId:string,session:SessionCredentials,input:{action?:string;projectId?:string;[key:string]:unknown},write=false){const{projectId,action,...body}=input;const query=new URLSearchParams({...projectId?{project_id:projectId}:{},...!write?{action:action??"identity",...Object.fromEntries(Object.entries(body).map(([k,v])=>[k,String(v??"")]))}:{}});return apiFetch<T>(`/v1/spaces/${encodeURIComponent(spaceId)}/assistant-communications?${query}`,{session,...write?{method:"POST",body:JSON.stringify({action,...body})}:{}});}
+export async function assistantMailAttachment(spaceId:string,session:SessionCredentials,input:{messageId:string;attachmentId:string;projectId?:string}):Promise<Blob>{
+  const query=new URLSearchParams({action:"attachment",id:input.messageId,attachment_id:input.attachmentId,...input.projectId?{project_id:input.projectId}:{}});
+  const path=`/v1/spaces/${encodeURIComponent(spaceId)}/assistant-communications?${query}`;
+  const headers=new Headers();
+  if(session.sessionToken!=="cookie")headers.set("Authorization",`Bearer ${session.sessionToken}`);
+  headers.set("x-naelao-end-user-id",session.endUserId);
+  const response=await fetch(`${session.sessionToken==="cookie"?"/api/naelao":API_URL}${path}`,{headers,...session.sessionToken==="cookie"?{credentials:"include" as const}:{}});
+  if(!response.ok){const error=await response.json().catch(()=>({})) as {message?:string;error?:string;error_code?:string};throw new ApiError(error.message??error.error??`Request failed (${response.status})`,response.status,error.error_code);}
+  return response.blob();
+}
 
 export interface ManagedServiceDashboard {
   planTier: string;

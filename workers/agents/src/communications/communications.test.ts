@@ -136,6 +136,78 @@ describe("scoped assistant communications", () => {
     }));
     expect(f.env.AGENTS_WORKER.fetch).not.toHaveBeenCalled();
   });
+  it("downloads only an attached inbound file for its mailbox owner with bounded binary headers", async () => {
+    const f = fixture(),
+      identity = await ensureIdentity(f.env, scope),
+      messageId = "mail-large",
+      attachmentId = `${messageId}-a0`,
+      size = 1024 * 1024 + 17,
+      bytes = Uint8Array.from({ length: size }, (_, index) => index % 251);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 32 * 1024)
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 32 * 1024));
+    const metadata = { id: attachmentId, filename: "quarterly report.bin", mimeType: "application/octet-stream", sizeBytes: size };
+    const attachmentKey = await storeBody(f.env, identity, attachmentId, {
+      data: btoa(binary), filename: metadata.filename, mimeType: metadata.mimeType, sizeBytes: size,
+    });
+    const messageKey = await storeBody(f.env, identity, messageId, { text: "See attached", attachments: [metadata], untrusted: true });
+    expect(attachmentKey).toBe(`spaces/space/communications/${identity.id}/${attachmentId}.json`);
+    await f.db.prepare(
+      "INSERT INTO assistant_communication_messages(id,identity_id,direction,sender,recipient,subject,status,body_key) VALUES(?,?,'inbound','sender@example.com','owner@example.com','Report','received',?)"
+    ).bind(messageId, identity.id, messageKey).run();
+
+    const app = new Hono<{ Bindings: AgentsEnv }>();
+    registerCommunicationRoutes(app);
+    const headers = {
+      "x-naelao-tenant-id": "tenant",
+      "x-naelao-user-id": "user",
+      "x-naelao-role": "owner",
+      "x-naelao-internal-token": await mintInternalToken("secret", "tenant"),
+    };
+    const response = await app.request(
+      `/spaces/space/assistant-communications?action=attachment&id=${messageId}&attachment_id=${attachmentId}`,
+      { headers },
+      f.env
+    );
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    expect(response.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''quarterly%20report.bin");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+
+    const foreign = await app.request(
+      `/spaces/space/assistant-communications?action=attachment&id=${messageId}&attachment_id=unrelated-file`,
+      { headers },
+      f.env
+    );
+    expect(foreign.status).toBe(404);
+  }, 30_000);
+  it("requires project mailbox ownership before returning attachment bytes", async () => {
+    const f = fixture(),
+      projectScope = { ...scope, projectId: "project" },
+      identity = await ensureIdentity(f.env, projectScope),
+      messageId = "mail-project",
+      attachmentId = `${messageId}-a0`,
+      metadata = { id: attachmentId, filename: "private.txt", mimeType: "text/plain", sizeBytes: 6 };
+    await storeBody(f.env, identity, attachmentId, { data: btoa("secret"), filename: metadata.filename, mimeType: metadata.mimeType, sizeBytes: metadata.sizeBytes });
+    const messageKey = await storeBody(f.env, identity, messageId, { text: "See attached", attachments: [metadata] });
+    await f.db.prepare(
+      "INSERT INTO assistant_communication_messages(id,identity_id,direction,sender,recipient,subject,status,body_key) VALUES(?,?,'inbound','sender@example.com','owner@example.com','Private','received',?)"
+    ).bind(messageId, identity.id, messageKey).run();
+    const app = new Hono<{ Bindings: AgentsEnv }>();
+    registerCommunicationRoutes(app);
+    const response = await app.request(
+      `/spaces/space/assistant-communications?action=attachment&project_id=project&id=${messageId}&attachment_id=${attachmentId}`,
+      { headers: {
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-user-id": "other",
+        "x-naelao-role": "product_end_user",
+        "x-naelao-internal-token": await mintInternalToken("secret", "tenant"),
+      } },
+      f.env
+    );
+    expect(response.status).toBe(403);
+  });
   it("blocks protected worker operations and unsigned requests", async () => {
     const f = fixture(),
       app = new Hono<{ Bindings: AgentsEnv }>();

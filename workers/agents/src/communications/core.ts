@@ -320,11 +320,12 @@ export async function storeBody(
   );
   return key;
 }
-export async function readBody(
+async function readStoredBody(
   env: AgentsEnv,
   identity: CommunicationIdentity,
   id: string,
-  key: string
+  key: string,
+  maxBytes: number
 ): Promise<Record<string, unknown>> {
   if (
     key !==
@@ -332,9 +333,27 @@ export async function readBody(
   )
     throw new Error("communication_body_scope_mismatch");
   const object = await env.SCRIPTS_R2?.get(key);
-  if (!object || object.size > 1024 * 1024)
+  if (!object || object.size > maxBytes)
     throw new Error("communication_body_unavailable");
   return openCommunication(env, identity, id, await object.json());
+}
+export async function readBody(
+  env: AgentsEnv,
+  identity: CommunicationIdentity,
+  id: string,
+  key: string
+): Promise<Record<string, unknown>> {
+  return readStoredBody(env, identity, id, key, 1024 * 1024);
+}
+/** Inbound attachments are base64-wrapped and encrypted in R2, so their JSON envelope is larger
+ * than the 5 MiB decoded attachment limit. Keep the larger bound private to this call path. */
+export async function readAttachmentBody(
+  env: AgentsEnv,
+  identity: CommunicationIdentity,
+  id: string,
+  key: string
+): Promise<Record<string, unknown>> {
+  return readStoredBody(env, identity, id, key, 8 * 1024 * 1024);
 }
 export interface CommunicationAutonomy {
   mode: "approve" | "standing";

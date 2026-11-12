@@ -5,8 +5,10 @@ import * as React from "react";
 import { Button, FormInput, FormTextarea, FormSelect } from "@naelao/ui";
 import {
   assistantMailApi,
+  assistantMailAttachment,
   listProjects,
   type AssistantMailbox,
+  type AssistantMailAttachment,
   type AssistantMailMessage,
   type SessionCredentials,
   type Project,
@@ -22,6 +24,8 @@ export function AssistantMailboxPanel({
     [cursor, setCursor] = React.useState<string | null>(null),
     [query, setQuery] = React.useState(""),
     [body, setBody] = React.useState(""),
+    [bodyMessageId, setBodyMessageId] = React.useState(""),
+    [attachments, setAttachments] = React.useState<AssistantMailAttachment[]>([]),
     [error, setError] = React.useState(""),
     [busy, setBusy] = React.useState(false),
     [token, setToken] = React.useState("");
@@ -52,6 +56,8 @@ export function AssistantMailboxPanel({
     setSubject("");
     setText("");
     setBody("");
+    setBodyMessageId("");
+    setAttachments([]);
     setToken("");
     setQuery("");
   }, [spaceId, session, project]);
@@ -116,11 +122,37 @@ export function AssistantMailboxPanel({
   async function readMessage(id: string) {
     const version = generation.current;
     try {
-      const r = await call<{ body: { text: string } }>("message", { id });
-      if (version === generation.current) setBody(r.body.text);
+      const r = await call<{ body: { text: string; attachments?: AssistantMailAttachment[] } }>("message", { id });
+      if (version === generation.current) {
+        setBody(r.body.text);
+        setBodyMessageId(id);
+        setAttachments(Array.isArray(r.body.attachments) ? r.body.attachments : []);
+      }
     } catch (e) {
       if (version === generation.current)
         setError(e instanceof Error ? e.message : "Message unavailable");
+    }
+  }
+  async function downloadAttachment(messageId: string, attachment: AssistantMailAttachment) {
+    setBusy(true);
+    setError("");
+    try {
+      const blob = await assistantMailAttachment(spaceId, session, {
+        messageId,
+        attachmentId: attachment.id,
+        ...(project ? { projectId: project } : {}),
+      });
+      const url = URL.createObjectURL(blob), link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Attachment unavailable");
+    } finally {
+      setBusy(false);
     }
   }
   async function loadMore() {
@@ -325,10 +357,15 @@ export function AssistantMailboxPanel({
       ))}
       {cursor && <Button onClick={() => void loadMore()}>Load more</Button>}
       {body && <pre style={{ whiteSpace: "pre-wrap" }}>{body}</pre>}
+      {bodyMessageId && attachments.length > 0 && (
+        <MailboxAttachments messageId={bodyMessageId} attachments={attachments} busy={busy} onDownload={downloadAttachment} />
+      )}
       <CommandInbox
         key={spaceId + ":" + project + ":" + session.endUserId}
         call={call}
         onApprove={(id) => void act("approve-command", { id })}
+        onDownload={downloadAttachment}
+        busy={busy}
       />
       {error && <p role="alert">{error}</p>}
       <AssistantPhonePanel
@@ -347,16 +384,22 @@ export function AssistantMailboxPanel({
 function CommandInbox({
   call,
   onApprove,
+  onDownload,
+  busy,
 }: {
   call: <T>(action: string, args?: Record<string, unknown>) => Promise<T>;
   onApprove: (id: string) => void;
+  onDownload: (messageId: string, attachment: AssistantMailAttachment) => Promise<void>;
+  busy: boolean;
 }) {
   const [commands, setCommands] = React.useState<
     Array<{ id: string; message_id: string; status: string }>
   >([]);
   const [selected, setSelected] = React.useState<{
     id: string;
+    messageId: string;
     text: string;
+    attachments: AssistantMailAttachment[];
   } | null>(null);
   React.useEffect(() => {
     setCommands([]);
@@ -379,9 +422,9 @@ function CommandInbox({
             <>
               <Button
                 onClick={() =>
-                  void call<{ body: { text: string } }>("message", {
+                  void call<{ body: { text: string; attachments?: AssistantMailAttachment[] } }>("message", {
                     id: c.message_id,
-                  }).then((r) => setSelected({ id: c.id, text: r.body.text }))
+                  }).then((r) => setSelected({ id: c.id, messageId: c.message_id, text: r.body.text, attachments: r.body.attachments ?? [] }))
                 }
               >
                 Review message
@@ -389,6 +432,9 @@ function CommandInbox({
               {selected?.id === c.id && (
                 <>
                   <pre style={{ whiteSpace: "pre-wrap" }}>{selected.text}</pre>
+                  {selected.attachments.length > 0 && (
+                    <MailboxAttachments messageId={selected.messageId} attachments={selected.attachments} busy={busy} onDownload={onDownload} />
+                  )}
                   <Button onClick={() => onApprove(c.id)}>
                     Confirm this task
                   </Button>
@@ -399,5 +445,28 @@ function CommandInbox({
         </p>
       ))}
     </details>
+  );
+}
+
+function MailboxAttachments({
+  messageId,
+  attachments,
+  busy,
+  onDownload,
+}: {
+  messageId: string;
+  attachments: AssistantMailAttachment[];
+  busy: boolean;
+  onDownload: (messageId: string, attachment: AssistantMailAttachment) => Promise<void>;
+}) {
+  return (
+    <ul aria-label="Message attachments">
+      {attachments.map((attachment) => (
+        <li key={attachment.id}>
+          {attachment.filename} · {attachment.mimeType} · {attachment.sizeBytes} bytes{" "}
+          <Button disabled={busy} onClick={() => void onDownload(messageId, attachment)}>Download</Button>
+        </li>
+      ))}
+    </ul>
   );
 }
