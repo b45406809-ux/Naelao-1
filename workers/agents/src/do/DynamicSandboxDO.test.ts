@@ -5,6 +5,9 @@ import { ToolSandboxDO } from "./ToolSandboxDO.js";
 import { assertDynamicPlan, dynamicCreditsPerHour, selectDynamicProfile } from "../script-engine/dynamic-containers.js";
 
 const image = `registry.cloudflare.com/${"1".repeat(32)}/tools@sha256:${"a".repeat(64)}`;
+async function sha256(value: string): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(v => v.toString(16).padStart(2,"0")).join("");
+}
 function capacityService() {
   const held = new Map<string, Map<string, number>>();
   const calls: string[] = [];
@@ -25,6 +28,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
   const snapshotRetentionWrites: string[] = [];
+  let snapshotRetentionFails = false;
   let running = false;
   let info: any;
   let alarmAt = 0;
@@ -75,6 +79,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
       run: async () => {
         if (sql.includes("workspace_runtime_snapshot_retention")) {
           snapshotRetentionWrites.push(sql);
+          if (snapshotRetentionFails) throw new Error("simulated_snapshot_retention_failure");
           return { meta: { changes: 1 } };
         }
         if (sql.includes("INSERT INTO project_main_runtime_registry")) {
@@ -151,6 +156,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
       headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
   }
   return { invoke, profile, transport, records, capacity, env, billing, projectMainRegistry, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+    setSnapshotRetentionFails: (value: boolean) => { snapshotRetentionFails = value; },
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
     waitForExecution: () => taskStarted,
@@ -323,6 +329,55 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
     expect((await r.invoke("/prewarm", { runId: "worker-run-two", executionId: "second-execution" })).status).toBe(200);
     expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ containerSnapshot: { id: "snapshot-one" } }));
+  });
+  it("recovers a pending project-main snapshot inventory write before reporting or starting a runtime", async () => {
+    let now = 2750000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    now += 60001; await r.alarm();
+    const snapshot = r.records.get("dynamic_snapshot");
+    expect(snapshot?.id).toBe("snapshot-one");
+    const record = {
+      tenantId: "tenant", spaceId: "space", projectId: "project",
+      runtimeObjectSha256: await sha256("test-durable-object-id"), snapshotHandleSha256: await sha256(snapshot.id),
+      imageSha256: snapshot.imageDigest, allocationGeneration: snapshot.allocationGeneration, sizeBytes: snapshot.sizeBytes,
+      createdAt: snapshot.createdAt, expiresAt: snapshot.expiresAt,
+    };
+    // Model a DO restart after its durable intent was written and the D1 receipt committed, but
+    // before the verified local restore pointer replaced the prior value.
+    r.records.set("dynamic_snapshot_registry_pending", { snapshot, record });
+    r.records.delete("dynamic_snapshot");
+    r.restart();
+
+    expect(await (await r.profile()).json()).toMatchObject({ state: "checkpointed", can_restore: true });
+    expect(r.records.get("dynamic_snapshot")).toEqual(snapshot);
+    expect(r.records.has("dynamic_snapshot_registry_pending")).toBe(false);
+    r.transport.start.mockClear();
+    expect((await r.invoke("/prewarm", { mainComputer: true, executionId: "recovered-snapshot" })).status).toBe(200);
+    expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ containerSnapshot: { id: snapshot.id } }));
+  });
+  it("fails closed when the pending project-main snapshot inventory cannot be recovered", async () => {
+    let now = 2850000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke("/prewarm", { mainComputer: true })).status).toBe(200);
+    now += 60001; await r.alarm();
+    const snapshot = r.records.get("dynamic_snapshot");
+    expect(snapshot?.id).toBe("snapshot-one");
+    r.records.set("dynamic_snapshot_registry_pending", { snapshot, record: {
+      tenantId: "tenant", spaceId: "space", projectId: "project",
+      runtimeObjectSha256: await sha256("test-durable-object-id"), snapshotHandleSha256: await sha256(snapshot.id),
+      imageSha256: snapshot.imageDigest, allocationGeneration: snapshot.allocationGeneration, sizeBytes: snapshot.sizeBytes,
+      createdAt: snapshot.createdAt, expiresAt: snapshot.expiresAt,
+    } });
+    r.records.delete("dynamic_snapshot");
+    r.restart(); r.setSnapshotRetentionFails(true); r.transport.start.mockClear();
+
+    expect(await (await r.profile()).json()).toMatchObject({ state: "recovery_required", can_restore: false,
+      recovery_error: "dynamic_snapshot_retention_tracking_unavailable", snapshot_retention_tracking_error: "dynamic_snapshot_retention_tracking_unavailable" });
+    const response = await r.invoke("/prewarm", { mainComputer: true, executionId: "retention-unavailable" });
+    expect(response.status).toBe(409);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.records.has("dynamic_snapshot_registry_pending")).toBe(true);
   });
   it("rejects a different tenant before restoring a saved snapshot", async () => {
     let now = 3000000; vi.spyOn(Date, "now").mockImplementation(() => now);

@@ -98,10 +98,14 @@ export class DynamicSandboxDO extends ToolSandboxDO {
         await this.ctx.storage.delete("dynamic_selection");
         return Response.json({ reset: true, providerSnapshotPurge: "not_supported" });
       }
+      let retentionTrackingError: string | undefined;
+      if (await this.ctx.storage.get("dynamic_snapshot_registry_pending")) {
+        try { await this.flushPendingSnapshotRetention(); }
+        catch { retentionTrackingError = "dynamic_snapshot_retention_tracking_unavailable"; }
+      }
       let snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
       const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
-      let retentionTrackingError: string | undefined;
-      if (snapshot && selection?.projectMain) {
+      if (snapshot && selection?.projectMain && !retentionTrackingError) {
         try { await this.trackSnapshotRetention(snapshot, selection); }
         catch { retentionTrackingError = "dynamic_snapshot_retention_tracking_unavailable"; }
       }
@@ -122,10 +126,10 @@ export class DynamicSandboxDO extends ToolSandboxDO {
                     : !Number.isFinite(snapshotExpiresAt) ? "dynamic_snapshot_record_invalid"
                       : snapshotExpiresAt! <= Date.now() ? "dynamic_snapshot_expired" : undefined
         : undefined;
-      const recoveryError = workspaceErasure ? "workspace_erased" : restoreError ?? snapshotStatusError;
+      const recoveryError = workspaceErasure ? "workspace_erased" : restoreError ?? snapshotStatusError ?? retentionTrackingError;
       const retryableRestoreFailure = restoreError === "dynamic_snapshot_restore_failed"
         || restoreError === "dynamic_snapshot_restore_incomplete";
-      const canRestore = Boolean(!workspaceErasure && snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
+      const canRestore = Boolean(!workspaceErasure && !retentionTrackingError && snapshot && !snapshotStatusError && (!restoreError || retryableRestoreFailure)
         && this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true");
       return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true",
         state: recoveryError ? "recovery_required" : snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
@@ -155,6 +159,9 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (env.DYNAMIC_CONTAINERS_ENABLED !== "true") throw new Error("dynamic_containers_disabled");
     // The authoritative plan is read at execution time; model/tool arguments cannot raise it.
     if (!env.PLATFORM_DB) throw new Error("container_subscription_service_unavailable");
+    // A crash after the D1 retention receipt committed but before the local pointer update leaves
+    // this intent pending. Resolve it before considering an empty start or any older snapshot.
+    await this.flushPendingSnapshotRetention();
     const tier = await new EntitlementsChecker(env.PLATFORM_DB).getTenantTier(scope.tenantId);
     let image = this.container?.images?.base;
     const projectPreference = scope.projectId && !scope.installationId
