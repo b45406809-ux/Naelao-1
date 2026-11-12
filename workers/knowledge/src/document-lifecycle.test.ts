@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean; mutationLeaseUnavailable?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -36,7 +36,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
             return null;
           },
           all: async () => ({ results: [] }),
-          run: async () => ({ meta: { changes: 1 } }),
+          run: async () => ({ meta: { changes: options.mutationLeaseUnavailable && sql.includes("INSERT INTO kb_document_mutation_leases") ? 0 : 1 } }),
         };
       },
     })),
@@ -127,6 +127,20 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_chunks"))).toBe(false);
   });
 
+  it("rejects queued workflow chunks after the document deletion fence wins", async () => {
+    const f = fixture({ workflowDoc: true, mutationLeaseUnavailable: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["must not persist"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(410);
+    expect(f.writes).toHaveLength(0);
+    expect(f.vectorUpserts).toHaveLength(0);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_chunks"))).toBe(false);
+  });
+
   it("preserves restrictive ACLs through workflow chunk ingestion", async () => {
     const f = fixture({ workflowDoc: true });
     const response = await worker.fetch(await request(
@@ -158,6 +172,40 @@ describe("Knowledge document lifecycle boundaries", () => {
         type: "kb.ingest", docId: result.id, spaceId: "space-1", tenantId: "tenant-1",
         projectId: "project-1", r2Key: key, requiredRoleRank: 30, allowedUserIds: ["user-special"],
       }));
+  });
+
+  it("does not stage or enqueue a large document after deletion fencing denies its mutation lease", async () => {
+    const f = fixture({ workflowDoc: true, mutationLeaseUnavailable: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Large guide", content: "safe content ".repeat(81_000), project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(410);
+    expect(f.writes).toHaveLength(0);
+    expect((f.env as unknown as { EVENTS_QUEUE: { send: ReturnType<typeof vi.fn> } }).EVENTS_QUEUE.send).not.toHaveBeenCalled();
+  });
+
+  it("stops content reindexing when deletion wins mutation lease admission", async () => {
+    const f = fixture({ existing: true, mutationLeaseUnavailable: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents/doc-1", "PATCH", {
+      content: "replacement content",
+    }), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(410);
+    expect(f.writes).toHaveLength(0);
+    expect(f.vectorize.deleteByIds).not.toHaveBeenCalled();
+    expect(f.vectorUpserts).toHaveLength(0);
+  });
+
+  it("stops synchronous document ingestion when deletion fencing denies its mutation lease", async () => {
+    const f = fixture({ mutationLeaseUnavailable: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Guide", content: "new content",
+    }), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(410);
+    expect(f.writes).toHaveLength(0);
+    expect(f.vectorUpserts).toHaveLength(0);
   });
 
   it("rolls back staged data and the document row when queue submission fails", async () => {

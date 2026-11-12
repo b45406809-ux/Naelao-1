@@ -1,11 +1,12 @@
 import type { WorkflowStep } from "cloudflare:workers";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
 const KV_DELETE_BATCH_SIZE = 100;
 export const SPACE_ERASURE_TABLES = [
-  "active_sessions", "thread_sessions", "threads", "kb_chunks", "kb_documents",
+  "active_sessions", "thread_sessions", "threads", "kb_document_deletion_operations", "kb_document_mutation_leases",
+  "kb_chunks", "kb_documents",
   "agent_email_addresses", "agi_runs", "artifacts", "attachment_copy_claims", "blueprint_export_jobs",
   "space_domains", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
   "product_link_migration_issues",
@@ -539,4 +540,23 @@ export async function eraseSpaceKnowledgePrefixes(spaceId: string, bucket: R2Buc
   // Remove leftovers from partially indexed or pre-project-scope documents as well.
   await deleteR2Prefix(bucket, `kb/${spaceId}/`);
   await deleteR2Prefix(bucket, `autorag/${spaceId}/`);
+}
+
+/** Rotate cache generations through the owning Worker so a suspended Space's cached answers
+ * become unreachable before the whole-Space D1 erasure. A large cache may retain expired KV
+ * payloads until their configured TTL; the worker reports that separate cleanup boundary. */
+export async function invalidateSpaceKnowledgeCaches(input: {
+  tenantId: string;
+  spaceId: string;
+  platformSecret: string;
+  knowledgeWorker: Fetcher;
+}): Promise<{ cleanupPending: boolean }> {
+  const token = await mintInternalToken(input.platformSecret, input.tenantId);
+  const response = await input.knowledgeWorker.fetch(new Request(
+    `http://knowledge-worker/internal/semantic-cache?spaceId=${encodeURIComponent(input.spaceId)}`,
+    { method: "DELETE", headers: { "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": token } },
+  ));
+  if (!response.ok) throw new Error(`Knowledge cache erasure failed with status ${response.status}`);
+  const result = await readBoundedResponseJson<{ cleanup_pending?: unknown }>(response, 8 * 1024);
+  return { cleanupPending: result.cleanup_pending === true };
 }

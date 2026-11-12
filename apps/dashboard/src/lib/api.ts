@@ -56,6 +56,11 @@ export interface KbDocument {
   created_at: string;
 }
 
+export interface KbDocumentDeletionReceipt {
+  state: "pending" | "complete";
+  retry_after_seconds?: number;
+}
+
 export interface AuthResponse {
   token: string;
   user: {
@@ -257,7 +262,7 @@ export async function updateSpace(
 
 export async function listKbDocs(spaceId: string): Promise<KbDocument[]> {
   const res = await apiFetch<{ data: KbDocument[] } | KbDocument[]>(
-    `/spaces/${pathSegment(spaceId)}/kb`
+    `/spaces/${pathSegment(spaceId)}/kb/documents`
   );
   if (Array.isArray(res)) return res;
   return (res as { data: KbDocument[] }).data ?? [];
@@ -267,7 +272,7 @@ export async function uploadKbDoc(
   spaceId: string,
   data: { title: string; content: string; content_type: string }
 ): Promise<KbDocument> {
-  return apiFetch<KbDocument>(`/spaces/${pathSegment(spaceId)}/kb`, {
+  return apiFetch<KbDocument>(`/spaces/${pathSegment(spaceId)}/kb/documents`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -276,10 +281,12 @@ export async function uploadKbDoc(
 export async function deleteKbDoc(
   spaceId: string,
   docId: string
-): Promise<void> {
-  return apiFetch<void>(`/spaces/${pathSegment(spaceId)}/kb/${pathSegment(docId)}`, {
+): Promise<KbDocumentDeletionReceipt> {
+  const result = await apiFetch<{ deletion?: KbDocumentDeletionReceipt } | undefined>(
+    `/spaces/${pathSegment(spaceId)}/kb/documents/${pathSegment(docId)}`, {
     method: "DELETE",
   });
+  return result?.deletion ?? { state: "complete" };
 }
 
 // ── Naelao team API keys ─────────────────────────────────────────────────────

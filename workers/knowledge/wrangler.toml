@@ -8,6 +8,9 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Secrets (set via `wrangler secret put`, never committed):
 #   PLATFORM_SECRET  — internal HMAC + tenant auth
 #   TAVILY_API_KEY   — UNIVERSAL platform-provided web search. Naelao holds ONE provider key
@@ -66,6 +69,9 @@ queue = "naelao-events"
 [env.staging]
 vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
 
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "naelao-events-staging"
@@ -76,6 +82,9 @@ service = "naelao-billing-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"

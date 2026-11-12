@@ -26,6 +26,7 @@ const STATUS_COLOR: Record<KbDocument["status"], "green" | "amber" | "red"> = {
   indexed: "green",
   pending: "amber",
   processing: "amber",
+  deleting: "amber",
   flagged: "amber",
   failed: "red",
 };
@@ -51,16 +52,16 @@ export default function KnowledgePage() {
   const [searching, setSearching] = React.useState(false);
   const [results, setResults] = React.useState<KbSearchResult[] | null>(null);
 
-  const refresh = React.useCallback(async () => {
+  const refresh = React.useCallback(async (showLoading = true) => {
     if (!creds) return;
-    setLoading(true);
+    if (showLoading) setLoading(true);
     try {
       setDocs(await listKbDocuments(activeSpaceId, creds));
       setFailed(false);
     } catch {
       setFailed(true);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, session]);
@@ -68,6 +69,12 @@ export default function KnowledgePage() {
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  React.useEffect(() => {
+    if (!docs.some((doc) => doc.status === "deleting")) return;
+    const timer = setInterval(() => { void refresh(false); }, 5_000);
+    return () => clearInterval(timer);
+  }, [docs, refresh]);
 
   async function handleAdd() {
     if (!creds || !title.trim() || !content.trim()) return;
@@ -111,8 +118,9 @@ export default function KnowledgePage() {
     if (!creds) return;
     setBusyId(doc.id);
     try {
-      await deleteKbDocument(activeSpaceId, doc.id, creds);
+      const result = await deleteKbDocument(activeSpaceId, doc.id, creds);
       await refresh();
+      if (result.state === "pending") show("Deletion is still in progress. This list will update when cleanup finishes.");
     } catch (err) {
       show(err instanceof Error ? err.message : "Couldn't delete that document");
     } finally {
@@ -225,8 +233,8 @@ export default function KnowledgePage() {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                   <Badge color={STATUS_COLOR[d.status]}>{d.status}</Badge>
-                  <Button variant="secondary" onClick={() => void handleDelete(d)} disabled={busyId === d.id}>
-                    {busyId === d.id ? "…" : "Delete"}
+                  <Button variant="secondary" onClick={() => void handleDelete(d)} disabled={busyId === d.id || d.status === "deleting"}>
+                    {busyId === d.id || d.status === "deleting" ? "Deleting…" : "Delete"}
                   </Button>
                 </div>
               </div>

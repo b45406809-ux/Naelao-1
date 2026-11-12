@@ -14,6 +14,9 @@ import { moderateInput } from "@naelao/llm-gateway";
 import { createParseV5Request } from "./parse-v5.js";
 import { sparseRank } from "./search.js";
 import { reportKnowledgeStorageWrite } from "./storage-usage.js";
+import { acquireKnowledgeDocumentMutationLease, hasKnowledgeDocumentDeletionSince, hasPendingKnowledgeDocumentDeletion, processKnowledgeDocumentDeletion,
+  reconcileKnowledgeDocumentDeletions, releaseKnowledgeDocumentMutationLease, renewKnowledgeDocumentMutationLease, type KnowledgeDeletionBindings,
+  type KnowledgeDocumentDeletion } from "./document-deletion.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -49,6 +52,8 @@ interface KnowledgeEnv {
   RETRIEVAL_CONFIDENCE_THRESHOLD?: string;
   KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
+
+const deletionBindings = (env: KnowledgeEnv): KnowledgeDeletionBindings => env;
 
 /** R2 key for the whole-document mirror AutoRAG indexes (one file per doc, not per-chunk —
  *  AutoRAG does its own chunking). Distinct prefix from the existing per-chunk `chunkR2Key`. */
@@ -179,6 +184,12 @@ async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: s
               WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`)
     .bind(spaceId, tenantId)
     .first();
+  return row !== null;
+}
+
+async function verifySpaceTenantOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await db.prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first();
   return row !== null;
 }
 
@@ -525,11 +536,13 @@ app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
     "SELECT id, status FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?"
   ).bind(docId, spaceId, tenantId, body.project_id).first<{ id: string; status: string }>();
   if (!doc) throw notFound("KbDocument");
+  if (doc.status === "deleting") return c.json({ error_code: "document_deletion_in_progress" }, 410);
   if (doc.status === "indexed" && body.status !== "indexed") return c.json({ error_code: "invalid_document_transition" }, 409);
   const result = await c.env.PLATFORM_DB.prepare(
     `UPDATE kb_documents SET status = ?, chunk_count = COALESCE(?, chunk_count), updated_at = datetime('now')
-     WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?`
-  ).bind(body.status, body.chunk_count ?? null, docId, spaceId, tenantId, body.project_id).run();
+     WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ? AND status!='deleting'
+       AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+  ).bind(body.status, body.chunk_count ?? null, docId, spaceId, tenantId, body.project_id, docId).run();
   if (result.meta.changes === 0) throw notFound("KbDocument");
   return c.json({ id: docId, status: body.status });
 });
@@ -580,6 +593,9 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   for (let start = 0; start < chunks.length; start += 50) embeddings.push(...await embedBatch(c.env.AI, chunks.slice(start, start + 50)));
   if (embeddings.length !== chunks.length) throw internalError("Embedding provider returned an incomplete batch");
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
+  const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
+  if (!mutationLease) return c.json({ error_code: "document_deletion_in_progress" }, 410);
+  try {
   const projectId = body.projectId;
   const projectScope = projectId || SPACE_WIDE_PROJECT_SENTINEL;
   const requiredRoleRank = Number(body.requiredRoleRank ?? 0);
@@ -593,6 +609,9 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   const vectors: VectorizeVector[] = [];
   let storageBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
+    if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+      throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    }
     if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
     const chunk = chunks[i]!;
     const chunkIndex = chunkOffset + i;
@@ -631,9 +650,17 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
     } });
   }
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
-  for (let start = 0; start < vectors.length; start += 100) await c.env.KB_VECTORS.upsert(vectors.slice(start, start + 100));
+  for (let start = 0; start < vectors.length; start += 100) {
+    if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+      throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    }
+    await c.env.KB_VECTORS.upsert(vectors.slice(start, start + 100));
+  }
   await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytes, true, `workflow-ingest:${docId}:${chunkOffset}`);
   return c.json({ id: docId, chunk_count: doc.chunk_count, batch_count: chunks.length });
+  } finally {
+    await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
+  }
 });
 
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────
@@ -749,7 +776,17 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
        (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
     ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now).run();
+    const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
+    if (!mutationLease) {
+      await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
+        .bind(docId, tenantId, spaceId, docId).run().catch(() => undefined);
+      return c.json({ error_code: "document_deletion_in_progress" }, 410);
+    }
     try {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
       await c.env.EVENTS_QUEUE.send({
         type: "kb.ingest", docId, spaceId, tenantId, projectId, r2Key,
@@ -760,10 +797,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     } catch (error) {
       await Promise.allSettled([
         c.env.KB_BUCKET.delete(r2Key),
-        c.env.PLATFORM_DB.prepare("DELETE FROM kb_documents WHERE id = ? AND tenant_id = ? AND space_id = ?")
-          .bind(docId, tenantId, spaceId).run(),
+        c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id = ? AND tenant_id = ? AND space_id = ?
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
+          .bind(docId, tenantId, spaceId, docId).run(),
       ]);
       throw new HttpError(503, "ingestion_queue_unavailable", "Could not enqueue large document ingestion");
+    } finally {
+      await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
     }
   }
 
@@ -778,6 +818,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   )
     .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now)
     .run();
+  const mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
+  if (!mutationLease) {
+    await c.env.PLATFORM_DB.prepare(`DELETE FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?
+      AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`)
+      .bind(docId, tenantId, spaceId, docId).run().catch(() => undefined);
+    return c.json({ error_code: "document_deletion_in_progress" }, 410);
+  }
 
   let storageBytesWritten = 0;
   try {
@@ -790,8 +837,9 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     if (injectionDetected) {
       // Flag in DB but do NOT reject — builders may legitimately document attacks
       await c.env.PLATFORM_DB.prepare(
-        `UPDATE kb_documents SET status = 'flagged', updated_at = ? WHERE id = ?`
-      ).bind(new Date().toISOString(), docId).run();
+        `UPDATE kb_documents SET status = 'flagged', updated_at = ? WHERE id = ? AND status!='deleting'
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+      ).bind(new Date().toISOString(), docId, docId).run();
       console.warn(`[kb] Injection pattern detected in doc ${docId} for space ${spaceId}`);
     }
 
@@ -817,14 +865,19 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
     // Persist the expected vector range before writes begin. If Vectorize partially accepts a
     // batch and then fails, the failed-document sweeper can remove every possible chunk ID.
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status IN ('processing', 'flagged')"
-    ).bind(chunks.length, docId).run();
+    const rangeUpdate = await c.env.PLATFORM_DB.prepare(
+      `UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status IN ('processing', 'flagged')
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+    ).bind(chunks.length, docId, docId).run();
+    if (!rangeUpdate.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
     // ── R2 storage + Vectorize upsert ───────────────────────────────────────
     const vectorUpserts: VectorizeVector[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       const chunk = chunks[i];
       const embedResult = allEmbedResults[i];
       const coordinate = coordinates[i];
@@ -900,6 +953,9 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     // Upsert vectors in batches (Vectorize has limits per upsert call)
     const VECTOR_BATCH_SIZE = 100;
     for (let i = 0; i < vectorUpserts.length; i += VECTOR_BATCH_SIZE) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       const batch = vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE);
       await c.env.KB_VECTORS.upsert(batch);
     }
@@ -908,6 +964,9 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     // configured — cheap, and a failed mirror write never fails ingestion since the legacy
     // pipeline above already succeeded and is the default retrieval path regardless).
     if (c.env.AUTORAG_KB_INSTANCE) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       try {
         await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), sanitizedContent);
         storageBytesWritten += new TextEncoder().encode(sanitizedContent).byteLength;
@@ -917,13 +976,15 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     }
 
     // ── Update DB: status=indexed ────────────────────────────────────────────
-    await c.env.PLATFORM_DB.prepare(
+    const publish = await c.env.PLATFORM_DB.prepare(
       `UPDATE kb_documents
        SET status = 'indexed', chunk_count = ?, updated_at = datetime('now')
-       WHERE id = ?`
+       WHERE id = ? AND status IN ('processing', 'flagged')
+         AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
     )
-      .bind(chunks.length, docId)
+      .bind(chunks.length, docId, docId)
       .run();
+    if (!publish.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
     const doc = await c.env.PLATFORM_DB.prepare(
       "SELECT * FROM kb_documents WHERE id = ?"
@@ -936,14 +997,17 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   } catch (err) {
     // Mark document as failed on any error during processing
     await c.env.PLATFORM_DB.prepare(
-      `UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status!='deleting'
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
     )
-      .bind(docId)
+      .bind(docId, docId)
       .run()
       .catch(() => {/* best-effort */});
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false);
 
     preserveHttpStatus(err);
+  } finally {
+    await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
   }
 });
 
@@ -995,8 +1059,11 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     if (titleMod.blocked) throw badRequest(`Title contains disallowed content: ${titleMod.reason}`);
 
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(newTitle, docId).run();
+      `UPDATE kb_documents SET title = ?, updated_at = datetime('now') WHERE id = ? AND status!='deleting'
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+    ).bind(newTitle, docId, docId).run().then((result) => {
+      if (!result.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    });
 
     const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
     return c.json(updated, 200);
@@ -1050,6 +1117,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   const storageOperationId = crypto.randomUUID();
   let storageBytesWritten = 0;
   let reindexStarted = false;
+  let mutationLease: string | null = null;
   try {
     // Finish every fallible embedding request before replacing the current index. A provider
     // timeout or malformed embedding must leave the previously indexed document usable.
@@ -1064,9 +1132,13 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       allEmbedResults.push(...batchResults);
     }
 
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET status = 'processing', updated_at = datetime('now') WHERE id = ?"
-    ).bind(docId).run();
+    mutationLease = await acquireKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, { documentId: docId, tenantId, spaceId });
+    if (!mutationLease) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+    const startReindex = await c.env.PLATFORM_DB.prepare(
+      `UPDATE kb_documents SET status = 'processing', updated_at = datetime('now') WHERE id = ? AND status!='deleting'
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+    ).bind(docId, docId).run();
+    if (!startReindex.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
     reindexStarted = true;
 
     // G-X09: Delete ALL old vectors before re-indexing to prevent stale accumulation
@@ -1076,6 +1148,9 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       for (let i = 0; i < oldChunkCount; i++) oldVectorIds.push(`${docId}_chunk_${i}`);
       const VECTOR_DELETE_BATCH = 100;
       for (let i = 0; i < oldVectorIds.length; i += VECTOR_DELETE_BATCH) {
+        if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+          throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+        }
         await c.env.KB_VECTORS.deleteByIds(oldVectorIds.slice(i, i + VECTOR_DELETE_BATCH));
       }
     }
@@ -1083,14 +1158,19 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       "DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?"
     ).bind(docId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL).run();
 
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status = 'processing'"
-    ).bind(chunks.length, docId).run();
+    const setChunkCount = await c.env.PLATFORM_DB.prepare(
+      `UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status = 'processing'
+        AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+    ).bind(chunks.length, docId, docId).run();
+    if (!setChunkCount.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
     // Delete old R2 chunks
     const prefix = docR2Prefix(spaceId, projectId, docId);
     let cursor: string | undefined;
     do {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
       const listed: R2Objects = await c.env.KB_BUCKET.list(listOpts);
       if (listed.objects.length > 0) {
@@ -1101,6 +1181,9 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
     const vectorUpserts: VectorizeVector[] = [];
     for (let i = 0; i < chunks.length; i++) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       const chunk = chunks[i];
       const embedResult = allEmbedResults[i];
       const coordinate = coordinates[i];
@@ -1149,12 +1232,18 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
     const VECTOR_BATCH_SIZE = 100;
     for (let i = 0; i < vectorUpserts.length; i += VECTOR_BATCH_SIZE) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       await c.env.KB_VECTORS.upsert(vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE));
     }
 
     // §A1.19: keep the AutoRAG mirror in sync with the re-indexed content (best-effort, same
     // posture as the POST route's mirror write).
     if (c.env.AUTORAG_KB_INSTANCE) {
+      if (!await renewKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease)) {
+        throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
+      }
       try {
         await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), newContent);
         storageBytesWritten += new TextEncoder().encode(newContent).byteLength;
@@ -1163,9 +1252,12 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       }
     }
 
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(newTitle, chunks.length, docId).run();
+    const publishReindex = await c.env.PLATFORM_DB.prepare(
+      `UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, updated_at = datetime('now')
+        WHERE id = ? AND status='processing'
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+    ).bind(newTitle, chunks.length, docId, docId).run();
+    if (!publishReindex.meta.changes) throw new HttpError(410, "document_deletion_in_progress", "Document deletion has started");
 
     const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true, storageOperationId);
@@ -1173,11 +1265,15 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   } catch (err) {
     if (reindexStarted) {
       await c.env.PLATFORM_DB.prepare(
-        "UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?"
-      ).bind(docId).run().catch(() => {});
+        `UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status!='deleting'
+          AND NOT EXISTS (SELECT 1 FROM kb_document_deletion_operations WHERE document_id=?)`
+      ).bind(docId, docId).run().catch(() => {});
     }
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false, storageOperationId);
+    if (err instanceof HttpError && err.status === 410) preserveHttpStatus(err);
     throw internalError(`Document update failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (mutationLease) await releaseKnowledgeDocumentMutationLease(c.env.PLATFORM_DB, docId, mutationLease);
   }
 });
 
@@ -1188,70 +1284,72 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const docId = c.req.param("docId");
 
-  // Verify ownership
   const doc = await c.env.PLATFORM_DB.prepare(
     "SELECT id, chunk_count, project_id FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
   )
     .bind(docId, spaceId, tenantId)
     .first<{ id: string; chunk_count: number; project_id: string | null }>();
 
-  if (!doc) throw notFound("KbDocument");
-  if (doc.project_id) {
-    const access = await requireProjectAccess(c, doc.project_id);
+  let deletion: KnowledgeDocumentDeletion | null = null;
+  if (doc) {
+    if (doc.project_id) {
+      const access = await requireProjectAccess(c, doc.project_id);
+      if (access instanceof Response) return access;
+    }
+    const now = new Date().toISOString();
+    // One D1 batch makes the read barrier, content redaction, publication unlink, and retry
+    // intent durable together before any Vectorize, R2, or cache operation begins.
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_document_deletion_operations
+        (document_id,tenant_id,space_id,project_id,chunk_count,state,next_attempt_at,created_at,updated_at)
+        VALUES(?,?,?,?,?,'pending',?,?,?)`)
+        .bind(docId, tenantId, spaceId, doc.project_id, doc.chunk_count ?? 0, now, now, now),
+      c.env.PLATFORM_DB.prepare(`UPDATE kb_documents SET status='deleting',title='Deleted document',source_url=NULL,updated_at=?
+        WHERE id=? AND tenant_id=? AND space_id=?`)
+        .bind(now, docId, tenantId, spaceId),
+      c.env.PLATFORM_DB.prepare(`DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?`)
+        .bind(docId, tenantId, spaceId, doc.project_id ?? SPACE_WIDE_PROJECT_SENTINEL),
+      c.env.PLATFORM_DB.prepare(`DELETE FROM kb_external_publication_documents
+        WHERE document_id=? AND tenant_id=? AND space_id=?`)
+        .bind(docId, tenantId, spaceId),
+    ]);
+  } else {
+    deletion = await c.env.PLATFORM_DB.prepare(`SELECT * FROM kb_document_deletion_operations
+      WHERE document_id=? AND tenant_id=? AND space_id=?`)
+      .bind(docId, tenantId, spaceId).first<KnowledgeDocumentDeletion>();
+    if (!deletion) throw notFound("KbDocument");
+  }
+
+  deletion ??= await c.env.PLATFORM_DB.prepare(`SELECT * FROM kb_document_deletion_operations
+    WHERE document_id=? AND tenant_id=? AND space_id=?`)
+    .bind(docId, tenantId, spaceId).first<KnowledgeDocumentDeletion>();
+  if (!deletion) throw new HttpError(503, "upstream_error", "Document deletion receipt is unavailable");
+  if (deletion.project_id) {
+    const access = await requireProjectAccess(c, deletion.project_id);
     if (access instanceof Response) return access;
   }
+  const outcome = await processKnowledgeDocumentDeletion(deletionBindings(c.env), docId);
+  if (outcome.state === "complete") return new Response(null, { status: 204 });
+  return c.json({ deletion: { document_id: docId, state: "pending", attempts: outcome.attempts ?? deletion.attempts,
+    retry_after_seconds: 300, provider_mirror_status: deletion.provider_mirror_status } }, 202, { "retry-after": "300" });
+});
 
-  const chunkCount = doc.chunk_count ?? 0;
-
-  // ── Delete Vectorize vectors ──────────────────────────────────────────────
-  // Build vector IDs directly from doc + chunk count (we stored them as {docId}_chunk_{i})
-  if (chunkCount > 0) {
-    const vectorIds: string[] = [];
-    for (let i = 0; i < chunkCount; i++) {
-      vectorIds.push(`${docId}_chunk_${i}`);
-    }
-    // Delete in batches of 100
-    const VECTOR_DELETE_BATCH = 100;
-    for (let i = 0; i < vectorIds.length; i += VECTOR_DELETE_BATCH) {
-      const batch = vectorIds.slice(i, i + VECTOR_DELETE_BATCH);
-      await c.env.KB_VECTORS.deleteByIds(batch);
-    }
+app.get("/spaces/:spaceId/kb/documents/:docId/deletion", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const documentId = c.req.param("docId");
+  const deletion = await c.env.PLATFORM_DB.prepare(`SELECT document_id,project_id,state,attempts,next_attempt_at,last_error,provider_mirror_status,completed_at
+    FROM kb_document_deletion_operations WHERE document_id=? AND tenant_id=? AND space_id=?`)
+    .bind(documentId, tenantId, spaceId).first<Pick<KnowledgeDocumentDeletion, "document_id" | "project_id" | "state" | "attempts" | "next_attempt_at" | "last_error" | "provider_mirror_status" | "completed_at">>();
+  if (!deletion) throw notFound("Document deletion");
+  if (deletion.project_id) {
+    const access = await requireProjectAccess(c, deletion.project_id);
+    if (access instanceof Response) return access;
   }
-
-  // ── Delete R2 objects ─────────────────────────────────────────────────────
-  const prefix = docR2Prefix(spaceId, doc.project_id, docId);
-  let cursor: string | undefined;
-  do {
-    const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
-    const listed: R2Objects = await c.env.KB_BUCKET.list(listOpts);
-    const keys = listed.objects.map(o => o.key);
-    if (keys.length > 0) {
-      // R2 doesn't have a batch delete — delete in parallel
-      await Promise.all(keys.map(k => c.env.KB_BUCKET.delete(k)));
-    }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
-
-  // §A1.19: the AutoRAG mirror lives at a separate `autorag/` prefix (not under docR2Prefix
-  // above, since it's one whole-document file rather than per-chunk records) — delete it
-  // explicitly, best-effort, so a purged document doesn't stay searchable via AutoRAG.
-  if (c.env.AUTORAG_KB_INSTANCE) {
-    await c.env.KB_BUCKET.delete(autoragKbKey(spaceId, doc.project_id, docId)).catch(() => {
-      /* best-effort */
-    });
+  if (deletion.state === "pending" && deletion.last_error === "resource_cleanup_retry_required") {
+    return c.json({ deletion: { ...deletion, state: "pending" } }, 200);
   }
-
-  // ── Delete DB record ──────────────────────────────────────────────────────
-  await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM kb_documents WHERE id = ?"
-  )
-    .bind(docId)
-    .run();
-  await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?"
-  ).bind(docId, tenantId, spaceId, doc.project_id ?? SPACE_WIDE_PROJECT_SENTINEL).run();
-
-  return new Response(null, { status: 204 });
+  return c.json({ deletion }, 200);
 });
 
 // Canonical citation resolver. Neither model nor browser supplies an R2 key: the key and range
@@ -1266,8 +1364,9 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
   if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Citation not found");
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end
-     FROM kb_chunks WHERE id=? AND document_id=? AND tenant_id=? AND space_id=? AND project_id=?
-       AND required_role_rank<=? AND deleted_at IS NULL`
+     FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
+     WHERE k.id=? AND k.document_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+       AND k.required_role_rank<=? AND k.deleted_at IS NULL AND d.status='indexed'`
   ).bind(c.req.param("chunkId"), c.req.param("documentId"), tenantId, spaceId, projectId, roleRank)
     .first<Record<string, unknown>>();
   if (!row) throw notFound("Citation not found");
@@ -1319,6 +1418,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
   const roleRank = effectiveRoleRank(c);
   const userId = c.req.header("x-naelao-user-id") ?? "";
+  const retrievalStartedAt = new Date().toISOString();
   const scope: RetrievalScope = {
     tenantId,
     spaceId,
@@ -1381,18 +1481,22 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       mode = "hybrid";
     }
   }
-  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}`;
+  const deletionPending = await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId);
+  const cacheGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null);
+  const cacheReadsAllowed = !deletionPending && cacheGeneration !== null;
+  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}:${cacheGeneration ?? crypto.randomUUID()}`;
   // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
   // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
   const queryEmbedding = await embedText(c.env.AI, query.trim());
-  const semanticHit = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId)
-    .then((cacheGeneration) => lookupSemanticCache(
+  const semanticHit = cacheReadsAllowed
+    ? await lookupSemanticCache(
       { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
       queryEmbedding.embedding,
-      { tenantId, spaceId, generation: cacheGeneration },
-    ))
-    .catch(() => null);
-  if (semanticHit) {
+      { tenantId, spaceId, generation: cacheGeneration! },
+    ).catch(() => null)
+    : null;
+  if (semanticHit && !await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) &&
+      await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) === cacheGeneration) {
     return c.json({ answer: semanticHit.text, data: [], citations: [], cached: true,
       cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
       confidence: semanticHit.score, live_grounding: false });
@@ -1402,6 +1506,8 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     now: Date.now,
     cache: {
       lookup: async (q, _scope, nowMs) => timed("cache_lookup_ms", async () => {
+        if (!cacheReadsAllowed || await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
+            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return null;
         const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
         const value = await c.env.KB_CACHE.get(key, "json") as { createdAt: number; expiresAt: number; hits: GroundedSearchHit[] } | null;
         if (!value) return null;
@@ -1409,7 +1515,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         return value;
       }),
       store: async (q, _scope, hits, expiresAt) => {
-        if (!hits.length) return;
+        if (!hits.length || !cacheReadsAllowed ||
+            await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, spaceId) ||
+            await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null) !== cacheGeneration) return;
         const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
         await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
       },
@@ -1428,7 +1536,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       const placeholders = ids.map(() => "?").join(",");
       const rows = await c.env.PLATFORM_DB.prepare(
         `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
-         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL`
+         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL AND d.status='indexed'`
       ).bind(...ids, ...retrievalPredicate.binds).all<Record<string, unknown>>();
       const byId = new Map(rows.results.map((row) => [String(row.id), row]));
       return (found.matches ?? []).flatMap((match) => {
@@ -1476,6 +1584,14 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
       line_start: hit.lineStart, line_end: hit.lineEnd } : null,
   })));
+  const deletionStartedDuringRetrieval = await hasKnowledgeDocumentDeletionSince(
+    c.env.PLATFORM_DB, tenantId, spaceId, retrievalStartedAt,
+  );
+  const finalCacheGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId).catch(() => null);
+  if (deletionStartedDuringRetrieval || (cacheGeneration !== null && finalCacheGeneration !== cacheGeneration)) {
+    return c.json({ data: [], citations: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION,
+      cached: false, retrieval_mode: mode, confidence: 0, live_grounding: false, latency_ms: result.latencyMs });
+  }
   return c.json({ data, citations, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
     live_grounding: result.liveGrounding, latency_ms: result.latencyMs });
 });
@@ -1519,6 +1635,9 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
   const tenantId = requireTenant(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
+  if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
+    return c.json({ hit: false, reason: "knowledge_deletion_pending" });
+  }
 
   // Fail open if Vectorize binding not available (optional binding)
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
@@ -1579,6 +1698,9 @@ app.post("/internal/semantic-cache/store", async (c) => {
   const tenantId = requireTenant(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
+  if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
+    return c.json({ stored: false, reason: "knowledge_deletion_pending" });
+  }
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
     return c.json({ stored: false, reason: "semantic cache not configured" });
@@ -1588,6 +1710,11 @@ app.post("/internal/semantic-cache/store", async (c) => {
     const generation = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId);
     const cacheId = crypto.randomUUID();
     const embedding = await embedText(c.env.AI, body.query);
+    // Pair the generation read with a final tombstone check. If deletion begins after this
+    // check, its generation rotation makes this write unreachable; if it began before, reject.
+    if (await hasPendingKnowledgeDocumentDeletion(c.env.PLATFORM_DB, tenantId, body.spaceId)) {
+      return c.json({ stored: false, reason: "knowledge_deletion_pending" });
+    }
     const expiresAt = Date.now() + SEMANTIC_CACHE_TTL_SECS * 1000;
 
     await c.env.SEMANTIC_CACHE_VECTORS.upsert([{
@@ -1618,8 +1745,9 @@ app.delete("/internal/semantic-cache", async (c) => {
   const spaceId = c.req.query("spaceId");
   if (!spaceId || spaceId.length > 256) return c.json({ error: "spaceId must contain 1..256 characters" }, 400);
   const tenantId = requireTenant(c);
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
-  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  // Whole-Space erasure suspends the Space before its delayed cleanup. The internal cleanup
+  // caller must still be able to rotate caches for that tenant-owned Space during erasure.
+  if (!(await verifySpaceTenantOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
     return c.json({ invalidated: true, count: 0 });
@@ -1632,6 +1760,9 @@ app.delete("/internal/semantic-cache", async (c) => {
     // more than Vectorize's 1,000-result query ceiling. The bounded delete below is cleanup.
     await c.env.SEMANTIC_CACHE_KV.put(await semanticCacheGenerationKey(tenantId, spaceId), crypto.randomUUID());
     generationRotated = true;
+    if (await knowledgeEgressDenied(c.env, spaceId)) {
+      return c.json({ invalidated: true, count: 0, cleanup_pending: true, cleanup_reason: "space_egress_policy" });
+    }
     // Clean up one bounded batch. Entries beyond the provider query ceiling remain unreachable
     // because their generation no longer matches; cleanup can continue asynchronously later.
     const dummyEmbed = await embedText(c.env.AI, "cache invalidation");
@@ -2024,4 +2155,9 @@ app.notFound((c) =>
   c.json({ error_code: "not_found", message: "Route not found" }, 404)
 );
 
-export default { fetch: app.fetch } satisfies ExportedHandler<KnowledgeEnv>;
+export default {
+  fetch: app.fetch,
+  scheduled(_controller: ScheduledController, env: KnowledgeEnv, ctx: ExecutionContext) {
+    ctx.waitUntil(reconcileKnowledgeDocumentDeletions(deletionBindings(env), 20));
+  },
+} satisfies ExportedHandler<KnowledgeEnv>;

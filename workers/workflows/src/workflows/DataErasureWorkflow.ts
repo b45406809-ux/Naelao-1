@@ -30,6 +30,7 @@ import {
   eraseSpaceD1Records,
   eraseSpaceKnowledgeDocumentResources,
   eraseSpaceKnowledgePrefixes,
+  invalidateSpaceKnowledgeCaches,
   eraseSpaceR2Prefixes,
   eraseSpacesInSteps,
   eraseWorkspaceCoordinatorsForSpace,
@@ -151,6 +152,9 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       params.orgId,
       step,
       async (spaceId) => {
+        const activeKnowledgeMutation = await this.env.PLATFORM_DB.prepare(`SELECT document_id FROM kb_document_mutation_leases
+          WHERE space_id=? AND lease_until>? LIMIT 1`).bind(spaceId, new Date().toISOString()).first<{ document_id: string }>();
+        if (activeKnowledgeMutation) throw new Error("Knowledge mutation is still active during Space erasure");
         let afterDocumentId = "";
         for (;;) {
           const { results: docs } = await this.env.PLATFORM_DB.prepare(
@@ -167,6 +171,12 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           afterDocumentId = nextDocumentId;
         }
         await eraseSpaceKnowledgePrefixes(spaceId, this.env.KB_BUCKET);
+        const cacheCleanup = await step.do(`invalidate-knowledge-cache-${spaceId.slice(0, 48)}`, () =>
+          invalidateSpaceKnowledgeCaches({
+            tenantId: params.orgId, spaceId, platformSecret: this.env.PLATFORM_SECRET,
+            knowledgeWorker: this.env.KNOWLEDGE_WORKER,
+          }));
+        if (cacheCleanup.cleanupPending) console.info("knowledge_cache_expiry_cleanup_pending");
 
         let workspaceCursor: string | undefined;
         let workspacePage = 0;

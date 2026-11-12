@@ -2,7 +2,7 @@
  * knowledge-base (spec §12.3) — Vectorize RAG integration for long-term semantic memory
  * that persists across sessions. Tier 2.
  *
- * Operations: knowledge.search, knowledge.index, knowledge.delete.
+ * Operations: knowledge.search, knowledge.index, knowledge.delete, knowledge.deletion_status.
  * Routed through the knowledge worker service binding (which owns the shared multi-tenant
  * Vectorize index with spaceId filtering — see CLAUDE.md).
  */
@@ -57,7 +57,7 @@ async function internalHeaders(ctx: PrebuiltOpContext, extra?: Record<string, st
 
 export const knowledgeBase: PrebuiltScript = {
   name: "knowledge-base",
-  description: "Semantic search, index, and delete over the Space knowledge base (Vectorize RAG).",
+  description: "Semantic search, index, and delete over the Space knowledge base (Vectorize RAG). Deletion reports pending cleanup explicitly.",
   domain: "knowledge",
   requires_tier: 2,
   // Phase 5: knowledge.index/knowledge.delete previously called routes that have never existed on
@@ -69,6 +69,7 @@ export const knowledgeBase: PrebuiltScript = {
     "knowledge.search_brief": "{query: string, top_k?:1..5} — explicitly summarize authorized retrieved chunks; preserves source citations and labels derived text. Use ordinary search for exact quotations.",
     "knowledge.index": "{title: string, content: string, content_type?: 'text'|'url'|'code'|'pdf', source_url?: string} — title and content are BOTH required, or the write is rejected.",
     "knowledge.delete": "{id: string} — the kb_documents row id returned by knowledge.index (its own 'id' field), not a raw filename.",
+    "knowledge.deletion_status": "{id: string} — check whether the document's durable Vectorize/R2 cleanup is pending or complete.",
     "knowledge.shared_document": "{source_space_id: string, document_id: string} — read one source document after its owner grants it and a member of this Space accepts that exact-document grant. Reads are audited and remain subject to source revocation.",
   },
   operations: {
@@ -152,7 +153,28 @@ export const knowledgeBase: PrebuiltScript = {
         const body = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
         throw new Error(`knowledge.delete failed: ${resp.status}${body ? ` — ${body}` : ""}`);
       }
-      return { ok: true };
+      if (resp.status === 204) return { ok: true, deleted: true, state: "complete" };
+      const result = await readBoundedResponseJson<{ deletion?: { state?: string; retry_after_seconds?: number } }>(resp, 8 * 1024);
+      if (!result.deletion || !["pending", "complete"].includes(result.deletion.state ?? "")) {
+        throw new Error("knowledge.delete response did not include a valid deletion state");
+      }
+      return { ok: true, deleted: result.deletion.state === "complete", deletion: result.deletion };
+    },
+
+    async "knowledge.deletion_status"(args, ctx) {
+      requireWorkerKnowledgeScope(ctx);
+      const id = String(args["id"] ?? "");
+      if (!id) throw new Error("knowledge.deletion_status requires 'id'");
+      const resp = await reqWorker(ctx).fetch(
+        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/documents/${encodeURIComponent(id)}/deletion`, {
+          headers: await internalHeaders(ctx),
+        })
+      );
+      if (!resp.ok) {
+        const body = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
+        throw new Error(`knowledge.deletion_status failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await readBoundedResponseJson(resp, 8 * 1024);
     },
 
     async "knowledge.shared_document"(args, ctx) {

@@ -17,6 +17,7 @@ const STATUS_CONFIG: Record<
   pending: { label: "Pending", className: "bg-gray-100 text-gray-600" },
   processing: { label: "Processing", className: "bg-blue-100 text-blue-700" },
   indexed: { label: "Indexed", className: "bg-green-100 text-green-700" },
+  deleting: { label: "Deleting", className: "bg-amber-100 text-amber-700" },
   failed: { label: "Failed", className: "bg-red-100 text-red-700" },
 };
 
@@ -75,7 +76,7 @@ export default function KbPage() {
   // Set up polling when any doc is in processing state
   useEffect(() => {
     const hasProcessing = docs.some(
-      (d) => d.status === "processing" || d.status === "pending"
+      (d) => d.status === "processing" || d.status === "pending" || d.status === "deleting"
     );
 
     if (hasProcessing) {
@@ -163,7 +164,7 @@ export default function KbPage() {
     setDeletingId(docId);
     try {
       await deleteKbDoc(spaceId, docId);
-      setDocs((prev) => prev.filter((d) => d.id !== docId));
+      await loadDocs();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
@@ -172,7 +173,7 @@ export default function KbPage() {
   }
 
   const hasProcessing = docs.some(
-    (d) => d.status === "processing" || d.status === "pending"
+    (d) => d.status === "processing" || d.status === "pending" || d.status === "deleting"
   );
 
   return (
@@ -198,7 +199,7 @@ export default function KbPage() {
         {hasProcessing && (
           <div className="flex items-center gap-2 text-sm text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg">
             <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600" />
-            Processing... (auto-refreshing)
+            {docs.some((doc) => doc.status === "deleting") ? "Deletion in progress..." : "Processing..."} (auto-refreshing)
           </div>
         )}
       </div>
@@ -257,10 +258,10 @@ export default function KbPage() {
                       <button
                         type="button"
                         onClick={() => void handleDelete(doc.id)}
-                        disabled={deletingId === doc.id}
+                        disabled={deletingId === doc.id || doc.status === "deleting"}
                         className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50 whitespace-nowrap transition-colors"
                       >
-                        {deletingId === doc.id ? "Deleting..." : "Delete"}
+                        {deletingId === doc.id || doc.status === "deleting" ? "Deleting..." : "Delete"}
                       </button>
                     </li>
                   ))}

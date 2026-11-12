@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0227_product_account_recovery_generation_and_email_outbox",
+  "requiredSchemaVersion": "0228_kb_document_deletion_tombstones",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -911,6 +911,10 @@
     {
       "filename": "0227_product_account_recovery_generation_and_email_outbox.sql",
       "sha256": "48a859c652eba1b42d7f234a534ffaa6968abf5a7a222345860067c0fa963c41"
+    },
+    {
+      "filename": "0228_kb_document_deletion_tombstones.sql",
+      "sha256": "a2498cb29b90555b9ebb4fbb1998195ac431738f7cb792c2bc5b9a3204c2df3b"
     }
   ]
 }

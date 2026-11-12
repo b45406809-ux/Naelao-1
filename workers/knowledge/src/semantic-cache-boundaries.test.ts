@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedResponse?: string } = {}) {
+function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedResponse?: string; pendingDeletion?: boolean; spaceSuspended?: boolean; airGapped?: boolean } = {}) {
   const query = vi.fn(async () => ({ matches: options.matches ?? [] }));
   const upsert = vi.fn(async () => ({ count: 1 }));
   const deleteByIds = vi.fn(async () => undefined);
@@ -11,6 +11,9 @@ function fixture(owned: boolean, options: { matches?: VectorizeMatch[]; cachedRe
   const aiRun = vi.fn(async () => ({ data: [[0.1, 0.2]] }));
   const prepare = vi.fn((sql: string) => ({
     bind: vi.fn(() => ({ first: vi.fn(async () => {
+      if (sql.includes("kb_document_deletion_operations")) return options.pendingDeletion ? { document_id: "doc-1" } : null;
+      if (sql.includes("status = 'active'")) return owned && !options.spaceSuspended ? { id: "space-a" } : null;
+      if (sql.includes("SELECT config_json FROM spaces")) return { config_json: options.airGapped ? '{"compliance":{"airGappedOnly":true}}' : "{}" };
       if (sql.includes("tenant_id = ?")) return owned ? { owned: 1 } : null;
       return { config_json: "{}" };
     }) })),
@@ -57,6 +60,26 @@ describe("semantic response cache tenant and request bounds", () => {
     expect(deleteResponse.status).toBe(404);
     expect(invalidation.aiRun).not.toHaveBeenCalled();
     expect(invalidation.query).not.toHaveBeenCalled();
+  });
+
+  it("bypasses semantic cache lookup and storage while any document deletion is pending", async () => {
+    const lookup = fixture(true, { pendingDeletion: true, matches: [{ id: "cached", score: 0.999 }] });
+    const lookupResponse = await worker.fetch(await signedRequest("/internal/semantic-cache/lookup", {
+      query: "question", spaceId: "space-a",
+    }), lookup.env, {} as ExecutionContext);
+    expect(lookupResponse.status).toBe(200);
+    await expect(lookupResponse.json()).resolves.toMatchObject({ hit: false, reason: "knowledge_deletion_pending" });
+    expect(lookup.aiRun).not.toHaveBeenCalled();
+    expect(lookup.query).not.toHaveBeenCalled();
+
+    const store = fixture(true, { pendingDeletion: true });
+    const storeResponse = await worker.fetch(await signedRequest("/internal/semantic-cache/store", {
+      query: "question", response: "stale answer", spaceId: "space-a",
+    }), store.env, {} as ExecutionContext);
+    expect(storeResponse.status).toBe(200);
+    await expect(storeResponse.json()).resolves.toMatchObject({ stored: false, reason: "knowledge_deletion_pending" });
+    expect(store.aiRun).not.toHaveBeenCalled();
+    expect(store.upsert).not.toHaveBeenCalled();
   });
 
   it("bounds query and response fields and scopes vector reads and writes by tenant", async () => {
@@ -117,5 +140,23 @@ describe("semantic response cache tenant and request bounds", () => {
     await expect(response.json()).resolves.toMatchObject({ invalidated: true, count: 1_000, cleanup_pending: true });
     expect(f.deleteByIds).toHaveBeenCalledOnce();
     expect(f.kvPut.mock.calls[0]?.[0]).toMatch(/^sc-generation:/);
+  });
+
+  it("allows tenant-authenticated cache invalidation after the Space is suspended for erasure", async () => {
+    const f = fixture(true, { spaceSuspended: true });
+    const response = await worker.fetch(await signedRequest("/internal/semantic-cache?spaceId=space-a", undefined, "DELETE"), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ invalidated: true });
+    expect(f.kvPut).toHaveBeenCalledWith(expect.stringMatching(/^sc-generation:/), expect.any(String));
+  });
+
+  it("rotates cache generation for an air-gapped Space without crossing egress boundaries", async () => {
+    const f = fixture(true, { airGapped: true });
+    const response = await worker.fetch(await signedRequest("/internal/semantic-cache?spaceId=space-a", undefined, "DELETE"), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ invalidated: true, cleanup_pending: true, cleanup_reason: "space_egress_policy" });
+    expect(f.kvPut).toHaveBeenCalledOnce();
+    expect(f.aiRun).not.toHaveBeenCalled();
+    expect(f.query).not.toHaveBeenCalled();
   });
 });

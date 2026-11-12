@@ -218,15 +218,15 @@ export default function ProjectDetailPage() {
     }
   }
 
-  const refreshDocs = React.useCallback(async () => {
+  const refreshDocs = React.useCallback(async (showLoading = true) => {
     if (!creds) return;
-    setDocsLoading(true);
+    if (showLoading) setDocsLoading(true);
     try {
       setDocs(await listKbDocuments(activeSpaceId, creds, params.projectId));
     } catch {
       show("Couldn't load knowledge base");
     } finally {
-      setDocsLoading(false);
+      if (showLoading) setDocsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, params.projectId, session]);
@@ -247,6 +247,12 @@ export default function ProjectDetailPage() {
     void refreshDocs();
     void refreshExternalKnowledge();
   }, [refresh, refreshDocs, refreshExternalKnowledge]);
+
+  React.useEffect(() => {
+    if (!docs.some((document) => document.status === "deleting")) return;
+    const timer = setInterval(() => { void refreshDocs(false); }, 5_000);
+    return () => clearInterval(timer);
+  }, [docs, refreshDocs]);
 
   // Defensive re-fetch on regaining focus: a thread created from this project's own "New Thread"
   // button navigates straight into it, so coming back here (tab switch, browser back) should
@@ -344,9 +350,10 @@ export default function ProjectDetailPage() {
   async function handleDeleteDoc(docId: string) {
     if (!creds) return;
     try {
-      await deleteKbDocument(activeSpaceId, docId, creds);
+      const result = await deleteKbDocument(activeSpaceId, docId, creds);
       await refreshDocs();
       await refreshExternalKnowledge();
+      if (result.state === "pending") show("Deletion is still in progress. This list will update when cleanup finishes.");
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to delete document");
     }
@@ -826,8 +833,8 @@ export default function ProjectDetailPage() {
                   {d.chunk_count} chunk{d.chunk_count === 1 ? "" : "s"} · {d.status}
                 </div>
               </div>
-              <Button size="sm" variant="ghost" onClick={() => handleDeleteDoc(d.id)}>
-                Remove
+              <Button size="sm" variant="ghost" onClick={() => handleDeleteDoc(d.id)} disabled={d.status === "deleting"}>
+                {d.status === "deleting" ? "Deleting…" : "Remove"}
               </Button>
             </div>
           ))}

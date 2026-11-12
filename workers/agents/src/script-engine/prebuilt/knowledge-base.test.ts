@@ -2,6 +2,40 @@ import { describe, expect, it, vi } from "vitest";
 import { knowledgeBase } from "./knowledge-base.js";
 
 describe("knowledge-base shared document reads", () => {
+  it("reports durable deletion as pending and exposes its retry status route", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (request.method === "DELETE") {
+        expect(url.pathname).toBe("/spaces/s/kb/documents/doc-1");
+        return Response.json({ deletion: { document_id: "doc-1", state: "pending", retry_after_seconds: 300 } }, { status: 202 });
+      }
+      expect(request.method).toBe("GET");
+      expect(url.pathname).toBe("/spaces/s/kb/documents/doc-1/deletion");
+      return Response.json({ deletion: { document_id: "doc-1", state: "pending", attempts: 2 } });
+    });
+    const ctx = {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", userId: "u", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never;
+
+    await expect(knowledgeBase.operations["knowledge.delete"]!({ id: "doc-1" }, ctx)).resolves.toMatchObject({
+      ok: true, deleted: false, deletion: { state: "pending", retry_after_seconds: 300 },
+    });
+    await expect(knowledgeBase.operations["knowledge.deletion_status"]!({ id: "doc-1" }, ctx)).resolves.toMatchObject({
+      deletion: { document_id: "doc-1", state: "pending", attempts: 2 },
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports deletion complete only after the worker returns 204", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const result = await knowledgeBase.operations["knowledge.delete"]!({ id: "doc-1" }, {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never);
+    expect(result).toEqual({ ok: true, deleted: true, state: "complete" });
+  });
+
   it("validates search queries and top-k before calling the Knowledge Worker", async () => {
     const fetch = vi.fn(async (_request: Request) => Response.json({ data: [] }));
     const ctx = {

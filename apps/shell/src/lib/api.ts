@@ -2532,7 +2532,7 @@ export interface KbDocument {
   title: string;
   source_url: string | null;
   content_type: "text" | "url" | "code" | "pdf";
-  status: "pending" | "processing" | "indexed" | "flagged" | "failed";
+  status: "pending" | "processing" | "indexed" | "flagged" | "failed" | "deleting";
   chunk_count: number;
   created_at: string;
   updated_at: string;
@@ -2552,8 +2552,32 @@ export async function createKbDocument(
   return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
 }
 
-export async function deleteKbDocument(spaceId: string, docId: string, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
+export interface KbDocumentDeletion {
+  document_id: string;
+  state: "pending" | "complete";
+  attempts: number;
+  next_attempt_at: string;
+  last_error: string | null;
+  provider_mirror_status: string;
+  completed_at: string | null;
+}
+
+export async function getKbDocumentDeletion(spaceId: string, docId: string, session: SessionCredentials): Promise<KbDocumentDeletion> {
+  const response = await apiFetch<{ deletion: KbDocumentDeletion }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/${encodeURIComponent(docId)}/deletion`,
+    { session, cache: "no-store" },
+  );
+  return response.deletion;
+}
+
+export async function deleteKbDocument(
+  spaceId: string, docId: string, session: SessionCredentials
+): Promise<{ state: "pending" | "complete" }> {
+  const response = await apiFetch<{ deletion?: Pick<KbDocumentDeletion, "state"> } | undefined>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/kb/documents/${encodeURIComponent(docId)}`,
+    { method: "DELETE", session },
+  );
+  return { state: response?.deletion?.state ?? "complete" };
 }
 
 export interface ExternalKnowledgePublication {
