@@ -80,135 +80,43 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           DB_ID="${{ vars.D1_DATABASE_ID_STAGING }}"
-          for migration in infra/migrations/*.sql; do
-            if [[ "$migration" == *0164_agentport_channel_message_refs.sql ]] && ! npx wrangler d1 execute "$DB_ID" --command="SELECT content_text FROM agentport_messages LIMIT 0" --remote --env=staging >/dev/null 2>&1; then
-              continue
-            fi
-            echo "Applying $migration..."
-            npx wrangler d1 execute "$DB_ID" \
-              --file="$migration" \
-              --remote \
-              --env=staging 2>&1 || true
-          done
-          # Carrier-aware phone consumers require both discriminator columns.
-          npx wrangler d1 execute "$DB_ID" --command="SELECT provider FROM assistant_phone_bindings LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT provider FROM assistant_phone_quotes LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT binding_id,event_id FROM assistant_telnyx_ingress_receipts LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT receipt_hash FROM assistant_telnyx_usage_receipts LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT action_id FROM assistant_telnyx_cost_polls LIMIT 0" --remote --env=staging
-          # The sweeper depends on persisted fairness cursors. Make this newest idempotent
-          # migration a required step instead of relying on the legacy best-effort loop above.
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0115_sweeper_fairness_cursors.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0152_decision_call_reservations.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT status,model_id,price_snapshot FROM decision_call_reservations LIMIT 0" \
-            --remote \
-            --env=staging
-          # Refuse to deploy consumers that require the suspension-reason column if migration
-          # application failed in the legacy best-effort loop above.
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT suspension_reason FROM spaces LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT suspension_reason FROM orgs LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT request_id FROM gdpr_erasure_outbox LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0119_portal_domains.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT hostname FROM portal_domains LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0120_synthetics_storage.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT check_name FROM synthetic_check_state LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0121_space_provisioning_leases.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT lease_token FROM space_provisioning_leases LIMIT 0" \
-            --remote \
-            --env=staging
-          # Platform assistant and builder-reset retention schemas are required by deployed routes.
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0122_platform_assistant_sessions.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT session_id FROM assistant_messages LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT id FROM assistant_sessions LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0123_builder_reset_token_expiry_index.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday('now') LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0124_project_scoped_agent_email_addresses.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --file=infra/migrations/0128_space_workspace_cleanup_marker.sql \
-            --remote \
-            --env=staging
-          npx wrangler d1 execute "$DB_ID" \
-            --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" \
-            --remote \
-            --env=staging
-          # AgentPort standalone public API credential registry and control plane.
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0158_agentport_registry.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0159_agentport_api_keys.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT key_hash FROM agentport_api_keys LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0160_agentport_developer_identity.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT email_normalized FROM agentport_developers LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0161_agentport_channels_threads.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_channel_id,session_binding_json,receipt_hash FROM agentport_channels LEFT JOIN agentport_threads ON 1=0 LEFT JOIN agentport_action_receipts ON 1=0 LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0162_agentport_signed_identity.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT public_jwk_json,private_key_ciphertext FROM agentport_identity_keys LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0163_agentport_provider_auth.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote --env=staging
-          if npx wrangler d1 execute "$DB_ID" --command="SELECT content_text FROM agentport_messages LIMIT 0" --remote --env=staging >/dev/null 2>&1; then
-            npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0164_agentport_channel_message_refs.sql --remote --env=staging
-          fi
-          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0165_agentport_oauth.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT token_hash FROM agentport_oauth_tokens LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0166_drop_agentport_message_store.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --file=infra/migrations/0167_agentport_apps_capabilities.sql --remote --env=staging
-          npx wrangler d1 execute "$DB_ID" --command="SELECT monthly_budget_micros FROM agentport_apps LIMIT 0" --remote --env=staging
+          : "${DB_ID:?D1_DATABASE_ID_STAGING is required}"
+          # The runner requires a reviewed per-database baseline before it contacts D1.
+          # It journals each migration checksum atomically and retains its lock after failure.
+          python3 infra/scripts/release_migrations.py \
+            --environment staging \
+            --database-id "$DB_ID" \
+            --execution-id "${D1_MIGRATION_RESUME_OWNER:-${GITHUB_WORKFLOW}-${GITHUB_RUN_ID}}" \
+            --baseline infra/release/baselines/staging.json \
+            --wrangler npx wrangler
+          # Keep the deploy-time consumer probes; any missing column/table stops this job.
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider FROM assistant_phone_bindings LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider FROM assistant_phone_quotes LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT binding_id,event_id FROM assistant_telnyx_ingress_receipts LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT receipt_hash FROM assistant_telnyx_usage_receipts LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT action_id FROM assistant_telnyx_cost_polls LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT status,model_id,price_snapshot FROM decision_call_reservations LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT suspension_reason FROM spaces LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT suspension_reason FROM orgs LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT request_id FROM gdpr_erasure_outbox LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT hostname FROM portal_domains LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT check_name FROM synthetic_check_state LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT lease_token FROM space_provisioning_leases LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT session_id FROM assistant_messages LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT id FROM assistant_sessions LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday('now') LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT key_hash FROM agentport_api_keys LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT email_normalized FROM agentport_developers LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_channel_id,session_binding_json,receipt_hash FROM agentport_channels LEFT JOIN agentport_threads ON 1=0 LEFT JOIN agentport_action_receipts ON 1=0 LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT public_jwk_json,private_key_ciphertext FROM agentport_identity_keys LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT jti,expires_at,revoked_at FROM agentport_issued_credentials LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT auth_json FROM agentport_provider_auth LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT provider_message_id FROM agentport_channel_message_refs LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT token_hash FROM agentport_oauth_tokens LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT monthly_budget_micros FROM agentport_apps LIMIT 0" --remote
 
       - name: Deploy router worker (staging)
         env:
