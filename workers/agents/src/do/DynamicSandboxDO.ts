@@ -77,27 +77,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
       const scope: { tenantId?: string; reset?: boolean } = await request.json<{ tenantId?: string; reset?: boolean }>().catch(() => ({}));
       if (!scope.tenantId || !this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
         scope.tenantId, this.bindings.PLATFORM_SECRET)) return new Response(null, { status: 403 });
-      if (scope.reset === true) {
-        try {
-          await this.flushPendingSnapshotRetention();
-          const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
-          if (selection?.projectMain && selection.projectId) await updateRuntimeSnapshotRetention(this.requireDb(), {
-            tenantId: selection.tenantId, spaceId: selection.spaceId, projectId: selection.projectId,
-            runtimeObjectSha256: await digest(this.ctx.id.toString()),
-          }, "reference_dropped");
-        } catch {
-          return Response.json({ error_code: "dynamic_snapshot_retention_tracking_unavailable" }, { status: 503 });
-        }
-        await this.stopContainer().catch(() => undefined);
-        await this.ctx.storage.delete("dynamic_snapshot");
-        await this.ctx.storage.delete("dynamic_restored");
-        await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
-        await this.ctx.storage.delete("dynamic_snapshot_restored_id");
-        await this.ctx.storage.delete("dynamic_snapshot_restore_error");
-        await this.ctx.storage.delete("dynamic_snapshot_save_error");
-        await this.ctx.storage.delete("dynamic_selection");
-        return Response.json({ reset: true, providerSnapshotPurge: "not_supported" });
-      }
+      if (scope.reset === true) return this.enqueueSerialized(() => this.resetSnapshot());
       let retentionTrackingError: string | undefined;
       if (await this.ctx.storage.get("dynamic_snapshot_registry_pending")) {
         try { await this.flushPendingSnapshotRetention(); }
@@ -152,6 +132,28 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (restoreCandidate && !response.ok && !await this.ctx.storage.get("dynamic_snapshot_restore_error"))
       await this.ctx.storage.put("dynamic_snapshot_restore_error", "dynamic_snapshot_restore_failed");
     return response;
+  }
+
+  private async resetSnapshot(): Promise<Response> {
+    try {
+      await this.flushPendingSnapshotRetention();
+      const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+      if (selection?.projectMain && selection.projectId) await updateRuntimeSnapshotRetention(this.requireDb(), {
+        tenantId: selection.tenantId, spaceId: selection.spaceId, projectId: selection.projectId,
+        runtimeObjectSha256: await digest(this.ctx.id.toString()),
+      }, "reference_dropped");
+    } catch {
+      return Response.json({ error_code: "dynamic_snapshot_retention_tracking_unavailable" }, { status: 503 });
+    }
+    await this.stopContainer().catch(() => undefined);
+    await this.ctx.storage.delete("dynamic_snapshot");
+    await this.ctx.storage.delete("dynamic_restored");
+    await this.ctx.storage.delete("dynamic_snapshot_restore_candidate");
+    await this.ctx.storage.delete("dynamic_snapshot_restored_id");
+    await this.ctx.storage.delete("dynamic_snapshot_restore_error");
+    await this.ctx.storage.delete("dynamic_snapshot_save_error");
+    await this.ctx.storage.delete("dynamic_selection");
+    return Response.json({ reset: true, providerSnapshotPurge: "not_supported" });
   }
 
   protected override async prepareAllocation(scope: ContainerInvocationScope): Promise<void> {

@@ -262,6 +262,38 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.records.has("dynamic_selection")).toBe(false);
     expect(r.transport.destroy).toHaveBeenCalledOnce();
   });
+  it("serializes snapshot reset after an in-flight idle snapshot save", async () => {
+    let now = 2_100_000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke()).status).toBe(200);
+    now += 5001;
+    await r.alarm();
+    const lastGood = structuredClone(r.records.get("dynamic_snapshot"));
+    expect(lastGood?.id).toBe("snapshot-one");
+    expect((await r.invoke()).status).toBe(200);
+
+    let announceSnapshot!: () => void;
+    let releaseSnapshot!: () => void;
+    const snapshotStarted = new Promise<void>(resolve => { announceSnapshot = resolve; });
+    const snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+    r.transport.snapshotContainer.mockImplementationOnce(async () => {
+      announceSnapshot();
+      await snapshotGate;
+      return { id: "snapshot-two", size: 2048 };
+    });
+    now += 5001;
+    const saving = r.alarm();
+    await snapshotStarted;
+    const reset = r.profile(true);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(r.records.get("dynamic_snapshot")).toEqual(lastGood);
+
+    releaseSnapshot();
+    await saving;
+    expect(await (await reset).json()).toEqual({ reset: true, providerSnapshotPurge: "not_supported" });
+    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.records.has("dynamic_selection")).toBe(false);
+  });
   it("rejects unauthenticated profile reads and resets", async () => {
     const r = runtime();
     expect((await r.profile(false, "invalid-token")).status).toBe(403);

@@ -255,7 +255,7 @@ export class ToolSandboxDO extends DurableObject {
 
   /** Serialize erasure with artifact transfers and other scoped runtime work. Erasure must not
    * acknowledge local fencing while an earlier sidecar R2 write can still land afterward. */
-  private enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
+  protected enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
     const pending = this.executionQueue.then(operation);
     this.executionQueue = pending.then(() => undefined, () => undefined);
     return pending;
