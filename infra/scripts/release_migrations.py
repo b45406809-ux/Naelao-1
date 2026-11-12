@@ -344,6 +344,24 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if "provider_receipt_id" not in auth_email_columns:
         raise ReleaseError("required schema check failed for product_auth_email_outbox")
+    deletion_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('kb_document_deletion_operations')")
+        if isinstance(row.get("name"), str)
+    }
+    deletion_expected = {
+        "operation_kind", "erasure_request_id", "cache_generation_to_purge",
+        "cache_generation_next", "cache_cleanup_ids_json", "cache_cleanup_status",
+    }
+    if not deletion_expected.issubset(deletion_columns):
+        raise ReleaseError("required schema check failed for kb_document_deletion_operations")
+    erasure_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('gdpr_requests')")
+        if isinstance(row.get("name"), str)
+    }
+    if "cache_cleanup_status" not in erasure_columns:
+        raise ReleaseError("required schema check failed for gdpr_requests")
     d1.execute_file(
         f"INSERT INTO {META_TABLE}(key,value) VALUES('current_schema_version',{sql_quote(manifest['requiredSchemaVersion'])}) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value;\n"

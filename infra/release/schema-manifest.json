@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0231_product_auth_email_provider_receipt",
+  "requiredSchemaVersion": "0232_semantic_cache_cleanup_operations",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -927,6 +927,10 @@
     {
       "filename": "0231_product_auth_email_provider_receipt.sql",
       "sha256": "0fd5e271a38bb6315b931631ab76f98d335224f3083362a175617cdf58e51aea"
+    },
+    {
+      "filename": "0232_semantic_cache_cleanup_operations.sql",
+      "sha256": "8dfb1a8b931d260f2eb90130e00f02c2df945f9c4eefece9d01c62f92ac9177b"
     }
   ]
 }

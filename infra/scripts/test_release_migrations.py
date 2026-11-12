@@ -22,6 +22,11 @@ class MemoryD1:
         self.applied_sql = []
         self.queue_health_columns = ("triggered_at", "observed_at", "source", "status", "unavailable_reason", "metrics_json", "alert_count", "alerts_json")
         self.auth_email_columns = ("operation_id", "status", "provider_receipt_id")
+        self.knowledge_deletion_columns = (
+            "operation_kind", "erasure_request_id", "cache_generation_to_purge",
+            "cache_generation_next", "cache_cleanup_ids_json", "cache_cleanup_status",
+        )
+        self.gdpr_request_columns = ("id", "tenant_id", "request_type", "cache_cleanup_status")
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -43,6 +48,10 @@ class MemoryD1:
             return [{"name": name} for name in self.queue_health_columns]
         if sql.startswith("PRAGMA table_info('product_auth_email_outbox')"):
             return [{"name": name} for name in self.auth_email_columns]
+        if sql.startswith("PRAGMA table_info('kb_document_deletion_operations')"):
+            return [{"name": name} for name in self.knowledge_deletion_columns]
+        if sql.startswith("PRAGMA table_info('gdpr_requests')"):
+            return [{"name": name} for name in self.gdpr_request_columns]
         return []
 
     def execute_file(self, sql):
@@ -179,6 +188,19 @@ class ReleaseMigrationTests(unittest.TestCase):
         incomplete = MemoryD1()
         incomplete.queue_health_columns = ("triggered_at", "status")
         with self.assertRaisesRegex(release.ReleaseError, "queue_health_checks"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_durable_cache_erasure_state(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        incomplete = MemoryD1()
+        incomplete.knowledge_deletion_columns = ("operation_kind", "cache_cleanup_status")
+        with self.assertRaisesRegex(release.ReleaseError, "kb_document_deletion_operations"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+        incomplete = MemoryD1()
+        incomplete.gdpr_request_columns = ("id", "status")
+        with self.assertRaisesRegex(release.ReleaseError, "gdpr_requests"):
             release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_interrupted_run_resumes_from_next_atomic_migration(self):

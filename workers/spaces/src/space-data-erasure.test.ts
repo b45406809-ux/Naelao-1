@@ -85,4 +85,26 @@ describe("whole-organization SpaceDO data erasure route", () => {
     expect(await response.json()).toEqual({ error_code: "erasure_request_not_claimed" });
     expect(h.doRequests).toHaveLength(0);
   });
+
+  it("exposes pending semantic-cache cleanup on the owner erasure status route", async () => {
+    const prepare = vi.fn((sql: string) => ({
+      bind: (..._values: unknown[]) => ({
+        first: async () => sql.includes("FROM orgs")
+          ? { id: "tenant-a" }
+          : sql.includes("FROM gdpr_requests")
+            ? { id: "erase-request-a", status: "completed", cache_cleanup_status: "pending",
+                created_at: "t0", updated_at: "t1", completed_at: "t1" }
+            : null,
+      }),
+    }));
+    const request = new Request("https://spaces.test/builder/erasure/erase-request-a", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" },
+    });
+    const response = await worker.fetch(request, { ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: { prepare } } as never, { waitUntil: vi.fn() } as never);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      request_id: "erase-request-a", status: "completed", cache_cleanup_status: "pending",
+    });
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining("cache_cleanup_status"));
+  });
 });

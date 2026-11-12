@@ -1,7 +1,10 @@
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
+
 export interface KnowledgeDeletionBindings {
   PLATFORM_DB: D1Database;
   KB_BUCKET: R2Bucket;
   KB_VECTORS: VectorizeIndex;
+  SEMANTIC_CACHE_VECTORS: VectorizeIndex;
   SEMANTIC_CACHE_KV: KVNamespace;
   AUTORAG_KB_INSTANCE?: string;
 }
@@ -17,6 +20,12 @@ export interface KnowledgeDocumentDeletion {
   r2_prefix_index: number;
   r2_cursor: string | null;
   cache_generation_rotated_at: string | null;
+  cache_generation_to_purge: string | null;
+  cache_generation_next: string | null;
+  cache_cleanup_ids_json: string;
+  cache_cleanup_status: "not_started" | "pending" | "complete";
+  operation_kind: "document" | "space_cache";
+  erasure_request_id: string | null;
   provider_mirror_status: string;
   attempts: number;
   next_attempt_at: string;
@@ -30,6 +39,7 @@ export interface KnowledgeDocumentDeletion {
 
 const VECTOR_BATCH_SIZE = 100;
 const VECTOR_BATCHES_PER_RUN = 10;
+const SEMANTIC_CACHE_CLEANUP_BATCH_SIZE = 100;
 const R2_PAGE_SIZE = 1000;
 const R2_PAGES_PER_RUN = 4;
 const DELETION_LEASE_MS = 10 * 60_000;
@@ -135,7 +145,7 @@ export async function hasPendingKnowledgeDocumentDeletion(
     return Boolean(
       await db
         .prepare(`SELECT document_id FROM kb_document_deletion_operations
-      WHERE tenant_id=? AND space_id=? AND state='pending' LIMIT 1`)
+      WHERE tenant_id=? AND space_id=? AND (state='pending' OR cache_cleanup_status='pending') LIMIT 1`)
         .bind(tenantId, spaceId)
         .first()
     );
@@ -170,19 +180,124 @@ async function rotateSemanticCacheGeneration(
   env: KnowledgeDeletionBindings,
   token: string
 ): Promise<KnowledgeDocumentDeletion> {
-  if (operation.cache_generation_rotated_at) return operation;
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(`${operation.tenant_id}:${operation.space_id}`)
   );
   const key = `sc-generation:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  let current = operation;
+  if (current.cache_cleanup_status === "not_started") {
+    const savedGeneration = await env.SEMANTIC_CACHE_KV.get(key);
+    const previousGeneration = current.cache_generation_to_purge ??
+      (savedGeneration && savedGeneration.length <= 128 ? savedGeneration : "0");
+    const nextGeneration = crypto.randomUUID();
+    const preparedAt = nowIso();
+    const prepared = await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+      SET cache_generation_to_purge=?,cache_generation_next=?,cache_cleanup_status='pending',updated_at=?
+      WHERE document_id=? AND lease_token=? AND state='pending' AND cache_cleanup_status='not_started'`)
+      .bind(previousGeneration, nextGeneration, preparedAt, operation.document_id, token).run();
+    if (!prepared.meta.changes) throw new Error("cache_cleanup_prepare_conflict");
+    current = { ...current, cache_generation_to_purge: previousGeneration,
+      cache_generation_next: nextGeneration, cache_cleanup_status: "pending", updated_at: preparedAt };
+  }
+
+  if (current.cache_generation_rotated_at) return current;
+  const nextGeneration = current.cache_generation_next;
+  if (!nextGeneration || !current.cache_generation_to_purge) throw new Error("cache_generation_receipt_missing");
+  // The future generation and old purge target are durable before this write. A lost KV response
+  // can therefore safely repeat the exact generation assignment after the next lease.
+  await env.SEMANTIC_CACHE_KV.put(key, nextGeneration);
   const rotatedAt = nowIso();
-  await env.SEMANTIC_CACHE_KV.put(key, crypto.randomUUID());
-  await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations SET cache_generation_rotated_at=?,updated_at=?
-    WHERE document_id=? AND lease_token=? AND state='pending'`)
-    .bind(rotatedAt, rotatedAt, operation.document_id, token)
+  const rotated = await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+    SET cache_generation_rotated_at=?,updated_at=?
+    WHERE document_id=? AND lease_token=? AND state='pending' AND cache_generation_next=?`)
+    .bind(rotatedAt, rotatedAt, operation.document_id, token, nextGeneration)
     .run();
-  return { ...operation, cache_generation_rotated_at: rotatedAt };
+  if (!rotated.meta.changes) throw new Error("cache_generation_rotation_conflict");
+  return { ...current, cache_generation_rotated_at: rotatedAt, updated_at: rotatedAt };
+}
+
+function parseSemanticCacheCleanupIds(value: string): string[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error("cache_cleanup_receipt_invalid"); }
+  if (!Array.isArray(parsed) || parsed.length > SEMANTIC_CACHE_CLEANUP_BATCH_SIZE ||
+      parsed.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) ||
+      new Set(parsed).size !== parsed.length) throw new Error("cache_cleanup_receipt_invalid");
+  return parsed as string[];
+}
+
+/** Persist a Vectorize result page before deleting either external copy, so retries retain exact IDs. */
+async function deleteSemanticCachePage(
+  operation: KnowledgeDocumentDeletion,
+  env: KnowledgeDeletionBindings,
+  token: string
+): Promise<{ operation: KnowledgeDocumentDeletion; pending: boolean }> {
+  if (operation.cache_cleanup_status === "complete") return { operation, pending: false };
+  let ids = parseSemanticCacheCleanupIds(operation.cache_cleanup_ids_json || "[]");
+  if (!ids.length) {
+    const generation = operation.cache_generation_to_purge;
+    if (!generation) throw new Error("cache_generation_purge_target_missing");
+    // The configured semantic-cache model produces 1,024-dimensional vectors. A zero query
+    // returns an arbitrary bounded page; deleting that page and repeating covers every ID without
+    // adding an embedding call or sending cached content back to an AI provider.
+    const filter = {
+      tenant_id: { $eq: operation.tenant_id },
+      space_id: { $eq: operation.space_id },
+      ...(generation === "*" ? {} : { generation: { $eq: generation } }),
+    };
+    const page = await env.SEMANTIC_CACHE_VECTORS.query(new Array(1024).fill(0), {
+      topK: SEMANTIC_CACHE_CLEANUP_BATCH_SIZE,
+      filter,
+      returnMetadata: "none",
+    });
+    ids = [...new Set((page.matches ?? []).map((match) => match.id))];
+    if (ids.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id))) throw new Error("cache_cleanup_vector_id_invalid");
+    if (!ids.length) {
+      const completedAt = nowIso();
+      const completed = await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+        SET cache_cleanup_status='complete',cache_cleanup_ids_json='[]',updated_at=?
+        WHERE document_id=? AND lease_token=? AND state='pending'`)
+        .bind(completedAt, operation.document_id, token).run();
+      if (!completed.meta.changes) throw new Error("cache_cleanup_complete_conflict");
+      return { operation: { ...operation, cache_cleanup_status: "complete", cache_cleanup_ids_json: "[]", updated_at: completedAt }, pending: false };
+    }
+    const idsJson = JSON.stringify(ids);
+    const saved = await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+      SET cache_cleanup_ids_json=?,updated_at=?
+      WHERE document_id=? AND lease_token=? AND state='pending' AND cache_cleanup_ids_json='[]'`)
+      .bind(idsJson, nowIso(), operation.document_id, token).run();
+    if (!saved.meta.changes) throw new Error("cache_cleanup_page_conflict");
+    operation = { ...operation, cache_cleanup_ids_json: idsJson };
+  }
+
+  await env.SEMANTIC_CACHE_VECTORS.deleteByIds(ids);
+  await Promise.all(ids.map((id) => env.SEMANTIC_CACHE_KV.delete(`sc:${id}`)));
+  const updatedAt = nowIso();
+  const cleared = await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+    SET cache_cleanup_ids_json='[]',updated_at=?
+    WHERE document_id=? AND lease_token=? AND state='pending' AND cache_cleanup_ids_json=?`)
+    .bind(updatedAt, operation.document_id, token, JSON.stringify(ids)).run();
+  if (!cleared.meta.changes) throw new Error("cache_cleanup_page_clear_conflict");
+  return { operation: { ...operation, cache_cleanup_ids_json: "[]", updated_at: updatedAt }, pending: true };
+}
+
+async function completeSpaceCacheErasure(
+  db: D1Database,
+  operation: KnowledgeDocumentDeletion,
+  token: string
+): Promise<boolean> {
+  if (!operation.erasure_request_id) throw new Error("cache_erasure_request_missing");
+  const completedAt = nowIso();
+  const results = await db.batch([
+    db.prepare(`UPDATE kb_document_deletion_operations SET state='complete',lease_token=NULL,lease_until=NULL,
+      last_error=NULL,updated_at=?,completed_at=? WHERE document_id=? AND lease_token=? AND state='pending'
+      AND cache_cleanup_status='complete'`).bind(completedAt, completedAt, operation.document_id, token),
+    db.prepare(`UPDATE gdpr_requests SET cache_cleanup_status=CASE WHEN EXISTS (
+      SELECT 1 FROM kb_document_deletion_operations WHERE erasure_request_id=? AND state='pending'
+    ) THEN 'pending' ELSE 'complete' END,updated_at=? WHERE id=? AND tenant_id=? AND request_type='erasure'`)
+      .bind(operation.erasure_request_id, completedAt, operation.erasure_request_id, operation.tenant_id),
+  ]);
+  return results[0]?.meta.changes === 1;
 }
 
 async function deleteVectorPages(
@@ -334,6 +449,42 @@ export async function processKnowledgeDocumentDeletion(
     }
 
     let current = await rotateSemanticCacheGeneration(operation, env, token);
+    if (current.operation_kind === "space_cache") {
+      if (!current.erasure_request_id) throw new Error("cache_erasure_request_missing");
+      const request = await db.prepare(`SELECT status FROM gdpr_requests
+        WHERE id=? AND tenant_id=? AND request_type='erasure'`)
+        .bind(current.erasure_request_id, current.tenant_id)
+        .first<{ status: string }>();
+      if (!request || !["processing", "completed"].includes(request.status)) {
+        throw new Error("cache_erasure_request_unavailable");
+      }
+      // Generation rotation is a KV-only read barrier. While the Space is still active, keep
+      // external Vectorize cleanup inside the Space's configured network policy. Once an
+      // erasure is complete, the remaining deletion-only work may finish even after the Space
+      // row itself has been removed; it carries IDs but no cached content across the boundary.
+      if (request.status !== "completed" &&
+          await isSpaceNetworkEgressDenied(db, current.space_id)) {
+        await markPending(db, documentId, token, current.attempts, "space_egress_policy");
+        return { state: "pending", attempts: current.attempts };
+      }
+      const cachePage = await deleteSemanticCachePage(current, env, token);
+      current = cachePage.operation;
+      if (cachePage.pending) {
+        await markPending(db, documentId, token, current.attempts, null);
+        return { state: "pending", attempts: current.attempts };
+      }
+      const completed = await completeSpaceCacheErasure(db, current, token);
+      return completed
+        ? { state: "complete", attempts: current.attempts }
+        : { state: "pending", attempts: current.attempts };
+    }
+
+    const cachePage = await deleteSemanticCachePage(current, env, token);
+    current = cachePage.operation;
+    if (cachePage.pending) {
+      await markPending(db, documentId, token, current.attempts, null);
+      return { state: "pending", attempts: current.attempts };
+    }
     current = await deleteVectorPages(current, env, token);
     if (current.vector_cursor < current.chunk_count) {
       await markPending(db, documentId, token, current.attempts, null);
@@ -419,6 +570,12 @@ export async function reconcileKnowledgeDocumentDeletions(
   limit = 20
 ): Promise<number> {
   const now = nowIso();
+  // An older Worker can finish a row during migration-before-code rollout without knowing the
+  // new cleanup columns. Keep cache reads fail-closed above and reopen that bounded work here.
+  await env.PLATFORM_DB.prepare(`UPDATE kb_document_deletion_operations
+    SET state='pending',next_attempt_at=?,lease_token=NULL,lease_until=NULL,updated_at=?
+    WHERE state='complete' AND cache_cleanup_status='pending'`)
+    .bind(now, now).run();
   const rows =
     await env.PLATFORM_DB.prepare(`SELECT document_id FROM kb_document_deletion_operations
     WHERE state='pending' AND next_attempt_at<=? AND (lease_until IS NULL OR lease_until<=?)

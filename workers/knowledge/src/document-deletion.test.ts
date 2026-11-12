@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   type KnowledgeDocumentDeletion,
   processKnowledgeDocumentDeletion,
+  reconcileKnowledgeDocumentDeletions,
 } from "./document-deletion.js";
 
 function fixture(
   options: {
     mutationLease?: string | null;
     failFirstObjectDelete?: boolean;
+    semanticCachePages?: string[][];
   } = {}
 ) {
   const now = new Date().toISOString();
@@ -22,6 +24,12 @@ function fixture(
     r2_prefix_index: 0,
     r2_cursor: null,
     cache_generation_rotated_at: null,
+    cache_generation_to_purge: null,
+    cache_generation_next: null,
+    cache_cleanup_ids_json: "[]",
+    cache_cleanup_status: "not_started",
+    operation_kind: "document",
+    erasure_request_id: null,
     provider_mirror_status: "not_configured",
     attempts: 0,
     next_attempt_at: "2000-01-01T00:00:00.000Z",
@@ -38,6 +46,10 @@ function fixture(
   const deletedVectorIds: string[][] = [];
   const deletedR2Keys: string[] = [];
   const kvPuts: Array<[string, string]> = [];
+  const kvDeletes: string[] = [];
+  const semanticCacheDeletedIds: string[][] = [];
+  const semanticCachePages = [...(options.semanticCachePages ?? [])];
+  const persistedIdsAtCacheDelete: string[] = [];
 
   class Statement {
     args: unknown[] = [];
@@ -55,6 +67,7 @@ function fixture(
       if (this.sql.includes("FROM kb_document_deletion_operations")) {
         return operation as T;
       }
+      if (this.sql.includes("FROM gdpr_requests")) return null;
       return null;
     }
     async all<T>() {
@@ -71,6 +84,17 @@ function fixture(
       return { results: [] as T[] };
     }
     async run() {
+      if (this.sql.includes("SET state='pending',next_attempt_at=?") && this.sql.includes("cache_cleanup_status='pending'")) {
+        if (operation.state === "complete" && operation.cache_cleanup_status === "pending") {
+          operation.state = "pending";
+          operation.next_attempt_at = String(this.args[0]);
+          operation.lease_token = null;
+          operation.lease_until = null;
+          operation.updated_at = String(this.args[1]);
+          return { meta: { changes: 1 } };
+        }
+        return { meta: { changes: 0 } };
+      }
       if (
         this.sql.startsWith(
           "UPDATE kb_document_deletion_operations SET lease_token=?"
@@ -92,6 +116,32 @@ function fixture(
         if (operation.lease_token !== this.args[3])
           return { meta: { changes: 0 } };
         operation.cache_generation_rotated_at = String(this.args[0]);
+        operation.updated_at = String(this.args[1]);
+        return { meta: { changes: 1 } };
+      }
+      if (this.sql.includes("SET cache_generation_to_purge=?")) {
+        if (operation.lease_token !== this.args[4]) return { meta: { changes: 0 } };
+        operation.cache_generation_to_purge = String(this.args[0]);
+        operation.cache_generation_next = String(this.args[1]);
+        operation.cache_cleanup_status = "pending";
+        operation.updated_at = String(this.args[2]);
+        return { meta: { changes: 1 } };
+      }
+      if (this.sql.includes("SET cache_cleanup_status='complete'")) {
+        if (operation.lease_token !== this.args[2]) return { meta: { changes: 0 } };
+        operation.cache_cleanup_status = "complete";
+        operation.cache_cleanup_ids_json = "[]";
+        operation.updated_at = String(this.args[0]);
+        return { meta: { changes: 1 } };
+      }
+      if (this.sql.includes("SET cache_cleanup_ids_json=?")) {
+        if (operation.lease_token !== this.args[3]) return { meta: { changes: 0 } };
+        operation.cache_cleanup_ids_json = String(this.args[0]);
+        return { meta: { changes: 1 } };
+      }
+      if (this.sql.includes("SET cache_cleanup_ids_json='[]'")) {
+        if (operation.lease_token !== this.args[2]) return { meta: { changes: 0 } };
+        operation.cache_cleanup_ids_json = "[]";
         return { meta: { changes: 1 } };
       }
       if (this.sql.includes("SET vector_cursor=?")) {
@@ -117,6 +167,7 @@ function fixture(
         operation.lease_until = null;
         operation.next_attempt_at = "2000-01-01T00:00:00.000Z";
         operation.last_error = this.args[1] as string | null;
+        operation.updated_at = String(this.args[2]);
         return { meta: { changes: 1 } };
       }
       return { meta: { changes: 1 } };
@@ -134,6 +185,15 @@ function fixture(
           continue;
         }
         if (statement.sql.includes("SET state='complete'")) {
+          if (statement.sql.includes("cache_cleanup_status='complete'")) {
+            if (operation.lease_token === statement.args[3]) {
+              operation.state = "complete";
+              operation.lease_token = null;
+              operation.lease_until = null;
+              operation.completed_at = String(statement.args[1]);
+            }
+            continue;
+          }
           if (operation.lease_token === statement.args[4] && !documentExists) {
             operation.state = "complete";
             operation.provider_mirror_status = String(statement.args[0]);
@@ -181,8 +241,17 @@ function fixture(
       }),
     },
     SEMANTIC_CACHE_KV: {
+      get: vi.fn(async () => "generation-1"),
       put: vi.fn(async (key: string, value: string) => {
         kvPuts.push([key, value]);
+      }),
+      delete: vi.fn(async (key: string) => { kvDeletes.push(key); }),
+    },
+    SEMANTIC_CACHE_VECTORS: {
+      query: vi.fn(async () => ({ matches: (semanticCachePages.shift() ?? []).map((id) => ({ id })) })),
+      deleteByIds: vi.fn(async (ids: string[]) => {
+        persistedIdsAtCacheDelete.push(operation.cache_cleanup_ids_json);
+        semanticCacheDeletedIds.push(ids);
       }),
     },
     AUTORAG_KB_INSTANCE: "knowledge-test",
@@ -195,6 +264,9 @@ function fixture(
     deletedVectorIds,
     deletedR2Keys,
     kvPuts,
+    kvDeletes,
+    semanticCacheDeletedIds,
+    persistedIdsAtCacheDelete,
     isDocumentPresent: () => documentExists,
     setMutationLease: (value: string | null) => {
       mutationLeaseUntil = value;
@@ -255,5 +327,32 @@ describe("durable Knowledge document deletion", () => {
     expect(f.kvPuts).toHaveLength(0);
     expect(f.deletedVectorIds).toHaveLength(0);
     expect(f.bucket.list).not.toHaveBeenCalled();
+  });
+
+  it("persists each semantic-cache page before deleting its Vectorize IDs and KV bodies", async () => {
+    const f = fixture({ semanticCachePages: [["cache-a", "cache-b"], []] });
+    const first = await processKnowledgeDocumentDeletion(f.env, "doc-1");
+    expect(first.state).toBe("pending");
+    expect(f.persistedIdsAtCacheDelete).toEqual(['["cache-a","cache-b"]']);
+    expect(f.semanticCacheDeletedIds).toEqual([["cache-a", "cache-b"]]);
+    expect(f.kvDeletes).toEqual(["sc:cache-a", "sc:cache-b"]);
+    expect(f.operation.cache_cleanup_ids_json).toBe("[]");
+
+    const second = await processKnowledgeDocumentDeletion(f.env, "doc-1");
+    expect(second.state).toBe("complete");
+    expect(f.operation.cache_cleanup_status).toBe("complete");
+    expect(f.semanticCacheDeletedIds).toEqual([["cache-a", "cache-b"]]);
+  });
+
+  it("reopens a cache cleanup row completed by an older Worker version", async () => {
+    const f = fixture();
+    f.operation.state = "complete";
+    f.operation.cache_generation_rotated_at = new Date().toISOString();
+    f.operation.cache_generation_to_purge = "*";
+    f.operation.cache_cleanup_status = "pending";
+    const completed = await reconcileKnowledgeDocumentDeletions(f.env, 20);
+    expect(completed).toBe(1);
+    expect(f.operation.state).toBe("complete");
+    expect(f.operation.cache_cleanup_status).toBe("complete");
   });
 });

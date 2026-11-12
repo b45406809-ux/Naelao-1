@@ -5,7 +5,7 @@ const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
 const KV_DELETE_BATCH_SIZE = 100;
 export const SPACE_ERASURE_TABLES = [
-  "active_sessions", "thread_sessions", "threads", "kb_document_deletion_operations", "kb_document_mutation_leases",
+  "active_sessions", "thread_sessions", "threads", "kb_document_mutation_leases",
   "kb_chunks", "kb_documents",
   "agent_email_addresses", "agi_runs", "artifacts", "attachment_copy_claims", "blueprint_export_jobs",
   "space_domains", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
@@ -277,6 +277,10 @@ export async function eraseSpaceD1Records(db: D1Database, spaceId: string, bucke
   await db.batch(SPACE_ERASURE_TABLES.map((table) =>
     db.prepare(`DELETE FROM ${table} WHERE space_id = ?`).bind(spaceId)
   ));
+  // Pending Knowledge cache/document cleanup is resumed by the scheduled reconciler after
+  // whole-Space erasure. Completed operation receipts contain no remaining external work.
+  await db.prepare("DELETE FROM kb_document_deletion_operations WHERE space_id=? AND state='complete'")
+    .bind(spaceId).run();
   await db.prepare(`DELETE FROM sandbox_computers WHERE space_id=?
     AND id NOT IN (SELECT computer_id FROM sandbox_provider_deletion_operations WHERE status NOT IN ('confirmed_deleted','retained'))`).bind(spaceId).run();
   await db.prepare(`DELETE FROM sandbox_filesystems WHERE space_id=?
@@ -578,15 +582,20 @@ export async function eraseSpaceKnowledgePrefixes(spaceId: string, bucket: R2Buc
 export async function invalidateSpaceKnowledgeCaches(input: {
   tenantId: string;
   spaceId: string;
+  requestId: string;
   platformSecret: string;
   knowledgeWorker: Fetcher;
-}): Promise<{ cleanupPending: boolean }> {
+}): Promise<{ cleanupPending: boolean; status: "not_started" | "pending" | "complete" }> {
   const token = await mintInternalToken(input.platformSecret, input.tenantId);
   const response = await input.knowledgeWorker.fetch(new Request(
-    `http://knowledge-worker/internal/semantic-cache?spaceId=${encodeURIComponent(input.spaceId)}`,
+    `http://knowledge-worker/internal/semantic-cache?spaceId=${encodeURIComponent(input.spaceId)}&requestId=${encodeURIComponent(input.requestId)}`,
     { method: "DELETE", headers: { "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": token } },
   ));
   if (!response.ok) throw new Error(`Knowledge cache erasure failed with status ${response.status}`);
-  const result = await readBoundedResponseJson<{ cleanup_pending?: unknown }>(response, 8 * 1024);
-  return { cleanupPending: result.cleanup_pending === true };
+  const result = await readBoundedResponseJson<{ cleanup_pending?: unknown; cache_cleanup_status?: unknown }>(response, 8 * 1024);
+  const status = result.cache_cleanup_status;
+  if (status !== "not_started" && status !== "pending" && status !== "complete") {
+    throw new Error("Knowledge cache erasure returned an invalid cleanup status");
+  }
+  return { cleanupPending: result.cleanup_pending === true, status };
 }

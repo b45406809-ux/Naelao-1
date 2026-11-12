@@ -15,19 +15,20 @@ describe("Space knowledge cache erasure", () => {
     const fetch = vi.fn(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/internal/semantic-cache");
       expect(new URL(request.url).searchParams.get("spaceId")).toBe("space-a");
+      expect(new URL(request.url).searchParams.get("requestId")).toBe("request-a");
       expect(request.method).toBe("DELETE");
       expect(request.headers.get("x-naelao-tenant-id")).toBe("tenant-a");
       expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
-      return Response.json({ invalidated: true, cleanup_pending: true });
+      return Response.json({ invalidated: true, cleanup_pending: true, cache_cleanup_status: "pending" });
     });
-    await expect(invalidateSpaceKnowledgeCaches({ tenantId: "tenant-a", spaceId: "space-a", platformSecret: "secret", knowledgeWorker: { fetch } as never }))
-      .resolves.toEqual({ cleanupPending: true });
+    await expect(invalidateSpaceKnowledgeCaches({ tenantId: "tenant-a", spaceId: "space-a", requestId: "request-a", platformSecret: "secret", knowledgeWorker: { fetch } as never }))
+      .resolves.toEqual({ cleanupPending: true, status: "pending" });
     expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("keeps whole-Space erasure retryable when cache invalidation is unavailable", async () => {
     const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
-    await expect(invalidateSpaceKnowledgeCaches({ tenantId: "tenant-a", spaceId: "space-a", platformSecret: "secret", knowledgeWorker: { fetch } as never }))
+    await expect(invalidateSpaceKnowledgeCaches({ tenantId: "tenant-a", spaceId: "space-a", requestId: "request-a", platformSecret: "secret", knowledgeWorker: { fetch } as never }))
       .rejects.toThrow("Knowledge cache erasure failed with status 503");
   });
 });
@@ -247,9 +248,11 @@ describe("space D1 erasure", () => {
     expect(statements).toContain("DELETE FROM space_credentials WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM mcp_servers WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM webhook_subscriptions WHERE space_id = ?");
-    expect(SPACE_ERASURE_TABLES).toContain("kb_document_deletion_operations" as never);
+    expect(SPACE_ERASURE_TABLES).not.toContain("kb_document_deletion_operations" as never);
     expect(SPACE_ERASURE_TABLES).toContain("kb_document_mutation_leases" as never);
-    expect(statements.slice(-SPACE_ERASURE_TABLES.length)).toHaveLength(SPACE_ERASURE_TABLES.length);
+    expect(statements).toContain("DELETE FROM kb_document_deletion_operations WHERE space_id=? AND state='complete'");
+    expect(batches[1]).toHaveLength(SPACE_ERASURE_TABLES.length);
+    expect(statements.at(-1)).toBe("DELETE FROM sandbox_filesystems WHERE space_id=?\n    AND NOT EXISTS (SELECT 1 FROM sandbox_computers c WHERE c.filesystem_id=sandbox_filesystems.id)");
     expect(statements).toContain("DELETE FROM fde_graduations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM llm_token_reservations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM workflow_budget_reservations WHERE space_id = ?");

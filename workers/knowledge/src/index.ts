@@ -1339,9 +1339,9 @@ app.get("/spaces/:spaceId/kb/documents/:docId/deletion", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const documentId = c.req.param("docId");
-  const deletion = await c.env.PLATFORM_DB.prepare(`SELECT document_id,project_id,state,attempts,next_attempt_at,last_error,provider_mirror_status,completed_at
+  const deletion = await c.env.PLATFORM_DB.prepare(`SELECT document_id,project_id,state,attempts,next_attempt_at,last_error,provider_mirror_status,cache_cleanup_status,completed_at
     FROM kb_document_deletion_operations WHERE document_id=? AND tenant_id=? AND space_id=?`)
-    .bind(documentId, tenantId, spaceId).first<Pick<KnowledgeDocumentDeletion, "document_id" | "project_id" | "state" | "attempts" | "next_attempt_at" | "last_error" | "provider_mirror_status" | "completed_at">>();
+    .bind(documentId, tenantId, spaceId).first<Pick<KnowledgeDocumentDeletion, "document_id" | "project_id" | "state" | "attempts" | "next_attempt_at" | "last_error" | "provider_mirror_status" | "cache_cleanup_status" | "completed_at">>();
   if (!deletion) throw notFound("Document deletion");
   if (deletion.project_id) {
     const access = await requireProjectAccess(c, deletion.project_id);
@@ -1741,50 +1741,58 @@ app.post("/internal/semantic-cache/store", async (c) => {
   }
 });
 
-// Invalidate all semantic cache entries for a space (called on KB update)
+// Durable, request-scoped semantic-cache purge for whole-Space erasure.
 app.delete("/internal/semantic-cache", async (c) => {
   const spaceId = c.req.query("spaceId");
   if (!spaceId || spaceId.length > 256) return c.json({ error: "spaceId must contain 1..256 characters" }, 400);
   const tenantId = requireTenant(c);
-  // Whole-Space erasure suspends the Space before its delayed cleanup. The internal cleanup
-  // caller must still be able to rotate caches for that tenant-owned Space during erasure.
-  if (!(await verifySpaceTenantOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
-
-  if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
-    return c.json({ invalidated: true, count: 0 });
+  const requestId = c.req.query("requestId");
+  if (!requestId || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) {
+    return c.json({ error: "requestId is required" }, 400);
   }
+  const request = await c.env.PLATFORM_DB.prepare(`SELECT status FROM gdpr_requests
+    WHERE id=? AND tenant_id=? AND request_type='erasure'`)
+    .bind(requestId, tenantId).first<{ status: string }>();
+  if (!request || !["processing", "completed"].includes(request.status)) throw notFound("Erasure request");
 
-  let generationRotated = false;
+  const operationId = `spacecache_${await sha256Hex(`${tenantId}:${requestId}:${spaceId}`)}`;
+  let operation = await c.env.PLATFORM_DB.prepare(`SELECT * FROM kb_document_deletion_operations
+    WHERE tenant_id=? AND space_id=? AND operation_kind='space_cache' AND erasure_request_id=?`)
+    .bind(tenantId, spaceId, requestId).first<KnowledgeDocumentDeletion>();
+  if (!operation) {
+    // A completed request may only resume an operation created while the exact Space still
+    // belonged to this tenant; it cannot use the internal route to start new cleanup work.
+    if (request.status !== "processing" ||
+        !(await verifySpaceTenantOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
+    const now = new Date().toISOString();
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO kb_document_deletion_operations
+        (document_id,tenant_id,space_id,project_id,chunk_count,state,next_attempt_at,created_at,updated_at,
+         operation_kind,erasure_request_id,cache_generation_to_purge,cache_cleanup_status)
+        VALUES(?,?,?,NULL,0,'pending',?,?,?,'space_cache',?,'*','not_started')`)
+        .bind(operationId, tenantId, spaceId, now, now, now, requestId),
+      c.env.PLATFORM_DB.prepare(`UPDATE gdpr_requests SET cache_cleanup_status='pending',updated_at=?
+        WHERE id=? AND tenant_id=? AND request_type='erasure' AND status='processing'`)
+        .bind(now, requestId, tenantId),
+    ]);
+    operation = await c.env.PLATFORM_DB.prepare(`SELECT * FROM kb_document_deletion_operations
+      WHERE tenant_id=? AND space_id=? AND operation_kind='space_cache' AND erasure_request_id=?`)
+      .bind(tenantId, spaceId, requestId).first<KnowledgeDocumentDeletion>();
+  }
+  if (!operation) throw new HttpError(503, "upstream_error", "Space cache cleanup receipt is unavailable");
+
   try {
-    const previousGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId);
-    // Rotate first so every old entry becomes unreachable immediately, including spaces with
-    // more than Vectorize's 1,000-result query ceiling. The bounded delete below is cleanup.
-    await c.env.SEMANTIC_CACHE_KV.put(await semanticCacheGenerationKey(tenantId, spaceId), crypto.randomUUID());
-    generationRotated = true;
-    if (await knowledgeEgressDenied(c.env, spaceId)) {
-      return c.json({ invalidated: true, count: 0, cleanup_pending: true, cleanup_reason: "space_egress_policy" });
-    }
-    // Clean up one bounded batch. Entries beyond the provider query ceiling remain unreachable
-    // because their generation no longer matches; cleanup can continue asynchronously later.
-    const dummyEmbed = await embedText(c.env.AI, "cache invalidation");
-    const toDelete = await c.env.SEMANTIC_CACHE_VECTORS.query(dummyEmbed.embedding, {
-      topK: 1000,
-      filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: spaceId }, generation: { $eq: previousGeneration } },
-      returnMetadata: "none",
-    });
-
-    const ids = toDelete.matches?.map(m => m.id) ?? [];
-    if (ids.length > 0) {
-      await c.env.SEMANTIC_CACHE_VECTORS.deleteByIds(ids);
-      // Also delete from KV
-      await Promise.all(ids.map(id => c.env.SEMANTIC_CACHE_KV.delete(`sc:${id}`)));
-    }
-
-    console.log(`[SemanticCache] Invalidated ${ids.length} entries for spaceId=${spaceId}`);
-    return c.json({ invalidated: true, count: ids.length, cleanup_pending: ids.length === 1_000 });
+    const result = await processKnowledgeDocumentDeletion(deletionBindings(c.env), operation.document_id);
+    const receipt = await c.env.PLATFORM_DB.prepare(`SELECT state,cache_cleanup_status FROM kb_document_deletion_operations
+      WHERE document_id=? AND tenant_id=? AND space_id=? AND erasure_request_id=?`)
+      .bind(operation.document_id, tenantId, spaceId, requestId)
+      .first<{ state: string; cache_cleanup_status: "not_started" | "pending" | "complete" }>();
+    const cleanupPending = !receipt || receipt.state !== "complete" || receipt.cache_cleanup_status !== "complete";
+    return c.json({ invalidated: true, cleanup_pending: cleanupPending,
+      cache_cleanup_status: receipt?.cache_cleanup_status ?? "pending", state: result.state });
   } catch (err) {
     console.warn(`[SemanticCache] Invalidation error: ${err}`);
-    return c.json({ invalidated: generationRotated, cleanup_pending: generationRotated, error: String(err) });
+    return c.json({ error: "cache_cleanup_unavailable" }, 503);
   }
 });
 

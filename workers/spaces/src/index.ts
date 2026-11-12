@@ -231,11 +231,12 @@ app.get("/builder/erasure/:requestId", async (c) => {
   ).bind(identity.tenantId, identity.userId).first<{ id: string }>();
   if (!owner) return c.json({ error_code: "owner_required" }, 403);
   const request = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, status, created_at, updated_at, completed_at FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND requested_by = ? AND request_type = 'erasure'",
+    "SELECT id, status, cache_cleanup_status, created_at, updated_at, completed_at FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND requested_by = ? AND request_type = 'erasure'",
   ).bind(requestId, identity.tenantId, identity.userId)
-    .first<{ id: string; status: string; created_at: string; updated_at: string; completed_at: string | null }>();
+    .first<{ id: string; status: string; cache_cleanup_status: "not_started" | "pending" | "complete"; created_at: string; updated_at: string; completed_at: string | null }>();
   if (!request) return c.json({ error_code: "not_found" }, 404);
-  return c.json({ request_id: request.id, status: request.status, created_at: request.created_at, updated_at: request.updated_at, completed_at: request.completed_at });
+  return c.json({ request_id: request.id, status: request.status, cache_cleanup_status: request.cache_cleanup_status,
+    created_at: request.created_at, updated_at: request.updated_at, completed_at: request.completed_at });
 });
 app.use("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", async (c) => {

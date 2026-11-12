@@ -174,10 +174,10 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         await eraseSpaceKnowledgePrefixes(spaceId, this.env.KB_BUCKET);
         const cacheCleanup = await step.do(`invalidate-knowledge-cache-${spaceId.slice(0, 48)}`, () =>
           invalidateSpaceKnowledgeCaches({
-            tenantId: params.orgId, spaceId, platformSecret: this.env.PLATFORM_SECRET,
+            tenantId: params.orgId, spaceId, requestId: params.requestId, platformSecret: this.env.PLATFORM_SECRET,
             knowledgeWorker: this.env.KNOWLEDGE_WORKER,
           }));
-        if (cacheCleanup.cleanupPending) console.info("knowledge_cache_expiry_cleanup_pending");
+        if (cacheCleanup.cleanupPending) console.info(`knowledge_cache_cleanup_${cacheCleanup.status}`);
 
         let workspaceCursor: string | undefined;
         let workspacePage = 0;
@@ -323,8 +323,13 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         .run();
 
       await this.env.PLATFORM_DB.prepare(
-        "UPDATE gdpr_requests SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'processing'",
-      ).bind(new Date().toISOString(), new Date().toISOString(), params.requestId, params.orgId).run();
+        `UPDATE gdpr_requests SET status = 'completed',
+          cache_cleanup_status=CASE WHEN EXISTS (
+            SELECT 1 FROM kb_document_deletion_operations WHERE erasure_request_id=?
+              AND (state='pending' OR cache_cleanup_status='pending')
+          ) THEN 'pending' ELSE 'complete' END,
+          completed_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'processing'`,
+      ).bind(params.requestId, new Date().toISOString(), new Date().toISOString(), params.requestId, params.orgId).run();
 
       const completedAt = new Date().toISOString();
 
