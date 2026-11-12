@@ -2,9 +2,17 @@ import { describe, expect, it } from "vitest";
 import { BrowserSessionDO } from "./BrowserSessionDO.js";
 import type { BrowserSessionRecord } from "./browser-session-state.js";
 
-function harness(initial?: BrowserSessionRecord) {
+function harness(initial?: BrowserSessionRecord, projectErasing = false) {
   const values = new Map<string, unknown>();
+  const statements: string[] = [];
   if (initial) values.set("browser-session", initial);
+  const database = { prepare(sql: string) {
+    statements.push(sql);
+    return { bind() { return {
+      async first<T>() { return (projectErasing && sql.includes("workspace_erasure_tombstones") ? { status: "cleaning" } : null) as T | null; },
+      async run() { return { meta: { changes: 1 } }; },
+    }; } };
+  } };
   const storage = {
     async get<T>(key: string) { return values.get(key) as T | undefined; },
     async put<T>(key: string, value: T) { values.set(key, value); },
@@ -14,7 +22,7 @@ function harness(initial?: BrowserSessionRecord) {
     async setAlarm() {},
     async deleteAlarm() {},
   };
-  return { instance: new BrowserSessionDO({ storage } as never, { ENVIRONMENT: "test", PLATFORM_SECRET: "test" } as never), values };
+  return { instance: new BrowserSessionDO({ storage } as never, { ENVIRONMENT: "test", PLATFORM_SECRET: "test", PLATFORM_DB: database } as never), values, statements };
 }
 
 const scope = {
@@ -28,6 +36,8 @@ function request(path: string, requestScope: typeof scope) {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: requestScope }),
   });
 }
+
+const projectScope = { ...scope, projectId: "project-a" };
 
 describe("BrowserSessionDO authorization edge cases", () => {
   it("rejects malformed scope before consulting browser or membership providers", async () => {
@@ -58,5 +68,24 @@ describe("BrowserSessionDO authorization edge cases", () => {
     expect(response.status).toBe(200);
     expect([...values.keys()]).toEqual(["closed"]);
     expect(JSON.stringify([...values.values()])).not.toContain("private page contents");
+  });
+
+  it("blocks project browser activity after erasure without recreating its session registry entry", async () => {
+    const { instance, statements } = harness(undefined, true);
+    const response = await instance.fetch(request("navigate", projectScope));
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ error_code: "workspace_project_erased" });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain("workspace_erasure_tombstones");
+  });
+
+  it("allows cleanup cancellation through an erasure tombstone without registering new activity", async () => {
+    const record: BrowserSessionRecord = { scope: projectScope, status: "open", engine: "kitesurf", url: "https://example.com", actions: 0, screenshots: [], lastUsedAt: Date.now() };
+    const { instance, statements, values } = harness(record, true);
+    const response = await instance.fetch(request("cancel", projectScope));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "closed" });
+    expect(values.get("closed")).toBe(true);
+    expect(statements.some(sql => sql.includes("INSERT INTO workspace_browser_session_registry"))).toBe(false);
   });
 });

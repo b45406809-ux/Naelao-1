@@ -44,7 +44,27 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     let body: BrowserRequest;
     try { body = await request.json<BrowserRequest>(); validateBrowserScope(body.scope); }
     catch { return Response.json({ error_code: "browser_scope_invalid" }, { status: 400 }); }
+    const method = new URL(request.url).pathname.split("/").pop() ?? "";
+    const isClose = method === "close" || method === "cancel";
+    let projectErasureExists = false;
+    let projectErasureCheckComplete = true;
     if (body.scope.projectId) {
+      try {
+        const tombstone = await this.env.PLATFORM_DB.prepare(`SELECT status FROM workspace_erasure_tombstones
+          WHERE tenant_id=? AND space_id=? AND project_id=? LIMIT 1`)
+          .bind(body.scope.tenantId, body.scope.spaceId, body.scope.projectId).first<{ status: string }>();
+        projectErasureExists = Boolean(tombstone);
+      } catch {
+        projectErasureCheckComplete = false;
+        // Project-scoped browser sessions cannot be admitted while the authoritative erasure
+        // ledger is unavailable. Close/cancel is still allowed so cleanup can finish.
+        if (!isClose) return Response.json({ error_code: "workspace_erasure_state_unavailable" }, { status: 503 });
+      }
+      if (projectErasureExists && !isClose) {
+        return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+      }
+    }
+    if (body.scope.projectId && !projectErasureExists && projectErasureCheckComplete) {
       const sessionId = await browserSessionId(body.scope);
       const at = new Date().toISOString();
       const registered = await this.env.PLATFORM_DB.prepare(`INSERT INTO workspace_browser_session_registry
@@ -62,9 +82,8 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
           body.scope.agentId, body.scope.runId, body.scope.sessionId, JSON.stringify(browserErasureScope(body.scope)), at, at).run();
       if (!registered.meta.changes) return Response.json({ error_code: "browser_session_registry_conflict" }, { status: 503 });
     }
-    const method = new URL(request.url).pathname.split("/").pop() ?? "";
     // Cancellation must interrupt work, rather than sit behind the running navigation.
-    if (method === "close" || method === "cancel") {
+    if (isClose) {
       const record = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
       if (!record && await this.ctx.storage.get("closed")) return Response.json({ ok: true, session_id: body.scope.sessionId, status: "closed" });
       if (!record || !sameBrowserOwner(record.scope, body.scope)) return Response.json({ error_code: "browser_session_not_found" }, { status: 404 });
