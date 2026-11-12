@@ -67,6 +67,8 @@ export function fixture() {
   for (const migration of ["0140_telnyx_live_calls.sql", "0141_managed_carrier_billing.sql", "0142_managed_phone_rentals.sql", "0143_managed_telnyx_inbound_costs.sql", "0155_telnyx_extension_calls.sql"]) {
     db.db.exec(readFileSync(new URL(`../../infra/migrations/${migration}`, import.meta.url), "utf8"));
   }
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0152_decision_call_reservations.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0153_decision_provider_usage_receipts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0172_assistant_agentmail_accounts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0179_managed_services_control_plane.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0180_managed_service_credit_reservations.sql", import.meta.url), "utf8"));

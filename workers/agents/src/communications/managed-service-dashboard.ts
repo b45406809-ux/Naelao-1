@@ -158,6 +158,18 @@ export async function getManagedServiceDashboard(env: AgentsEnv, scope: Communic
     .bind(scope.tenantId,scope.spaceId,since,now.toISOString(),scope.projectId??null,scope.projectId??null)
     .all<{provider:string;service_id:string;usage_kind:string;currency:string;provider_cost_micros:number;receipt_count:number}>();
 
+  // Decision verification costs already live beside their authoritative token/credit settlement.
+  // Surface those OpenRouter receipts from that ledger instead of copying them into a second cost table.
+  const decisionModelCosts = await env.PLATFORM_DB.prepare(`SELECT model_id,usage_evidence_source AS evidence_source,
+      SUM(provider_cost_usd) AS provider_cost_usd,COUNT(*) AS receipt_count
+    FROM decision_call_reservations
+    WHERE org_id=? AND space_id=? AND status='settled' AND provider_cost_usd IS NOT NULL
+      AND usage_evidence_source IS NOT NULL AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)
+      AND (? IS NULL OR project_id=?)
+    GROUP BY model_id,usage_evidence_source ORDER BY model_id,usage_evidence_source`)
+    .bind(scope.tenantId,scope.spaceId,since,now.toISOString(),scope.projectId??null,scope.projectId??null)
+    .all<{model_id:string;evidence_source:"openrouter_response"|"openrouter_generation_api";provider_cost_usd:number;receipt_count:number}>();
+
   const budgets = await listManagedServiceCostBudgets(env, scope);
   const costBudgetAlerts = await listManagedServiceCostBudgetAlerts(env, scope);
   const costBudgets = budgets.map(budget => {
@@ -240,6 +252,14 @@ export async function getManagedServiceDashboard(env: AgentsEnv, scope: Communic
         provenance: "provider_api_observed" as const,
       })),
     ],
+    decisionModelCosts30d: decisionModelCosts.results.map((row) => ({
+      provider: "openrouter" as const,
+      modelId: row.model_id,
+      currency: "USD" as const,
+      providerCostMicros: Math.round(row.provider_cost_usd * 1_000_000),
+      receiptCount: row.receipt_count,
+      evidenceSource: row.evidence_source,
+    })),
     providerCostBudgets30d: costBudgets,
     providerCostAlerts: costBudgetAlerts,
   };

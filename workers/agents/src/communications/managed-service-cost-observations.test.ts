@@ -34,4 +34,30 @@ describe("managed provider API cost observations", () => {
       providerCostMicros: 4500, receiptCount: 1, provenance: "provider_api_observed",
     }]);
   });
+
+  it("reports settled OpenRouter decision costs from the existing ledger with exact project scope", async () => {
+    const f = fixture();
+    const insert = `INSERT INTO decision_call_reservations(
+      id,org_id,space_id,project_id,run_id,model_id,price_snapshot,input_usd_per_token,output_usd_per_token,
+      max_tokens,max_credits,status,actual_tokens,cost_credits,rate_card_version,provider_generation_id,
+      provider_cost_usd,usage_evidence_source,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+    const save = (id: string, projectId: string, status: string, cost: number, source: string) => f.db.prepare(insert).bind(
+      id, scope.tenantId, scope.spaceId, projectId, `run-${id}`, "openai/gpt-4o-mini", "2026-11-12T01:00:00.000Z",
+      0.0000001, 0.0000004, 1000, 100, status, 12, 1, `openrouter:generation:gen-${id}`, `gen-${id}`,
+      cost, source, "2026-11-12 01:00:00", "2026-11-12 01:01:00",
+    ).run();
+    await save("decision-a", "project-a", "settled", 0.001, "openrouter_response");
+    await save("decision-b", "project-a", "settled", 0.002, "openrouter_generation_api");
+    await save("decision-c", "project-b", "settled", 0.004, "openrouter_generation_api");
+    await save("decision-pending", "project-a", "uncertain", 0.5, "openrouter_generation_api");
+
+    const dashboard = await getManagedServiceDashboard(f.env, { ...scope, projectId: "project-a" }, new Date("2026-11-12T02:00:00.000Z"));
+    expect(dashboard.decisionModelCosts30d).toEqual([
+      { provider: "openrouter", modelId: "openai/gpt-4o-mini", currency: "USD", providerCostMicros: 2000,
+        receiptCount: 1, evidenceSource: "openrouter_generation_api" },
+      { provider: "openrouter", modelId: "openai/gpt-4o-mini", currency: "USD", providerCostMicros: 1000,
+        receiptCount: 1, evidenceSource: "openrouter_response" },
+    ]);
+  });
 });

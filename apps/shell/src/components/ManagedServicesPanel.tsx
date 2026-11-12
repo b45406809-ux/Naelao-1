@@ -790,6 +790,20 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
           {dashboard.providerCosts30d.some((cost) => cost.provenance === "provider_api_observed") &&
             <p>Provider API observations are not invoice reconciliation. Actual provider statements may include charges outside these measured operations.</p>}
 
+          <h4>Decision model provider costs</h4>
+          {dashboard.decisionModelCosts30d.length === 0 ? (
+            <p>No settled OpenRouter decision-cost receipts are recorded for the last 30 days.</p>
+          ) : (
+            <ul>{dashboard.decisionModelCosts30d.map((cost) => (
+              <li key={`${cost.modelId}:${cost.evidenceSource}`}>
+                OpenRouter {cost.modelId}: {new Intl.NumberFormat(undefined, { style: "currency", currency: cost.currency }).format(cost.providerCostMicros / 1_000_000)}
+                {` from ${cost.receiptCount} settled decision receipt${cost.receiptCount === 1 ? "" : "s"} (${cost.evidenceSource.replaceAll("_", " ")})`}
+              </li>
+            ))}</ul>
+          )}
+          {dashboard.decisionModelCosts30d.length > 0 &&
+            <p>These costs come from settled per-generation provider receipts. They are separate from Naelao credits and do not reconcile the provider invoice.</p>}
+
           <h4>Rolling 30-day cost thresholds</h4>
           <p>Threshold crossings are stored as owner dashboard alerts using the selected evidence source and currency. They do not stop provider operations or reconcile invoices.</p>
           <h4>Unacknowledged provider cost alerts</h4>

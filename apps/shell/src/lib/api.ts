@@ -2978,6 +2978,8 @@ export interface ManagedServiceDashboard {
   usage30d: Array<{ provider: string; serviceId: string; heldCredits: number; settledCredits: number; operations: number }>;
   providerCosts30d: Array<{ provider: string; serviceId: string; usageKind: string; currency: string; providerCostMicros: number;
     receiptCount: number; provenance: "operator_imported" | "provider_api_observed" }>;
+  decisionModelCosts30d: Array<{ provider: "openrouter"; modelId: string; currency: "USD"; providerCostMicros: number;
+    receiptCount: number; evidenceSource: "openrouter_response" | "openrouter_generation_api" }>;
   providerCostBudgets30d: Array<{ provider: string; serviceId: string; provenance: "operator_imported" | "provider_api_observed";
     currency: string; limitProviderCostMicros: number; updatedAt: string; observedProviderCostMicros: number; thresholdReached: boolean }>;
   providerCostAlerts: Array<{ id:string;provider:string;serviceId:string;provenance:"operator_imported"|"provider_api_observed";currency:string;
