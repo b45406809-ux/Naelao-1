@@ -1229,6 +1229,28 @@ describe("WorkspaceCoordinatorDO checked publication", () => {
     } finally { vi.restoreAllMocks(); }
   });
 
+  it("schedules another alarm when a live-checkpoint batch leaves more branch jobs queued", async () => {
+    const { instance, storage } = setup();
+    await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      for (let index = 0; index < 21; index++) {
+        const branch = `branch-${String(index).padStart(2, "0")}`;
+        storage.values.set(`live-checkpoint:${branch}`, {
+          sessionId: `ws_${crypto.randomUUID()}`, branch, runtimeId: "runtime", allocationGeneration: 1,
+          fence: 1, requestedAt: now, dueAt: now, requestCount: 1, idempotencyKey: `live-${index}`,
+        });
+      }
+
+      await instance.alarm();
+
+      expect(storage.values.has("live-checkpoint:branch-00")).toBe(false);
+      expect(storage.values.has("live-checkpoint:branch-20")).toBe(true);
+      expect(storage.alarmAt).toBe(now + 1_000);
+    } finally { vi.restoreAllMocks(); }
+  });
+
   it("revokes the handoff target if runtime activation fails after the old writer is fenced", async () => {
     const { instance, storage } = setup({ liveEnabled: true, runtimeControl: "activation_failure" });
     await call(instance, "/v1/initialize", { scope, branch: "main", entries: [] });

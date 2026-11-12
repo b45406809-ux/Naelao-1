@@ -158,6 +158,7 @@ const MAX_MIGRATION_FILES = 10_000;
 const MAX_MIGRATION_BYTES = 64 * 1024 * 1024;
 const MAX_MIGRATION_BRANCHES = 200;
 const MAX_MIGRATION_ALL_BRANCH_BYTES = 512 * 1024 * 1024;
+const LIVE_CHECKPOINT_BATCH_SIZE = 20;
 const STAGING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2684,7 +2685,10 @@ export class WorkspaceCoordinatorDO extends DurableObject<Env> {
   }
 
   private async processLiveCheckpoint(): Promise<void> {
-    const jobs = await this.ctx.storage.list<LiveCheckpointJob>({ prefix: "live-checkpoint:", limit: 20 });
+    const jobs = await this.ctx.storage.list<LiveCheckpointJob>({ prefix: "live-checkpoint:", limit: LIVE_CHECKPOINT_BATCH_SIZE });
+    // Keep draining a large branch roster promptly. The coordinator has one durable alarm, so
+    // schedule the next page before any provider call can time out or the isolate can exit.
+    if (jobs.size >= LIVE_CHECKPOINT_BATCH_SIZE) await this.scheduleAlarmAt(Date.now() + 1_000);
     for (const [key, storedJob] of jobs) {
       let job = storedJob;
       if (job.dueAt > Date.now()) {
