@@ -57,30 +57,30 @@ vars = { ENVIRONMENT = "staging" }
 
 [[env.staging.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.staging.queues.consumers]]
-queue = "naelao-provisioning-queue"
+queue = "naelao-provisioning-queue-staging"
 max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10
-dead_letter_queue = "naelao-provisioning-dlq"
+dead_letter_queue = "naelao-provisioning-dlq-staging"
 
 
 [[env.staging.d1_databases]]
@@ -109,12 +109,12 @@ id = "50fe6d17439d4b8082cdc827393fc87f"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-provisioning-queue"
+queue = "naelao-provisioning-queue-production"
 max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10
-dead_letter_queue = "naelao-provisioning-dlq"
+dead_letter_queue = "naelao-provisioning-dlq-production"
 
 
 [[env.production.d1_databases]]

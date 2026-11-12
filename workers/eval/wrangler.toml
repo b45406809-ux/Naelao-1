@@ -43,7 +43,7 @@ vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
@@ -51,7 +51,7 @@ vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e8
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"

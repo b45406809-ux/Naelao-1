@@ -202,19 +202,19 @@ vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "", UNIFIED_WORKSPACE_ENAB
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [[env.staging.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-staging"
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-staging"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha. Real deploys of this
@@ -225,19 +225,19 @@ vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.p
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-production"
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-production"
 
 [[env.staging.worker_loaders]]
 binding = "LOADER"
@@ -250,13 +250,13 @@ class_name = "ConformanceSandboxDO"
 
 [[env.staging.workflows]]
 binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
-name = "BlueprintConformanceWorkflow"
+name = "BlueprintConformanceWorkflow-staging"
 class_name = "BlueprintConformanceWorkflow"
 
 
 [[env.staging.services]]
 binding = "CONFORMANCE_EXECUTOR"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 
 [[env.staging.analytics_engine_datasets]]
@@ -342,7 +342,7 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 
 [[env.staging.queues.producers]]
 binding = "PROVISION_QUEUE"
-queue = "naelao-provisioning-queue"
+queue = "naelao-provisioning-queue-staging"
 
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
@@ -352,7 +352,7 @@ queue = "naelao-events-staging"
 
 [[env.staging.services]]
 binding = "WS_GATEWAY"
-service = "naelao-ws-gateway"
+service = "naelao-ws-gateway-staging"
 
 # Security audit follow-up — password-reset emails (product-end-user-routes.ts).
 
@@ -367,13 +367,13 @@ class_name = "ConformanceSandboxDO"
 
 [[env.production.workflows]]
 binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
-name = "BlueprintConformanceWorkflow"
+name = "BlueprintConformanceWorkflow-production"
 class_name = "BlueprintConformanceWorkflow"
 
 
 [[env.production.services]]
 binding = "CONFORMANCE_EXECUTOR"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 
 [[env.production.analytics_engine_datasets]]
@@ -459,7 +459,7 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 
 [[env.production.queues.producers]]
 binding = "PROVISION_QUEUE"
-queue = "naelao-provisioning-queue"
+queue = "naelao-provisioning-queue-production"
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
@@ -469,7 +469,7 @@ queue = "naelao-events-production"
 
 [[env.production.services]]
 binding = "WS_GATEWAY"
-service = "naelao-ws-gateway"
+service = "naelao-ws-gateway-production"
 
 # Security audit follow-up — password-reset emails (product-end-user-routes.ts).
 

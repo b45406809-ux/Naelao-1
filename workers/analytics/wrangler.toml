@@ -60,7 +60,7 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.queues.consumers]]
-queue = "naelao-analytics"
+queue = "naelao-analytics-staging"
 max_batch_size = 100
 max_batch_timeout = 10
 max_retries = 3
@@ -84,7 +84,7 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.production.queues.consumers]]
-queue = "naelao-analytics"
+queue = "naelao-analytics-production"
 max_batch_size = 100
 max_batch_timeout = 10
 max_retries = 3

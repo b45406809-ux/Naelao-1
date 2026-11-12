@@ -43,7 +43,7 @@ max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-notifications-dlq"
+dead_letter_queue = "naelao-notifications-dlq-staging"
 
 
 [[env.staging.d1_databases]]
@@ -54,7 +54,7 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-staging"
 
 [[env.production.queues.consumers]]
 queue = "naelao-notifications-queue-production"
@@ -62,7 +62,7 @@ max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-notifications-dlq"
+dead_letter_queue = "naelao-notifications-dlq-production"
 
 
 [[env.production.d1_databases]]
@@ -73,4 +73,4 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-production"

@@ -55,7 +55,7 @@ migrations_dir = "../../infra/migrations"
 
 [[env.staging.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-staging"
 
 [[env.staging.services]]
 binding = "AGENTPORT_WORKER"
@@ -77,7 +77,7 @@ migrations_dir = "../../infra/migrations"
 
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-production"
 
 [[env.production.services]]
 binding = "AGENTPORT_WORKER"

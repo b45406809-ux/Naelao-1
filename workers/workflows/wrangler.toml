@@ -110,31 +110,31 @@ vars = { ENVIRONMENT = "staging" }
 vars = { ENVIRONMENT = "production" }
 
 [[env.staging.workflows]]
-name = "SpaceProvisioningWorkflow"
+name = "SpaceProvisioningWorkflow-staging"
 class_name = "SpaceProvisioningWorkflow"
 binding = "SPACE_PROVISIONING"
 
 
 [[env.staging.workflows]]
-name = "DataErasureWorkflow"
+name = "DataErasureWorkflow-staging"
 class_name = "DataErasureWorkflow"
 binding = "DATA_ERASURE"
 
 
 [[env.staging.workflows]]
-name = "KbIngestionWorkflow"
+name = "KbIngestionWorkflow-staging"
 class_name = "KbIngestionWorkflow"
 binding = "KB_INGESTION"
 
 
 [[env.staging.workflows]]
-name = "DunningWorkflow"
+name = "DunningWorkflow-staging"
 class_name = "DunningWorkflow"
 binding = "DUNNING"
 
 
 [[env.staging.workflows]]
-name = "QueueHealthWorkflow"
+name = "QueueHealthWorkflow-staging"
 class_name = "QueueHealthWorkflow"
 binding = "QUEUE_HEALTH"
 
@@ -186,7 +186,7 @@ queue = "naelao-notifications-queue-staging"
 
 [[env.staging.queues.producers]]
 binding = "ANALYTICS_QUEUE"
-queue = "naelao-analytics"
+queue = "naelao-analytics-staging"
 
 
 [[env.staging.queues.consumers]]
@@ -200,45 +200,45 @@ dead_letter_queue = "naelao-events-dlq-staging"
 
 [[env.staging.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-staging"
 
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 
 [[env.production.workflows]]
-name = "SpaceProvisioningWorkflow"
+name = "SpaceProvisioningWorkflow-production"
 class_name = "SpaceProvisioningWorkflow"
 binding = "SPACE_PROVISIONING"
 
 
 [[env.production.workflows]]
-name = "DataErasureWorkflow"
+name = "DataErasureWorkflow-production"
 class_name = "DataErasureWorkflow"
 binding = "DATA_ERASURE"
 
 
 [[env.production.workflows]]
-name = "KbIngestionWorkflow"
+name = "KbIngestionWorkflow-production"
 class_name = "KbIngestionWorkflow"
 binding = "KB_INGESTION"
 
 
 [[env.production.workflows]]
-name = "DunningWorkflow"
+name = "DunningWorkflow-production"
 class_name = "DunningWorkflow"
 binding = "DUNNING"
 
 
 [[env.production.workflows]]
-name = "QueueHealthWorkflow"
+name = "QueueHealthWorkflow-production"
 class_name = "QueueHealthWorkflow"
 binding = "QUEUE_HEALTH"
 
@@ -290,7 +290,7 @@ queue = "naelao-notifications-queue-production"
 
 [[env.production.queues.producers]]
 binding = "ANALYTICS_QUEUE"
-queue = "naelao-analytics"
+queue = "naelao-analytics-production"
 
 
 [[env.production.queues.consumers]]
@@ -304,14 +304,14 @@ dead_letter_queue = "naelao-events-dlq-production"
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-production"
 
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"

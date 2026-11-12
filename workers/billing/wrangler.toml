@@ -72,11 +72,11 @@ vars = { ENVIRONMENT = "staging", ALLOW_DEV_CHECKOUTS = "false" }
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [[env.staging.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
@@ -84,11 +84,11 @@ vars = { ENVIRONMENT = "production", ALLOW_DEV_CHECKOUTS = "false" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 [env.staging.triggers]
 crons = ["0 0 * * *", "*/5 * * * *", "15 * * * *"]
@@ -110,7 +110,7 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 
 [[env.staging.queues.producers]]
 binding = "BILLING_EVENTS"
-queue = "naelao-billing-events"
+queue = "naelao-billing-events-staging"
 
 [[env.staging.queues.producers]]
 binding = "DUNNING_EVENTS"
@@ -118,12 +118,12 @@ queue = "naelao-events-staging"
 
 
 [[env.staging.queues.consumers]]
-queue = "naelao-billing-events"
+queue = "naelao-billing-events-staging"
 max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-billing-events-dlq"
+dead_letter_queue = "naelao-billing-events-dlq-staging"
 
 # Billing provider: Lemon Squeezy ONLY (Stripe removed in the vendor cutover).
 # Secrets (set via `wrangler secret put`, per environment):
@@ -157,7 +157,7 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 
 [[env.production.queues.producers]]
 binding = "BILLING_EVENTS"
-queue = "naelao-billing-events"
+queue = "naelao-billing-events-production"
 
 [[env.production.queues.producers]]
 binding = "DUNNING_EVENTS"
@@ -165,12 +165,12 @@ queue = "naelao-events-production"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-billing-events"
+queue = "naelao-billing-events-production"
 max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-billing-events-dlq"
+dead_letter_queue = "naelao-billing-events-dlq-production"
 
 # Billing provider: Lemon Squeezy ONLY (Stripe removed in the vendor cutover).
 # Secrets (set via `wrangler secret put`, per environment):

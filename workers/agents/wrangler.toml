@@ -445,27 +445,27 @@ name = "EMAIL"
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-staging"
 
 [[env.staging.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [[env.staging.services]]
 binding = "MCP_HUB"
-service = "naelao-mcp-hub"
+service = "naelao-mcp-hub-staging"
 
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-staging"
 
 [[env.staging.services]]
 binding = "BROWSER_WORKER"
-service = "naelao-browser"
+service = "naelao-browser-staging"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
@@ -477,27 +477,27 @@ name = "EMAIL"
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-production"
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 [[env.production.services]]
 binding = "MCP_HUB"
-service = "naelao-mcp-hub"
+service = "naelao-mcp-hub-production"
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-production"
 
 [[env.production.services]]
 binding = "BROWSER_WORKER"
-service = "naelao-browser"
+service = "naelao-browser-production"
 
 [[env.staging.durable_objects.bindings]]
 name = "NAELAO_AGENT_DO"
@@ -649,19 +649,19 @@ binding = "LOADER"
 
 
 [[env.staging.workflows]]
-name = "AgentTaskWorkflow"
+name = "AgentTaskWorkflow-staging"
 class_name = "AgentTaskWorkflow"
 binding = "AGENT_TASK_WORKFLOW"
 
 
 [[env.staging.workflows]]
-name = "GenericSubagentWorkflow"
+name = "GenericSubagentWorkflow-staging"
 class_name = "GenericSubagentWorkflow"
 binding = "GENERIC_SUBAGENT_WORKFLOW"
 
 
 [[env.staging.workflows]]
-name = "CompanyAutomationWorkflow"
+name = "CompanyAutomationWorkflow-staging"
 class_name = "CompanyAutomationWorkflow"
 binding = "COMPANY_AUTOMATION_WORKFLOW"
 
@@ -670,13 +670,13 @@ binding = "COMPANY_AUTOMATION_WORKFLOW"
 # this runs one named script directly, no reasoner, with step retries.
 
 [[env.staging.workflows]]
-name = "ScriptRunWorkflow"
+name = "ScriptRunWorkflow-staging"
 class_name = "ScriptRunWorkflow"
 binding = "AGENT_SCRIPT_WORKFLOW"
 
 
 [[env.staging.workflows]]
-name = "ScheduledReminderWorkflow"
+name = "ScheduledReminderWorkflow-staging"
 class_name = "ScheduledReminderWorkflow"
 binding = "SCHEDULED_REMINDER_WORKFLOW"
 
@@ -703,28 +703,28 @@ dataset = "naelao_agent_events"
 
 [[env.staging.queues.producers]]
 binding = "AGENT_TICKS"
-queue = "naelao-agent-ticks"
+queue = "naelao-agent-ticks-staging"
 
 [[env.staging.queues.producers]]
 binding = "CHANNEL_SESSIONS"
-queue = "naelao-channel-sessions"
+queue = "naelao-channel-sessions-staging"
 
 
 [[env.staging.queues.consumers]]
-queue = "naelao-agent-ticks"
+queue = "naelao-agent-ticks-staging"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-agent-ticks-dlq"
+dead_letter_queue = "naelao-agent-ticks-dlq-staging"
 
 [[env.staging.queues.consumers]]
-queue = "naelao-channel-sessions"
+queue = "naelao-channel-sessions-staging"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 10
-dead_letter_queue = "naelao-channel-sessions-dlq"
+dead_letter_queue = "naelao-channel-sessions-dlq-staging"
 
 
 [env.staging.triggers]
@@ -736,11 +736,11 @@ crons = ["0 * * * *", "*/5 * * * *"]
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [[env.staging.services]]
 binding = "LIVE_CAPABILITY_VERIFIER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [[env.staging.services]]
 binding = "AGENTPORT_WORKER"
@@ -753,20 +753,20 @@ service = "naelao-sandboxes-staging"
 
 [[env.staging.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-staging"
 
 # Billing worker — the reserved commerce script's only money-in path.
 
 [[env.staging.services]]
 binding = "ARTIFACT_WORKER"
-service = "naelao-artifact"
+service = "naelao-artifact-staging"
 
 # CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
 # get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
 
 [[env.staging.services]]
 binding = "WS_GATEWAY"
-service = "naelao-ws-gateway"
+service = "naelao-ws-gateway-staging"
 
 # PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
 # uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,
@@ -942,19 +942,19 @@ binding = "LOADER"
 
 
 [[env.production.workflows]]
-name = "AgentTaskWorkflow"
+name = "AgentTaskWorkflow-production"
 class_name = "AgentTaskWorkflow"
 binding = "AGENT_TASK_WORKFLOW"
 
 
 [[env.production.workflows]]
-name = "GenericSubagentWorkflow"
+name = "GenericSubagentWorkflow-production"
 class_name = "GenericSubagentWorkflow"
 binding = "GENERIC_SUBAGENT_WORKFLOW"
 
 
 [[env.production.workflows]]
-name = "CompanyAutomationWorkflow"
+name = "CompanyAutomationWorkflow-production"
 class_name = "CompanyAutomationWorkflow"
 binding = "COMPANY_AUTOMATION_WORKFLOW"
 
@@ -963,13 +963,13 @@ binding = "COMPANY_AUTOMATION_WORKFLOW"
 # this runs one named script directly, no reasoner, with step retries.
 
 [[env.production.workflows]]
-name = "ScriptRunWorkflow"
+name = "ScriptRunWorkflow-production"
 class_name = "ScriptRunWorkflow"
 binding = "AGENT_SCRIPT_WORKFLOW"
 
 
 [[env.production.workflows]]
-name = "ScheduledReminderWorkflow"
+name = "ScheduledReminderWorkflow-production"
 class_name = "ScheduledReminderWorkflow"
 binding = "SCHEDULED_REMINDER_WORKFLOW"
 
@@ -996,28 +996,28 @@ dataset = "naelao_agent_events"
 
 [[env.production.queues.producers]]
 binding = "AGENT_TICKS"
-queue = "naelao-agent-ticks"
+queue = "naelao-agent-ticks-production"
 
 [[env.production.queues.producers]]
 binding = "CHANNEL_SESSIONS"
-queue = "naelao-channel-sessions"
+queue = "naelao-channel-sessions-production"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-agent-ticks"
+queue = "naelao-agent-ticks-production"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-agent-ticks-dlq"
+dead_letter_queue = "naelao-agent-ticks-dlq-production"
 
 [[env.production.queues.consumers]]
-queue = "naelao-channel-sessions"
+queue = "naelao-channel-sessions-production"
 max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 10
-dead_letter_queue = "naelao-channel-sessions-dlq"
+dead_letter_queue = "naelao-channel-sessions-dlq-production"
 
 
 [env.production.triggers]
@@ -1029,11 +1029,11 @@ crons = ["0 * * * *", "*/5 * * * *"]
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.production.services]]
 binding = "LIVE_CAPABILITY_VERIFIER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.production.services]]
 binding = "AGENTPORT_WORKER"
@@ -1046,20 +1046,20 @@ service = "naelao-sandboxes-production"
 
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
+service = "naelao-notifications-production"
 
 # Billing worker — the reserved commerce script's only money-in path.
 
 [[env.production.services]]
 binding = "ARTIFACT_WORKER"
-service = "naelao-artifact"
+service = "naelao-artifact-production"
 
 # CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
 # get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
 
 [[env.production.services]]
 binding = "WS_GATEWAY"
-service = "naelao-ws-gateway"
+service = "naelao-ws-gateway-production"
 
 # PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
 # uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,

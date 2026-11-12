@@ -142,37 +142,37 @@ class_name = "RateLimitDO"
 
 [[env.staging.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-staging"
 
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-staging"
 
 
 [[env.staging.services]]
 binding = "EVAL_WORKER"
-service = "naelao-eval"
+service = "naelao-eval-staging"
 
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 
 [[env.staging.services]]
 binding = "AUTH_WORKER"
-service = "naelao-auth"
+service = "naelao-auth-staging"
 
 
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-staging"
 
 
 [[env.staging.services]]
 binding = "ANALYTICS_WORKER"
-service = "naelao-analytics"
+service = "naelao-analytics-staging"
 
 # F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
 # proxies here. Inherited by the staging/production named environments (only vars are replaced
@@ -180,21 +180,21 @@ service = "naelao-analytics"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [[env.staging.services]]
 binding = "SANDBOXES_WORKER"
-service = "naelao-sandboxes"
+service = "naelao-sandboxes-staging"
 
 
 [[env.staging.services]]
 binding = "MARKETPLACE_WORKER"
-service = "naelao-marketplace"
+service = "naelao-marketplace-staging"
 
 
 [[env.staging.services]]
 binding = "PORTAL_ROUTER"
-service = "naelao-portal-router"
+service = "naelao-portal-router-staging"
 
 
 [env.production.ai]
@@ -239,37 +239,37 @@ class_name = "RateLimitDO"
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
-service = "naelao-spaces"
+service = "naelao-spaces-production"
 
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
-service = "naelao-knowledge"
+service = "naelao-knowledge-production"
 
 
 [[env.production.services]]
 binding = "EVAL_WORKER"
-service = "naelao-eval"
+service = "naelao-eval-production"
 
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 
 [[env.production.services]]
 binding = "AUTH_WORKER"
-service = "naelao-auth"
+service = "naelao-auth-production"
 
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-production"
 
 
 [[env.production.services]]
 binding = "ANALYTICS_WORKER"
-service = "naelao-analytics"
+service = "naelao-analytics-production"
 
 # F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
 # proxies here. Inherited by the staging/production named environments (only vars are replaced
@@ -277,18 +277,18 @@ service = "naelao-analytics"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 
 [[env.production.services]]
 binding = "MARKETPLACE_WORKER"
-service = "naelao-marketplace"
+service = "naelao-marketplace-production"
 
 
 [[env.production.services]]
 binding = "PORTAL_ROUTER"
-service = "naelao-portal-router"
+service = "naelao-portal-router-production"
 
 [[env.production.services]]
 binding = "SANDBOXES_WORKER"
-service = "naelao-sandboxes"
+service = "naelao-sandboxes-production"

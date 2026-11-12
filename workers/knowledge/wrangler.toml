@@ -72,7 +72,7 @@ queue = "naelao-events-staging"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
@@ -83,7 +83,7 @@ queue = "naelao-events-production"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 [env.staging.ai]
 binding = "AI"

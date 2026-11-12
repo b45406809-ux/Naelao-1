@@ -41,7 +41,7 @@ vars = { ENVIRONMENT = "production", RATE_LIMIT_GLOBAL = "1000", RATE_LIMIT_AUTH
 [[env.staging.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiterDO"
-script_name = "naelao-security-gateway"
+script_name = "naelao-security-gateway-staging"
 
 
 [[env.staging.d1_databases]]
@@ -53,7 +53,7 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 [[env.production.durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiterDO"
-script_name = "naelao-security-gateway"
+script_name = "naelao-security-gateway-production"
 
 
 [[env.production.d1_databases]]

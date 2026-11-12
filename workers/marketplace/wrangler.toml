@@ -29,14 +29,14 @@ vars = { ENVIRONMENT = "staging" }
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"

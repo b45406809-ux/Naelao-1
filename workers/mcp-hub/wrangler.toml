@@ -61,19 +61,19 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-staging"
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-staging"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-staging"
 
 [[env.staging.services]]
 binding = "AGENTPORT_WORKER"
-service = "naelao-agentport"
+service = "agentport-api-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
@@ -85,16 +85,16 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
+service = "naelao-credentials-production"
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
-service = "naelao-agents"
+service = "naelao-agents-production"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
-service = "naelao-billing"
+service = "naelao-billing-production"
 
 [[env.production.services]]
 binding = "AGENTPORT_WORKER"
-service = "naelao-agentport"
+service = "agentport-api-production"
