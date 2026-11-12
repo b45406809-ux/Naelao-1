@@ -301,6 +301,8 @@ function validateEnv(env: NotificationsEnv): void {
 interface NotificationMessage {
   type: "email" | "in_app" | "webhook" | "push" | "web_push";
   tenantId: string;
+  /** Stable caller-supplied identity for idempotent notification retries. */
+  notificationId?: string;
   userId?: string;
   spaceId?: string;
   email?: string;
@@ -533,6 +535,7 @@ async function sendEmailNow(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      ...(notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(notificationId) ? { "Idempotency-Key": notificationId } : {}),
     },
     body: JSON.stringify({
       from,
@@ -560,7 +563,7 @@ async function sendEmailNow(
   // has nothing to attribute an in-app row to.
   if (msg.userId) {
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
+      `INSERT OR IGNORE INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
        VALUES (?, ?, ?, 'email', ?, ?, datetime('now'))`
     )
       .bind(notificationId ?? crypto.randomUUID(), msg.tenantId, msg.userId, subject, html)
@@ -579,6 +582,9 @@ export async function queue(
   for (const message of batch.messages) {
     const msg = message.body;
     try {
+      const notificationId = msg.notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.notificationId)
+        ? msg.notificationId
+        : undefined;
       const tenant = msg.tenantId
         ? await env.PLATFORM_DB.prepare("SELECT status FROM orgs WHERE id = ?").bind(msg.tenantId).first<{ status: string }>()
         : null;
@@ -610,7 +616,7 @@ export async function queue(
             break;
           }
 
-          const result = await sendEmailNow(env, msg, `email:${message.id}`);
+          const result = await sendEmailNow(env, msg, notificationId ?? `email:${message.id}`);
           if (!result.ok) {
             console.error(
               `[notifications/queue] Resend API error ${result.status ?? "unknown"} for email=${msg.email}`
@@ -634,7 +640,7 @@ export async function queue(
              VALUES (?, ?, ?, 'in_app', ?, ?, datetime('now'))`
           )
             .bind(
-              `in-app:${message.id}`,
+              notificationId ?? `in-app:${message.id}`,
               msg.tenantId,
               msg.userId,
               msg.subject ?? "(no subject)",

@@ -42,10 +42,10 @@ function checkoutReq(body: unknown, role = "owner"): Request {
 }
 
 describe("POST /billing/checkout — Lemon Squeezy platform plans (Stripe removed)", () => {
-  it("boots without any STRIPE_* env at all (validateEnv no longer requires them)", async () => {
+  it("boots without any STRIPE_* env when explicit local checkout simulation is enabled", async () => {
     const res = await billingWorker.fetch(
       checkoutReq({ plan: "growth", success_url: "https://app.naelao.com/dashboard/settings" }),
-      makeEnv() as never,
+      makeEnv({ ALLOW_DEV_CHECKOUTS: "true" }) as never,
       execCtx
     );
     expect(res.status).toBe(200); // would 500 "Missing required secret" before the cutover
@@ -54,7 +54,7 @@ describe("POST /billing/checkout — Lemon Squeezy platform plans (Stripe remove
   it("returns the dev placeholder when LS creds / plan variant are unset", async () => {
     const res = await billingWorker.fetch(
       checkoutReq({ plan: "business", success_url: "https://x.example/done" }),
-      makeEnv() as never,
+      makeEnv({ ALLOW_DEV_CHECKOUTS: "true" }) as never,
       execCtx
     );
     const body = (await res.json()) as { checkout_url: string; dev?: boolean; plan: string };
@@ -66,7 +66,7 @@ describe("POST /billing/checkout — Lemon Squeezy platform plans (Stripe remove
   it("no longer requires cancel_url (an LS checkout has no cancel redirect)", async () => {
     const res = await billingWorker.fetch(
       checkoutReq({ plan: "growth", success_url: "https://x.example/done" }),
-      makeEnv() as never,
+      makeEnv({ ALLOW_DEV_CHECKOUTS: "true" }) as never,
       execCtx
     );
     expect(res.status).toBe(200);
@@ -185,6 +185,7 @@ async function loadDb() {
     m("0125_subscription_event_ordering.sql"),
     m("0061_reseller_ledger_kind.sql"),
     m("0127_launchpad_order_seat_user_id.sql"),
+    m("0225_billing_dunning_outbox.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
     .bind(ORG_ID).run();
@@ -336,6 +337,8 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     expect(res.status).toBe(200);
     const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
     expect(sub).toMatchObject({ plan_tier: "growth", status: "past_due" });
+    const dunning = await fakeDb.prepare("SELECT tenant_id, provider, subscription_id, status, attempt_count FROM billing_dunning_outbox").first();
+    expect(dunning).toMatchObject({ tenant_id: ORG_ID, provider: "lemon_squeezy", subscription_id: "sub_paid", status: "pending", attempt_count: 0 });
   });
 
   it("ignores a failed payment from a replaced platform subscription", async () => {

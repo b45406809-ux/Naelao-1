@@ -38,7 +38,7 @@ binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
 [[env.staging.queues.consumers]]
-queue = "naelao-notifications-queue"
+queue = "naelao-notifications-queue-staging"
 max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
@@ -57,7 +57,7 @@ binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
 [[env.production.queues.consumers]]
-queue = "naelao-notifications-queue"
+queue = "naelao-notifications-queue-production"
 max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3

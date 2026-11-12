@@ -39,6 +39,8 @@ export interface Env {
   EVENTS_QUEUE: Queue;
   /** Dedicated analytics queue; the shared events queue has a single workflow consumer. */
   ANALYTICS_QUEUE: Queue;
+  /** Existing Notifications worker queue for retryable transactional billing notices. */
+  NOTIFICATIONS_QUEUE: Queue;
 
   // Service bindings
   SPACES_WORKER: Fetcher;

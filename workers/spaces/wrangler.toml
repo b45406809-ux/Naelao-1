@@ -346,7 +346,7 @@ queue = "naelao-provisioning-queue"
 
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-staging"
 
 # Billing worker — called at product publish time to auto-create LS product + variant.
 
@@ -463,7 +463,7 @@ queue = "naelao-provisioning-queue"
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-production"
 
 # Billing worker — called at product publish time to auto-create LS product + variant.
 

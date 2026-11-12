@@ -74,10 +74,23 @@ export async function queue(
           message.ack();
           break;
 
-        case "dunning":
-          await createWorkflowOnce(env.DUNNING, message.id, body);
+        case "dunning": {
+          const scopeValid = body.scope === "platform_subscription"
+            ? typeof body.orgId === "string" && Boolean(body.orgId) && body.orgId.length <= 256
+            : body.scope === "product_user_subscription" && typeof body.productId === "string" && Boolean(body.productId) &&
+              body.productId.length <= 256 && typeof body.endUserId === "string" && Boolean(body.endUserId) && body.endUserId.length <= 256;
+          if (typeof body.workflow_id !== "string" || !/^dunning-[a-f0-9]{64}$/.test(body.workflow_id) ||
+              !scopeValid ||
+              (body.provider !== "lemon_squeezy" && body.provider !== "whop") ||
+              typeof body.subscriptionId !== "string" || !body.subscriptionId || body.subscriptionId.length > 256 ||
+              !(body.providerEventId === null || (typeof body.providerEventId === "string" && body.providerEventId.length <= 256)) ||
+              !(body.providerUpdatedAt === null || (typeof body.providerUpdatedAt === "string" && Number.isFinite(Date.parse(body.providerUpdatedAt))))) {
+            throw new Error("dunning requires a stable subscription event identity");
+          }
+          await createWorkflowOnce(env.DUNNING, body.workflow_id, body);
           message.ack();
           break;
+        }
 
         default:
           // Unknown event types are acknowledged without processing

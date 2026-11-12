@@ -36,5 +36,6 @@ describe("Product user subscription entitlements", () => {
     expect(writes.at(-1)?.args.slice(0, 4)).toEqual(["product-1", "user-1", "free", "expired"]);
     await recordProductUserPlanSubscription(event({ providerUpdatedAt: "2026-11-04T00:00:00Z" }), { PLATFORM_DB: db, PLATFORM_SECRET: "secret" });
     expect(writes.at(-1)?.sql).toContain("provider_event_at");
+    expect(writes.at(-1)?.sql).toContain("excluded.provider_event_at IS NULL AND product_user_subscriptions.provider_event_at IS NULL");
   });
 });

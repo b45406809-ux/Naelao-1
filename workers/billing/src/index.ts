@@ -16,10 +16,11 @@ import {
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
 import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary, PLAN_LIMITS, llmReservationAdmission } from "./quota.js";
-import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, recordProductUserPlanSubscription } from "./lemon-squeezy.js";
+import { handleLemonSqueezyWebhook, markEventProcessedOnce, recordPlatformPlanSubscription, recordProductUserPlanSubscription, sha256Hex, unmarkEventProcessed } from "./lemon-squeezy.js";
 import { normalizePlanTier, PLANS, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
+import { dispatchDunningOutbox } from "./dunning-outbox.js";
 import { validateDecisionUsageReceipt } from "./decision-usage.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 import { recordManagedProviderCostReceipts, summarizeManagedProviderCostReceipts, type ManagedProviderCostReceiptInput } from "./managed-service-provider-costs.js";
@@ -38,6 +39,7 @@ export interface BillingEnv {
   PLATFORM_DB: D1Database;
   QUOTA_CACHE: KVNamespace;
   BILLING_EVENTS: Queue;
+  DUNNING_EVENTS: Queue;
   /** Separate operator key for enabling verified managed-service plan entitlements. */
   MANAGED_SERVICES_OPERATOR_SECRET?: string;
   // Lemon Squeezy (the ONLY billing provider — spec Appendix H / CLAUDE.md #9)
@@ -1522,9 +1524,19 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
     QUOTA_CACHE: c.env.QUOTA_CACHE,
   };
-  const handled = event.metadata.kind === "product_user_plan"
-    ? await recordProductUserPlanSubscription(event, env)
-    : await recordPlatformPlanSubscription(event, env);
+  const eventKey = `body:${await sha256Hex(rawBody)}`;
+  if (!await markEventProcessedOnce("whop", eventKey, event.type, env.PLATFORM_DB)) {
+    return c.json({ ok: true, duplicate: true });
+  }
+  let handled: boolean;
+  try {
+    handled = event.metadata.kind === "product_user_plan"
+      ? await recordProductUserPlanSubscription(event, env)
+      : await recordPlatformPlanSubscription(event, env);
+  } catch (err) {
+    await unmarkEventProcessed("whop", eventKey, env.PLATFORM_DB);
+    throw err;
+  }
   return c.json({ ok: true, handled });
 });
 
@@ -1554,11 +1566,19 @@ async function handleQueue(
     try {
       switch (msg.type) {
         case "dunning": {
-          // G-D06: Dunning stub — real dunning via CF Workflows in Phase 7
-          console.log(
-            `[billing/dunning] org=${msg.org_id} invoice=${msg.invoice_id} — queued for dunning workflow`
-          );
-          // Future: trigger a CF Workflow to send dunning emails + pause spaces on non-payment
+          const scopeValid = msg.scope === "platform_subscription"
+            ? typeof msg.orgId === "string" && Boolean(msg.orgId) && msg.orgId.length <= 256
+            : msg.scope === "product_user_subscription" && typeof msg.productId === "string" && Boolean(msg.productId) &&
+              msg.productId.length <= 256 && typeof msg.endUserId === "string" && Boolean(msg.endUserId) && msg.endUserId.length <= 256;
+          if (typeof msg.workflow_id !== "string" || !/^dunning-[a-f0-9]{64}$/.test(msg.workflow_id) ||
+              !scopeValid ||
+              (msg.provider !== "lemon_squeezy" && msg.provider !== "whop") ||
+              typeof msg.subscriptionId !== "string" || !msg.subscriptionId || msg.subscriptionId.length > 256 ||
+              !(msg.providerEventId === null || (typeof msg.providerEventId === "string" && msg.providerEventId.length <= 256)) ||
+              !(msg.providerUpdatedAt === null || (typeof msg.providerUpdatedAt === "string" && Number.isFinite(Date.parse(msg.providerUpdatedAt))))) {
+            throw new Error("billing_dunning_message_invalid");
+          }
+          await _env.DUNNING_EVENTS.send(msg);
           message.ack();
           break;
         }
@@ -1612,6 +1632,7 @@ export default {
     ctx.waitUntil(Promise.allSettled([
       reconcileDeveloperPayouts(env, Date.now(), event.cron === "0 0 * * *"),
       dispatchManagedServiceMeterOutbox(env),
+      dispatchDunningOutbox(env),
     ]));
   },
   queue: handleQueue as unknown as ExportedHandlerQueueHandler<BillingEnv>,

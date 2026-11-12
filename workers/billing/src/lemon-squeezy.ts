@@ -101,7 +101,21 @@ export async function recordPlatformPlanSubscription(
     // an older subscription (or an initial payment with no row yet) must not downgrade new access.
     if (!event.subscriptionId) return true;
     const subscriptionColumn = event.provider === "whop" ? "whop_subscription_id" : "ls_subscription_id";
-    await env.PLATFORM_DB.prepare(
+    const workflowHash = await sha256Hex(JSON.stringify([
+      event.provider, orgId, event.subscriptionId, event.providerEventId ?? null, event.providerUpdatedAt ?? null,
+    ]));
+    const payload = {
+      type: "dunning",
+      workflow_id: `dunning-${workflowHash}`,
+      scope: "platform_subscription",
+      orgId,
+      provider: event.provider,
+      subscriptionId: event.subscriptionId,
+      providerEventId: event.providerEventId ?? null,
+      providerUpdatedAt: event.providerUpdatedAt ?? null,
+    };
+    const receivedAt = new Date().toISOString();
+    const update = env.PLATFORM_DB.prepare(
       `UPDATE subscriptions SET status = 'past_due', provider_event_at = COALESCE(?, provider_event_at),
          billing_provider = COALESCE(billing_provider, ?), updated_at = datetime('now')
        WHERE org_id = ? AND plan_tier = ? AND ${subscriptionColumn} = ?
@@ -110,7 +124,25 @@ export async function recordPlatformPlanSubscription(
               (? IS NOT NULL AND (provider_event_at IS NULL OR ? > provider_event_at)))`
     ).bind(event.providerUpdatedAt ?? null, event.provider, orgId, plan, event.subscriptionId,
       event.provider, event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null,
-      event.providerUpdatedAt ?? null).run();
+      event.providerUpdatedAt ?? null);
+    const outbox = env.PLATFORM_DB.prepare(
+      `INSERT OR IGNORE INTO billing_dunning_outbox
+         (workflow_id,tenant_id,provider,subscription_id,provider_event_id,provider_updated_at,payload_json,
+          status,attempt_count,next_attempt_at,lease_until,last_error,sent_at,created_at,updated_at)
+       SELECT ?,?,?,?,?,?,?,'pending',0,?,NULL,NULL,NULL,?,?
+       WHERE EXISTS (
+         SELECT 1 FROM subscriptions WHERE org_id=? AND plan_tier=? AND ${subscriptionColumn}=?
+           AND status='past_due' AND billing_provider=? AND provider_event_at IS ?
+       )`
+    ).bind(
+      payload.workflow_id, orgId, event.provider, event.subscriptionId,
+      event.providerEventId ?? null, event.providerUpdatedAt ?? null, JSON.stringify(payload),
+      receivedAt, receivedAt, receivedAt,
+      orgId, plan, event.subscriptionId, event.provider, event.providerUpdatedAt ?? null,
+    );
+    // D1 batches are transactional: the state transition and its durable dispatch intent either
+    // both commit or both roll back. Queue delivery is retried separately from webhook handling.
+    await env.PLATFORM_DB.batch([update, outbox]);
     return true;
   }
   if (event.type === "refund.issued") return true;
@@ -188,12 +220,47 @@ export async function recordProductUserPlanSubscription(event: NormalizedBilling
   const providerSubscriptionId = event.subscriptionId ?? null;
   if (event.type === "payment.failed") {
     if (!providerSubscriptionId) return true;
-    await env.PLATFORM_DB.prepare(
+    const workflowHash = await sha256Hex(JSON.stringify([
+      "product_user_subscription", provider, productId, endUserId, providerSubscriptionId,
+      event.providerEventId ?? null, event.providerUpdatedAt ?? null,
+    ]));
+    const payload = {
+      type: "dunning",
+      workflow_id: `dunning-${workflowHash}`,
+      scope: "product_user_subscription",
+      productId,
+      endUserId,
+      provider,
+      subscriptionId: providerSubscriptionId,
+      providerEventId: event.providerEventId ?? null,
+      providerUpdatedAt: event.providerUpdatedAt ?? null,
+    };
+    const receivedAt = new Date().toISOString();
+    const update = env.PLATFORM_DB.prepare(
       `UPDATE product_user_subscriptions SET status='past_due', provider_event_at=COALESCE(?, provider_event_at), updated_at=datetime('now')
        WHERE product_id=? AND end_user_id=? AND provider=? AND provider_subscription_id=?
-         AND (? IS NULL OR provider_event_at IS NULL OR ? > provider_event_at)`
+         AND ((? IS NULL AND provider_event_at IS NULL) OR
+              (? IS NOT NULL AND (provider_event_at IS NULL OR ? > provider_event_at)))`
     ).bind(event.providerUpdatedAt ?? null, productId, endUserId, provider, providerSubscriptionId,
-      event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null).run();
+      event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null);
+    const outbox = env.PLATFORM_DB.prepare(
+      `INSERT OR IGNORE INTO billing_dunning_outbox
+         (workflow_id,tenant_id,provider,subscription_id,provider_event_id,provider_updated_at,payload_json,
+          status,attempt_count,next_attempt_at,lease_until,last_error,sent_at,created_at,updated_at)
+       SELECT ?,p.tenant_id,?,?,?,?,?,'pending',0,?,NULL,NULL,NULL,?,?
+       FROM products p JOIN product_end_users u ON u.product_space_id=p.id
+       WHERE p.id=? AND u.end_user_id=? AND p.status='active' AND u.deleted_at IS NULL AND u.suspended_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM product_user_subscriptions s WHERE s.product_id=p.id AND s.end_user_id=u.end_user_id
+             AND s.provider=? AND s.provider_subscription_id=? AND s.status='past_due' AND s.provider_event_at IS ?
+         )`
+    ).bind(
+      payload.workflow_id, provider, providerSubscriptionId, event.providerEventId ?? null,
+      event.providerUpdatedAt ?? null, JSON.stringify(payload), receivedAt,
+      receivedAt, receivedAt, productId, endUserId, provider,
+      providerSubscriptionId, event.providerUpdatedAt ?? null,
+    );
+    await env.PLATFORM_DB.batch([update, outbox]);
     return true;
   }
   if (!event.type.startsWith("subscription.") && event.type !== "payment.success") return true;
@@ -216,7 +283,9 @@ export async function recordProductUserPlanSubscription(event: NormalizedBilling
      WHERE (product_user_subscriptions.provider=excluded.provider OR product_user_subscriptions.provider IS NULL)
        AND (product_user_subscriptions.provider_subscription_id=excluded.provider_subscription_id
             OR (excluded.provider_event_at IS NOT NULL AND (product_user_subscriptions.provider_event_at IS NULL OR excluded.provider_event_at>product_user_subscriptions.provider_event_at)))
-       AND (excluded.provider_event_at IS NULL OR product_user_subscriptions.provider_event_at IS NULL OR excluded.provider_event_at>product_user_subscriptions.provider_event_at)`
+       AND ((excluded.provider_event_at IS NULL AND product_user_subscriptions.provider_event_at IS NULL)
+            OR (excluded.provider_event_at IS NOT NULL AND (product_user_subscriptions.provider_event_at IS NULL
+                OR excluded.provider_event_at>product_user_subscriptions.provider_event_at)))`
   ).bind(productId, endUserId, planTier, status, provider, event.customerId ?? null, providerSubscriptionId,
     event.currentPeriodEnd ?? null, event.providerUpdatedAt ?? null).run();
   if (!result.meta.changes) console.warn(`[billing/${provider}] Ignored stale Product user plan event product=${productId} user=${endUserId}`);

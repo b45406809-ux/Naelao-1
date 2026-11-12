@@ -68,7 +68,7 @@ vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONF
 
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-staging"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
@@ -79,7 +79,7 @@ vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_C
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-production"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"

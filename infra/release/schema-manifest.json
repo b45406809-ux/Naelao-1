@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0224_sandbox_agentport_revoke_recovery",
+  "requiredSchemaVersion": "0225_billing_dunning_outbox",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -899,6 +899,10 @@
     {
       "filename": "0224_sandbox_agentport_revoke_recovery.sql",
       "sha256": "b4929e35da2e565f6a2b285d93464c6d548cb62a0a1dcd8425438d283d800183"
+    },
+    {
+      "filename": "0225_billing_dunning_outbox.sql",
+      "sha256": "78a42b43feba7bc3fc1d962661c48ba3f0e448a9f0c0228c3ebb1e063da51723"
     }
   ]
 }

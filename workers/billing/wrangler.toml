@@ -10,7 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 
 [triggers]
-crons = ["0 0 * * *", "15 * * * *"]
+crons = ["0 0 * * *", "*/5 * * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
 # This does not move a customer project balance or a Lemon Squeezy balance.
@@ -27,6 +27,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 [[queues.producers]]
 binding = "BILLING_EVENTS"
 queue = "naelao-billing-events"
+
+[[queues.producers]]
+binding = "DUNNING_EVENTS"
+queue = "naelao-events"
 
 [[queues.consumers]]
 queue = "naelao-billing-events"
@@ -87,7 +91,7 @@ binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
 [env.staging.triggers]
-crons = ["0 0 * * *", "15 * * * *"]
+crons = ["0 0 * * *", "*/5 * * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
 # This does not move a customer project balance or a Lemon Squeezy balance.
@@ -107,6 +111,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 [[env.staging.queues.producers]]
 binding = "BILLING_EVENTS"
 queue = "naelao-billing-events"
+
+[[env.staging.queues.producers]]
+binding = "DUNNING_EVENTS"
+queue = "naelao-events-staging"
 
 
 [[env.staging.queues.consumers]]
@@ -130,7 +138,7 @@ dead_letter_queue = "naelao-billing-events-dlq"
 # without them /billing/checkout degrades to the dev-placeholder flow.
 
 [env.production.triggers]
-crons = ["0 0 * * *", "15 * * * *"]
+crons = ["0 0 * * *", "*/5 * * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
 # This does not move a customer project balance or a Lemon Squeezy balance.
@@ -150,6 +158,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 [[env.production.queues.producers]]
 binding = "BILLING_EVENTS"
 queue = "naelao-billing-events"
+
+[[env.production.queues.producers]]
+binding = "DUNNING_EVENTS"
+queue = "naelao-events-production"
 
 
 [[env.production.queues.consumers]]

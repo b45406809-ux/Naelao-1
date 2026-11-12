@@ -73,6 +73,10 @@ binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
 [[queues.producers]]
+binding = "NOTIFICATIONS_QUEUE"
+queue = "naelao-notifications-queue"
+
+[[queues.producers]]
 binding = "ANALYTICS_QUEUE"
 queue = "naelao-analytics"
 
@@ -174,7 +178,11 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-staging"
+
+[[env.staging.queues.producers]]
+binding = "NOTIFICATIONS_QUEUE"
+queue = "naelao-notifications-queue-staging"
 
 [[env.staging.queues.producers]]
 binding = "ANALYTICS_QUEUE"
@@ -182,12 +190,12 @@ queue = "naelao-analytics"
 
 
 [[env.staging.queues.consumers]]
-queue = "naelao-events"
+queue = "naelao-events-staging"
 max_batch_size = 100
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-events-dlq"
+dead_letter_queue = "naelao-events-dlq-staging"
 
 
 [[env.staging.services]]
@@ -274,7 +282,11 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
-queue = "naelao-events"
+queue = "naelao-events-production"
+
+[[env.production.queues.producers]]
+binding = "NOTIFICATIONS_QUEUE"
+queue = "naelao-notifications-queue-production"
 
 [[env.production.queues.producers]]
 binding = "ANALYTICS_QUEUE"
@@ -282,12 +294,12 @@ queue = "naelao-analytics"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-events"
+queue = "naelao-events-production"
 max_batch_size = 100
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-events-dlq"
+dead_letter_queue = "naelao-events-dlq-production"
 
 
 [[env.production.services]]
