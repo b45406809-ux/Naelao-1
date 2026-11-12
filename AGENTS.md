@@ -20,10 +20,10 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 `autonomous-managed-services-20261111` in `/workspace/Naelao-1-managed-services`; preserve this
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
-remains separate and must not be switched or merged with the recovery branch. Code checkpoint
-`171a3471` and docs checkpoint `8f9c0c15` are pushed there. This worktree now adds repricing-safe
-scheduled AgentMail renewal replay and its tests; the local checkpoint and fresh checks are recorded
-in the progress source pending the next push.
+remains separate and must not be switched or merged with the recovery branch. Code checkpoints
+`171a3471` and `064efff8`, plus docs checkpoint `8f9c0c15`, are pushed there. Both AgentMail
+provision and scheduled renewal recovery now reuse their consumed quote after repricing; exact push
+and fresh checks are recorded in the progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
@@ -122,9 +122,9 @@ rate; do not infer one from the current 300-credit reservation. Then continue re
 U01–U12 gaps. Record subsequent checkpoints and exact pushed SHAs in the progress source.
 Keep every rollout flag disabled. Do not deploy or purchase services.
 
-Latest local continuation: AgentMail provision and scheduled renewal recovery reuse the consumed
-quote and original credit amount after repricing, while the same capability version remains verified
-and current caps permit the amount. AgentMail tests pass 16/16; Billing reservation tests pass 17/17;
+Latest continuation: AgentMail provision and scheduled renewal recovery reuse the consumed quote and
+original credit amount after repricing, while the same capability version remains verified and
+current caps permit the amount. AgentMail tests pass 16/16; Billing reservation tests pass 17/17;
 Agents and Billing typechecks pass. The next implementation action is to audit Cloudflare model
 replay under repricing, then continue S2–S9 and U01–U12. Rollout remains disabled.
 
