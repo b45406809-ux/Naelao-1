@@ -147,6 +147,29 @@ describe("sandbox control plane boundary", () => {
     ).toBe("configured");
   });
 
+  it("exposes settled runtime credits only to owners/admins and labels them as Naelao credits", async () => {
+    const secret = "sandbox-test-platform-secret";
+    const token = await mintInternalToken(secret, "tenant_1");
+    const db = new FakeD1();
+    const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: secret };
+    const send = (role: string) => app.fetch(new Request("http://sandbox/usage?days=30&spaceId=space_1&projectId=project_1", {
+      headers: {
+        "x-naelao-tenant-id": "tenant_1", "x-naelao-user-id": "user_1", "x-naelao-role": role,
+        "x-naelao-internal-token": token,
+      },
+    }), env);
+
+    expect((await send("member")).status).toBe(403);
+    const accepted = await send("owner");
+    expect(accepted.status).toBe(200);
+    const body = await accepted.json();
+    expect(body).toMatchObject({
+      days: 30, spaceId: "space_1", projectId: "project_1", provenance: "naelao_credit_ledger", unit: "credits",
+      credits: 0, eventCount: 0,
+    });
+    expect(JSON.stringify(body)).toContain("not provider cost");
+  });
+
   it("limits manual provider deletion evidence to owners and admins and stores a hashed receipt", async () => {
     const secret = "sandbox-test-platform-secret";
     const token = await mintInternalToken(secret, "tenant_1");

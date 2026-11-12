@@ -35,6 +35,7 @@ type Agent37Usage = {
   byIntegration: Array<{ kind: string; costMicros: number; awakeMinutes?: number }>;
 };
 type Agent37UsageResponse = { usage: Agent37Usage; scope: "agent37_workspace_account"; provenance: "provider_api_observed"; notice: string };
+type RuntimeCreditsResponse = { credits: number; eventCount: number; days: number; provenance: "naelao_credit_ledger"; unit: "credits"; note: string };
 const panelStyle: React.CSSProperties = { marginTop: 24, padding: 16 };
 
 /** Project computer inventory. A configured row is only durable configuration; provider
@@ -54,6 +55,7 @@ export function ProjectComputersPanel({
   const [computers, setComputers] = React.useState<Computer[]>([]);
   const [connections, setConnections] = React.useState<ProviderConnection[]>([]);
   const [providerUsage, setProviderUsage] = React.useState<Record<string, Agent37UsageResponse>>({});
+  const [runtimeCredits, setRuntimeCredits] = React.useState<RuntimeCreditsResponse | null>(null);
   const [apiKey, setApiKey] = React.useState("");
   const [instanceKey, setInstanceKey] = React.useState("");
   const [region, setRegion] = React.useState("");
@@ -65,6 +67,7 @@ export function ProjectComputersPanel({
   );
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
+  const [usageBusy, setUsageBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -287,6 +290,19 @@ export function ProjectComputersPanel({
       setBusy(false);
     }
   }
+  async function fetchRuntimeCredits() {
+    setUsageBusy(true);
+    setMessage("");
+    try {
+      const query = new URLSearchParams({ days: "30", spaceId, projectId });
+      const result = await apiFetch<RuntimeCreditsResponse>(`/v1/usage?${query}`, { session: stableSession, cache: "no-store" });
+      setRuntimeCredits(result);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not read runtime credit usage");
+    } finally {
+      setUsageBusy(false);
+    }
+  }
   async function revokeConnection(id: string) {
     if (!window.confirm("Revoke this provider connection and queue cleanup for computers that use it?")) return;
     setBusy(true);
@@ -317,6 +333,14 @@ export function ProjectComputersPanel({
       <p style={{ color: "var(--text3)", fontSize: 12 }}>
         Providers: {providerMessage}
       </p>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0" }}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={usageBusy} onClick={() => void fetchRuntimeCredits()}>
+          {usageBusy ? "Reading runtime credits…" : "Read runtime credits"}
+        </button>
+        {runtimeCredits && <span style={{ color: "var(--text3)", fontSize: 11 }}>
+          {runtimeCredits.credits.toLocaleString()} Naelao credits across {runtimeCredits.eventCount} settled Tier 5 events in the last {runtimeCredits.days} days. {runtimeCredits.note}
+        </span>}
+      </div>
       <label style={{ display: "grid", gap: 4, maxWidth: 520, marginBottom: 12, fontSize: 12 }}>
         Provider for the next computer
         <select value={computerConnectionId} onChange={(event) => setComputerConnectionId(event.target.value)} disabled={busy}>

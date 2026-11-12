@@ -4,7 +4,8 @@ export const SANDBOX_OPS_SIGNALS = [
   "stale_lease_fence",
   "reconciliation_age_ms",
   "runtime_startup_ms",
-  "billed_idle_micros",
+  "operator_imported_idle_cost_micros",
+  "operator_imported_idle_receipt_count",
   "bridge_storage_bytes",
   "quota_pressure_ppm",
   "pending_erasure",
@@ -63,7 +64,8 @@ export interface SandboxOpsSnapshot {
   checkpointLagMs: number;
   reconciliationAgeMs: number;
   runtimeStartupMs: number;
-  billedIdleMicros: number;
+  operatorImportedIdleCostMicros: number;
+  operatorImportedIdleReceiptCount: number;
   bridgeStorageBytes: number;
   quotaPressurePpm: number;
   pendingErasure: number;
@@ -91,7 +93,7 @@ export function sandboxOpsAlerts(snapshot: SandboxOpsSnapshot): Array<{ signal: 
 /** Bounded aggregate probe for dashboards/alerts. All SQL dimensions are fixed enums and the
  * result contains no tenant/project/allocation IDs. */
 export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs = Date.now()): Promise<SandboxOpsSnapshot> {
-  const [publications, publicationSamples, reconciliation, allocation, startupSamples, idle, storage, erasure, deletion, billing] = await Promise.all([
+  const [publications, publicationSamples, reconciliation, allocation, startupSamples, idleCost, storage, erasure, deletion, billing] = await Promise.all([
     env.PLATFORM_DB.prepare(`SELECT SUM(CASE WHEN status IN ('pending','recovery_required') THEN 1 ELSE 0 END) AS count,
       MIN(CASE WHEN status IN ('pending','recovery_required') THEN created_at END) AS oldest
       FROM sandbox_publications`).first<{ count: number; oldest: string | null }>(),
@@ -101,7 +103,10 @@ export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs 
     env.PLATFORM_DB.prepare("SELECT MIN(updated_at) AS oldest FROM sandbox_allocations WHERE status IN ('intent','unknown','error')").first<{ oldest: string | null }>(),
     env.PLATFORM_DB.prepare(`SELECT MAX(0,(julianday(updated_at)-julianday(created_at))*86400000) AS elapsed_ms
       FROM sandbox_operations WHERE operation='start' AND status='complete' ORDER BY updated_at DESC LIMIT 1000`).all<{ elapsed_ms: number }>(),
-    env.PLATFORM_DB.prepare("SELECT COALESCE(SUM(quantity_micros),0) AS total FROM sandbox_usage_events WHERE kind='billed_idle_micros'").first<{ total: number }>(),
+    env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(provider_cost_micros),0) AS total,COUNT(*) AS receipt_count
+      FROM sandbox_provider_cost_receipts WHERE usage_kind='idle' AND currency='USD' AND provenance='operator_imported'
+        AND period_end>=strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')
+        AND period_start<=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).first<{ total: number; receipt_count: number }>(),
     env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(size_bytes),0) AS total,
       COALESCE(MAX(snapshot_bytes),0) AS largest_snapshot FROM (
         SELECT b.size_bytes, SUM(b.size_bytes) OVER (PARTITION BY b.snapshot_id) AS snapshot_bytes
@@ -117,7 +122,8 @@ export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs 
     reconciliationAgeMs: boundedAgeMs([reconciliation?.oldest, allocation?.oldest, publications?.oldest]
       .filter((value): value is string => typeof value === "string").sort()[0], nowMs),
     runtimeStartupMs: boundedP95Ms((startupSamples.results ?? []).map((row) => typeof row.elapsed_ms === "number" ? row.elapsed_ms : Number.NaN)),
-    billedIdleMicros: Math.max(0, Number(idle?.total ?? 0)),
+    operatorImportedIdleCostMicros: Math.max(0, Number(idleCost?.total ?? 0)),
+    operatorImportedIdleReceiptCount: Math.max(0, Number(idleCost?.receipt_count ?? 0)),
     bridgeStorageBytes: Math.max(0, Number(storage?.total ?? 0)),
     quotaPressurePpm: Math.max(0, Math.min(1_000_000, Math.round(Number(storage?.largest_snapshot ?? 0) / (64 * 1024 * 1024) * 1_000_000))),
     pendingErasure: Number(erasure?.count ?? 0),
@@ -135,7 +141,10 @@ export async function collectSandboxOpsMetrics(env: SandboxOpsMetricsEnv, nowMs 
     snapshot.reconciliationAgeMs >= 60_000 ? "warning" : "all");
   writeSandboxOpsMetric(env.ANALYTICS, "runtime_startup_ms", snapshot.runtimeStartupMs,
     snapshot.runtimeStartupMs >= 30_000 ? "warning" : "all");
-  writeSandboxOpsMetric(env.ANALYTICS, "billed_idle_micros", snapshot.billedIdleMicros);
+  writeSandboxOpsMetric(env.ANALYTICS, "operator_imported_idle_cost_micros", snapshot.operatorImportedIdleCostMicros,
+    snapshot.operatorImportedIdleReceiptCount ? "all" : "unknown");
+  writeSandboxOpsMetric(env.ANALYTICS, "operator_imported_idle_receipt_count", snapshot.operatorImportedIdleReceiptCount,
+    snapshot.operatorImportedIdleReceiptCount ? "all" : "unknown");
   writeSandboxOpsMetric(env.ANALYTICS, "bridge_storage_bytes", snapshot.bridgeStorageBytes);
   writeSandboxOpsMetric(env.ANALYTICS, "quota_pressure_ppm", snapshot.quotaPressurePpm,
     snapshot.quotaPressurePpm >= 900_000 ? "warning" : "all");

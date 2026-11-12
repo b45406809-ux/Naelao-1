@@ -22,6 +22,7 @@ import { queueSandboxComputerDeletion, recordManualProviderDeletionEvidence, run
 import { collectSandboxOpsMetrics, sandboxOpsAlerts } from "./ops-metrics.js";
 import { recordSandboxBillingReconciliation, type SandboxBillingProvider } from "./billing-reconciliation.js";
 import { recordProviderCostReceipts, summarizeProviderCostReceipts, type ProviderCostReceiptInput } from "./provider-cost-receipts.js";
+import { summarizeSandboxRuntimeUsage } from "./runtime-usage.js";
 import { agent37TemplateAllows, parseAgent37TemplateConstraints, validateAgent37TemplateEvidence, type Agent37TemplateConstraints } from "./agent37-admission.js";
 import { openSandboxRecord, sealSandboxRecord } from "./record-crypto.js";
 import {
@@ -482,16 +483,19 @@ app.delete("/connections/:id", async (c) => {
   return json({ revoked:true, cleanup:pending?"pending":"complete", credentialsRetainedForCleanup:!!pending },pending?202:200);
 });
 app.get("/usage", async (c) => {
-  const rows = await c.env.PLATFORM_DB.prepare(
-    "SELECT kind,SUM(quantity_micros) AS quantity_micros,COUNT(*) AS events FROM sandbox_usage_events WHERE tenant_id=? GROUP BY kind"
-  )
-    .bind(c.get("tenantId"))
-    .all<{ kind: string; quantity_micros: number; events: number }>();
-  return json({
-    usage: rows.results ?? [],
-    currency: "USD",
-    note: "Only persisted measured events are included; estimates are not billed usage.",
-  });
+  if (!['owner', 'admin'].includes(c.get("role"))) return fail("forbidden", 403);
+  const days = Number(c.req.query("days") ?? "30");
+  const spaceId = c.req.query("spaceId") || undefined;
+  const projectId = c.req.query("projectId") || undefined;
+  try {
+    return json(await summarizeSandboxRuntimeUsage(c.env.PLATFORM_DB, {
+      tenantId: c.get("tenantId"), days, ...(spaceId ? { spaceId } : {}), ...(projectId ? { projectId } : {}),
+    }));
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "sandbox_runtime_usage_unavailable";
+    return fail(code === "sandbox_runtime_usage_invalid" ? code : "sandbox_runtime_usage_unavailable",
+      code === "sandbox_runtime_usage_invalid" ? 400 : 503);
+  }
 });
 app.post("/billing/reconcile", async c => {
   if (!["owner", "admin"].includes(c.get("role"))) return fail("forbidden", 403);
