@@ -35,11 +35,17 @@ jobs:
       - name: Test environment isolation guard
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_wrangler_env_isolation.py"
 
+      - name: Test environment resource inventory and receipts
+        run: python3 -m unittest discover -s infra/scripts -p "test_validate_environment_resources.py"
+
       - name: Test release schema manifest
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_release_manifest.py"
 
       - name: Validate release schema manifest
         run: python3 infra/scripts/validate_release_manifest.py
+
+      - name: Require isolated environment resources and staging inventory receipts
+        run: python3 infra/scripts/validate_environment_resources.py
 
       - name: Reject shared mutable staging/production bindings
         run: python3 infra/scripts/validate_wrangler_env_isolation.py

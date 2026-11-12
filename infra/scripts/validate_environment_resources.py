@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Validate the checked-in environment map and read-only resource receipts."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKERS = ROOT / "workers"
+MAP_PATH = ROOT / "infra/environment/resource-map.json"
+RECEIPTS_PATH = ROOT / "infra/environment/resource-receipts.json"
+RECEIPT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+ENVIRONMENTS = ("staging", "production")
+RECEIPT_KINDS = {"queue", "workflow", "r2", "vectorize"}
+
+
+def _rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _resource_rows(environment: dict[str, Any]) -> list[tuple[str, str, str]]:
+    resources: list[tuple[str, str, str]] = []
+
+    def add(kind: str, values: Any, key: str) -> None:
+        for row in _rows(values):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                binding = row.get("binding") or row.get("name") or key
+                resources.append((kind, str(binding), value.strip()))
+
+    add("d1", environment.get("d1_databases"), "database_id")
+    add("kv", environment.get("kv_namespaces"), "id")
+    add("r2", environment.get("r2_buckets"), "bucket_name")
+    add("vectorize", environment.get("vectorize"), "index_name")
+    add("service", environment.get("services"), "service")
+    queues = environment.get("queues")
+    if isinstance(queues, dict):
+        add("queue", queues.get("producers"), "queue")
+        add("queue", queues.get("consumers"), "queue")
+        add("queue", queues.get("consumers"), "dead_letter_queue")
+    add("workflow", environment.get("workflows"), "name")
+    durable_objects = environment.get("durable_objects")
+    if isinstance(durable_objects, dict):
+        add("durable_object_script", durable_objects.get("bindings"), "script_name")
+    return resources
+
+
+def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
+    files = sorted(workers_dir.glob("*/wrangler.toml"))
+    by_binding: dict[tuple[str, str], dict[str, dict[str, set[str]]]] = {}
+    receipt_requirements: set[tuple[str, str, str]] = set()
+    service_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
+    known_targets: set[str] = set()
+
+    for path in files:
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        worker_name = str(parsed.get("name") or path.parent.name)
+        relative = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name
+        for environment_name in ENVIRONMENTS:
+            environment = parsed.get("env", {}).get(environment_name)
+            if not isinstance(environment, dict):
+                continue
+            target_name = environment.get("name")
+            known_targets.add(str(target_name or f"{worker_name}-{environment_name}"))
+            for kind, binding, resource in _resource_rows(environment):
+                target = by_binding.setdefault((kind, binding), {})
+                environment_resources = target.setdefault(environment_name, {})
+                environment_resources.setdefault(resource, set()).add(relative)
+                if kind == "service":
+                    service_targets[environment_name].add(resource)
+                if environment_name == "staging" and kind in RECEIPT_KINDS:
+                    receipt_requirements.add((kind, environment_name, resource))
+                if kind in {"d1", "kv"}:
+                    receipt_requirements.add((kind, environment_name, resource))
+
+    mapped_bindings: list[dict[str, Any]] = []
+    for (kind, binding), environments in sorted(by_binding.items()):
+        environment_map: dict[str, list[dict[str, Any]]] = {}
+        for environment_name in ENVIRONMENTS:
+            rows = environments.get(environment_name, {})
+            environment_map[environment_name] = [
+                {"id_or_name": resource, "workers": sorted(workers)}
+                for resource, workers in sorted(rows.items())
+            ]
+        mapped_bindings.append({"kind": kind, "binding": binding, "environments": environment_map})
+
+    source_hashes = []
+    for path in files:
+        relative = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name
+        source_hashes.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+
+    return {
+        "version": 1,
+        "status": "source_inventory_only",
+        "source_files": source_hashes,
+        "bindings": mapped_bindings,
+        "unresolved_service_targets": sorted(
+            set.union(*(service_targets[name] for name in ENVIRONMENTS)) - known_targets
+        ),
+        "required_existence_receipts": [
+            {"kind": kind, "environment": environment_name, "id_or_name": name, "status": "unverified"}
+            for kind, environment_name, name in sorted(receipt_requirements)
+        ],
+    }
+
+
+def _read_json(path: Path, label: str) -> tuple[Any | None, list[str]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), []
+    except FileNotFoundError:
+        return None, [f"{label} is missing: {path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}"]
+    except (OSError, json.JSONDecodeError) as error:
+        return None, [f"{label} is unreadable or invalid JSON: {error}"]
+
+
+def _resource_conflicts(source_map: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    by_kind_environment: dict[str, dict[str, set[str]]] = {
+        "d1": {"staging": set(), "production": set()},
+        "kv": {"staging": set(), "production": set()},
+    }
+    for binding in source_map["bindings"]:
+        kind = binding["kind"]
+        name = binding["binding"]
+        staging = {row["id_or_name"] for row in binding["environments"].get("staging", [])}
+        production = {row["id_or_name"] for row in binding["environments"].get("production", [])}
+        if kind in {"d1", "kv"}:
+            if not staging or not production:
+                errors.append(f"{kind} {name} must have explicit staging and production resource IDs")
+            elif staging & production:
+                shared = ", ".join(sorted(staging & production))
+                errors.append(f"{kind} {name} shares staging/production resource ID(s): {shared}")
+            by_kind_environment[kind]["staging"].update(staging)
+            by_kind_environment[kind]["production"].update(production)
+            id_pattern = re.compile(
+                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                if kind == "d1"
+                else r"^[0-9a-fA-F]{32}$"
+            )
+            for environment_name, values in (("staging", staging), ("production", production)):
+                for value in values:
+                    if not id_pattern.fullmatch(value):
+                        errors.append(f"{kind} {name} {environment_name} resource ID is not a real-format ID: {value}")
+    for kind, environments in by_kind_environment.items():
+        shared_across_bindings = environments["staging"] & environments["production"]
+        for resource in sorted(shared_across_bindings):
+            if not any(f"resource ID(s): {resource}" in error for error in errors):
+                errors.append(f"{kind} resource ID is shared across staging and production bindings: {resource}")
+    return errors
+
+
+def _validate_receipts(
+    source_map: dict[str, Any], receipts: Any, now: datetime | None = None
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(receipts, dict) or receipts.get("version") != 1:
+        return ["resource receipts must be a version 1 JSON object"]
+    rows = receipts.get("resources")
+    if not isinstance(rows, list):
+        return ["resource receipts must contain a resources array"]
+    required = {
+        (row["kind"], row["environment"], row["id_or_name"])
+        for row in source_map["required_existence_receipts"]
+    }
+    observed: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            errors.append(f"receipt resources[{index}] must be an object")
+            continue
+        key = (row.get("kind"), row.get("environment"), row.get("id_or_name"))
+        if key not in required:
+            errors.append(f"receipt resources[{index}] does not match a required environment resource")
+            continue
+        if key in observed:
+            errors.append(f"duplicate staging receipt for {key[0]} {key[1]}")
+            continue
+        observed[key] = row
+
+    account_id = receipts.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        errors.append("resource receipts require the observed Cloudflare account_id")
+    try:
+        observed_at = datetime.fromisoformat(str(receipts.get("observed_at", "")).replace("Z", "+00:00"))
+        if observed_at.tzinfo is None:
+            raise ValueError("timezone is required")
+        current = now or datetime.now(timezone.utc)
+        age = (current - observed_at.astimezone(timezone.utc)).total_seconds()
+        if age < 0 or age > RECEIPT_MAX_AGE_SECONDS:
+            errors.append("resource receipt observed_at must be no more than seven days old and not in the future")
+    except (TypeError, ValueError):
+        errors.append("resource receipts require an ISO-8601 observed_at timestamp with timezone")
+
+    for key in sorted(required):
+        row = observed.get(key)
+        if row is None:
+            errors.append(f"missing read-only {key[1]} existence receipt for {key[0]} {key[2]}")
+            continue
+        for field in ("resource_id", "evidence_source", "observer"):
+            value = row.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"receipt for {key[0]} {key[1]} requires {field}")
+        if row.get("environment") != key[1]:
+            errors.append(f"receipt for {key[0]} {key[2]} must identify {key[1]}")
+        if row.get("read_only") is not True:
+            errors.append(f"receipt for {key[0]} {key[2]} must be from a read-only inventory")
+        if key[0] in {"d1", "kv"} and row.get("resource_id") != key[2]:
+            errors.append(f"receipt for {key[0]} {key[2]} must confirm the exact configured resource ID")
+    return errors
+
+
+def validate(
+    workers_dir: Path = WORKERS,
+    map_path: Path = MAP_PATH,
+    receipts_path: Path = RECEIPTS_PATH,
+    now: datetime | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        source_map = build_source_map(workers_dir)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"could not build source environment map: {error}"]
+    if not source_map["source_files"]:
+        return [f"no worker Wrangler TOMLs found under {workers_dir}"]
+
+    checked_in_map, map_errors = _read_json(map_path, "resource map")
+    errors.extend(map_errors)
+    if checked_in_map is not None and checked_in_map != source_map:
+        errors.append("resource map is stale; regenerate it from the current Worker Wrangler TOMLs")
+
+    errors.extend(_resource_conflicts(source_map))
+    unresolved = source_map["unresolved_service_targets"]
+    if unresolved:
+        errors.append("service targets have no named Worker owner: " + ", ".join(unresolved))
+
+    receipts, receipt_errors = _read_json(receipts_path, "resource receipts")
+    errors.extend(receipt_errors)
+    if receipts is not None:
+        errors.extend(_validate_receipts(source_map, receipts, now))
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--write-source-map", action="store_true", help="write the source-derived inventory")
+    args = parser.parse_args()
+    if args.write_source_map:
+        MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MAP_PATH.write_text(json.dumps(build_source_map(), indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote source-derived environment map to {MAP_PATH.relative_to(ROOT)}")
+        return 0
+
+    errors = validate()
+    if errors:
+        print("Environment resource preflight failed:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+    print("Environment resource preflight passed: source map and staging receipts are current.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

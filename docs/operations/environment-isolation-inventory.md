@@ -3,6 +3,9 @@
 This is a source-level inventory of `workers/*/wrangler.toml`. It is not a Cloudflare
 account inventory and does not establish that a named queue, Worker environment,
 Vectorize index, bucket, namespace or callback exists in either deployed environment.
+The source-derived binding map is checked in at
+`infra/environment/resource-map.json`; `infra/scripts/validate_environment_resources.py`
+compares its hashes and entries to all 28 current Wrangler files.
 
 ## Closed in checked-in configuration
 
@@ -34,6 +37,23 @@ no corresponding Worker config in this repository, so its environment-specific t
 and ownership remain unknown. `workers/eval/wrangler.toml` still assigns the same D1
 ID to staging and production; that remains a release blocker after its Agents service
 binding was corrected. The D1/KV targets span twelve distinct underlying resources.
+
+`validate_environment_resources.py` runs in both deployment preflights before any
+deployment job can start. It requires disjoint, well-formed staging/production D1 and
+KV IDs, read-only existence receipts for every configured D1/KV ID in both environments,
+and read-only receipts for each newly named staging queue, Workflow, R2 bucket and
+Vectorize index. Receipts in `infra/environment/resource-receipts.json` must identify
+the Cloudflare account, observer, source, environment, exact configured identifier and
+an observation timestamp no more than seven days old. The checked-in receipt document
+is intentionally empty: no Cloudflare credentials or inventory were available, so it
+does not assert that any resource exists. `--write-source-map` refreshes only the
+source-derived map; it does not produce provider evidence.
+
+Read-only receipts should be collected from Cloudflare account inventory/API GET
+responses after access is authorized. Record the exact endpoint/command and observation
+time in `evidence_source` and `observed_at`; do not use a deploy, create, update, delete,
+or migration operation to prove existence. Obtain ownership/environment details for
+`naelao-calls` from its actual platform owner before adding it to the named-target map.
 
 Do not put fabricated IDs in these bindings to make the static guard pass. Provision
 or identify the real environment D1/KV resources, map every Worker binding to the

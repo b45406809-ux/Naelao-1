@@ -1,0 +1,2353 @@
+{
+  "version": 1,
+  "status": "source_inventory_only",
+  "source_files": [
+    {
+      "path": "workers/admin/wrangler.toml",
+      "sha256": "1ecaa0c41f64b0b5c63dad5ac226508f209b5ccd2dc3d222eba65c1a0aefa05f"
+    },
+    {
+      "path": "workers/agentport/wrangler.toml",
+      "sha256": "4fb837e516fb4d43c414292af265858d77b5af3671c5b9c7708c4eeaf12f2a08"
+    },
+    {
+      "path": "workers/agents/wrangler.toml",
+      "sha256": "40e342cf8f1c04ea9437925e60e18e819e1058bf6882b27ad114eb3ec0af9f49"
+    },
+    {
+      "path": "workers/analytics/wrangler.toml",
+      "sha256": "316215153722630c053933e1595edf8b1b3956a6e21a53c81b6413cfd329bcaa"
+    },
+    {
+      "path": "workers/artifact/wrangler.toml",
+      "sha256": "d7ffabe1a093afe4ebdab67e4a4ea7e1e7891bbd6579383d66369e68255d7c19"
+    },
+    {
+      "path": "workers/assistant/wrangler.toml",
+      "sha256": "893227b38b812330e1f0339973013dec636485b7c873e8922fe06893fbb3a2e7"
+    },
+    {
+      "path": "workers/auth/wrangler.toml",
+      "sha256": "1383050540b0649d700ee59fd892b43d092c1c1e8d3226d2362ea37ca81e3128"
+    },
+    {
+      "path": "workers/billing/wrangler.toml",
+      "sha256": "ba5d00d80efc214784eed91bff4deb78d6fb159ca8f9b881be1aa6dd5cf7fe1b"
+    },
+    {
+      "path": "workers/browser/wrangler.toml",
+      "sha256": "fefb941c58d448c4a3385471726c48b1353a5bfa823d965f5bd05c0420f9d5d7"
+    },
+    {
+      "path": "workers/connector-gumroad/wrangler.toml",
+      "sha256": "b583f1ca9699a835c867f536208b809154afb7e5a01f29b39fc41daab698d257"
+    },
+    {
+      "path": "workers/connector-whop/wrangler.toml",
+      "sha256": "a9803af7ba1ea589670193088779399095c928bfb19d353ed88b82362fa19a67"
+    },
+    {
+      "path": "workers/credentials/wrangler.toml",
+      "sha256": "4303b9a6f321a99a54cc8eac99774f019320def400382f94b16f248f058ab71a"
+    },
+    {
+      "path": "workers/eval/wrangler.toml",
+      "sha256": "130d32617451d7ccb702c56b69d8f0cabd365666b72084d0471a571921c57cce"
+    },
+    {
+      "path": "workers/knowledge/wrangler.toml",
+      "sha256": "5a7871c8d0e3d6c822dcaeaf0e1dc6cac7179962f3b435bfb6f2606d166afa31"
+    },
+    {
+      "path": "workers/marketplace/wrangler.toml",
+      "sha256": "114bf8ec896accba31ffb195f09b1b3562d3f5bc436bc56cb5f879c9b8b74050"
+    },
+    {
+      "path": "workers/mcp-hub/wrangler.toml",
+      "sha256": "eb739f16c1b1fdaffb6db967c14cfccd4516c061524df3008cfba6c98d89e21d"
+    },
+    {
+      "path": "workers/notifications/wrangler.toml",
+      "sha256": "8775dbeb54495d5bdd8d7e5a0b2be7e70fec987a205fe586bef38382b706d6c9"
+    },
+    {
+      "path": "workers/portal-router/wrangler.toml",
+      "sha256": "4d75114a911e208302ae4653d2aa8773ef775ce18cbf953e46dabfd839df3f6d"
+    },
+    {
+      "path": "workers/provisioner/wrangler.toml",
+      "sha256": "6443506c1427ca087acca8b2d3a5739aae5df1a5f2eaab78eaa6e8446527a2c0"
+    },
+    {
+      "path": "workers/router/wrangler.toml",
+      "sha256": "0748e2be36a3b7c6b73f297927d20dec65e03d24053c6f40e6d8e95c7a5341e2"
+    },
+    {
+      "path": "workers/sandboxes/wrangler.toml",
+      "sha256": "329a47d4d969ccdb54b7347104ef3d730b1b7f910e46849098d47ca2a3a02de3"
+    },
+    {
+      "path": "workers/security-gateway/wrangler.toml",
+      "sha256": "bccb06904914d731f5c706fd8d68490780d3ee88c608d4476f489ba9bbabf9ba"
+    },
+    {
+      "path": "workers/spaces/wrangler.toml",
+      "sha256": "72aebee7507c4a208645bbddb2e7f2698fab6013c5ddec374cbb53ff1cd0aa0d"
+    },
+    {
+      "path": "workers/sweeper/wrangler.toml",
+      "sha256": "0cd90e8cf024d6443cc4ebcee1580d36d7ae73d4a86273f0d85522538982d152"
+    },
+    {
+      "path": "workers/synthetics/wrangler.toml",
+      "sha256": "c75ebbb8126b4471dafabad0999319543fefa691c5ac3afcda9658d29411b972"
+    },
+    {
+      "path": "workers/threads/wrangler.toml",
+      "sha256": "25faf004d793aa0fd486b2eef6949803de7f3df38b764ef396e503a48ee6f816"
+    },
+    {
+      "path": "workers/workflows/wrangler.toml",
+      "sha256": "3d8c7d16fcbe951cbfc81ac0ec7cf555db3e335a019339ba178c282cdbec313c"
+    },
+    {
+      "path": "workers/ws-gateway/wrangler.toml",
+      "sha256": "3d7bff3f61f14beb1254e4725ceb8ce16c34dd5f7aa87dc47e32d87e07751747"
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "d1",
+      "binding": "PLATFORM_DB",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "f29714eb-28bd-4c76-895d-eb186e92a88f",
+            "workers": [
+              "workers/admin/wrangler.toml",
+              "workers/agentport/wrangler.toml",
+              "workers/agents/wrangler.toml",
+              "workers/analytics/wrangler.toml",
+              "workers/assistant/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/browser/wrangler.toml",
+              "workers/credentials/wrangler.toml",
+              "workers/eval/wrangler.toml",
+              "workers/knowledge/wrangler.toml",
+              "workers/marketplace/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/notifications/wrangler.toml",
+              "workers/portal-router/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/sandboxes/wrangler.toml",
+              "workers/security-gateway/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/synthetics/wrangler.toml",
+              "workers/threads/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "f29714eb-28bd-4c76-895d-eb186e92a88f",
+            "workers": [
+              "workers/admin/wrangler.toml",
+              "workers/agentport/wrangler.toml",
+              "workers/agents/wrangler.toml",
+              "workers/analytics/wrangler.toml",
+              "workers/assistant/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/browser/wrangler.toml",
+              "workers/credentials/wrangler.toml",
+              "workers/eval/wrangler.toml",
+              "workers/knowledge/wrangler.toml",
+              "workers/marketplace/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/notifications/wrangler.toml",
+              "workers/portal-router/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/sandboxes/wrangler.toml",
+              "workers/security-gateway/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/synthetics/wrangler.toml",
+              "workers/threads/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object_script",
+      "binding": "CONCURRENCY_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agents-staging",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agents-production",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object_script",
+      "binding": "RATE_LIMITER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-security-gateway-staging",
+            "workers": [
+              "workers/security-gateway/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-security-gateway-production",
+            "workers": [
+              "workers/security-gateway/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object_script",
+      "binding": "WORKSPACE_COORDINATOR",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agents-staging",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agents-production",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "AGENT_CACHE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "8564eeacd7b44efb88f71f39366ec4be",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "8564eeacd7b44efb88f71f39366ec4be",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "CONFIG",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "8af2d30b39db44ffa3ec8aca10d2ef8a",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "8af2d30b39db44ffa3ec8aca10d2ef8a",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "KB_CACHE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "bd6fe7b9c8eb40c8922c85249888add7",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "bd6fe7b9c8eb40c8922c85249888add7",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "METRICS_CACHE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "6e38f2bdab314df480fc82d0f2c2adbb",
+            "workers": [
+              "workers/analytics/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "6e38f2bdab314df480fc82d0f2c2adbb",
+            "workers": [
+              "workers/analytics/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "NAELAO_CONFIG_KV",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "2816ec20283b4ecd8c5b43e3ebe18b77",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "2816ec20283b4ecd8c5b43e3ebe18b77",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "NONCE_STORE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "d9668899b225423a980124f4ff38eeb0",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "d9668899b225423a980124f4ff38eeb0",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "PORTAL_KV",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "50fe6d17439d4b8082cdc827393fc87f",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "50fe6d17439d4b8082cdc827393fc87f",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "QUOTA_CACHE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "0b8cfd9b3d4c4aa5a7b14c343aeab8fe",
+            "workers": [
+              "workers/billing/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "0b8cfd9b3d4c4aa5a7b14c343aeab8fe",
+            "workers": [
+              "workers/billing/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "SEMANTIC_CACHE_KV",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "10ca4ecaba3e40deaf7e7cb53ed7c5cf",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "10ca4ecaba3e40deaf7e7cb53ed7c5cf",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "SESSION_REVOCATION",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "3f2a9f17b80d48db915bc8261f606155",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "3f2a9f17b80d48db915bc8261f606155",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "kv",
+      "binding": "SPACES_KV",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "0fdaabda06a64e1f911c32fddde5718c",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "0fdaabda06a64e1f911c32fddde5718c",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "AGENT_TICKS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-ticks-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-ticks",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "ANALYTICS_QUEUE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-analytics-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-analytics",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "BILLING_EVENTS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-billing-events-staging",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-billing-events",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "CHANNEL_SESSIONS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-channel-sessions-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-channel-sessions",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "DUNNING_EVENTS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-events-staging",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-events-production",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "EVENTS_QUEUE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-events-staging",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-events-production",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "NOTIFICATIONS_QUEUE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-notifications-queue-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-notifications-queue-production",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "PROVISION_QUEUE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-provisioning-queue-staging",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-provisioning-queue",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "SESSIONS_QUEUE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-channel-sessions-staging",
+            "workers": [
+              "workers/threads/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-channel-sessions",
+            "workers": [
+              "workers/threads/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "dead_letter_queue",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-ticks-dlq-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-billing-events-dlq-staging",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-channel-sessions-dlq-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-events-dlq-staging",
+            "workers": [
+              "workers/analytics/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-notifications-dlq-staging",
+            "workers": [
+              "workers/notifications/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-provisioning-dlq-staging",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-ticks-dlq",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-billing-events-dlq",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-channel-sessions-dlq",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-events-dlq-production",
+            "workers": [
+              "workers/analytics/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-notifications-dlq",
+            "workers": [
+              "workers/notifications/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-provisioning-dlq",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "queue",
+      "binding": "queue",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-ticks-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-analytics-staging",
+            "workers": [
+              "workers/analytics/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-billing-events-staging",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-channel-sessions-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-dlq-staging",
+            "workers": [
+              "workers/admin/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-events-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-notifications-queue-staging",
+            "workers": [
+              "workers/notifications/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-provisioning-queue-staging",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-ticks",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-analytics",
+            "workers": [
+              "workers/analytics/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-billing-events",
+            "workers": [
+              "workers/billing/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-channel-sessions",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-dlq",
+            "workers": [
+              "workers/admin/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-events-production",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-notifications-queue-production",
+            "workers": [
+              "workers/notifications/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-provisioning-queue",
+            "workers": [
+              "workers/provisioner/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "ARTIFACT_BUCKET",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-artifacts-staging",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-artifacts",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "ARTIFACT_R2_BUCKET",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-artifacts-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-artifacts",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "BROWSER_ARTIFACTS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-browser-artifacts-staging",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-browser-artifacts",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "EXPORTS_BUCKET",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-exports-staging",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-exports",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "KB_BUCKET",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-kb-staging",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-kb",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "REPOSITORY_OBJECTS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-repository-objects-staging",
+            "workers": [
+              "workers/artifact/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-repository-objects",
+            "workers": [
+              "workers/artifact/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "SCRIPTS_R2",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-scripts-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-scripts",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/sweeper/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "r2",
+      "binding": "WORKSPACE_R2",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-scripts-staging",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-scripts",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "AGENTPORT_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "agentport-api-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/sandboxes/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "agentport-api-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/sandboxes/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "AGENTS_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agents-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/eval/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/sandboxes/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agents-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/eval/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/sandboxes/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "ANALYTICS_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-analytics-staging",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-analytics-production",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "ARTIFACT_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-artifact-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-artifact-production",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "AUTH_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-auth-staging",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-auth-production",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "BILLING_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-billing-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/knowledge/wrangler.toml",
+              "workers/marketplace/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-billing-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/knowledge/wrangler.toml",
+              "workers/marketplace/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "BROWSER_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-browser-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-browser-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "CONFORMANCE_EXECUTOR",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-spaces-staging",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-spaces-production",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "CREDENTIALS_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-credentials-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/notifications/wrangler.toml",
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-credentials-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/mcp-hub/wrangler.toml",
+              "workers/notifications/wrangler.toml",
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "EVAL_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-eval-staging",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-eval-production",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "KNOWLEDGE_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-knowledge-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-knowledge-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/spaces/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "LIVE_CAPABILITY_VERIFIER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agents-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agents-production",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "MARKETPLACE_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-marketplace-staging",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-marketplace-production",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "MCP_HUB",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-mcp-hub-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-mcp-hub-production",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "NOTIFICATIONS_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-notifications-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-notifications-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/auth/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "PORTAL_ROUTER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-portal-router-staging",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-portal-router-production",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "SANDBOXES_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-sandboxes-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-sandboxes-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "SPACES_WORKER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-spaces-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/browser/wrangler.toml",
+              "workers/credentials/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-spaces-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/billing/wrangler.toml",
+              "workers/browser/wrangler.toml",
+              "workers/credentials/wrangler.toml",
+              "workers/provisioner/wrangler.toml",
+              "workers/router/wrangler.toml",
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "VOICE_CALLS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-calls",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-calls",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "service",
+      "binding": "WS_GATEWAY",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-ws-gateway-staging",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-ws-gateway-production",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "KB_VECTORS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-kb-prod-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-kb-vectors-staging",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/sweeper/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-kb-prod",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-kb-vectors",
+            "workers": [
+              "workers/knowledge/wrangler.toml",
+              "workers/sweeper/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "MEMORY_VECTORIZE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-memory-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-memory",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "PLATFORM_DOCS_INDEX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-platform-docs-staging",
+            "workers": [
+              "workers/assistant/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-platform-docs",
+            "workers": [
+              "workers/assistant/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "SCRIPTS_VECTORIZE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-agent-scripts-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-agent-scripts",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "SEMANTIC_CACHE_VECTORS",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-semantic-cache-staging",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-semantic-cache",
+            "workers": [
+              "workers/knowledge/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "vectorize",
+      "binding": "SPACE_TYPES_INDEX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "naelao-space-types-staging",
+            "workers": [
+              "workers/marketplace/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "naelao-space-types",
+            "workers": [
+              "workers/marketplace/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "AGENT_SCRIPT_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ScriptRunWorkflow-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ScriptRunWorkflow",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "AGENT_TASK_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "AgentTaskWorkflow-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "AgentTaskWorkflow",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "BLUEPRINT_CONFORMANCE_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "BlueprintConformanceWorkflow-staging",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "BlueprintConformanceWorkflow",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "COMPANY_AUTOMATION_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "CompanyAutomationWorkflow-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "CompanyAutomationWorkflow",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "DATA_ERASURE",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "DataErasureWorkflow-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "DataErasureWorkflow",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "DUNNING",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "DunningWorkflow-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "DunningWorkflow",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "GENERIC_SUBAGENT_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "GenericSubagentWorkflow-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "GenericSubagentWorkflow",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "KB_INGESTION",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "KbIngestionWorkflow-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "KbIngestionWorkflow",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "QUEUE_HEALTH",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "QueueHealthWorkflow-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "QueueHealthWorkflow",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "SCHEDULED_REMINDER_WORKFLOW",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ScheduledReminderWorkflow-staging",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ScheduledReminderWorkflow",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workflow",
+      "binding": "SPACE_PROVISIONING",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "SpaceProvisioningWorkflow-staging",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "SpaceProvisioningWorkflow",
+            "workers": [
+              "workers/workflows/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "unresolved_service_targets": [
+    "naelao-calls"
+  ],
+  "required_existence_receipts": [
+    {
+      "kind": "d1",
+      "environment": "production",
+      "id_or_name": "f29714eb-28bd-4c76-895d-eb186e92a88f",
+      "status": "unverified"
+    },
+    {
+      "kind": "d1",
+      "environment": "staging",
+      "id_or_name": "f29714eb-28bd-4c76-895d-eb186e92a88f",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "0b8cfd9b3d4c4aa5a7b14c343aeab8fe",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "0fdaabda06a64e1f911c32fddde5718c",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "10ca4ecaba3e40deaf7e7cb53ed7c5cf",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "2816ec20283b4ecd8c5b43e3ebe18b77",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "3f2a9f17b80d48db915bc8261f606155",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "50fe6d17439d4b8082cdc827393fc87f",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "6e38f2bdab314df480fc82d0f2c2adbb",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "8564eeacd7b44efb88f71f39366ec4be",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "8af2d30b39db44ffa3ec8aca10d2ef8a",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "bd6fe7b9c8eb40c8922c85249888add7",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "production",
+      "id_or_name": "d9668899b225423a980124f4ff38eeb0",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "0b8cfd9b3d4c4aa5a7b14c343aeab8fe",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "0fdaabda06a64e1f911c32fddde5718c",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "10ca4ecaba3e40deaf7e7cb53ed7c5cf",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "2816ec20283b4ecd8c5b43e3ebe18b77",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "3f2a9f17b80d48db915bc8261f606155",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "50fe6d17439d4b8082cdc827393fc87f",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "6e38f2bdab314df480fc82d0f2c2adbb",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "8564eeacd7b44efb88f71f39366ec4be",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "8af2d30b39db44ffa3ec8aca10d2ef8a",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "bd6fe7b9c8eb40c8922c85249888add7",
+      "status": "unverified"
+    },
+    {
+      "kind": "kv",
+      "environment": "staging",
+      "id_or_name": "d9668899b225423a980124f4ff38eeb0",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-agent-ticks-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-agent-ticks-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-analytics-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-billing-events-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-billing-events-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-channel-sessions-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-channel-sessions-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-events-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-events-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-notifications-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-notifications-queue-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-provisioning-dlq-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "staging",
+      "id_or_name": "naelao-provisioning-queue-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-agent-scripts-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-artifacts-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-browser-artifacts-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-exports-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-kb-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "staging",
+      "id_or_name": "naelao-repository-objects-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-agent-memory-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-agent-scripts-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-kb-prod-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-kb-vectors-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-platform-docs-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-semantic-cache-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "staging",
+      "id_or_name": "naelao-space-types-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "AgentTaskWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "BlueprintConformanceWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "CompanyAutomationWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "DataErasureWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "DunningWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "GenericSubagentWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "KbIngestionWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "QueueHealthWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "ScheduledReminderWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "ScriptRunWorkflow-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "staging",
+      "id_or_name": "SpaceProvisioningWorkflow-staging",
+      "status": "unverified"
+    }
+  ]
+}
