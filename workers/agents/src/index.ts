@@ -5164,7 +5164,8 @@ app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
 
 app.get("/spaces/:spaceId/projects/:projectId/workspace-retention", async c => {
   const { spaceId, projectId } = c.req.param();
-  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+  // Hold reasons and the actor audit trail are owner/admin controls, not shared-project data.
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
   const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
   const response = await workspaceCoordinatorRequest(c.env as unknown as WorkspaceCoordinatorBindings, scope, "/v1/retention/policy", {});
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });

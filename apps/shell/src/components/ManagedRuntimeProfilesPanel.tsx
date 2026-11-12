@@ -4,19 +4,29 @@ import * as React from "react";
 import {
   getManagedRuntimeProfile,
   getProjectMainRuntimeProfile,
+  getWorkspaceRetentionPolicy,
   getSidecarRuntimeExecutionProfile,
   listContainerInstallations,
   resetManagedRuntimeProfile,
   saveProjectMainRuntimeProfile,
+  saveWorkspaceRetentionPolicy,
   saveSidecarRuntimeExecutionProfile,
   type ManagedRuntimeProfile,
   type ProjectMainRuntimeProfile,
   type SidecarRuntimeExecutionProfile,
   type SessionCredentials,
+  type WorkspaceRetentionPolicy,
 } from "@/lib/api";
 
 type ProfileRow = { installationId: string; extensionName: string; containerId: string; branch?: string; profile?: ManagedRuntimeProfile; error?: string;
   executionProfile?: SidecarRuntimeExecutionProfile; executionProfileDraft?: number; executionProfileError?: string };
+
+function asLocalDateTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 
 /** Shows the provider-backed state of installed project containers. This is a whole-container
  * checkpoint/reset control; it does not claim to migrate or health-check app-specific profiles. */
@@ -30,6 +40,12 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [mainProfile, setMainProfile] = React.useState<ProjectMainRuntimeProfile | null>(null);
   const [mainProfileDraft, setMainProfileDraft] = React.useState<ProjectMainRuntimeProfile["profile"] | "">("");
   const [mainProfileError, setMainProfileError] = React.useState("");
+  const [retentionPolicy, setRetentionPolicy] = React.useState<WorkspaceRetentionPolicy | null>(null);
+  const [retentionDaysDraft, setRetentionDaysDraft] = React.useState("7");
+  const [legalHoldDraft, setLegalHoldDraft] = React.useState(false);
+  const [legalHoldExpiryDraft, setLegalHoldExpiryDraft] = React.useState("");
+  const [retentionReasonDraft, setRetentionReasonDraft] = React.useState("");
+  const [retentionError, setRetentionError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -37,11 +53,21 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     setMainProfile(null);
     setMainProfileDraft("");
     setMainProfileError("");
+    setRetentionPolicy(null);
+    setRetentionDaysDraft("7");
+    setLegalHoldDraft(false);
+    setLegalHoldExpiryDraft("");
+    setRetentionReasonDraft("");
+    setRetentionError("");
     try {
-      const [inventory, savedMainProfile] = await Promise.all([
+      const [inventory, savedMainProfile, savedRetentionPolicy] = await Promise.all([
         listContainerInstallations(spaceId, stableSession, projectId),
         getProjectMainRuntimeProfile(spaceId, projectId, stableSession).catch((failure) => {
           setMainProfileError(failure instanceof Error ? failure.message : "Main computer profile unavailable");
+          return null;
+        }),
+        getWorkspaceRetentionPolicy(spaceId, projectId, stableSession).catch((failure) => {
+          setRetentionError(failure instanceof Error ? failure.message : "Workspace retention policy unavailable");
           return null;
         }),
       ]);
@@ -50,6 +76,13 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
         setMainProfile(savedMainProfile);
         setMainProfileDraft(savedMainProfile.profile);
         setMainProfileError("");
+      }
+      if (savedRetentionPolicy) {
+        setRetentionPolicy(savedRetentionPolicy);
+        setRetentionDaysDraft(String(savedRetentionPolicy.stagingRetentionDays));
+        setLegalHoldDraft(Boolean(savedRetentionPolicy.legalHold
+          && (!savedRetentionPolicy.legalHold.expiresAt || Date.parse(savedRetentionPolicy.legalHold.expiresAt) > Date.now())));
+        setLegalHoldExpiryDraft(asLocalDateTime(savedRetentionPolicy.legalHold?.expiresAt));
       }
       const targets = installations.filter(({ instance }) => instance.status === "active" && instance.project_id === projectId)
         .flatMap(({ instance, manifest }) => {
@@ -104,6 +137,44 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     finally { setBusy(null); }
   }
 
+  async function saveRetentionPolicy() {
+    const days = Number(retentionDaysDraft);
+    if (!Number.isSafeInteger(days) || days < 7 || days > 3650) {
+      setRetentionError("Staging retention must be a whole number from 7 to 3650 days.");
+      return;
+    }
+    if (retentionReasonDraft.trim().length < 10 || retentionReasonDraft.trim().length > 500) {
+      setRetentionError("Add an audit reason of 10 to 500 characters for this policy change.");
+      return;
+    }
+    if (retentionPolicy?.legalHold && !legalHoldDraft
+      && (!retentionPolicy.legalHold.expiresAt || Date.parse(retentionPolicy.legalHold.expiresAt) > Date.now())
+      && !window.confirm("Release the active legal hold? This resumes eligible workspace cleanup and permits project erasure admission.")) return;
+    const expiry = legalHoldExpiryDraft ? new Date(legalHoldExpiryDraft) : null;
+    if (expiry && !Number.isFinite(expiry.getTime())) {
+      setRetentionError("Choose a valid hold expiry date and time.");
+      return;
+    }
+    setBusy("retention-policy"); setRetentionError(""); setNotice("");
+    try {
+      const saved = await saveWorkspaceRetentionPolicy(spaceId, projectId, stableSession, {
+        stagingRetentionDays: days,
+        legalHold: legalHoldDraft,
+        ...(legalHoldDraft && expiry ? { legalHoldExpiresAt: expiry.toISOString() } : {}),
+        reason: retentionReasonDraft.trim(),
+      });
+      setRetentionPolicy(saved);
+      setRetentionDaysDraft(String(saved.stagingRetentionDays));
+      setLegalHoldDraft(Boolean(saved.legalHold
+        && (!saved.legalHold.expiresAt || Date.parse(saved.legalHold.expiresAt) > Date.now())));
+      setLegalHoldExpiryDraft(asLocalDateTime(saved.legalHold?.expiresAt));
+      setRetentionReasonDraft("");
+      setNotice("Workspace retention policy saved and audited.");
+    } catch (error) {
+      setRetentionError(error instanceof Error ? error.message : "Workspace retention policy could not be saved.");
+    } finally { setBusy(null); }
+  }
+
   async function saveSidecarExecutionProfile(row: ProfileRow) {
     if (!row.executionProfile || row.executionProfileDraft === undefined || busy) return;
     const key = `${row.installationId}:${row.containerId}:execution`;
@@ -152,6 +223,39 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             : mainProfile.snapshotRetention.state === "reference_dropped" ? "The local restore reference was removed. " : "A provider snapshot is recorded. "}
             Its recorded retention window ends {new Date(mainProfile.snapshotRetention.expiresAt).toLocaleString()}; provider-side deletion is not supported or verified.</>}
     </p>}
+    <div className="section-label">Workspace retention and legal hold</div>
+    <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
+      This project policy controls staged-artifact cleanup and canonical workspace-content collection, and an active hold blocks project-erasure admission. It does not retain or delete opaque Cloudflare Container snapshots or third-party backups; snapshot export, extension and physical purge are unsupported or unverified.
+    </p>
+    {retentionPolicy ? <div style={{ display: "grid", gap: 9, maxWidth: 560 }}>
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span>Staging retention (7–3650 days)</span>
+        <input aria-label="Staging retention days" type="number" min={7} max={3650} step={1} value={retentionDaysDraft}
+          disabled={busy !== null} onChange={event => setRetentionDaysDraft(event.target.value)} />
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input aria-label="Legal hold active" type="checkbox" checked={legalHoldDraft} disabled={busy !== null}
+          onChange={event => setLegalHoldDraft(event.target.checked)} />
+        Preserve eligible workspace content under an owner-attributed legal hold
+      </label>
+      {legalHoldDraft && <label style={{ display: "grid", gap: 4 }}>
+        <span>Optional hold expiry</span>
+        <input aria-label="Legal hold expiry" type="datetime-local" value={legalHoldExpiryDraft} disabled={busy !== null}
+          onChange={event => setLegalHoldExpiryDraft(event.target.value)} />
+      </label>}
+      <label style={{ display: "grid", gap: 4 }}>
+        <span>Audit reason for this change</span>
+        <textarea aria-label="Retention policy reason" minLength={10} maxLength={500} rows={2} value={retentionReasonDraft}
+          disabled={busy !== null} onChange={event => setRetentionReasonDraft(event.target.value)} />
+      </label>
+      {retentionPolicy.legalHold && <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>
+        {retentionPolicy.legalHold.expiresAt && Date.parse(retentionPolicy.legalHold.expiresAt) <= Date.now() ? "The recorded legal hold has expired. " : "An owner-attributed legal hold is recorded. "}
+        {retentionPolicy.legalHold.reason} · set by {retentionPolicy.legalHold.actorId}{retentionPolicy.legalHold.expiresAt ? ` · expires ${new Date(retentionPolicy.legalHold.expiresAt).toLocaleString()}` : " · no expiry"}
+      </p>}
+      {retentionError && <p role="alert" style={{ color: "var(--danger,#b42318)", fontSize: 12, margin: 0 }}>{retentionError}</p>}
+      <div><button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null || !retentionReasonDraft.trim()}
+        onClick={() => void saveRetentionPolicy()}>{busy === "retention-policy" ? "Saving…" : "Save retention policy"}</button></div>
+    </div> : <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{retentionError || "Loading workspace retention policy…"}</p>}
     <div className="section-label" style={{ marginTop: 0 }}>Managed runtime state</div>
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
       Set a per-container execution ceiling within the image limit and inspect or reset saved container state. Changes affect new executions; they do not interrupt a run already admitted.

@@ -1499,6 +1499,28 @@ export function saveProjectMainRuntimeProfile(spaceId: string, projectId: string
     method: "PUT", session, body: JSON.stringify(input),
   });
 }
+export interface WorkspaceRetentionPolicy {
+  version: 1;
+  stagingRetentionDays: number;
+  legalHold: { expiresAt?: string; reason: string; actorId: string; createdAt: string } | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+function workspaceRetentionPath(spaceId: string, projectId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/workspace-retention`;
+}
+export async function getWorkspaceRetentionPolicy(spaceId: string, projectId: string, session: SessionCredentials) {
+  const response = await apiFetch<{ policy: WorkspaceRetentionPolicy }>(workspaceRetentionPath(spaceId, projectId), { session, cache: "no-store" });
+  return response.policy;
+}
+export async function saveWorkspaceRetentionPolicy(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  stagingRetentionDays: number; legalHold: boolean; legalHoldExpiresAt?: string; reason: string;
+}) {
+  const response = await apiFetch<{ policy: WorkspaceRetentionPolicy }>(workspaceRetentionPath(spaceId, projectId), {
+    method: "POST", session, body: JSON.stringify(input),
+  });
+  return response.policy;
+}
 export function setProjectExtensionEnabled(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
