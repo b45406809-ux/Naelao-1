@@ -210,6 +210,20 @@ describe("specialized project workspaces", () => {
     expect(await erasureResponse.json()).toMatchObject({ erased: true, localStatePurged: true });
     expect(store.data.has(environmentArtifactObjectKey({ tenantId: "tenant", spaceId: "space", projectId: "project" }, digest))).toBe(true);
   });
+  it("removes sidecar transfer receipts and runtime control secrets during project erasure", async () => {
+    const store = workspace(), r = runtime(store);
+    const source = projectExtensionPrefix + "private/report.txt";
+    await store.seed(source, new TextEncoder().encode("private report"));
+    expect((await r.artifactTransfer({ direction: "export", path: "private/report.txt", requestId: "erase-receipt" })).status).toBe(200);
+    expect(r.records.has("sidecar_artifact_transfer:erase-receipt")).toBe(true);
+
+    r.setProjectErased(true);
+    const erased = await r.eraseProject();
+    expect(erased.status).toBe(200);
+    expect(r.records.has("sidecar_artifact_transfer:erase-receipt")).toBe(false);
+    expect(r.records.has("container_control_token")).toBe(false);
+    expect(r.records.has("container_invocation_scope")).toBe(false);
+  });
 
   it("refreshes warm readers across specialized executions, including binary updates and deletions", async () => {
     const store = workspace(), general = runtime(store), specialized = runtime(store);

@@ -243,7 +243,7 @@ export class ToolSandboxDO extends DurableObject {
         return Response.json({ ok: false, error: "bad_request" }, { status: 400 });
       }
     }
-    if (path === "/output") return this.output(request);
+    if (path === "/output") return this.enqueueSerialized(() => this.output(request));
     if (path === "/cancel") return this.cancel(request);
     return this.enqueueSerialized(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
       ? this.executeScoped(request) : (async () => {
@@ -382,6 +382,10 @@ export class ToolSandboxDO extends DurableObject {
     }
     const executions = await this.ctx.storage.list({ prefix: "execution:" });
     for (const key of executions.keys()) await this.ctx.storage.delete(key);
+    const transfers = await this.ctx.storage.list({ prefix: "sidecar_artifact_transfer:" });
+    for (const key of transfers.keys()) await this.ctx.storage.delete(key);
+    await this.ctx.storage.delete("container_control_token");
+    await this.ctx.storage.delete("container_invocation_scope");
     await this.ctx.storage.delete("sidecar_warm_expires_at");
     await this.ctx.storage.put("container_status", "hibernated");
   }
