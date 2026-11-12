@@ -1927,6 +1927,11 @@ function formatComputer(
 export default {
   fetch: app.fetch,
   scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(import("./agent37-agentport-reconciliation.js").then(module=>module.sweepAgent37AgentPortRevocations(env))
+      .then(result=>{
+        if(result.reconciled)console.log("Agent37 AgentPort share revocations reconciled",{count:result.reconciled});
+        if(result.deferred||result.failed)console.warn("Agent37 AgentPort share revocation reconciliation attention",result);
+      }).catch(()=>{console.warn("Agent37 AgentPort share revocation reconciliation postponed");}));
     ctx.waitUntil(runProviderDeletionReconciliation(env).then(async result => {
       if (result.indeterminate || result.retained) console.warn("sandbox_provider_deletion_reconciliation_attention", {
         indeterminate: result.indeterminate, retained: result.retained,

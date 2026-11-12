@@ -51,24 +51,24 @@ async function agentPort(env: Agent37AgentPortEnv, tenantId: string, path: strin
 }
 
 async function operation(env: Agent37AgentPortEnv, computer: Agent37AgentPortComputer, key: string,
-  kind: "share" | "revoke", requestHash: string) {
+  kind: "share" | "revoke", requestHash: string, requestJson = "{}") {
   const operationId = `ag37ap_${(await digest(`${computer.tenant_id}:${computer.owner_id}:${computer.id}:${key}`)).slice(0, 40)}`;
   const now = new Date().toISOString();
   await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO sandbox_agentport_operations
-    (id,tenant_id,owner_id,computer_id,operation,idempotency_key,request_sha256,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,'pending',?,?)`).bind(operationId, computer.tenant_id, computer.owner_id, computer.id, kind, key, requestHash, now, now).run();
-  const row = await env.PLATFORM_DB.prepare(`SELECT id,operation,request_sha256,status FROM sandbox_agentport_operations
+    (id,tenant_id,owner_id,computer_id,operation,idempotency_key,request_sha256,status,request_json,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'pending',?,?,?)`).bind(operationId, computer.tenant_id, computer.owner_id, computer.id, kind, key, requestHash, requestJson, now, now).run();
+  const row = await env.PLATFORM_DB.prepare(`SELECT id,operation,request_sha256,status,request_json,lease_until FROM sandbox_agentport_operations
     WHERE tenant_id=? AND owner_id=? AND computer_id=? AND idempotency_key=?`)
     .bind(computer.tenant_id, computer.owner_id, computer.id, key)
-    .first<{id:string;operation:string;request_sha256:string;status:string}>();
+    .first<{id:string;operation:string;request_sha256:string;status:string;request_json:string;lease_until:string|null}>();
   if (!row || row.operation !== kind || row.request_sha256 !== requestHash) throw new Error("agentport_operation_idempotency_conflict");
   return row;
 }
 
 async function markOperation(env: Agent37AgentPortEnv, operationId: string, tenantId: string,
-  status: "complete" | "unknown", errorCode: string | null = null) {
-  await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_operations SET status=?,error_code=?,updated_at=? WHERE id=? AND tenant_id=?`)
-    .bind(status, errorCode, new Date().toISOString(), operationId, tenantId).run();
+  status: "complete" | "unknown", errorCode: string | null = null, nextReconcileAt: string | null = null) {
+  await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_operations SET status=?,error_code=?,lease_until=NULL,next_reconcile_at=?,updated_at=? WHERE id=? AND tenant_id=?`)
+    .bind(status, errorCode, nextReconcileAt, new Date().toISOString(), operationId, tenantId).run();
 }
 
 async function ownerPrincipal(env: Agent37AgentPortEnv, computer: Agent37AgentPortComputer) {
@@ -150,6 +150,11 @@ export async function shareAgent37ComputerWithAgentPort(env: Agent37AgentPortEnv
   if (operationRow.status === "complete" && current?.status === "active")
     return { shared: true, status: "active", capabilities: JSON.parse(current.capabilities_json) as string[], idempotent: true };
   if (current?.status === "revoking") throw new Error("agentport_share_revoke_in_progress");
+  const pendingRevoke = current ? await env.PLATFORM_DB.prepare(`SELECT 1 AS pending FROM sandbox_agentport_operations
+    WHERE tenant_id=? AND owner_id=? AND computer_id=? AND operation='revoke' AND status IN ('pending','unknown')
+      AND json_extract(request_json,'$.agentportAccountId')=? LIMIT 1`)
+    .bind(computer.tenant_id,computer.owner_id,computer.id,current.agentport_account_id).first<{pending:number}>() : null;
+  if (pendingRevoke) throw new Error("agentport_share_revoke_reconciliation_required");
   if (current && ["pending", "unknown"].includes(current.status)) {
     const saved = JSON.parse(current.capabilities_json) as string[];
     if (JSON.stringify([...saved].sort()) !== JSON.stringify(selected)) {
@@ -234,11 +239,24 @@ export async function revokeAgent37ComputerAgentPortShare(env: Agent37AgentPortE
     .first<{id:string;status:string;agentport_account_id:string}>();
   if (!current || current.status === "revoked") return { revoked: true, alreadyUnlinked: true };
   const requestHash = await digest(JSON.stringify({ computerId: computer.id, accountId: current.agentport_account_id }));
-  const operationRow = await operation(env, computer, idempotencyKey, "revoke", requestHash);
+  const requestJson = JSON.stringify({ agentportAccountId: current.agentport_account_id });
+  const activeRevocation = await env.PLATFORM_DB.prepare(`SELECT id FROM sandbox_agentport_operations
+    WHERE tenant_id=? AND owner_id=? AND computer_id=? AND operation='revoke' AND status IN ('pending','unknown')
+      AND idempotency_key<>? AND json_extract(request_json,'$.agentportAccountId')=? LIMIT 1`)
+    .bind(computer.tenant_id,computer.owner_id,computer.id,idempotencyKey,current.agentport_account_id).first<{id:string}>();
+  if(activeRevocation)return {revoked:false,pending:true,alreadyUnlinked:false};
+  const operationRow = await operation(env, computer, idempotencyKey, "revoke", requestHash, requestJson);
   if (operationRow.status === "complete") return { revoked: true, alreadyUnlinked: false };
+  const operationNow = new Date();
+  if (operationRow.status === "pending" && operationRow.lease_until && operationRow.lease_until > operationNow.toISOString())
+    return { revoked: false, pending: true, alreadyUnlinked: false };
   const now = new Date().toISOString();
   await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_shares SET status='revoking',updated_at=? WHERE tenant_id=? AND computer_id=? AND owner_id=? AND status IN ('active','unknown','pending','revoking')`)
     .bind(now, computer.tenant_id, computer.id, computer.owner_id).run();
+  const claimed = await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_operations SET status='pending',lease_until=?,next_reconcile_at=NULL,
+      error_code=NULL,updated_at=? WHERE id=? AND tenant_id=? AND status IN ('pending','unknown')`)
+    .bind(new Date(operationNow.getTime() + 120_000).toISOString(), now, operationRow.id, computer.tenant_id).run();
+  if (claimed.meta.changes !== 1) return { revoked: false, pending: true, alreadyUnlinked: false };
   try {
     const { result } = await agentPort(env, computer.tenant_id, `/accounts/${encodeURIComponent(current.agentport_account_id)}/revoke`, "POST", {});
     if (result.revoked !== true) throw new Error("agentport_revoke_unconfirmed");
@@ -252,9 +270,11 @@ export async function revokeAgent37ComputerAgentPortShare(env: Agent37AgentPortE
   } catch (error) {
     const message = error instanceof Error ? error.message : "agentport_revoke_unknown";
     const code = /^[a-z][a-z0-9_:-]{1,120}$/.test(message) ? message : "agentport_revoke_unknown";
-    await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_shares SET status='unknown',error_code=?,updated_at=? WHERE tenant_id=? AND computer_id=?`)
-      .bind(code, new Date().toISOString(), computer.tenant_id, computer.id).run().catch(() => undefined);
-    await markOperation(env, operationRow.id, computer.tenant_id, "unknown", code).catch(() => undefined);
+    const failedAt = new Date();
+    await env.PLATFORM_DB.prepare(`UPDATE sandbox_agentport_shares SET status='unknown',error_code=?,updated_at=? WHERE tenant_id=? AND computer_id=? AND agentport_account_id=?`)
+      .bind(code, failedAt.toISOString(), computer.tenant_id, computer.id, current.agentport_account_id).run().catch(() => undefined);
+    await markOperation(env, operationRow.id, computer.tenant_id, "unknown", code,
+      new Date(failedAt.getTime() + 60_000).toISOString()).catch(() => undefined);
     throw error;
   }
 }
