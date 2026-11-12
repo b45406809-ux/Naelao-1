@@ -60,6 +60,6 @@ dataset = "naelao_events"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-dlq-production"
+queue = "naelao-dlq"
 max_batch_size = 10
 max_retries = 0

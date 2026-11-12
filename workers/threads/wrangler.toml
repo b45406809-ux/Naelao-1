@@ -46,4 +46,4 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.production.queues.producers]]
 binding = "SESSIONS_QUEUE"
-queue = "naelao-channel-sessions-production"
+queue = "naelao-channel-sessions"

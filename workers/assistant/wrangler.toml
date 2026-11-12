@@ -37,7 +37,7 @@ migrations_dir = "../../infra/migrations"
 
 [[env.staging.vectorize]]
 binding = "PLATFORM_DOCS_INDEX"
-index_name = "naelao-platform-docs"
+index_name = "naelao-platform-docs-staging"
 
 
 [[env.production.d1_databases]]

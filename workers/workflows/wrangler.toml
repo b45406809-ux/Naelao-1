@@ -151,24 +151,24 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.r2_buckets]]
 binding = "KB_BUCKET"
-bucket_name = "naelao-kb"
+bucket_name = "naelao-kb-staging"
 
 [[env.staging.r2_buckets]]
 binding = "ARTIFACT_R2_BUCKET"
-bucket_name = "naelao-artifacts"
+bucket_name = "naelao-artifacts-staging"
 
 [[env.staging.r2_buckets]]
 binding = "REPOSITORY_OBJECTS"
-bucket_name = "naelao-repository-objects"
+bucket_name = "naelao-repository-objects-staging"
 
 [[env.staging.r2_buckets]]
 binding = "SCRIPTS_R2"
-bucket_name = "naelao-agent-scripts"
+bucket_name = "naelao-agent-scripts-staging"
 
 
 [[env.staging.vectorize]]
 binding = "KB_VECTORS"
-index_name = "naelao-kb-prod"
+index_name = "naelao-kb-prod-staging"
 
 
 [[env.staging.kv_namespaces]]
@@ -214,31 +214,31 @@ service = "naelao-agents-staging"
 
 
 [[env.production.workflows]]
-name = "SpaceProvisioningWorkflow-production"
+name = "SpaceProvisioningWorkflow"
 class_name = "SpaceProvisioningWorkflow"
 binding = "SPACE_PROVISIONING"
 
 
 [[env.production.workflows]]
-name = "DataErasureWorkflow-production"
+name = "DataErasureWorkflow"
 class_name = "DataErasureWorkflow"
 binding = "DATA_ERASURE"
 
 
 [[env.production.workflows]]
-name = "KbIngestionWorkflow-production"
+name = "KbIngestionWorkflow"
 class_name = "KbIngestionWorkflow"
 binding = "KB_INGESTION"
 
 
 [[env.production.workflows]]
-name = "DunningWorkflow-production"
+name = "DunningWorkflow"
 class_name = "DunningWorkflow"
 binding = "DUNNING"
 
 
 [[env.production.workflows]]
-name = "QueueHealthWorkflow-production"
+name = "QueueHealthWorkflow"
 class_name = "QueueHealthWorkflow"
 binding = "QUEUE_HEALTH"
 
@@ -290,7 +290,7 @@ queue = "naelao-notifications-queue-production"
 
 [[env.production.queues.producers]]
 binding = "ANALYTICS_QUEUE"
-queue = "naelao-analytics-production"
+queue = "naelao-analytics"
 
 
 [[env.production.queues.consumers]]

@@ -54,17 +54,17 @@ vars = { ENVIRONMENT = "production", UNIFIED_WORKSPACE_ENABLED = "false", WORKSP
 
 [[env.staging.r2_buckets]]
 binding = "ARTIFACT_BUCKET"
-bucket_name = "naelao-artifacts"
+bucket_name = "naelao-artifacts-staging"
 
 
 [[env.staging.r2_buckets]]
 binding = "REPOSITORY_OBJECTS"
-bucket_name = "naelao-repository-objects"
+bucket_name = "naelao-repository-objects-staging"
 
 
 [[env.staging.r2_buckets]]
 binding = "WORKSPACE_R2"
-bucket_name = "naelao-agent-scripts"
+bucket_name = "naelao-agent-scripts-staging"
 
 
 [[env.staging.durable_objects.bindings]]

@@ -62,7 +62,10 @@ class WranglerEnvironmentIsolationTests(unittest.TestCase):
         unscoped = [
             error
             for error in errors
-            if any(f"share mutable {kind} resource" in error for kind in ("service", "queue", "workflow", "durable_object_script"))
+            if any(
+                f"share mutable {kind} resource" in error
+                for kind in ("service", "queue", "workflow", "durable_object_script", "r2", "vectorize")
+            )
         ]
         self.assertEqual(len(unscoped), 1)
         self.assertIn("service resource naelao-calls", unscoped[0])

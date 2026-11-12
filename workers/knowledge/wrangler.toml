@@ -96,17 +96,17 @@ id = "bd6fe7b9c8eb40c8922c85249888add7"
 
 [[env.staging.r2_buckets]]
 binding = "KB_BUCKET"
-bucket_name = "naelao-kb"
+bucket_name = "naelao-kb-staging"
 
 
 [[env.staging.vectorize]]
 binding = "KB_VECTORS"
-index_name = "naelao-kb-vectors"
+index_name = "naelao-kb-vectors-staging"
 
 
 [[env.staging.vectorize]]
 binding = "SEMANTIC_CACHE_VECTORS"
-index_name = "naelao-semantic-cache"
+index_name = "naelao-semantic-cache-staging"
 
 
 [[env.staging.kv_namespaces]]

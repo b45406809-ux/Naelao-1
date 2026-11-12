@@ -44,15 +44,15 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.r2_buckets]]
 binding = "KB_BUCKET"
-bucket_name = "naelao-kb"
+bucket_name = "naelao-kb-staging"
 
 [[env.staging.r2_buckets]]
 binding = "SCRIPTS_R2"
-bucket_name = "naelao-agent-scripts"
+bucket_name = "naelao-agent-scripts-staging"
 
 [[env.staging.vectorize]]
 binding = "KB_VECTORS"
-index_name = "naelao-kb-vectors"
+index_name = "naelao-kb-vectors-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }

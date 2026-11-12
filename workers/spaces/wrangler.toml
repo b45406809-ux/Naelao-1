@@ -321,7 +321,7 @@ migrations_dir = "../../infra/migrations"
 
 [[env.staging.r2_buckets]]
 binding = "EXPORTS_BUCKET"
-bucket_name = "naelao-exports"
+bucket_name = "naelao-exports-staging"
 
 # F-39: read-only access to the agent workspace bucket so the builder/end-user file viewer can
 # list + read a project's R2 workspace files (spaces/{id}/projects/{id}/workspace/...). Same
@@ -329,7 +329,7 @@ bucket_name = "naelao-exports"
 
 [[env.staging.r2_buckets]]
 binding = "SCRIPTS_R2"
-bucket_name = "naelao-agent-scripts"
+bucket_name = "naelao-agent-scripts-staging"
 
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 
@@ -367,7 +367,7 @@ class_name = "ConformanceSandboxDO"
 
 [[env.production.workflows]]
 binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
-name = "BlueprintConformanceWorkflow-production"
+name = "BlueprintConformanceWorkflow"
 class_name = "BlueprintConformanceWorkflow"
 
 
@@ -459,7 +459,7 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 
 [[env.production.queues.producers]]
 binding = "PROVISION_QUEUE"
-queue = "naelao-provisioning-queue-production"
+queue = "naelao-provisioning-queue"
 
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"

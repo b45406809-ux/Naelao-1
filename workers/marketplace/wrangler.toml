@@ -46,7 +46,7 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.staging.vectorize]]
 binding = "SPACE_TYPES_INDEX"
-index_name = "naelao-space-types"
+index_name = "naelao-space-types-staging"
 
 
 [[env.production.d1_databases]]

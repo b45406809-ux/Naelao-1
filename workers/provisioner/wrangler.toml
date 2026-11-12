@@ -98,7 +98,7 @@ id = "0fdaabda06a64e1f911c32fddde5718c"
 
 [[env.staging.r2_buckets]]
 binding = "SCRIPTS_R2"
-bucket_name = "naelao-agent-scripts"
+bucket_name = "naelao-agent-scripts-staging"
 
 # Portal slug→spaceId mapping written during external portal provisioning (step 7).
 # Read by naelao-portal-router worker at request time. Optional — skipped if unbound.
@@ -109,12 +109,12 @@ id = "50fe6d17439d4b8082cdc827393fc87f"
 
 
 [[env.production.queues.consumers]]
-queue = "naelao-provisioning-queue-production"
+queue = "naelao-provisioning-queue"
 max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10
-dead_letter_queue = "naelao-provisioning-dlq-production"
+dead_letter_queue = "naelao-provisioning-dlq"
 
 
 [[env.production.d1_databases]]
