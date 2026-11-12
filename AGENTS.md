@@ -9,9 +9,12 @@ generation receipts were displayed but absent from the existing rolling threshol
 They now feed its provider-observed USD budget directly from `decision_call_reservations`, without a
 duplicate cost ledger. Focused Agents cost/dashboard tests pass **11/11**, Agents and Shell typechecks
 pass, Shell tests pass **18/18**, and the release manifest validates **229** migration files. These
-are local/mocked checks only. Exact next task: continue S3 at U03 by auditing runtime lifecycle and
-recovery callers against the recorded operation/allocation journals, close any independent
-authorization/persistence/UI gap, then continue the remaining S3/U03–U12 code audit. Keep rollout
+are local/mocked checks only. U03's current runtime caller audit found no additional code gap;
+start/sleep/execute, allocation and execution journals, scheduled read-only allocation recovery,
+owner-confirmed transition inspection, and prebuilt execution/artifact reconciliation are reachable.
+Exact next task: continue S3 at U04 by auditing MIME and byte-preservation across the current
+remaining readable/writable callers, implement any concrete local gap, then continue S3/U04–U12.
+Keep rollout
 disabled and preserve `infra/scripts/__pycache__/`.
 
 The active mission supersedes the historical transcript-batch task. Finish
