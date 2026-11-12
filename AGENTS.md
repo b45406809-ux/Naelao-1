@@ -21,15 +21,15 @@ run fetched the newer target at `02a0cf78` on 2026-11-11. Implementation is on b
 original dirty worktree and do not reset, clean, replace, switch branches, or fast-forward it.
 The user selected `origin/Mcbt5s-Backup-2` as the recovery branch; the active implementation branch
 remains separate and must not be switched or merged with the recovery branch. Code checkpoints
-`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e` and `daca80bd`, plus docs checkpoints `8f9c0c15`,
-`7e401225` and `1c32ef26`, are pushed there. AgentMail provision/renewal and Cloudflare model replay
+`171a3471`, `064efff8`, `fcc26543`, `e9df3da4`, `504a488e`, `daca80bd` and `6046eebc`, plus docs checkpoints `8f9c0c15`,
+`7e401225`, `1c32ef26` and `ece794ec`, are pushed there. AgentMail provision/renewal and Cloudflare model replay
 preserve consumed quote terms in their covered recovery paths. Managed Telnyx now persists the
 owner-confirmed line rate version and exact rental/SMS/call prices, binds reservations and cost
 receipts to those terms, and retries release of unused call holds. Telnyx/Higgsfield AgentPort share
 revocations now persist exact account references and retry on the scheduled path; exact checks and
 next task are recorded in the progress source.
 Checkpoint (2026-11-12, refreshed): **S0/S1 complete locally; S2/S3 IN_PROGRESS; S4–S9 and U01–U12 remain IN_PROGRESS.**
-Code checkpoints `504a488e` and `daca80bd` are pushed to `origin/Mcbt5s-Backup-2`. Exact next task: continue S2/MS01d by adding the same durable scheduled AgentPort share-revocation recovery to Agent37 Sandboxes, then audit remaining provider-wide sync and payer selection callers before advancing through S3–S9/U01–U12. Keep managed Telnyx rollout disabled and restrict its current caller to numbers already assigned to Naelao; provider entitlement, approved rate schedule, recurring mandate and live acceptance remain external gates.
+Code checkpoint `6046eebc` and docs checkpoint `ece794ec` are pushed to `origin/Mcbt5s-Backup-2`. S2/MS01d now includes migration 0224 and a scheduled, leased Agent37 AgentPort revocation reconciler with exact-target retry. Focused Agent37 tests pass 4/4, the Sandboxes suite passes 68/68, Sandboxes typecheck passes, migration validation passes 7/7, and `git diff --check` passes; these are local fixtures, not live provider or deployed D1 evidence. Exact next task: continue S3/U02 by reconciling real allocation accounting and trusted provider cost/usage producers against available provider contracts and reachable callers; implement any ordinary code gap before recording an external invoice/idle-data gate. Then continue S2–S9/U01–U12. Keep managed Telnyx rollout disabled and restricted to numbers already assigned to Naelao; provider entitlement, approved rate schedule, recurring mandate and live acceptance remain external gates.
 The worktree contains Agent37 lifecycle, selected artifact transfer and revocation fencing; shared
 managed-service records, parent-funded scoped AgentPort-agent reservations on the existing
 organization quota, owner-authorized AgentMail link repair/revocation and capability-specific provider action receipts,
