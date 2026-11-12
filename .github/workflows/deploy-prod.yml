@@ -44,6 +44,12 @@ jobs:
       - name: Test release schema manifest
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_release_manifest.py"
 
+      - name: Test deployment release manifest
+        run: python3 -m unittest discover -s infra/scripts -p "test_validate_deployment_manifest.py"
+
+      - name: Validate deployment release manifest
+        run: python3 infra/scripts/validate_deployment_manifest.py
+
       - name: Validate release schema manifest
         run: python3 infra/scripts/validate_release_manifest.py
 

@@ -41,6 +41,12 @@ jobs:
       - name: Test release schema manifest
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_release_manifest.py"
 
+      - name: Test deployment release manifest
+        run: python3 -m unittest discover -s infra/scripts -p "test_validate_deployment_manifest.py"
+
+      - name: Validate deployment release manifest
+        run: python3 infra/scripts/validate_deployment_manifest.py
+
       - name: Validate release schema manifest
         run: python3 infra/scripts/validate_release_manifest.py
 
@@ -201,7 +207,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     concurrency: deploy-staging-pages
-    needs: [preflight]
+    needs: [deploy-workers-staging]
     steps:
       - uses: actions/checkout@v4
 
@@ -265,7 +271,7 @@ jobs:
     name: Deploy marketplace-web to staging (CF Pages)
     runs-on: ubuntu-latest
     environment: staging
-    needs: [preflight]
+    needs: [deploy-workers-staging]
     steps:
       - uses: actions/checkout@v4
 
@@ -298,7 +304,7 @@ jobs:
     name: Build and publish widget
     runs-on: ubuntu-latest
     environment: staging
-    needs: [preflight]
+    needs: [deploy-workers-staging]
     steps:
       - uses: actions/checkout@v4
 

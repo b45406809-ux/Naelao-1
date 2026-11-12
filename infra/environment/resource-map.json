@@ -56,7 +56,7 @@
     },
     {
       "path": "workers/knowledge/wrangler.toml",
-      "sha256": "5a7871c8d0e3d6c822dcaeaf0e1dc6cac7179962f3b435bfb6f2606d166afa31"
+      "sha256": "338c1593d697f2ef56a6b28e4bbff2433135679b3da8cd0ec3b3285c9d6494be"
     },
     {
       "path": "workers/marketplace/wrangler.toml",
