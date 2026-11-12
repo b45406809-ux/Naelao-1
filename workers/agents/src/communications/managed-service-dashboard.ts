@@ -174,8 +174,12 @@ export async function getManagedServiceDashboard(env: AgentsEnv, scope: Communic
   const costBudgetAlerts = await listManagedServiceCostBudgetAlerts(env, scope);
   const costBudgets = budgets.map(budget => {
     const sourceRows = budget.provenance === "operator_imported" ? providerCosts.results : observedProviderCosts.results;
-    const observedProviderCostMicros = sourceRows.filter(row => row.provider === budget.provider && row.service_id === budget.serviceId
+    let observedProviderCostMicros = sourceRows.filter(row => row.provider === budget.provider && row.service_id === budget.serviceId
       && row.currency === budget.currency).reduce((sum, row) => sum + (row.provider_cost_micros ?? 0), 0);
+    if(budget.provenance==="provider_api_observed"&&budget.provider==="openrouter"&&budget.serviceId==="decision-model"
+      &&budget.currency==="USD"){
+      observedProviderCostMicros+=decisionModelCosts.results.reduce((sum,row)=>sum+Math.round(row.provider_cost_usd*1_000_000),0);
+    }
     return { ...budget, observedProviderCostMicros, thresholdReached: observedProviderCostMicros >= budget.limitProviderCostMicros };
   });
 

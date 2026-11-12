@@ -86,6 +86,8 @@ type CostBudgetRow = {
 };
 type CostBudgetAlertState = { threshold_reached:number;lease_token:string|null;last_observed_provider_cost_micros:number };
 
+const OPENROUTER_DECISION_COST_SERVICE_ID = "decision-model";
+
 async function observedCostForBudget(env:AgentsEnv,budget:CostBudgetRow,windowStart:string,windowEnd:string):Promise<number>{
   const table=budget.provenance==="operator_imported"?"managed_service_provider_cost_receipts":"managed_service_provider_cost_observations";
   // A Space-level budget is a rollup across all of that Space's projects, matching the
@@ -100,7 +102,23 @@ async function observedCostForBudget(env:AgentsEnv,budget:CostBudgetRow,windowSt
     :`SELECT COALESCE(SUM(provider_cost_micros),0) AS amount FROM ${table}
       WHERE tenant_id=? AND space_id=?${projectClause} AND provider=? AND service_id=? AND currency=? AND period_start>=? AND period_end<=?`;
   const row=await env.PLATFORM_DB.prepare(query).bind(...bindings).first<{amount:number}>();
-  const amount=Number(row?.amount??0);
+  let amount=Number(row?.amount??0);
+  // OpenRouter decision receipts already have an authoritative, settled generation ledger.
+  // Include it directly in the provider-observed budget view instead of copying those receipts
+  // into the generic provider-cost observation table.
+  if(budget.provenance==="provider_api_observed"&&budget.provider==="openrouter"
+    &&budget.service_id===OPENROUTER_DECISION_COST_SERVICE_ID&&budget.currency==="USD"){
+    const decisionProjectClause=budget.project_id===null?"":" AND project_id=?";
+    const decisionBindings=budget.project_id===null
+      ?[budget.tenant_id,budget.space_id,windowStart,windowEnd]
+      :[budget.tenant_id,budget.space_id,budget.project_id,windowStart,windowEnd];
+    const decision=await env.PLATFORM_DB.prepare(`SELECT COALESCE(SUM(ROUND(provider_cost_usd*1000000)),0) AS amount
+      FROM decision_call_reservations WHERE org_id=? AND space_id=?${decisionProjectClause} AND status='settled'
+        AND provider_cost_usd IS NOT NULL AND usage_evidence_source IN ('openrouter_response','openrouter_generation_api')
+        AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)`)
+      .bind(...decisionBindings).first<{amount:number}>();
+    amount+=Number(decision?.amount??0);
+  }
   if(!Number.isSafeInteger(amount)||amount<0)throw new Error("managed_service_cost_budget_total_invalid");
   return amount;
 }

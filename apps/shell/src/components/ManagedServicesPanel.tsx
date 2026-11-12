@@ -61,6 +61,15 @@ function providerCostBudgetGroups(dashboard: ManagedServiceDashboard): CostBudge
     current.observedProviderCostMicros += cost.providerCostMicros;
     groups.set(key,current);
   }
+  // These receipts stay in the decision reservation ledger, but share the existing
+  // provider-observed threshold and alert path without duplicating rows in a second table.
+  for (const cost of dashboard.decisionModelCosts30d) {
+    const row={provider:"openrouter",serviceId:"decision-model",provenance:"provider_api_observed" as const,currency:"USD"};
+    const key=keyOf(row);
+    const current=groups.get(key)??{...row,observedProviderCostMicros:0,limitProviderCostMicros:null,thresholdReached:false};
+    current.observedProviderCostMicros+=cost.providerCostMicros;
+    groups.set(key,current);
+  }
   for (const budget of dashboard.providerCostBudgets30d) {
     const key = keyOf(budget);
     const current = groups.get(key) ?? { provider:budget.provider,serviceId:budget.serviceId,provenance:budget.provenance,

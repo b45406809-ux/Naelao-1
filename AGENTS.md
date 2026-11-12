@@ -2,6 +2,18 @@
 
 ## Active mission and checkpoint
 
+Latest continuation checkpoint (2026-11-12): S2 is IMPLEMENTED_LOCAL for currently supported
+provider lanes; account-specific provider enablement, approved commercial terms and unsupported
+wallet/Coinbase product remain separate gates. U02's owner-cost trace found that settled OpenRouter
+generation receipts were displayed but absent from the existing rolling threshold/alert evaluator.
+They now feed its provider-observed USD budget directly from `decision_call_reservations`, without a
+duplicate cost ledger. Focused Agents cost/dashboard tests pass **11/11**, Agents and Shell typechecks
+pass, Shell tests pass **18/18**, and the release manifest validates **229** migration files. These
+are local/mocked checks only. Exact next task: continue S3 at U03 by auditing runtime lifecycle and
+recovery callers against the recorded operation/allocation journals, close any independent
+authorization/persistence/UI gap, then continue the remaining S3/U03–U12 code audit. Keep rollout
+disabled and preserve `infra/scripts/__pycache__/`.
+
 The active mission supersedes the historical transcript-batch task. Finish
 `docs/research/managed-services-and-sidecar-runtime-plan.md`, including inherited first-plan code
 gaps U01–U12, then continue through `docs/research/platform-completion-and-guided-templates-plan.md`.

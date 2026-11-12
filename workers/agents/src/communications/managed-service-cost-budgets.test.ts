@@ -99,6 +99,44 @@ describe("managed-service provider-cost threshold notices", () => {
     expect(projectDashboard.providerCostBudgets30d[0]).toMatchObject({observedProviderCostMicros:3_000,thresholdReached:false});
   });
 
+  it("uses settled OpenRouter decision receipts in the existing provider-observed budget and alert path", async () => {
+    const f=fixture();
+    const insert=`INSERT INTO decision_call_reservations(
+      id,org_id,space_id,project_id,run_id,model_id,price_snapshot,input_usd_per_token,output_usd_per_token,
+      max_tokens,max_credits,status,actual_tokens,cost_credits,rate_card_version,provider_generation_id,
+      provider_cost_usd,usage_evidence_source,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+    const save=(id:string,projectId:string,status:string,cost:number,source:string)=>f.db.prepare(insert).bind(
+      id,scope.tenantId,scope.spaceId,projectId,`run-${id}`,"openai/gpt-4o-mini","2026-11-12T01:00:00.000Z",
+      0.0000001,0.0000004,1000,100,status,12,1,`openrouter:generation:gen-${id}`,`gen-${id}`,cost,source,
+      "2026-11-12 01:00:00","2026-11-12 01:01:00",
+    ).run();
+    await save("decision-a","project-a","settled",0.001,"openrouter_response");
+    await save("decision-b","project-a","settled",0.002,"openrouter_generation_api");
+    await save("decision-c","project-b","settled",0.004,"openrouter_generation_api");
+    await save("decision-uncertain","project-a","uncertain",0.5,"openrouter_generation_api");
+
+    const spaceBudget={provider:"openrouter",serviceId:"decision-model",provenance:"provider_api_observed" as const,
+      currency:"USD",limitProviderCostMicros:6_000};
+    await setManagedServiceCostBudget(f.env,scope,spaceBudget);
+    const at=new Date("2026-11-12T02:00:00.000Z");
+    expect((await getManagedServiceDashboard(f.env,scope,at)).providerCostBudgets30d).toEqual([
+      expect.objectContaining({provider:"openrouter",serviceId:"decision-model",observedProviderCostMicros:7_000,
+        thresholdReached:true,limitProviderCostMicros:6_000}),
+    ]);
+    await expect(sweepManagedServiceCostBudgetAlerts(f.env,at)).resolves.toMatchObject({scanned:1,alertsCreated:1});
+    expect((await getManagedServiceDashboard(f.env,scope,at)).providerCostAlerts).toEqual([
+      expect.objectContaining({provider:"openrouter",serviceId:"decision-model",observedProviderCostMicros:7_000,
+        currency:"USD",provenance:"provider_api_observed"}),
+    ]);
+
+    const projectScope={...scope,projectId:"project-a"};
+    await setManagedServiceCostBudget(f.env,projectScope,{...spaceBudget,limitProviderCostMicros:4_000});
+    expect((await getManagedServiceDashboard(f.env,projectScope,at)).providerCostBudgets30d[0])
+      .toMatchObject({observedProviderCostMicros:3_000,thresholdReached:false});
+    await expect(sweepManagedServiceCostBudgetAlerts(f.env,at)).resolves.toMatchObject({scanned:2,alertsCreated:0});
+  });
+
   it("saves and removes a threshold through the owner-authenticated UserPort action", async () => {
     const f = fixture();
     const app = new Hono<{ Bindings: AgentsEnv }>();
