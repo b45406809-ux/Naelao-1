@@ -208,6 +208,71 @@ describe("scoped assistant communications", () => {
     );
     expect(response.status).toBe(403);
   });
+  it("uses project membership as a mailbox read grant while keeping private verification and command controls owner-scoped", async () => {
+    const f = fixture(),
+      projectScope = { ...scope, projectId: "project" },
+      identity = await ensureIdentity(f.env, projectScope),
+      messageId = "mail-private",
+      messageKey = await storeBody(f.env, identity, messageId, {
+        text: "Shared project message",
+        private_text: "Owner-only verification code 123456",
+        private_subject: "Private verification",
+        private_actor_id: "user",
+        untrusted: true,
+      });
+    await f.db.prepare(
+      "INSERT INTO assistant_communication_messages(id,identity_id,direction,sender,recipient,subject,status,body_key) VALUES(?,?,'inbound','sender@example.com','project@example.com','Shared subject','received',?)"
+    ).bind(messageId, identity.id, messageKey).run();
+    await f.db.prepare(
+      "INSERT INTO assistant_communication_commands(id,identity_id,message_id,controller_user_id) VALUES('command-1',?,?,?)"
+    ).bind(identity.id, messageId, "user").run();
+
+    const app = new Hono<{ Bindings: AgentsEnv }>();
+    registerCommunicationRoutes(app);
+    const memberHeaders = {
+      "x-naelao-tenant-id": "tenant",
+      "x-naelao-user-id": "other",
+      "x-naelao-role": "product_end_user",
+      "x-naelao-internal-token": await mintInternalToken("secret", "tenant"),
+    };
+    const list = await app.request(
+      "/spaces/space/assistant-communications?action=messages&project_id=project",
+      { headers: memberHeaders },
+      f.env
+    );
+    expect(list.status).toBe(200);
+    expect((await list.json<{ data: Array<{ id: string }> }>()).data[0]?.id).toBe(messageId);
+    const read = await app.request(
+      `/spaces/space/assistant-communications?action=message&project_id=project&id=${messageId}`,
+      { headers: memberHeaders },
+      f.env
+    );
+    const memberBody = await read.json<{ body: Record<string, unknown> }>();
+    expect(read.status).toBe(200);
+    expect(memberBody.body.text).toBe("Shared project message");
+    expect(memberBody.body).not.toHaveProperty("private_text");
+    expect(memberBody.body).not.toHaveProperty("private_subject");
+    const commands = await app.request(
+      "/spaces/space/assistant-communications?action=commands&project_id=project",
+      { headers: memberHeaders },
+      f.env
+    );
+    expect(commands.status).toBe(403);
+
+    const ownerRead = await app.request(
+      `/spaces/space/assistant-communications?action=message&project_id=project&id=${messageId}`,
+      { headers: {
+        ...memberHeaders,
+        "x-naelao-user-id": "user",
+        "x-naelao-role": "owner",
+      } },
+      f.env
+    );
+    expect((await ownerRead.json<{ body: { text: string; subject?: string } }>()).body).toMatchObject({
+      text: "Owner-only verification code 123456",
+      subject: "Private verification",
+    });
+  });
   it("blocks protected worker operations and unsigned requests", async () => {
     const f = fixture(),
       app = new Hono<{ Bindings: AgentsEnv }>();
