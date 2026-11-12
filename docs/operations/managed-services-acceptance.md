@@ -11,8 +11,10 @@ Keep `UNIFIED_WORKSPACE_ENABLED`, `DYNAMIC_CONTAINERS_ENABLED`,
 `HIGGSFIELD_BYO_ENABLED` false. `LIVE_RUNTIME_AGENT` is unbound. `AGENT37_RUNTIME_ENABLED` is not
 enabled in Wrangler. Do not change these settings as part of local acceptance.
 
-No production or staging deployment, provider purchase, destructive remote migration, commit, or
-push is authorized by this handoff.
+Recovery commits and fast-forward pushes to the user-selected `origin/Mcbt5s-Backup-2` branch are
+authorized by the active root `AGENTS.md`; keep the implementation branch active and verify the
+remote tip is an ancestor before each push. Production or staging deployment, provider purchase,
+destructive remote migration, and rollout enablement are not authorized by this handoff.
 
 ## Repeatable local checks
 
@@ -38,6 +40,7 @@ Focused resumption checks:
 
 ```sh
 corepack pnpm --filter @naelao/sandboxes-worker exec vitest run src/agent37-runtime-routes.test.ts
+corepack pnpm --filter @naelao/sandboxes-worker exec vitest run src/runtime-usage.test.ts src/ops-metrics.test.ts
 corepack pnpm --filter @naelao/agents-worker exec vitest run src/communications/managed-service-cost-budgets.test.ts
 corepack pnpm --filter @naelao/agents-worker exec vitest run src/communications/telnyx-webhook.test.ts src/communications/telnyx-live-calls.test.ts src/communications/phones.test.ts src/voice/telnyx-telephony.test.ts
 corepack pnpm --filter @naelao/agents-worker exec vitest run src/do/DynamicSandboxDO.test.ts
@@ -86,6 +89,7 @@ approved secret manager and must never be placed in shell history, this runbook,
 | Telnyx Naelao-managed number | Can stage an already assigned number after webhook/profile checks; managed rental/SMS/voice billing and number release are present | Managed inventory ordering is unavailable. It needs an approved per-number price, payer/credit cap, recurring renewal and plan entitlement before an order caller can be enabled. No managed number purchase is authorized. |
 | Managed-service cost alerts | Owner-configured source/currency thresholds persist durable dashboard crossings and acknowledgements. A leased migration 0219 outbox sends browser push through the existing Notifications worker to the threshold author's existing subscription, retries transient failures, suppresses removed users and shows delivery status in Shell. | Local mocked tests verify dispatch, retry/backoff, missing-subscription handling and access-revocation suppression. Delivery is at-least-once when a push succeeds but its response is lost; no email notification or provider-action blocking is implemented. |
 | Agent37 customer-owned computer | Owner credential verification, template-gated create/start/sleep/exec, operation recovery, selected-path artifact transfer, usage read, AgentPort actions and confirmed cleanup; Shell Project Computers | Local code is behind the disabled `AGENT37_RUNTIME_ENABLED` gate. Live acceptance needs an authorized customer account, exact operator-reviewed template digest and region, provider limits/funding, create/start/sleep/exec/recovery, artifact integrity and deletion receipts. No full project hydration or provider availability is claimed. |
+| Naelao runtime credits | Project Computers reads settled Tier 5 charges from the tenant/Space/project-scoped Billing ledger. The result is labeled as Naelao credits, not provider cost or invoice. | Sandboxes and Shell local tests/typechecks pass. Provider API observations and operator-imported receipts remain separate from these credits; no provider-billed idle feed or invoice source is claimed. |
 | Higgsfield customer-owned generation | Owner API-key setup, quote, confirmed idempotent generation, status/cancel/delete/reconciliation and Shell caller | Local code is behind `HIGGSFIELD_BYO_ENABLED=false`; capability remains draft. Review current account terms, end-user flowdown, age/likeness consent, job isolation, retention/deletion, pricing and live callback behavior before enabling. Shared managed-account/resale support is not claimed. |
 | Managed Workers AI text | Owner-only exact-model caller through the existing Cloudflare AI binding, fixed-price Billing reservation/settlement and encrypted result storage | Caller code exists, but no model entitlement or price is active. Verify current Cloudflare model availability, terms, region, commercial price and plan limits; operator verification and an authorized deployed test are required before activation. |
 | Cloudflare project main computer / live single writer | D1 project-main generation claim, checked workspace path, authority-verifier boundary, snapshot inventory and coordinator protocol tests | Live mode is unavailable. Before binding a runtime adapter, establish an accepted daemon/API contract for authenticated writer admission, generation-bound reconnect, process drain/fsync, durable handoff receipts and read-only operation recovery. Build and sign/publish the exact pinned image; verify FUSE, sync, crash/reconnect, billing and stale-writer fencing in staging. |
