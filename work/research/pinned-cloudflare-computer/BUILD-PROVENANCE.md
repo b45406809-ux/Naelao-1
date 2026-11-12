@@ -28,13 +28,30 @@ output is recorded as observed provenance, not claimed as bit-for-bit reproducib
 
 The pinned upstream README marks the Container backend, workspace push/pull sync, daemon/container
 image and RPC wire protocol experimental. The image is an image-only distribution layer based on
-`scratch`; its README says it is intended for downstream `COPY`, not as a runnable service. The
-checked-in workflow now builds the exact pin, generates its dependency SBOM, emits GitHub build
-provenance attestations for the daemon binary and SBOM when GitHub Actions runs, and retains those
-outputs for 30 days. The attestation action is pinned to
-`e8998f949152b193b063cb0ec769d69d929409be`; the upload action is pinned to
-`ea165f8d65b6e75b540449e92b4886f43607fa02`. No matching GitHub run or attestation receipt is
-recorded yet. No Naelao adapter, readiness probe, authentication binding, ignore-policy verification,
-registry publication, FUSE mount/flush test, or Cloudflare deployment was performed. The local
-image still has no registry digest. Rollout remains disabled. U08 stays partial until the
-attestation run is verified and the runtime integration contract and acceptance evidence exist.
+`scratch`; its README says it is intended for downstream `COPY`, not as a runnable service.
+
+The checked-in workflow builds the exact pin, generates its dependency SBOM, emits GitHub build
+provenance attestations for the daemon binary and SBOM, and retains those outputs for 30 days. Both
+actions are pinned: attestation action `e8998f949152b193b063cb0ec769d69d929409be` and upload action
+`ea165f8d65b6e75b540449e92b4886f43607fa02`.
+
+GitHub Actions run [43247749684](https://github.com/b45406809-ux/Naelao-1/actions/runs/43247749684)
+completed successfully for source commit `3d6edc9ce314de5de087fec600eb53a7bbd37d18`. The public
+[attestation receipt](https://github.com/b45406809-ux/Naelao-1/attestations/66758079) contains two
+subjects and reports a Sigstore signature and Rekor upload:
+
+| Subject | SHA-256 |
+| --- | --- |
+| `computerd-linux-x64` | `238b0d15c3dfa09f25e3466ec78a472d0176cb228ecb275251aa40c3c63f9273` |
+| `computerd-0.10.0.cdx.json` | `ee7bf3f480fbc0a991199f791c725689fbec2e239473969190a623b3b1524467` |
+
+The run verified source archive SHA-256
+`b5ae608fd845af5762187793e0d823c414e37d5d98eb1e62ea406b1eabb326c6`. Its ephemeral Docker build
+reported manifest digest `sha256:efaacd22408c202fc24db83bed719da4cfa3387d3fdd99611bfceacc492dee93`;
+the image was not published to a registry. The retained build artifact is 43,328,215 bytes and its
+archive SHA-256 is `6aaf8f274ce744672072df60ef90316252f57ec72ec5e5cbb94a31b27bdf9cb7`.
+
+No Naelao adapter, readiness probe, authentication binding, ignore-policy verification, registry
+publication, FUSE mount/flush test, or Cloudflare deployment was performed. The upstream daemon and
+Container backend remain experimental. Rollout remains disabled. U08 stays partial until the runtime
+integration contract and acceptance evidence exist.
