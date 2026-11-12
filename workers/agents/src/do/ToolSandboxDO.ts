@@ -228,7 +228,7 @@ export class ToolSandboxDO extends DurableObject {
 
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
-    if (path === "/_internal/workspace/erase") return this.eraseWorkspaceRuntime(request);
+    if (path === "/_internal/workspace/erase") return this.enqueueSerialized(() => this.eraseWorkspaceRuntime(request));
     const largeWorkspaceWrite = ["/workspace/write", "/workspace/state-sync", "/workspace/rehydrate"].includes(path);
     if (largeWorkspaceWrite) {
       try { await this.authenticatedScope(request); }
@@ -245,14 +245,20 @@ export class ToolSandboxDO extends DurableObject {
     }
     if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
-    const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
+    return this.enqueueSerialized(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
       ? this.executeScoped(request) : (async () => {
         try { await this.authenticatedScope(request); }
         catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
         return this.handleRequest(request);
       })());
-    this.executionQueue = execution.then(() => undefined, () => undefined);
-    return execution;
+  }
+
+  /** Serialize erasure with artifact transfers and other scoped runtime work. Erasure must not
+   * acknowledge local fencing while an earlier sidecar R2 write can still land afterward. */
+  private enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.executionQueue.then(operation);
+    this.executionQueue = pending.then(() => undefined, () => undefined);
+    return pending;
   }
 
   protected get container(): ContainerRuntime | undefined {

@@ -15,7 +15,7 @@ const extensionPrefix = "spaces/space/space-workspace/extensions/media-one/works
 
 // R2 and the native process transport are doubles. Publication uses the real ConcurrencyDO
 // and its actual SQLite schema/CAS implementation, not a mocked lock success response.
-function workspace() {
+function workspace(beforePut?: (key: string) => Promise<void>) {
   const data = new Map<string, Uint8Array>(), metadata = new Map<string, Record<string, string>>(), etags = new Map<string, string>();
   let revision = 0;
   const bucket = {
@@ -26,6 +26,7 @@ function workspace() {
     }),
     put: async (key: string, value: Uint8Array, options?: { customMetadata?: Record<string, string>; onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) => {
       if (options?.onlyIf?.etagMatches && etags.get(key) !== options.onlyIf.etagMatches || options?.onlyIf?.etagDoesNotMatch === "*" && data.has(key)) return null;
+      await beforePut?.(key);
       data.set(key, new Uint8Array(value)); metadata.set(key, options?.customMetadata ?? {}); etags.set(key, String(++revision));
       return { etag: etags.get(key) };
     },
@@ -47,6 +48,7 @@ function workspace() {
 function runtime(store: ReturnType<typeof workspace>, deployedImage = image, unifiedWorkspace = false) {
   const files = new Map<string, string>(), records = new Map<string, unknown>(), calls: string[] = [];
   let running = false;
+  let projectErased = false;
   let afterExec: (() => Promise<void>) | undefined;
   const transport = {
     get running() { return running; },
@@ -76,12 +78,14 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image, uni
   };
   const ctx = { container: transport, exports: { PackageEgress: () => ({ fetch: async (request: Request) => new Response(request.url) }) }, storage: {
     get: async (key: string) => records.get(key), put: async (key: string, value: unknown) => { records.set(key, structuredClone(value)); },
-    delete: async (key: string) => records.delete(key), setAlarm: async () => undefined,
+    delete: async (key: string) => records.delete(key),
+    list: async ({ prefix: keyPrefix = "" }: { prefix?: string } = {}) => new Map([...records.entries()].filter(([key]) => key.startsWith(keyPrefix))),
+    setAlarm: async () => undefined,
   } };
   const env = { PLATFORM_SECRET: "test-secret", SCRIPTS_R2: store.bucket, CONCURRENCY_DO: store.namespace,
     UNIFIED_WORKSPACE_ENABLED: unifiedWorkspace ? "true" : "false",
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: (..._values: unknown[]) => ({
-      first: async () => sql.includes("workspace_erasure_tombstones") ? null : { id: "space" },
+      first: async () => sql.includes("workspace_erasure_tombstones") ? projectErased ? { erased: 1 } : null : { id: "space" },
       run: async () => ({ meta: { changes: 1 } }),
     }) }) },
     BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) } };
@@ -116,7 +120,10 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image, uni
     return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
   };
-  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, artifactTransfer, store, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
+  const eraseProject = async () => sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
+    body: JSON.stringify({ scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, confirm: true }) }));
+  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, artifactTransfer, eraseProject, setProjectErased: (value: boolean) => { projectErased = value; }, store, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
 }
 
 describe("specialized project workspaces", () => {
@@ -169,6 +176,39 @@ describe("specialized project workspaces", () => {
   it("rejects a sidecar transfer without an internal host token", async () => {
     const r = runtime(workspace());
     expect((await r.artifactTransfer({ direction: "export", path: "output.txt", requestId: "unsigned-transfer" }, false)).status).toBe(403);
+  });
+
+  it("serializes project erasure after an in-flight sidecar artifact write", async () => {
+    let holdArtifactWrite = false;
+    let announceArtifactWrite!: () => void;
+    let releaseArtifactWrite!: () => void;
+    const artifactWriteStarted = new Promise<void>(resolve => { announceArtifactWrite = resolve; });
+    const artifactWriteGate = new Promise<void>(resolve => { releaseArtifactWrite = resolve; });
+    const store = workspace(async key => {
+      if (holdArtifactWrite && key.startsWith("workspace-artifacts/")) {
+        announceArtifactWrite();
+        await artifactWriteGate;
+      }
+    });
+    const r = runtime(store);
+    const bytes = new TextEncoder().encode("sidecar output");
+    const digest = await sha256Bytes(bytes);
+    await store.seed(projectExtensionPrefix + "output.txt", bytes);
+    holdArtifactWrite = true;
+
+    const transfer = r.artifactTransfer({ direction: "export", path: "output.txt", requestId: "erase-race-export" });
+    await artifactWriteStarted;
+    r.setProjectErased(true);
+    const erasure = r.eraseProject();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(r.records.has("workspace_erasure_blocked")).toBe(false);
+
+    releaseArtifactWrite();
+    const [transferResponse, erasureResponse] = await Promise.all([transfer, erasure]);
+    expect(transferResponse.status).toBe(200);
+    expect(erasureResponse.status).toBe(200);
+    expect(await erasureResponse.json()).toMatchObject({ erased: true, localStatePurged: true });
+    expect(store.data.has(environmentArtifactObjectKey({ tenantId: "tenant", spaceId: "space", projectId: "project" }, digest))).toBe(true);
   });
 
   it("refreshes warm readers across specialized executions, including binary updates and deletions", async () => {
