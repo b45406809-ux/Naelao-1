@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { verifyInternalToken } from "@naelao/http";
+import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
 import { accountModelRequiresParent, inspectDependencyGraph, leaseExpiry, validateServiceRegistration, type AccountModel, type AccountDependency, type DependencyType } from "./core.js";
 import { createSealedAgentKey, signAgentCredential } from "./identity.js";
 import { parseThreadSessionBinding, type ThreadSessionBinding } from "./thread-session-binding.js";
@@ -884,6 +884,37 @@ routes.post("/channels/:channelId/threads", async (c) => {
       JSON.stringify((body.participants ?? []).filter(x => typeof x === "string").slice(0, 100)), JSON.stringify(body.metadata ?? {}), sessionBinding ? JSON.stringify(sessionBinding) : null, at, at).run(); }
   catch { return c.json({ error_code: "thread_conflict" }, 409); }
   return c.json({ thread: { id: threadId, channelId, providerThreadId: body.providerThreadId, sessionBinding, status: "active" } }, 201);
+});
+
+routes.put("/threads/:threadId/session-binding", async (c) => {
+  const body = await readBoundedRequestText(c.req.raw, 4096)
+    .then(text => JSON.parse(text) as { sessionBinding?: unknown })
+    .catch(() => null);
+  if (!body || Object.keys(body).some(key => key !== "sessionBinding")
+      || !Object.prototype.hasOwnProperty.call(body, "sessionBinding"))
+    return c.json({ error_code: "invalid_session_binding" }, 400);
+  if (c.req.header("x-agentport-actor-role") === "agent")
+    return channelPermissionDenied(c, "Only the channel owner or host can change an external session binding.");
+  const binding = body.sessionBinding === null ? null : parseThreadSessionBinding(body.sessionBinding);
+  if (body.sessionBinding !== null && !binding)
+    return c.json({ error_code: "invalid_session_binding" }, 400);
+  const tenantId = c.get("tenantId"), threadId = c.req.param("threadId");
+  if (!await actorOwnsThread(c, threadId))
+    return c.json({ error_code: "thread_unavailable" }, 404);
+  const thread = await c.env.PLATFORM_DB.prepare(`SELECT t.id,t.session_binding_json,t.status,ch.status AS channel_status
+    FROM agentport_threads t JOIN agentport_channels ch ON ch.id=t.channel_id AND ch.tenant_id=t.tenant_id
+    WHERE t.id=? AND t.tenant_id=?`).bind(threadId, tenantId)
+    .first<{ id: string; session_binding_json: string | null; status: string; channel_status: string }>();
+  if (!thread || thread.status !== "active" || thread.channel_status !== "active")
+    return c.json({ error_code: "thread_unavailable" }, 404);
+  const serialized = binding ? JSON.stringify(binding) : null;
+  const updated = await c.env.PLATFORM_DB.prepare(`UPDATE agentport_threads SET session_binding_json=?,updated_at=?
+    WHERE id=? AND tenant_id=? AND session_binding_json IS ? AND status='active'`).bind(
+      serialized, stamp(), threadId, tenantId, thread.session_binding_json
+    ).run();
+  if (!updated.meta.changes)
+    return c.json({ error_code: "thread_session_binding_conflict" }, 409);
+  return c.json({ thread: { id: threadId, sessionBinding: binding } });
 });
 
 routes.get("/channels/:channelId/threads", async (c) => {

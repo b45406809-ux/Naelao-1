@@ -9,6 +9,16 @@ describe("AgentPort public SDK", () => {
     expect(fetcher).toHaveBeenCalledWith("https://agentport.internal/internal/agentport/accounts",expect.objectContaining({redirect:"error"}));
     expect(()=>client.request("//evil.example/path")).toThrow("invalid_internal_path");
   });
+  it("updates an existing provider thread's external session binding through the bounded API", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("PUT");
+      return Response.json({ thread: { id: "thread-1", sessionBinding: JSON.parse(String(init?.body)).sessionBinding } });
+    });
+    const client = new AgentPortClient({ apiKey: "ap_live_test", baseUrl: "https://agentport.test", fetch: fetcher as typeof fetch });
+    const binding = { version: 1 as const, consumerId: "support", sessionRef: "opaque-session" };
+    await expect(client.setThreadSessionBinding("thread-1", binding)).resolves.toMatchObject({ thread: { id: "thread-1", sessionBinding: binding } });
+    expect(fetcher).toHaveBeenCalledWith("https://agentport.test/v1/threads/thread-1/session-binding", expect.objectContaining({ method: "PUT" }));
+  });
   it("verifies signed event bytes and rejects stale and altered notifications", async () => {
     const secret = "event-secret", timestamp = "1000", raw = new TextEncoder().encode('{"id":"evt_1"}');
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

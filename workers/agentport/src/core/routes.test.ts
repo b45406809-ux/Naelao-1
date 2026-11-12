@@ -212,7 +212,7 @@ describe("AgentPort internal registry API", () => {
     const { db, platformDb } = fixture(); const secret = "platform-secret"; const master = "session-notification-secret-long-enough";
     const headers = { "content-type": "application/json", "x-agentport-tenant-id": "tenant-a", "x-agentport-internal-token": await mintInternalToken(secret, "tenant-a") };
     const env = { PLATFORM_SECRET: secret, AGENTPORT_JWT_SECRET: master, PLATFORM_DB: platformDb } as never;
-    const call = (path: string, method: string, body?: unknown) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+    const call = (path: string, method: string, body?: unknown, actor: Record<string, string> = {}) => agentPortRoutes.fetch(new Request(`https://agentport.test${path}`, { method, headers: { ...headers, ...actor }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
 
     await call("/services", "POST", { id: "session-provider", name: "Session Provider", type: "channel", accountModels: ["agent_native"],
       capabilities: ["channels", "messages.read"], events: ["message.received"], connectionPurpose: "agent_resource" });
@@ -223,14 +223,24 @@ describe("AgentPort internal registry API", () => {
     const { channel } = await (await call("/channels", "POST", { serviceId: "session-provider", accountId: account.id, agentId: agent.id,
       providerChannelId: "provider-channel", displayName: "Consumer Session Channel" })).json() as { channel: { id: string } };
     const binding = { version: 1, consumerId: "consumer-a", sessionRef: "private-session-1", conversationRef: "conversation-1" };
-    const thread = await call(`/channels/${channel.id}/threads`, "POST", { providerThreadId: "provider-thread-1", sessionBinding: binding });
-    expect(await thread.json()).toMatchObject({ thread: { sessionBinding: binding } });
+    const inbound = await call(`/channels/${channel.id}/message-events/inbound`, "POST", { providerMessageId: "provider-message-1", providerThreadId: "provider-thread-1", senderId: "sender-a" });
+    expect(inbound.status).toBe(202);
     const matching = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "session-provider", accountId: account.id,
       eventType: "message.received", deliveryMode: "webhook", consumerGroup: "consumer-a", routing: { webhookUrl: "https://hooks.builder.com/a" } });
     const other = await call("/events/subscriptions", "POST", { agentId: agent.id, serviceId: "session-provider", accountId: account.id,
       eventType: "message.received", deliveryMode: "webhook", consumerGroup: "consumer-b", routing: { webhookUrl: "https://hooks.builder.com/b" } });
     const { subscription: matchingSubscription } = await matching.json() as { subscription: { id: string } };
     const { subscription: otherSubscription } = await other.json() as { subscription: { id: string } };
+    const existingThread = await platformDb.prepare("SELECT id FROM agentport_threads WHERE tenant_id=? AND channel_id=? AND provider_thread_id=?")
+      .bind("tenant-a", channel.id, "provider-thread-1").first<{ id: string }>();
+    expect(existingThread).not.toBeNull();
+    expect((await call(`/threads/${existingThread!.id}/session-binding`, "PUT", { sessionBinding: binding }, { "x-agentport-actor-role": "agent" })).status).toBe(403);
+    expect((await call(`/threads/${existingThread!.id}/session-binding`, "PUT", { sessionBinding: binding }, {
+      "x-agentport-actor-role": "agentport_api", "x-agentport-owner-id": "another-owner", "x-agentport-owner-type": "individual",
+    })).status).toBe(404);
+    expect((await call(`/threads/${existingThread!.id}/session-binding`, "PUT", { sessionBinding: { ...binding, accessToken: "must-not-persist" } })).status).toBe(400);
+    const bound = await call(`/threads/${existingThread!.id}/session-binding`, "PUT", { sessionBinding: binding });
+    expect(await bound.json()).toMatchObject({ thread: { id: existingThread!.id, sessionBinding: binding } });
     const eventResponse = await call("/events", "POST", { serviceId: "session-provider", accountId: account.id,
       providerEventId: "provider-event-1", eventType: "message.received", threadRef: "provider-thread-1", dataRef: "provider-message-1" });
     const { id: eventId } = await eventResponse.json() as { id: string };
