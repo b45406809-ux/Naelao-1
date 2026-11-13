@@ -2,7 +2,25 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; template source availability `f725fa2c` pushed)
+### Active continuation (2026-11-13; template schema/dependency update review `9d0c2da7` pushed)
+
+- Space Template source review now verifies that the installed receipt digest matches the buyer's
+  signed fork before comparing a candidate. It reports setup-schema changes and added/removed or
+  version-changed required extensions alongside price/license-term changes; it returns no setup
+  values. Code `9d0c2da7` is pushed to `origin/Mcbt5s-Backup-2`, following `f725fa2c`.
+- Fresh local verification: Spaces activation/status suite **19/19**, Spaces and Shell typechecks, and
+  `git diff --check`. These are local Worker/DO mocks; no Marketplace, provider, deployed database or
+  live installation was accessed. This remains an availability/review surface; updates, migrations,
+  permission approvals, rollback and uninstall are not implemented.
+- P03's owner status caller was checked and is already reachable through Router and Dashboard. P03/P20
+  grace/restriction, refund/dispute/author accounting, independent operator identity and live provider
+  acceptance remain open. P04 remains partial for archive scope/limits, merge-only restore, legal/key
+  policy and isolated/live drills.
+- Exact next task: audit §9.5 voice-dashboard APIs and reachable callers, then implement the next
+  supported per-installation configuration gap. Continue §10 and remaining S2–S9/U01–U12 ledger gaps
+  without repeating completed audits. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+### Prior active continuation (2026-11-13; template source availability `f725fa2c` pushed)
 
 - Owner/admin Space Template status now reads the newest published, host-certified Marketplace
   listing from the same publisher for the installed blueprint, validates its certificate and digest,

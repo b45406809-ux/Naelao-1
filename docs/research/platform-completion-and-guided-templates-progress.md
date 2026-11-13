@@ -2,19 +2,20 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after guided-template source availability code `f725fa2c` was pushed to
-`origin/Mcbt5s-Backup-2`. Owner/admin installation status checks the newest published, host-certified
-listing for the same publisher and blueprint, compares its artifact digest and listing terms with the
-installed record, and never applies an update. Local evidence: Spaces activation/status suite **19/19**,
-Spaces/Shell typechecks and `git diff --check`. No Marketplace, provider, deployed database or live
-installation was accessed. A targeted P03 caller review confirmed its provider-outcome API reaches
-Dashboard through Router; no independent code gap was found, and provider acceptance is not inbox
-delivery. P03/P20 policy and independent operator identity remain unresolved. P04 restore safety is
-implemented locally (`b6c408c8`); archive limits, merge semantics, legal/key policy and isolated/live
-drills remain open. P01/P02 still lack separated resources, read-only receipts, operator-attested
-migration baselines and isolated/deployed acceptance. Exact next task: add a read-only summary of
-changed setup-schema/dependency versions for a signed update candidate, then continue §9.5 voice
-dashboard integration and §10 lifecycle/policy gaps.
+Updated 2026-11-13 after signed-template lifecycle review code `9d0c2da7` was pushed, following
+update-availability code `f725fa2c`, to `origin/Mcbt5s-Backup-2`. Owner/admin status verifies the
+installed receipt against the buyer's certified fork and checks the newest published, host-certified
+listing from the same publisher. It reports changed artifact, setup schema, required extensions and
+versions, and listing terms. It does not apply an update or alter licenses, permissions or customer
+configuration. Local evidence: Spaces activation/status suite **19/19**, Spaces/Shell typechecks and
+`git diff --check`. No Marketplace, provider, deployed database or live installation was accessed.
+A targeted P03 caller review confirmed provider outcomes reach Dashboard through Router; no independent
+code gap was found, and provider acceptance is not inbox delivery. P03/P20 policy and independent
+operator identity remain unresolved. P04 restore safety is implemented locally (`b6c408c8`); archive
+limits, merge semantics, legal/key policy and isolated/live drills remain open. P01/P02 still lack
+separated resources, read-only receipts, operator-attested migration baselines and isolated/deployed
+acceptance. Exact next task: audit §9.5 voice-dashboard APIs and reachable callers, implement the next
+supported per-installation configuration gap, then continue §10 lifecycle/policy work.
 
 Prior §10 audience code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Migration 119 preserves the
 legacy member audience and the v2 flow supports an explicit member or owners/admins audience, with
