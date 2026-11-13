@@ -2,27 +2,28 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; signed Space-shared update review `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` pushed)
+### Active continuation (2026-11-13; dependency closure `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` pushed)
 
-- Code `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` is pushed to `origin/Mcbt5s-Backup-2` after
-  fetching and confirming the remote was an ancestor. The Spaces owner/admin API and Shell page now
-  preview an update for one exact Space-shared installation and expected release pin. The host checks
-  the latest catalog release, registered active publisher key, publisher signature, manifest and
-  stored artifact digest. The bounded response shows permission/capability, provider-connection,
-  shared-folder and schema-ID changes; the package contract currently has no dependency or price-term
-  fields, so both are explicitly shown as undeclared. Stale pins, wrong-Space IDs, revoked keys and bad
-  signatures fail closed. Preview performs only reads and cannot change a Canvas or installation.
-- Local/mock evidence: Spaces signed-package and SpaceDO runtime suites **30/30**, Spaces/Shell
-  typechecks and `git diff --check`. No package publication, provider, deployment or live acceptance
-  occurred. Preserve unrelated untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
-- P10/P24 remain PARTIAL. General update activation, dependency resolution, schema migration, automatic
-  rollback, active-work drain, package pricing and commercial reconciliation remain uncoded or
-  contract-limited. The managed S2–S9/U01–U12 ledger is unchanged; retain its recorded runtime/provider
-  boundaries and do not repeat completed audits without a concrete source change.
-- Exact next action: add a signed exact-version extension dependency declaration to the SDK manifest
-  contract and update review. Validate duplicate IDs, cycles, conflicts and exact same-Space installed
-  pins; fail closed when closure is unresolved. Then implement the host resolver and recovery before
-  allowing dependency installation or package activation.
+- Code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` is pushed to `origin/Mcbt5s-Backup-2` and fetch-
+  confirmed. P24 now stores signed exact dependency pins in the extension manifest, resolves transitive
+  version/digest closure against active trusted installations visible in the same Space/project, and
+  rejects cycles, pin conflicts, missing releases, unsupported scopes and invalid attestations.
+  Marketplace, project and channel admission, rollback, staged activation and runtime callers recheck
+  closure. Workflow, Canvas/Gadget, phone settings and channel handlers fail closed after a dependency
+  disappears; uninstall blocks removal of an exact pin still needed by a dependent. Catalog and update
+  review display required pins and resolution state. Existing signed manifest/release/installation
+  records provide persistence; no migration was required.
+- Local evidence: SDK extension suite **31/31**; Spaces runtime, signed-package, channel, phone-settings
+  and Gadget suites **66/66**; SDK/Spaces/Shell typechecks and `git diff --check`. No deployment,
+  provider, publisher submission or live acceptance was exercised. Preserve untracked
+  `infra/scripts/__pycache__/`; rollouts remain disabled.
+- P24 remains PARTIAL. Missing-dependency fetching/installation, explicit whole-closure owner review,
+  durable multi-package partial-install recovery, update apply/migration, active-work drain, cross-Space
+  artifact restore, compromise notices, scanning and retention policy remain uncoded or contract-
+  limited; these are not credential blockers. S2–S9/U01–U12 statuses remain as previously reconciled.
+- Exact next action: add a read-only owner review of every exact dependency release, publisher,
+  permission and capability; require explicit approval before adding packages. Then implement resumable,
+  idempotent multi-package installation and lost-response recovery. Keep update apply and rollout disabled.
 
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 

@@ -2,27 +2,28 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after signed Space-shared package review code
-`9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` was pushed to `origin/Mcbt5s-Backup-2` after fetch and
-ancestor verification. P10 now has an owner/admin, read-only update preview bound to the exact
-installation and expected release pin. It validates the latest catalog candidate, active publisher
-key, publisher signature, manifest and R2 artifact digest. The Shell extension manager displays
-version, permission/capability changes, provider connections, shared-folder changes, schema IDs and
-whether price terms are declared. Stale pin, wrong-Space, revoked-key and bad-signature cases fail
-closed; preview makes no writes. Package dependencies and prices are not present in the current
-signed manifest contract, so the preview reports them as undeclared.
+Updated 2026-11-13 after dependency-closure code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` was
+pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`. P24 now has signed extension dependency pins
+with exact version and manifest digest, transitive closure validation, trusted same-Space/project
+resolution, admission and rollback checks, activation and runtime rechecks, and protection against
+removing an exact dependency used by installed packages. The shared catalog and update preview show
+required pins and whether closure resolves. Workflow, Canvas/Gadget, channel and phone-settings
+callers fail closed on unresolved dependencies. Pins use the existing signed manifest, release and
+installation storage; no migration was needed.
 
-Local/mock evidence: Spaces shared-package/DO suites **30/30**, Spaces/Shell typechecks and
-`git diff --check`. No package publication, provider, deployment or live acceptance was exercised.
-P10/P24 remain PARTIAL: dependency declaration/resolution, package update application, schema
-migration, safe rollback and active-work drain are not implemented. §9.5/P06 remains PARTIAL; the
-phone dashboard and synthetic handler preview do not provide a conversational voice-agent lifecycle.
-Rollouts remain disabled.
+Local/mock evidence: SDK extension suite **31/31**; Spaces runtime, package, channel, phone-settings
+and Gadget suites **66/66**; SDK/Spaces/Shell typechecks and `git diff --check`. No deployment,
+provider, publisher submission or live acceptance was exercised. P10/P24 remain PARTIAL: missing
+dependency fetching and installation, full owner review of dependency publisher/access changes,
+multi-package retry recovery, update application/schema migration and active-work drain remain
+uncoded. Cross-Space artifact restore, publisher compromise notice, scanning and retention policy also
+remain open. These are ordinary implementation or contract gaps, not credential blockers. §9.5/P06
+remains PARTIAL; the phone dashboard and synthetic handler preview do not provide conversational
+voice-agent lifecycle. Rollouts remain disabled.
 
-Exact next action: add signed exact-version dependencies to the SDK package manifest and update
-preview. Validate duplicate IDs, cycles, conflicts and exact same-Space installed pins; fail closed
-when the dependency closure is unresolved. Then implement the host resolver and recovery before
-allowing dependency installation or package activation.
+Exact next action: add a read-only owner review of every exact dependency release, publisher,
+permission and capability; require explicit approval before adding packages. Then implement resumable,
+idempotent multi-package installation and lost-response recovery. Keep update apply and rollout disabled.
 
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel

@@ -12,27 +12,31 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` is pushed to
-`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. P10 now has a
-read-only owner/admin update review for one exact signed Space-shared installation and expected
-release pin. It validates the latest catalog candidate, publisher key/signature and stored artifact
-digest, then reports permissions/capabilities, provider connections, shared folders, schema IDs and
-price-term availability. Stale pins, wrong-Space installation IDs, revoked keys and invalid publisher
-signatures fail closed. The Shell management page reaches this API. No installation or Canvas mutation
-occurs; apply remains unsupported until safe migration, rollback and active-work drain are implemented.
-Local/mock evidence: Spaces package/DO suites **30/30**, Spaces/Shell typechecks and `git diff --check`.
-No deployment, provider or live acceptance was exercised. Preserve untracked
-`infra/scripts/__pycache__/`.
+Current checkpoint (2026-11-13): code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` is pushed to
+`origin/Mcbt5s-Backup-2`, fetch-confirmed at the same SHA. P24 now has a signed SDK dependency pin
+(extension ID, exact version and canonical manifest digest), transitive closure checks for cycles,
+conflicts and missing/replaced releases, same-Space/project trusted-install resolution, install and
+rollback admission, activation rechecks, and runtime checks for workflow, Canvas/Gadget, channel and
+phone-settings callers. Removal of an exact package pin is blocked while an installed dependent uses
+it. Catalog and update-review UI show exact pins and unresolved closure. No new persistence schema was
+needed; pins live in the signed manifest and existing release/installation records.
 
-Exact next action: continue P24/§5 by adding a signed, exact-version extension dependency declaration
-to the SDK manifest contract and update review. Validate duplicate IDs, cycles, conflicts and exact
-same-Space installed pins; fail closed on unresolved closure. Then implement the host resolver and
-recovery path before allowing dependency installation or package activation. Keep rollout disabled.
-After compaction, interruption, or a new session, read both plans, both progress records and this
-runbook; inspect the actual branch and worktree; resume from the exact next action. Keep rollout
-disabled; do not deploy, purchase, reset, clean, switch branches or force-push. The user has authorized
-normal commits and pushes to `Mcbt5s-Backup-2`: fetch before every push, safely incorporate remote
-advances, and never rewrite remote history.
+Local evidence: SDK extension tests **31/31**, Spaces focused package/runtime/channel/phone/Gadget
+suites **66/66**, SDK/Spaces/Shell typechecks and `git diff --check`. These are local mocks only; no
+deployment, provider or live acceptance ran. Automatic fetching/installation of missing dependencies,
+durable multi-package partial-install recovery, update apply/migration, active-work drain, cross-Space
+artifact restore, compromise notices, scanning and retention rules remain uncoded or contract-limited;
+none is credential-blocked. P24 remains PARTIAL. S2–S9/U01–U12 status is unchanged. Rollouts remain
+disabled. Preserve unrelated untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue P24's install journey with a read-only owner review of the complete exact
+dependency closure, including each publisher, permissions and capabilities; require explicit approval
+before installing additional packages. Then add resumable, idempotent multi-package installation and
+lost-response recovery without enabling update apply or rollout. After compaction, interruption or a
+new session, read both plans, both progress records and this runbook; inspect the actual worktree and
+resume from that exact action. Do not deploy, purchase, reset, clean, switch branches or force-push.
+The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
+fetch before each push, safely incorporate remote advances, and never rewrite remote history.
 
 Earlier code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` adds P05 scoped text attachment access.
 Channel packages may opt into text extraction with owner/admin approval; opaque handles are tied to
