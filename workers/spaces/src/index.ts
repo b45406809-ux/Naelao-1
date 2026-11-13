@@ -2,6 +2,7 @@ import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
 import { registerSpaceCoordinationRoutes } from "./routes/space-coordination.js";
 import { standingBlackboardPeer } from "./blackboard-sharing.js";
 import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
+import { createBlackboardRequestIfPublished, retireProjectCoordination, unpublishBlackboardProject } from "./project-coordination-retirement.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { readWorkspaceCompat } from "./workspace-compat.js";
@@ -2541,7 +2542,8 @@ app.delete("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
   if (denied) return denied;
-  await c.env.PLATFORM_DB.prepare("DELETE FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(c.req.header("x-naelao-tenant-id"), spaceId, projectId).run();
+  try { await unpublishBlackboardProject(c.env.PLATFORM_DB, c.req.header("x-naelao-tenant-id")!, spaceId, projectId); }
+  catch { return c.json({ error_code: "blackboard_unpublish_unavailable" }, 503); }
   return c.json({ unpublished: true });
 });
 app.get("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
@@ -2573,14 +2575,12 @@ app.post("/internal/spaces/:spaceId/blackboard/requests", async c => {
   const card = await c.env.PLATFORM_DB.prepare("SELECT project_id FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,spaceId,b.target_project_id).first();
   if (!card) return c.json({ error_code: "target_not_shared" }, 409);
   const now = new Date().toISOString(), deadline = b.deadline ?? null;
-  await c.env.PLATFORM_DB.batch([
-    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_requests(tenant_id,space_id,id,source_project_id,target_project_id,objective,expected_result,deadline,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'pending',?,?,?)")
-      .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user,now,now),
-    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_events(tenant_id,space_id,event_id,project_id,request_id,kind,created_at) SELECT tenant_id,space_id,id||':pending',target_project_id,id,'request.pending',created_at FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=? AND source_project_id=? AND target_project_id=? AND objective=? AND expected_result=? AND deadline IS ? AND created_by=?")
-      .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user),
-  ]);
+  await createBlackboardRequestIfPublished(c.env.PLATFORM_DB, { tenantId: tenant, spaceId, requestId: b.id,
+    sourceProjectId: b.source_project_id, targetProjectId: b.target_project_id, objective: b.objective.trim(),
+    expectedResult: b.expected_result.trim(), deadline, userId: user, now });
   const row = await c.env.PLATFORM_DB.prepare("SELECT * FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=?").bind(tenant,spaceId,b.id).first<{source_project_id:string;target_project_id:string;objective:string;expected_result:string;deadline:string|null;created_by:string}>();
-  if (!row || row.source_project_id !== b.source_project_id || row.target_project_id !== b.target_project_id || row.objective !== b.objective.trim() || row.expected_result !== b.expected_result.trim() || row.deadline !== deadline || row.created_by !== user) return c.json({ error_code: "request_id_conflict" }, 409);
+  if (!row) return c.json({ error_code: "target_not_shared" }, 409);
+  if (row.source_project_id !== b.source_project_id || row.target_project_id !== b.target_project_id || row.objective !== b.objective.trim() || row.expected_result !== b.expected_result.trim() || row.deadline !== deadline || row.created_by !== user) return c.json({ error_code: "request_id_conflict" }, 409);
   return c.json({ request: row });
 });
 app.get("/internal/spaces/:spaceId/blackboard/requests/:projectId", async c => {
@@ -3933,6 +3933,11 @@ app.delete("/spaces/:spaceId/projects/:projectId", async c => {
   if (!access.ok) return c.json({ error_code: access.status === 404 ? "project_not_found" : "project_forbidden" }, access.status === 404 ? 404 : 403);
   const archived = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", JSON.stringify({ status: "archived" }));
   if (!archived.ok) return new Response(archived.body, { status: archived.status, headers: { "content-type": "application/json" } });
+  try {
+    await retireProjectCoordination(c.env.PLATFORM_DB, tenantId, spaceId, projectId);
+  } catch {
+    return c.json({ error_code: "project_coordination_cleanup_unavailable", archived: true, retryable: true }, 503, { "cache-control": "no-store" });
+  }
   if (!c.env.AGENTS_WORKER) return c.json({ error_code: "project_workspace_cleanup_unavailable", archived: true }, 503);
   const scope = { tenantId, spaceId, projectId, jurisdiction: c.env.DATA_JURISDICTION === "eu" ? "eu" as const : "global" as const };
   const cleanup = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/delete-project", {
