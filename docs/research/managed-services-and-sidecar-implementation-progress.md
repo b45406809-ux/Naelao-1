@@ -2,7 +2,27 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; extension settings foundation `07af44c2` pushed)
+### Active continuation (2026-11-13; voice dashboard `9919963e` pushed)
+
+- Code `9919963e` is pushed to `origin/Mcbt5s-Backup-2` after `07af44c2`. It adds a reference
+  Assistant Voice microapp and a typed SDK adapter over the existing revisioned `/assistant-voice`
+  store. The Space-shared API checks active installation, the manifest's declared capability and
+  permission, membership, admin-only writes and the existing preference validator. Existing voice
+  catalog and limit behavior are reused; no provider API or alternate settings ledger was added.
+- Local evidence: SDK contract/canvas/dashboard tests **40/40**, Spaces extension-settings,
+  assistant-voice route and migration tests **20/20**, SDK/Spaces/Shell typechecks and `git diff
+  --check`. These are local/mock checks, not deployed or provider-live acceptance. This is a Space
+  Assistant preferences dashboard, not a complete customer voice-agent product: no preview, custom
+  voice lifecycle, public streaming, provider acceptance or production call telemetry was added.
+- Pushed docs `31149fbf` identify §5 setup/runtime gaps and the prior S2–S9/U01–U12 evidence. The new
+  voice dashboard does not change those managed-services classifications.
+- Exact next task: reconcile plan §10's proposed coordination registry against existing project
+  Blackboard, membership/visibility checks, extension grants and owner approval. Implement explicit
+  Space-owned, owner-published advisory facts with disclosure preview and bounded member reads; do not
+  derive facts from private projects or add singleton enforcement before its policy is approved.
+  Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+
+### Prior continuation (2026-11-13; extension settings foundation `07af44c2` pushed)
 
 - Code `07af44c2` is pushed to `origin/Mcbt5s-Backup-2`. The ExtensionManifest now includes the
   same bounded schema-v1 field contract used by Space Templates. SpaceDO persists settings by

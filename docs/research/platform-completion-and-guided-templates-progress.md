@@ -2,16 +2,17 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code commit `07af44c2` was pushed to `origin/Mcbt5s-Backup-2`.
-Extension manifests now use the same bounded schema-v1 field vocabulary as Space Templates.
-Installation settings are stored per active Space-shared extension with optimistic revisions; the
-Shell renders a basic settings form and exposes a restricted microapp RPC. Each host request
-revalidates the active installation, signed manifest schema, declared read/configure capability and
-permission, Space membership/administrator role, value shape and revision. Initial reads apply
-defaults while leaving required values blank. Focused local evidence: SDK schema/canvas tests **36/36**,
-Spaces settings/MCP-route/migration tests **20/20**, SDK/Spaces/Shell typechecks, local SDK build and
-`git diff --check`. No deployed Durable Object, package runtime, customer install or provider was
-exercised.
+Updated 2026-11-13 after code commits `07af44c2` and `9919963e` were pushed to
+`origin/Mcbt5s-Backup-2`. Extension manifests now use the same bounded schema-v1 field vocabulary as
+Space Templates. Per-install settings have optimistic revisions, a host-rendered Shell form and a
+restricted microapp RPC; requests revalidate the active installation, signed schema, declared
+capabilities/permissions, Space membership, administrator role, value shape and revision. The
+reference Assistant Voice dashboard and SDK adapter call the existing `/assistant-voice` preferences
+service and its approved voice catalog; the SpaceDO rechecks the installed manifest grants, Space
+scope and administrator role before forwarding to the same revisioned store. Focused local evidence:
+SDK schema/canvas/dashboard tests **40/40**, Spaces settings/voice-route/migration tests **20/20**,
+SDK/Spaces/Shell typechecks, local SDK build and `git diff --check`. No deployed Durable Object,
+package runtime, customer install or provider was exercised.
 
 §5 remains PARTIAL. Space Template setup values are persisted with their idempotent install record,
 but are still not exposed to template code; no browser draft/resume lifecycle, conditional/localized
@@ -19,15 +20,19 @@ fields, visual authoring, expected-usage inputs, complete provider/runtime rate 
 update/uninstall acceptance exists. The new extension settings store is install-scoped but is not a
 template runtime consumer. Fields cannot collect provider secrets; use host-managed connections.
 
-The managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
+The new voice dashboard configures Space Assistant preferences only. It does not implement a
+customer-agent product package, test call/preview, custom voice lifecycle, streaming phone path,
+provider quote, usage dashboard or live acceptance; public phone streaming remains rejected. The
+managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
 their named product policy, unsupported runtime/platform contract, external resource evidence or
 deployed/live acceptance gap. P01/P02 remain fail-closed on environment IDs, ownership receipts and
 operator-attested migration baselines; P03/P20 retain the grace/restriction,
-refund/dispute/author-accounting and independent operator-identity gaps. Exact next task: connect the
-existing `createAssistantVoiceClient` to a capability-checked Space-shared extension RPC for the
-existing `/assistant-voice` service, then build a package dashboard caller that reuses its catalog,
-revision and safe preferences. Do not enable unsupported public phone streaming. Continue §9 and then
-§10 Shared-Space coordination; keep implementation, mocked, deployed and live evidence distinct.
+refund/dispute/author-accounting and independent operator-identity gaps. Exact next task: reconcile
+§10's proposed Space coordination registry with current Blackboard sharing, project visibility,
+extension grants and approval callers; implement explicit Space-owned advisory facts with a disclosure
+preview and bounded member reads. Do not infer facts from private projects or enforce singleton rules
+before policy approval. Continue remaining §9 customer voice product gaps and §10 lifecycle,
+concurrency and privacy requirements; keep implementation, mocked, deployed and live evidence distinct.
 
 Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
 `origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a
