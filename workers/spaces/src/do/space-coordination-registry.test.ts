@@ -111,6 +111,34 @@ describe("Space-owned advisory coordination registry", () => {
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries)
       .toMatchObject([{ entry_id: "admin-only", status: "active" }]);
   });
+
+  it("amends a fact with explicit audience confirmation and expected-version fencing", async () => {
+    const { space, storage, root, publish } = setup();
+    expect((await publish("entry", "Old company site")).status).toBe(201);
+    const amend = (expectedVersion: number, confirmed: boolean, audience: "space_members" | "space_admins" = "space_admins") =>
+      space.fetch(new Request(`${root}/entry`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
+        tenant_id: "tenant", space_id: "space", actor_id: "admin", approved_role: "admin", schema_version: 2,
+        expected_version: expectedVersion, confirmed,
+        draft: { schema_version: 2, capability_key: "official.website", label: "Current company site", audience },
+      }) }));
+
+    const unconfirmed = await amend(1, false);
+    expect(unconfirmed.status).toBe(400);
+    const updated = await amend(1, true);
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({ entry: {
+      entry_id: "entry", schema_version: 2, label: "Current company site", audience: "space_admins", version: 2, advisory_only: true,
+    } });
+    expect(storage.sql.exec<{ created_by: string; approved_by: string; approved_role: string; provenance: string }>(
+      "SELECT created_by,approved_by,approved_role,provenance FROM space_coordination_entries WHERE entry_id='entry'").toArray()).toEqual([{
+      created_by: "owner", approved_by: "admin", approved_role: "admin", provenance: "explicit_owner_or_admin_approval",
+    }]);
+    expect((await amend(1, true)).status).toBe(409);
+    expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`)).then(response => response.json()))
+      .entries).toEqual([]);
+    expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json()))
+      .entries).toMatchObject([{ entry_id: "entry", version: 2, label: "Current company site" }]);
+  });
 });
 
 function storageRow(space: SpaceDO) {

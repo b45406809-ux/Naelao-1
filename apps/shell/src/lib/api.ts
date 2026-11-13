@@ -122,6 +122,11 @@ export function revokeSpaceCoordination(spaceId: string, session: SessionCredent
     `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/${encodeURIComponent(entryId)}`,
     { method: "DELETE", session, body: JSON.stringify({ schema_version: 2, expected_version: expectedVersion }) });
 }
+export function amendSpaceCoordination(spaceId: string, session: SessionCredentials, entryId: string, expectedVersion: number, draft: SpaceCoordinationDraftV2, confirmDisclosure: boolean) {
+  return apiFetch<{ entry: SpaceCoordinationEntryV2; disclosure: { audience: string; effect: string } }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/${encodeURIComponent(entryId)}`,
+    { method: "PATCH", session, body: JSON.stringify({ ...draft, expected_version: expectedVersion, confirm_disclosure: confirmDisclosure }) });
+}
 
 export interface CustomModelLifecycle {
   modelId: string; space_id: string; model_id: string; status: string; training_enabled: boolean;

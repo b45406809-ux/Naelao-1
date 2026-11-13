@@ -3,7 +3,7 @@
 import * as React from "react";
 import type { SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2 } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
-import { listSpaceCoordination, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
+import { amendSpaceCoordination, listSpaceCoordination, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -16,6 +16,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [audience, setAudience] = React.useState<SpaceCoordinationAudienceV2>("space_members");
+  const [editingEntry, setEditingEntry] = React.useState<SpaceCoordinationEntryV2 | null>(null);
   const [preview, setPreview] = React.useState<{ draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string } } | null>(null);
   const [confirmed, setConfirmed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -56,6 +57,21 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const draft = (): SpaceCoordinationDraftV2 => ({ schema_version: 2, capability_key: capabilityKey, label,
     ...(description.trim() ? { description } : {}), audience });
 
+  function beginEdit(entry: SpaceCoordinationEntryV2) {
+    setEditingEntry(entry);
+    setCapabilityKey(entry.capability_key);
+    setLabel(entry.label);
+    setDescription(entry.description ?? "");
+    setAudience(entry.audience);
+    changed();
+  }
+
+  function cancelEdit() {
+    setEditingEntry(null);
+    setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members");
+    changed();
+  }
+
   async function makePreview() {
     setBusy(true); setError(null); setNotice(null);
     try {
@@ -71,12 +87,20 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     if (!preview || !confirmed) return;
     setBusy(true); setError(null); setNotice(null);
     try {
-      await publishSpaceCoordination(spaceId, session, preview.draft, true);
-      setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setPreview(null); setConfirmed(false);
-      setNotice(preview.draft.audience === "space_admins" ? "The approved advisory fact is visible to Space owners and administrators." : "The approved advisory fact is visible to Space members.");
-      await refresh();
+      let updatedEntry: SpaceCoordinationEntryV2 | null = null;
+      if (editingEntry) {
+        const result = await amendSpaceCoordination(spaceId, session, editingEntry.entry_id, editingEntry.version, preview.draft, true);
+        updatedEntry = result.entry;
+        setNotice(preview.draft.audience === "space_admins" ? "The approved fact was updated for Space owners and administrators." : "The approved fact was updated for Space members.");
+      } else {
+        await publishSpaceCoordination(spaceId, session, preview.draft, true);
+        setNotice(preview.draft.audience === "space_admins" ? "The approved advisory fact is visible to Space owners and administrators." : "The approved advisory fact is visible to Space members.");
+      }
+      if (updatedEntry) setEntries(current => current.map(entry => entry.entry_id === updatedEntry!.entry_id ? updatedEntry! : entry));
+      setEditingEntry(null); setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setPreview(null); setConfirmed(false);
+      if (!updatedEntry) await refresh();
     } catch {
-      setError("The fact was not published. Review your role and try again.");
+      setError(editingEntry ? "The fact changed or could not be updated. Refresh the list and review it again." : "The fact was not published. Review your role and try again.");
     } finally { setBusy(false); }
   }
 
@@ -107,7 +131,10 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           <div className="settings-row-sub" style={{ marginTop: 3 }}>{entry.capability_key}{entry.description ? ` · ${entry.description}` : ""}</div>
           <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version}</div>
         </div>
-        {canManage && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void revoke(entry)}>Unpublish</button>}
+        {canManage && <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>Edit</button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void revoke(entry)}>Unpublish</button>
+        </div>}
       </article>)}
       {nextAfter && <div style={{ borderTop: "1px solid var(--border)", padding: "10px 16px" }}>
         <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadMore()}>Load more facts</button>
@@ -115,7 +142,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     </div> : <p className="settings-row-sub" style={{ padding: "0 16px 14px", margin: 0 }}>No coordination facts have been published.</p>}
 
     {canManage && <div style={{ borderTop: "1px solid var(--border)", padding: 16, display: "grid", gap: 10 }}>
-      <div className="settings-row-label">Publish an approved fact</div>
+      <div className="settings-row-label">{editingEntry ? "Edit an approved fact" : "Publish an approved fact"}</div>
       <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to the selected audience. Duplicate capability keys are allowed; this registry does not reserve or enforce a singleton resource.</p>
       <label className="settings-row-sub">Capability key
         <input className="form-input" maxLength={96} value={capabilityKey} disabled={busy} placeholder="official.website" onChange={event => { setCapabilityKey(event.target.value); changed(); }} />
@@ -134,6 +161,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
       </label>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !capabilityKey.trim() || !label.trim()} onClick={() => void makePreview()}>Preview disclosure</button>
+        {editingEntry && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={cancelEdit}>Cancel edit</button>}
       </div>
       {preview && <div role="group" aria-label="Disclosure preview" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
         <div className="settings-row-label">Disclosure preview</div>
@@ -142,9 +170,9 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         <div className="settings-row-sub">Effect: {preview.disclosure.effect}.</div>
         <label className="settings-row-sub" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
           <input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />
-          I approve publishing this exact fact to the audience shown above.
+          {editingEntry ? "I approve this exact update and its disclosure to the audience shown above." : "I approve publishing this exact fact to the audience shown above."}
         </label>
-        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !confirmed} onClick={() => void publish()}>Publish fact</button>
+        <button type="button" className="btn btn-primary btn-sm" disabled={busy || !confirmed} onClick={() => void publish()}>{editingEntry ? "Update fact" : "Publish fact"}</button>
       </div>}
     </div>}
     {error && <p role="alert" className="settings-row-sub" style={{ color: "#dc2626", padding: "0 16px 12px" }}>{error}</p>}

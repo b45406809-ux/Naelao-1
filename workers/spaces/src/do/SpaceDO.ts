@@ -2859,6 +2859,38 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ entry: { ...entry, advisory_only: true } });
   }
 
+  private async updateSpaceCoordination(request: Request, entryId: string): Promise<Response> {
+    const body = await request.json<{
+      tenant_id?: string; space_id?: string; actor_id?: string; approved_role?: string;
+      schema_version?: number; expected_version?: number; confirmed?: unknown; draft?: unknown;
+    }>().catch(() => null);
+    if (!body?.tenant_id || !body.space_id || !body.actor_id || !["owner", "admin"].includes(body.approved_role ?? "")
+      || body.schema_version !== 2 || !Number.isInteger(body.expected_version) || (body.expected_version ?? 0) < 1 || body.confirmed !== true) {
+      return Response.json({ error_code: "coordination_disclosure_confirmation_required" }, { status: 400 });
+    }
+    const parsed = validateSpaceCoordinationDraftV2(body.draft);
+    if (!parsed.ok) return Response.json({ error_code: parsed.error }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const current = queryOne<Record<string, unknown>>(sql,
+      "SELECT status,version,updated_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, entryId);
+    if (!current) return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
+    if (current.status !== "active" || current.version !== body.expected_version)
+      return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
+    const previousUpdatedAt = typeof current.updated_at === "string" ? Date.parse(current.updated_at) : 0;
+    const now = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
+    const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_entries
+      SET schema_version=2,capability_key=?,label=?,description=?,audience=?,approved_by=?,approved_role=?,version=version+1,updated_at=?
+      WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=?`,
+      parsed.value.capability_key, parsed.value.label, parsed.value.description ?? null, parsed.value.audience,
+      body.actor_id, body.approved_role, now, body.tenant_id, body.space_id, entryId, body.expected_version);
+    if (changed.rowsWritten !== 1) return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
+    const entry = queryOne<Record<string, unknown>>(sql,
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, entryId);
+    return Response.json({ entry: { ...entry, advisory_only: true } });
+  }
+
   private deleteDomainGlossary(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const term = params.get("term") ?? "";
@@ -3481,6 +3513,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-coordination-registry" && method === "POST") return this.publishSpaceCoordination(request);
       const coordinationRevoke = url.pathname.match(/^\/space-coordination-registry\/([^/]+)$/);
       if (coordinationRevoke?.[1] && method === "DELETE") return this.revokeSpaceCoordination(request, decodeURIComponent(coordinationRevoke[1]));
+      if (coordinationRevoke?.[1] && method === "PATCH") return this.updateSpaceCoordination(request, decodeURIComponent(coordinationRevoke[1]));
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/extension-installation/activate" && method === "POST") return this.activateExtensionInstallation(request);
       if (url.pathname === "/extension-installation/abort" && method === "POST") return this.abortStagedExtensionInstallation(request);

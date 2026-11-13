@@ -108,7 +108,7 @@ export interface SpaceCoordinationPageV2 {
 
 export interface SpaceCoordinationClientOptions {
   spaceId: string;
-  request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE"; body?: unknown }): Promise<T>;
+  request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown }): Promise<T>;
 }
 
 /** Small caller-neutral API client. The caller supplies its authenticated host transport. */
@@ -147,6 +147,9 @@ export function createSpaceCoordinationClientV2(options: SpaceCoordinationClient
     },
     revoke(entryId: string, expectedVersion: number): Promise<{ entry: SpaceCoordinationEntryV2 }> {
       return options.request(`${base}/${encodeURIComponent(entryId)}`, { method: "DELETE", body: { schema_version: 2, expected_version: expectedVersion } });
+    },
+    amend(entryId: string, expectedVersion: number, draft: SpaceCoordinationDraftV2, confirmDisclosure: boolean): Promise<{ entry: SpaceCoordinationEntryV2; disclosure: SpaceCoordinationDisclosureV2 }> {
+      return options.request(`${base}/${encodeURIComponent(entryId)}`, { method: "PATCH", body: { ...draft, expected_version: expectedVersion, confirm_disclosure: confirmDisclosure } });
     },
   };
 }

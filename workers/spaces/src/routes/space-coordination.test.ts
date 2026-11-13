@@ -16,7 +16,7 @@ describe("Space coordination registry gateway", () => {
       SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
         calls.push(request);
         if (request.method === "GET") return Response.json({ schema_version: 1, entries: [], next_after: null });
-        return Response.json({ entry: { entry_id: "entry-1", version: 1 } }, { status: request.method === "DELETE" ? 200 : 201 });
+        return Response.json({ entry: { entry_id: "entry-1", version: request.method === "PATCH" ? 2 : 1 }, ...(request.method === "PATCH" ? { disclosure: { audience: "Space owners and administrators", effect: "advisory only" } } : {}) }, { status: request.method === "DELETE" || request.method === "PATCH" ? 200 : 201 });
       } }) },
     } as unknown as Env;
     return { bindings, calls };
@@ -98,5 +98,17 @@ describe("Space coordination registry gateway", () => {
     const revoked = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "DELETE", { schema_version: 2, expected_version: 1 }), owner.bindings);
     expect(revoked.status).toBe(200);
     expect(await owner.calls[1]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user" });
+
+    const needsConfirmation = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "PATCH", {
+      ...draft, expected_version: 1, confirm_disclosure: false,
+    }), owner.bindings);
+    expect(await needsConfirmation.json()).toMatchObject({ error_code: "coordination_disclosure_confirmation_required", disclosure: { audience: "Space owners and administrators" } });
+    const amended = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "PATCH", {
+      ...draft, expected_version: 1, label: "Updated company site", confirm_disclosure: true,
+    }), owner.bindings);
+    expect(amended.status).toBe(200);
+    await expect(amended.json()).resolves.toMatchObject({ entry: { version: 2 }, disclosure: { audience: "Space owners and administrators" } });
+    expect(await owner.calls[2]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, confirmed: true, approved_role: "owner",
+      draft: { label: "Updated company site", audience: "space_admins" } });
   });
 });
