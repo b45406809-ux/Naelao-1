@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0232_semantic_cache_cleanup_operations",
+  "requiredSchemaVersion": "0233_dunning_notification_attempt_receipts",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -931,6 +931,10 @@
     {
       "filename": "0232_semantic_cache_cleanup_operations.sql",
       "sha256": "8dfb1a8b931d260f2eb90130e00f02c2df945f9c4eefece9d01c62f92ac9177b"
+    },
+    {
+      "filename": "0233_dunning_notification_attempt_receipts.sql",
+      "sha256": "8618a9633d02ab0a1a500cdd077546d2590c6c0277d6187b75a8ac590375105f"
     }
   ]
 }

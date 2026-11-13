@@ -22,6 +22,11 @@ class MemoryD1:
         self.applied_sql = []
         self.queue_health_columns = ("triggered_at", "observed_at", "source", "status", "unavailable_reason", "metrics_json", "alert_count", "alerts_json")
         self.auth_email_columns = ("operation_id", "status", "provider_receipt_id")
+        self.dunning_attempt_columns = (
+            "tenant_id", "notification_id", "subscription_scope", "provider", "provider_outcome",
+            "attempt_count", "last_http_status", "provider_receipt_id", "first_attempt_at",
+            "last_attempt_at", "accepted_at", "updated_at",
+        )
         self.knowledge_deletion_columns = (
             "operation_kind", "erasure_request_id", "cache_generation_to_purge",
             "cache_generation_next", "cache_cleanup_ids_json", "cache_cleanup_status",
@@ -48,6 +53,8 @@ class MemoryD1:
             return [{"name": name} for name in self.queue_health_columns]
         if sql.startswith("PRAGMA table_info('product_auth_email_outbox')"):
             return [{"name": name} for name in self.auth_email_columns]
+        if sql.startswith("PRAGMA table_info('dunning_notification_attempts')"):
+            return [{"name": name} for name in self.dunning_attempt_columns]
         if sql.startswith("PRAGMA table_info('kb_document_deletion_operations')"):
             return [{"name": name} for name in self.knowledge_deletion_columns]
         if sql.startswith("PRAGMA table_info('gdpr_requests')"):
@@ -177,6 +184,14 @@ class ReleaseMigrationTests(unittest.TestCase):
         d1.auth_email_columns = ("operation_id", "status")
         with self.assertRaisesRegex(release.ReleaseError, "product_auth_email_outbox"):
             release._required_schema_check(d1, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_dunning_provider_outcome_storage(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        incomplete = MemoryD1()
+        incomplete.dunning_attempt_columns = ("tenant_id", "notification_id", "provider_outcome")
+        with self.assertRaisesRegex(release.ReleaseError, "dunning_notification_attempts"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_required_schema_probe_checks_durable_queue_health_history(self):
         required = self.entries[-1]["filename"]

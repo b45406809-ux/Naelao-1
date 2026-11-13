@@ -344,6 +344,18 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if "provider_receipt_id" not in auth_email_columns:
         raise ReleaseError("required schema check failed for product_auth_email_outbox")
+    dunning_attempt_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('dunning_notification_attempts')")
+        if isinstance(row.get("name"), str)
+    }
+    dunning_attempt_expected = {
+        "tenant_id", "notification_id", "subscription_scope", "provider", "provider_outcome",
+        "attempt_count", "last_http_status", "provider_receipt_id", "first_attempt_at",
+        "last_attempt_at", "accepted_at", "updated_at",
+    }
+    if not dunning_attempt_expected.issubset(dunning_attempt_columns):
+        raise ReleaseError("required schema check failed for dunning_notification_attempts")
     deletion_columns = {
         row.get("name")
         for row in d1.query("PRAGMA table_info('kb_document_deletion_operations')")

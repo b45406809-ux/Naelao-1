@@ -379,6 +379,22 @@ export async function getBillingSubscription(): Promise<{
   );
 }
 
+export interface BillingDunningNotificationAttempt {
+  notification_id: string;
+  provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
+  attempt_count: number;
+  last_http_status: number | null;
+  provider_receipt_id: string | null;
+  first_attempt_at: string;
+  last_attempt_at: string;
+  accepted_at: string | null;
+}
+
+export async function getBillingDunningNotificationAttempts(): Promise<BillingDunningNotificationAttempt[]> {
+  const result = await apiFetch<{ data: BillingDunningNotificationAttempt[] }>("/billing/dunning-notifications");
+  return result.data ?? [];
+}
+
 export async function createBillingPortal(): Promise<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }> {
   const result = await apiFetch<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }>("/billing/portal", { method: "POST" });
   let target: URL;

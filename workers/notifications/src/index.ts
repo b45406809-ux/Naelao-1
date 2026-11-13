@@ -303,6 +303,8 @@ interface NotificationMessage {
   tenantId: string;
   /** Stable caller-supplied identity for idempotent notification retries. */
   notificationId?: string;
+  /** Billing dunning scope; used only to persist non-PII delivery attempt outcomes. */
+  subscriptionScope?: "platform_subscription" | "product_user_subscription";
   userId?: string;
   spaceId?: string;
   email?: string;
@@ -510,9 +512,50 @@ function plainTextToHtml(text: string): string {
   return escaped.replace(/\n/g, "<br>");
 }
 
+async function recordDunningProviderAttempt(
+  env: NotificationsEnv,
+  input: {
+    tenantId: string;
+    notificationId: string | undefined;
+    subscriptionScope: NotificationMessage["subscriptionScope"];
+    outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
+    httpStatus?: number;
+    providerReceiptId?: string;
+  },
+): Promise<void> {
+  if (!input.subscriptionScope || !/^[A-Za-z0-9_-]{1,128}$/.test(input.tenantId)
+    || !input.notificationId || !/^dunning-[a-f0-9]{64}$/.test(input.notificationId)) return;
+  const now = new Date().toISOString();
+  await env.PLATFORM_DB.prepare(`INSERT INTO dunning_notification_attempts (
+      tenant_id, notification_id, subscription_scope, provider, provider_outcome, attempt_count,
+      last_http_status, provider_receipt_id, first_attempt_at, last_attempt_at, accepted_at, updated_at
+    ) VALUES (?, ?, ?, 'resend', ?, 1, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tenant_id, notification_id) DO UPDATE SET
+      provider_outcome=excluded.provider_outcome,
+      attempt_count=dunning_notification_attempts.attempt_count+1,
+      last_http_status=excluded.last_http_status,
+      provider_receipt_id=COALESCE(excluded.provider_receipt_id, dunning_notification_attempts.provider_receipt_id),
+      last_attempt_at=excluded.last_attempt_at,
+      accepted_at=COALESCE(dunning_notification_attempts.accepted_at, excluded.accepted_at),
+      updated_at=excluded.updated_at`)
+    .bind(
+      input.tenantId,
+      input.notificationId,
+      input.subscriptionScope,
+      input.outcome,
+      input.httpStatus ?? null,
+      input.providerReceiptId ?? null,
+      now,
+      now,
+      input.outcome === "provider_accepted" ? now : null,
+      now,
+    )
+    .run();
+}
+
 async function sendEmailNow(
   env: NotificationsEnv,
-  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo">,
+  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo" | "subscriptionScope">,
   notificationId?: string
 ): Promise<{ ok: boolean; status?: number; from?: string; providerReceiptId?: string }> {
   let subject = msg.subject ?? "(no subject)";
@@ -530,25 +573,43 @@ async function sendEmailNow(
   html = plainTextToHtml(html);
   const from = env.RESEND_FROM_ADDRESS || "onboarding@resend.dev";
 
-  const res = await fetch(`${env.RESEND_API_URL}/emails`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-      ...(notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(notificationId) ? { "Idempotency-Key": notificationId } : {}),
-    },
-    body: JSON.stringify({
-      from,
-      to: msg.email,
-      ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
-      subject,
-      html,
-    }),
-    redirect: "error",
-    signal: AbortSignal.timeout(15_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${env.RESEND_API_URL}/emails`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        ...(notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(notificationId) ? { "Idempotency-Key": notificationId } : {}),
+      },
+      body: JSON.stringify({
+        from,
+        to: msg.email,
+        ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
+        subject,
+        html,
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    await recordDunningProviderAttempt(env, {
+      tenantId: msg.tenantId,
+      notificationId,
+      subscriptionScope: msg.subscriptionScope,
+      outcome: "attempt_ambiguous",
+    });
+    throw error;
+  }
 
   if (!res.ok) {
+    await recordDunningProviderAttempt(env, {
+      tenantId: msg.tenantId,
+      notificationId,
+      subscriptionScope: msg.subscriptionScope,
+      outcome: "provider_rejected",
+      httpStatus: res.status,
+    });
     // eslint-disable-next-line no-console -- diagnostic only, Resend never echoes secrets back
     console.error("resend send failed", res.status);
     return { ok: false, status: res.status };
@@ -561,6 +622,14 @@ async function sendEmailNow(
   const providerReceiptId = typeof providerResponse?.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(providerResponse.id)
     ? providerResponse.id
     : undefined;
+  await recordDunningProviderAttempt(env, {
+    tenantId: msg.tenantId,
+    notificationId,
+    subscriptionScope: msg.subscriptionScope,
+    outcome: "provider_accepted",
+    httpStatus: res.status,
+    ...(providerReceiptId ? { providerReceiptId } : {}),
+  });
 
   // Audit row in the `notifications` table (migration 0010: id, tenant_id, user_id NOT NULL,
   // type, title, body, ...) — this previously used columns (`status`, `subject`) that don't

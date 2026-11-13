@@ -196,6 +196,33 @@ app.get("/billing/subscription", async (c) => {
   });
 });
 
+// Owner/admin-only provider acceptance evidence for recent platform-plan dunning notices.
+// This reports the email provider's response and never claims inbox delivery.
+app.get("/billing/dunning-notifications", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!isOrgBillingAdmin(c.req.header("x-naelao-role"))) {
+    return c.json({ error_code: "forbidden", message: "Only organization owners and admins can review billing notices" }, 403);
+  }
+  const result = await c.env.PLATFORM_DB.prepare(`
+    SELECT notification_id, provider_outcome, attempt_count, last_http_status,
+           provider_receipt_id, first_attempt_at, last_attempt_at, accepted_at
+    FROM dunning_notification_attempts
+    WHERE tenant_id=? AND subscription_scope='platform_subscription'
+    ORDER BY last_attempt_at DESC, notification_id DESC LIMIT 50
+  `).bind(orgId).all<{
+    notification_id: string;
+    provider_outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous";
+    attempt_count: number;
+    last_http_status: number | null;
+    provider_receipt_id: string | null;
+    first_attempt_at: string;
+    last_attempt_at: string;
+    accepted_at: string | null;
+  }>();
+  return c.json({ data: result.results ?? [] });
+});
+
 // ── POST /billing/checkout ────────────────────────────────────────────────────
 app.post("/billing/checkout", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";

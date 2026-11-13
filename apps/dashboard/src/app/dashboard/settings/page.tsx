@@ -1,6 +1,6 @@
 "use client";
 
-import { createBillingPortal, getBillingSubscription, getMyPreferences, updateMyPreferences } from "@/lib/api";
+import { createBillingPortal, getBillingDunningNotificationAttempts, getBillingSubscription, getMyPreferences, updateMyPreferences, type BillingDunningNotificationAttempt } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -38,6 +38,9 @@ export default function SettingsPage() {
   const [billingLoading, setBillingLoading] = useState(true);
   const [billingError, setBillingError] = useState<string | null>(null);
   const [billingPortalOpening, setBillingPortalOpening] = useState(false);
+  const [dunningAttempts, setDunningAttempts] = useState<BillingDunningNotificationAttempt[]>([]);
+  const [dunningAttemptsLoading, setDunningAttemptsLoading] = useState(false);
+  const [dunningAttemptsError, setDunningAttemptsError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -48,6 +51,29 @@ export default function SettingsPage() {
     }).finally(() => { if (active) setLanguageLoading(false); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (claims?.role !== "owner" && claims?.role !== "admin") {
+      setDunningAttempts([]);
+      setDunningAttemptsLoading(false);
+      setDunningAttemptsError(false);
+      return;
+    }
+    let active = true;
+    setDunningAttemptsLoading(true);
+    setDunningAttemptsError(false);
+    void getBillingDunningNotificationAttempts().then((rows) => {
+      if (active) setDunningAttempts(rows);
+    }).catch(() => {
+      if (active) {
+        setDunningAttempts([]);
+        setDunningAttemptsError(true);
+      }
+    }).finally(() => {
+      if (active) setDunningAttemptsLoading(false);
+    });
+    return () => { active = false; };
+  }, [claims?.role]);
 
   useEffect(() => {
     let active = true;
@@ -138,6 +164,20 @@ export default function SettingsPage() {
             Your billing provider reported a payment issue. Review your payment options with the provider. Access follows the current subscription status reported by the provider.
           </p>}
           {billing.cancel_at_period_end && <p className="text-sm text-gray-600">Your subscription is set to cancel at the end of the current period.</p>}
+          {(claims?.role === "owner" || claims?.role === "admin") && (dunningAttemptsLoading || dunningAttempts.length > 0 || dunningAttemptsError) && <div className="border-t border-gray-200 pt-3">
+            <h3 className="text-sm font-semibold text-gray-900">Recent billing notice attempts</h3>
+            <p className="text-xs text-gray-500 mt-1">This shows provider request outcomes. Provider acceptance does not confirm inbox delivery.</p>
+            {dunningAttemptsLoading ? <p className="text-sm text-gray-500 mt-2">Loading recent attempts…</p> : <ul className="mt-2 space-y-2">
+              {dunningAttemptsError && <li role="status" className="text-sm text-gray-600">Attempt status is unavailable right now.</li>}
+              {dunningAttempts.map((attempt) => <li key={attempt.notification_id} className="rounded-lg border border-gray-200 p-3 text-sm">
+                <p className="font-medium text-gray-900">
+                  {attempt.accepted_at ? `Provider acceptance recorded ${new Date(attempt.accepted_at).toLocaleString()}` : attempt.provider_outcome === "provider_accepted" ? "Provider accepted request" : attempt.provider_outcome === "provider_rejected" ? `Provider rejected request${attempt.last_http_status ? ` (HTTP ${attempt.last_http_status})` : ""}` : "Provider request outcome is uncertain"}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">{attempt.attempt_count} recorded attempt{attempt.attempt_count === 1 ? "" : "s"} · last provider attempt {new Date(attempt.last_attempt_at).toLocaleString()}</p>
+                {attempt.provider_receipt_id && <p className="text-xs text-gray-500 mt-1">Provider receipt: <code>{attempt.provider_receipt_id}</code></p>}
+              </li>)}
+            </ul>}
+          </div>}
           {billing.plan_tier !== "free" && (claims?.role === "owner" || claims?.role === "admin") && <button
             type="button" onClick={() => void openBillingPortal()} disabled={billingPortalOpening}
             className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg">
