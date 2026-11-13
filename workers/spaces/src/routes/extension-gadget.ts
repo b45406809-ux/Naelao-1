@@ -3,6 +3,7 @@ import type { Env } from "../index.js";
 import { getDOName } from "@naelao/crypto";
 import { verifyInternalToken } from "@naelao/http";
 import { gadgetActorId } from "../do/MicroAppDO.js";
+import { extensionRuntimeWork, releaseRuntimeWorkAfterResponse } from "./gadget-mcp.js";
 
 /** Internal-only bridge used by an already-authorized project workflow role. */
 export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): void {
@@ -50,10 +51,18 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
       && roles[0]?.gadgetActions?.some(grant => grant.gadgetId === primitiveId && grant.operations.includes(toolName) && grant.tables.includes(table));
     if (!actionAllowed) return c.json({ error_code: "extension_gadget_action_not_granted" }, 403);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
-    const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
-      method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": `workflow:${workflowId}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
-    }));
-    return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+    const workId = crypto.randomUUID();
+    const admitted = await extensionRuntimeWork(c.env, { action: "acquire", tenantId, spaceId, projectId,
+      installationId, workId, workKind: "gadget" });
+    if (admitted.acquired !== true) return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
+    const release = () => extensionRuntimeWork(c.env, { action: "release", tenantId, spaceId, projectId, installationId, workId, workKind: "gadget" });
+    try {
+      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": `workflow:${workflowId}` },
+        body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
+      }));
+      const relayed = new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+      return await releaseRuntimeWorkAfterResponse(relayed, release);
+    } catch (error) { await release(); throw error; }
   });
 }

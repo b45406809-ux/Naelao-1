@@ -28,7 +28,7 @@ import type { ProvisionMessage } from "./create-space.js";
 import { requireSpaceMembership, resolveEndUserSpaceRole } from "./space-auth.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
-import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { extensionRuntimeWork, registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
@@ -1453,21 +1453,48 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
   catch { return { ok: false, error: "first_party_manifest_invalid" }; }
   if (!manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)) return { ok: false, error: "space_shared_gadget_required" };
   const spaceStub = await spaceDoStub(env, spaceId, tenantId);
+  const existingResponse = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+    tenant_id: tenantId, space_id: spaceId, extension_id: extensionId,
+  })}`));
+  if (!existingResponse.ok) return { ok: false, error: "extension_installation_lookup_unavailable" };
+  let existingBody: { installations?: Array<{ instance_id?: string; scope?: string; project_id?: string | null; instance_key?: string; status?: string }> };
+  try { existingBody = await readBoundedResponseJson(existingResponse, 256 * 1024); }
+  catch { return { ok: false, error: "extension_installation_lookup_unavailable" }; }
+  const existing = existingBody.installations?.find(item => item.scope === "SPACE_SHARED" && item.project_id === null
+    && (item.instance_key ?? "default") === "default" && item.instance_id);
+  if (existing && existing.status !== "active") return { ok: false, error: "extension_installation_paused" };
   const installed = await spaceStub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy, tenantId, spaceId, scope: "SPACE_SHARED", approvedSharedFilesystem, gatekeeperCapabilities: manifest.capabilityRequirements }) }));
   if (!installed.ok) return { ok: false, error: "extension_installation_rejected" };
   const result = await installed.json<{ installationId?: string }>().catch(() => ({} as { installationId?: string }));
   if (!result.installationId) return { ok: false, error: "extension_installation_id_missing" };
   const html = DOGFOOD_EXTENSION_CANVASES[extensionId];
-  if (html) for (const gadget of manifest.gadgets.filter(item => item.scope === "SPACE_SHARED" && item.gadgetTier === 3)) {
-    const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: gadget.id });
-    const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId: gadget.id, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: gadget.defaultSchemaSql, migrations: gadget.migrations ?? [], html }) }));
-    if (!initialized.ok) {
-      const removed = await spaceStub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({
+  if (html) {
+    const workId = crypto.randomUUID();
+    const lease = await extensionRuntimeWork(env, { action: "acquire", tenantId, spaceId, projectId: null,
+      installationId: result.installationId, workId, workKind: "gadget" });
+    if (lease.acquired !== true) {
+      if (!existing) await spaceStub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({
         instance_id: result.installationId, tenant_id: tenantId, space_id: spaceId,
       })}`, { method: "DELETE" }));
-      return { ok: false, error: removed.ok ? "extension_canvas_initialization_failed" : "extension_canvas_initialization_rollback_failed" };
+      return { ok: false, error: lease.errorCode === "extension_installation_inactive" ? "extension_installation_paused" : "extension_runtime_work_unavailable" };
+    }
+    let initialized = true;
+    try {
+      for (const gadget of manifest.gadgets.filter(item => item.scope === "SPACE_SHARED" && item.gadgetTier === 3)) {
+        const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: gadget.id });
+        const response = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ appId: gadget.id, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: gadget.defaultSchemaSql, migrations: gadget.migrations ?? [], html }) }));
+        if (!response.ok) { initialized = false; break; }
+      }
+    } catch { initialized = false; }
+    finally { await extensionRuntimeWork(env, { action: "release", tenantId, spaceId, projectId: null,
+      installationId: result.installationId, workId, workKind: "gadget" }); }
+    if (!initialized) {
+      const removed = existing ? null : await spaceStub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({
+        instance_id: result.installationId, tenant_id: tenantId, space_id: spaceId,
+      })}`, { method: "DELETE" }));
+      return { ok: false, error: removed?.ok === false ? "extension_canvas_initialization_rollback_failed" : "extension_canvas_initialization_failed" };
     }
   }
   return { ok: true, installationId: result.installationId };
@@ -2102,7 +2129,7 @@ app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   const status = result.error === "first_party_extension_not_found" || result.error === "extension_package_release_unavailable" ? 404
     : result.error.includes("publisher_key_untrusted") ? 403
     : result.error.includes("dependency_registry_unavailable") ? 503
-    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted")
+    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted") || result.error.includes("paused")
       || result.error.includes("dependency") || result.error.includes("requires_review") ? 409
     : result.error.includes("unsupported") ? 422
     : result.error.includes("invalid") ? 400 : 503;
@@ -2703,12 +2730,31 @@ app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle
   const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const body = await c.req.json<{ action?: "enable" | "disable" }>().catch((): { action?: "enable" | "disable" } => ({}));
+  const body = await c.req.json<{ action?: "enable" | "disable"; drain_timeout_ms?: number }>()
+    .catch((): { action?: "enable" | "disable"; drain_timeout_ms?: number } => ({}));
   if (body.action !== "enable" && body.action !== "disable") return c.json({ error_code: "extension_lifecycle_action_invalid" }, 400);
+  if (body.drain_timeout_ms !== undefined && (!Number.isSafeInteger(body.drain_timeout_ms) || body.drain_timeout_ms < 0 || body.drain_timeout_ms > 10_000))
+    return c.json({ error_code: "extension_lifecycle_drain_timeout_invalid" }, 400);
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
   return stub.fetch(new Request("http://space-do/space-shared-extension-lifecycle", { method: "PATCH",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
-    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, instanceId, action: body.action }) }));
+    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, instanceId, action: body.action, drainTimeoutMs: body.drain_timeout_ms ?? 0 }) }));
+});
+
+app.post("/internal/extensions/runtime-work", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  const bytes = await readBoundedRequestBytes(c.req.raw, 8 * 1024).catch(() => null);
+  if (!bytes) return c.json({ error_code: "extension_runtime_work_request_invalid" }, 400);
+  let body: { tenantId?: unknown; spaceId?: unknown };
+  try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body; }
+  catch { return c.json({ error_code: "extension_runtime_work_request_invalid" }, 400); }
+  if (body.tenantId !== tenantId || typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId))
+    return c.json({ error_code: "extension_runtime_work_request_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, body.spaceId, tenantId);
+  return stub.fetch(new Request("http://space-do/extension-runtime-work", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": c.req.header("x-naelao-internal-token") ?? "" }, body: bytes }));
 });
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
@@ -4698,13 +4744,22 @@ app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId"
   const identity = getCallerIdentity(c);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const pause = await stub.fetch(new Request("http://space-do/project-extension-lifecycle", { method: "PATCH",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: "disable", drainTimeoutMs: 10_000 }) }));
+  if (!pause.ok) return new Response(pause.body, { status: pause.status, headers: { "content-type": "application/json" } });
+  const drain = await readBoundedResponseJson<{ drained?: unknown; active_work_count?: unknown }>(pause, 8 * 1024)
+    .catch(() => ({} as { drained?: unknown; active_work_count?: unknown }));
+  if (drain.drained !== true) return c.json({ error_code: "extension_runtime_work_not_drained",
+    active_work_count: Number.isSafeInteger(drain.active_work_count) ? drain.active_work_count : null,
+    message: "The installation is paused. Wait for admitted work to finish, then retry removal." }, 409);
   const cleanup = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/session-state", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ spaceId, projectId, installationId: instanceId, action: "uninstall" }),
   }));
   if (!cleanup.ok) return new Response(cleanup.body, { status: cleanup.status, headers: { "content-type": "application/json" } });
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const removed = await stub.fetch(new Request("http://space-do/extension-installation?" + new URLSearchParams({
     instance_id: instanceId, tenant_id: tenantId, space_id: spaceId, project_id: projectId,
   }), { method: "DELETE" }));
@@ -4716,13 +4771,16 @@ app.patch("/spaces/:spaceId/projects/:projectId/extension-installations/:instanc
   const { spaceId, projectId, instanceId } = c.req.param();
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
   if (denied) return denied;
-  const body = await c.req.json<{ action?: "enable" | "disable" }>().catch((): { action?: "enable" | "disable" } => ({}));
+  const body = await c.req.json<{ action?: "enable" | "disable"; drain_timeout_ms?: number }>()
+    .catch((): { action?: "enable" | "disable"; drain_timeout_ms?: number } => ({}));
   if (body.action !== "enable" && body.action !== "disable") return c.json({ error_code: "extension_lifecycle_action_invalid" }, 400);
+  if (body.drain_timeout_ms !== undefined && (!Number.isSafeInteger(body.drain_timeout_ms) || body.drain_timeout_ms < 0 || body.drain_timeout_ms > 10_000))
+    return c.json({ error_code: "extension_lifecycle_drain_timeout_invalid" }, 400);
   const tenantId = getCallerIdentity(c).tenantId;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   return stub.fetch(new Request("http://space-do/project-extension-lifecycle", { method: "PATCH",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
-    body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action }) }));
+    body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action, drainTimeoutMs: body.drain_timeout_ms ?? 0 }) }));
 });
 
 const projectExtensionSettingsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings";

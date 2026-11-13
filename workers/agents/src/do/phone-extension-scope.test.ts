@@ -11,11 +11,16 @@ function setup(project: string | null, provider = "twilio") {
     ],
     channel_session_update: { simulation: "must not persist" },
   }));
+  const runtimeWork = vi.fn(async (request: Request) => {
+    const body = await request.clone().json() as { action?: string };
+    return Response.json(body.action === "acquire" ? { acquired: true } : { released: true });
+  });
   const storage = createDOStorage();
   const agent = new NaelaoAgentDO(
     { storage, id: { toString: () => "agent" } } as never,
     {
       PLATFORM_SECRET: secret,
+      SPACES_WORKER: { fetch: runtimeWork },
       PLATFORM_DB: {
         prepare: () => ({
           bind: () => ({
@@ -48,7 +53,7 @@ function setup(project: string | null, provider = "twilio") {
     limits: {},
   }));
   internals.buildScriptEngineEnv = async () => ({ codeRunner: { runChannel } });
-  return { agent, runChannel, internals, storage };
+  return { agent, runChannel, internals, storage, runtimeWork };
 }
 async function invoke(agent: NaelaoAgentDO, valid = true) {
   return agent.fetch(
@@ -115,14 +120,42 @@ describe("phone extension scope dispatch", () => {
         installationId: "install",
         channel: { provider: "phone", settings: { schemaVersion: 2, revision: 7, values: { greeting: "Welcome" } } },
       });
+      expect(f.runtimeWork.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual([
+        "/internal/extensions/runtime-work", "/internal/extensions/runtime-work",
+      ]);
+      expect(await f.runtimeWork.mock.calls[0]?.[0].clone().json()).toMatchObject({ action: "acquire", instanceId: "install", workKind: "phone_call" });
+      expect(await f.runtimeWork.mock.calls[1]?.[0].clone().json()).toMatchObject({ action: "release", instanceId: "install", workKind: "phone_call" });
     }
   );
+
+  it("returns the durable phone event receipt before requesting another runtime lease", async () => {
+    const f = setup("project");
+    expect((await invoke(f.agent)).status).toBe(200);
+    expect(f.runtimeWork).toHaveBeenCalledTimes(2);
+    f.runtimeWork.mockClear();
+
+    const replay = await invoke(f.agent);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ response: { actions: [{ type: "say", text: "Hello" }] } });
+    expect(f.runChannel).toHaveBeenCalledOnce();
+    expect(f.runtimeWork).not.toHaveBeenCalled();
+  });
   it("rejects unsigned dispatch and an unavailable installed handler", async () => {
     const f = setup(null);
     expect((await invoke(f.agent, false)).status).toBe(403);
     f.internals.loadActiveChannelHandler = vi.fn(async () => null);
     expect((await invoke(f.agent)).status).toBe(409);
     expect(f.runChannel).not.toHaveBeenCalled();
+  });
+
+  it("does not execute a phone handler when its installation is paused", async () => {
+    const f = setup(null);
+    f.runtimeWork.mockImplementationOnce(async () => Response.json({ error_code: "extension_installation_inactive" }, { status: 409 }));
+    const response = await invoke(f.agent);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error_code: "phone_extension_paused" });
+    expect(f.runChannel).not.toHaveBeenCalled();
+    expect(f.storage.sql.exec("SELECT status FROM phone_extension_events").toArray()).toEqual([]);
   });
 
   it("simulates synthetic speech in the bounded isolate without call receipts or saved sessions", async () => {

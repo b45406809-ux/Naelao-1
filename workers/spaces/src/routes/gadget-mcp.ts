@@ -7,24 +7,72 @@ import { mintInternalToken, readBoundedRequestBytes, readBoundedRequestText, rea
 const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 const MAX_CANVAS_GADGET_RESPONSE_BYTES = 512 * 1024;
 
-async function sharedExtensionRuntimeError(env: Env, tenantId: string, spaceId: string, appId: string): Promise<string | null> {
-  if (!env.SPACE_DO) return null;
+export type SharedRuntimeStatus = { error: string | null; managed: boolean; installationId?: string };
+export async function sharedExtensionRuntimeError(env: Env, tenantId: string, spaceId: string, appId: string): Promise<SharedRuntimeStatus> {
+  if (!env.SPACE_DO) return { error: null, managed: false };
   try {
     const actor = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
     const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
     const response = await env.SPACE_DO.get(actor).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
-    if (!response.ok) return "space_extension_runtime_unavailable";
-    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; dependenciesResolved?: unknown; publisherKeyId?: unknown };
-    if (runtime.managed !== true) return null;
-    if (runtime.dependenciesResolved === false) return "space_extension_dependency_unavailable";
-    if (runtime.active !== true || runtime.releaseValid !== true) return "space_extension_release_invalid";
+    if (!response.ok) return { error: "space_extension_runtime_unavailable", managed: true };
+    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; dependenciesResolved?: unknown; publisherKeyId?: unknown; installationId?: unknown };
+    if (runtime.managed !== true) return { error: null, managed: false };
+    if (runtime.dependenciesResolved === false) return { error: "space_extension_dependency_unavailable", managed: true };
+    if (runtime.active !== true || runtime.releaseValid !== true) return { error: "space_extension_release_invalid", managed: true };
     if (typeof runtime.publisherKeyId === "string") {
       const publisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
         WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtime.publisherKeyId).first();
-      if (!publisher) return "space_extension_publisher_revoked";
+      if (!publisher) return { error: "space_extension_publisher_revoked", managed: true };
     }
-    return null;
-  } catch { return "space_extension_runtime_unavailable"; }
+    return { error: null, managed: true, ...(typeof runtime.installationId === "string" ? { installationId: runtime.installationId } : {}) };
+  } catch { return { error: "space_extension_runtime_unavailable", managed: true }; }
+}
+
+export async function extensionRuntimeWork(env: Env, input: { action: "acquire" | "release"; tenantId: string; spaceId: string;
+  projectId: string | null; installationId: string; workId: string; workKind: "gadget" | "gadget_read" | "phone_simulation" }): Promise<{ acquired?: boolean; errorCode?: string }> {
+  if (!env.SPACE_DO) return { errorCode: "extension_runtime_work_unavailable" };
+  try {
+    const id = env.SPACE_DO.idFromName(await getDOName("space", input.spaceId, input.tenantId, env.PLATFORM_SECRET));
+    const response = await env.SPACE_DO.get(id).fetch(new Request("http://space-do/extension-runtime-work", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, input.tenantId) },
+      body: JSON.stringify({ ...input, instanceId: input.installationId }),
+    }));
+    const result = await readBoundedResponseJson<{ acquired?: unknown; error_code?: unknown }>(response, 8 * 1024)
+      .catch(() => ({} as { acquired?: unknown; error_code?: unknown }));
+    return { acquired: response.ok && result.acquired === true,
+      ...(typeof result.error_code === "string" ? { errorCode: result.error_code } : response.ok ? {} : { errorCode: "extension_runtime_work_unavailable" }) };
+  } catch { return { errorCode: "extension_runtime_work_unavailable" }; }
+}
+
+/** Keep an admitted installation lease until a streamed Worker response is consumed or cancelled. */
+export async function releaseRuntimeWorkAfterResponse(response: Response, release: () => Promise<unknown>): Promise<Response> {
+  if (!response.body) { await release(); return response; }
+  const reader = response.body.getReader();
+  let released = false;
+  const releaseOnce = async () => {
+    if (released) return;
+    released = true;
+    await release();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          controller.close();
+          await releaseOnce();
+        } else controller.enqueue(result.value);
+      } catch (error) {
+        controller.error(error);
+        await releaseOnce();
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); }
+      finally { await releaseOnce(); }
+    },
+  });
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
@@ -50,8 +98,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       ).bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden", message: "Space membership required" }, 403);
     }
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_WIDE", spaceId, appId });
     let requestBody: ArrayBuffer | Uint8Array | undefined;
     if (method === "POST") {
@@ -60,7 +108,19 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
     }
     const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
-    return c.env.MICRO_APP_DO.get(id).fetch(request);
+    let workId: string | undefined;
+    if (runtime.managed) {
+      if (!runtime.installationId) return c.json({ error_code: "space_extension_runtime_unavailable" }, 503);
+      workId = crypto.randomUUID();
+      const admitted = await extensionRuntimeWork(c.env, { action: "acquire", tenantId, spaceId, projectId: null,
+        installationId: runtime.installationId, workId, workKind: "gadget" });
+      if (admitted.acquired !== true) return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
+    }
+    const release = () => workId && runtime.installationId
+      ? extensionRuntimeWork(c.env, { action: "release", tenantId, spaceId, projectId: null,
+        installationId: runtime.installationId, workId, workKind: "gadget" }) : Promise.resolve();
+    try { return await releaseRuntimeWorkAfterResponse(await c.env.MICRO_APP_DO.get(id).fetch(request), release); }
+    catch (error) { await release(); throw error; }
   };
   const forwardSettings = async (c: Context<{ Bindings: Env }>) => {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -77,8 +137,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }
@@ -108,8 +168,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 8 * 1024)).buffer as ArrayBuffer; }
@@ -131,8 +191,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.json({ error_code: "not_found" }, 404);
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     if (!c.env.SPACE_DO || !c.env.AGENTS_WORKER) return c.json({ error_code: "phone_dashboard_unavailable" }, 503);
 
     try {
@@ -209,8 +269,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.json({ error_code: "not_found" }, 404);
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     if (!c.env.SPACE_DO || !c.env.AGENTS_WORKER) return c.json({ error_code: "phone_simulation_unavailable" }, 503);
     try {
       const actor = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
@@ -265,8 +325,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
-    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
-    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    const runtime = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtime.error) return c.json({ error_code: runtime.error }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }
@@ -335,7 +395,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const spaceDoId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
     const runtime = await c.env.SPACE_DO.get(spaceDoId).fetch(new Request(`http://space-do/project-extension-runtime?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, app_id: appId })}`));
     if (!runtime.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
-    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string }>().catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string } => ({}));
+    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string }>()
+      .catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string; installationId?: string } => ({}));
     if (runtimeState.managed && !runtimeState.active) return c.json({ error_code: "project_extension_inactive" }, 404);
     if (runtimeState.managed && !runtimeState.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
     if (runtimeState.managed && runtimeState.publisherKeyId) {
@@ -343,6 +404,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtimeState.publisherKeyId).first();
       if (!trustedPublisher) return c.json({ error_code: "project_extension_publisher_revoked" }, 503);
     }
+    if (runtimeState.managed && !runtimeState.installationId) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
     if (path === "/initialize" && runtimeState.managed) return c.json({ error_code: "project_extension_install_route_required" }, 409);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     let requestBody: ArrayBuffer | Uint8Array | undefined;
@@ -352,7 +414,18 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
     }
     const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
-    return c.env.MICRO_APP_DO.get(id).fetch(request);
+    let workId: string | undefined;
+    if (runtimeState.managed) {
+      workId = crypto.randomUUID();
+      const admitted = await extensionRuntimeWork(c.env, { action: "acquire", tenantId, spaceId, projectId,
+        installationId: runtimeState.installationId!, workId, workKind: "gadget" });
+      if (admitted.acquired !== true) return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
+    }
+    const release = () => workId && runtimeState.installationId
+      ? extensionRuntimeWork(c.env, { action: "release", tenantId, spaceId, projectId,
+        installationId: runtimeState.installationId, workId, workKind: "gadget" }) : Promise.resolve();
+    try { return await releaseRuntimeWorkAfterResponse(await c.env.MICRO_APP_DO.get(id).fetch(request), release); }
+    catch (error) { await release(); throw error; }
   };
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/initialize", async c => {
     const blocked = await projectAccess(c, true);
@@ -436,6 +509,10 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtime.publisherKeyId).first();
       if (!trustedPublisher) return c.json({ error_code: "project_extension_publisher_revoked" }, 503);
     }
+    const workId = crypto.randomUUID();
+    const admitted = await extensionRuntimeWork(c.env, { action: "acquire", tenantId, spaceId, projectId,
+      installationId, workId, workKind: "gadget_read" });
+    if (admitted.acquired !== true) return c.json({ error_code: admitted.errorCode ?? "extension_installation_inactive" }, 409);
     const args: Record<string, unknown> = { table };
     if (operation === "get") args.id = rowId;
     else {
@@ -444,26 +521,31 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       args.limit = limit;
     }
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
-    const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
-      method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "canvas" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
-    }));
-    if (!response.body) return response;
-    const reader = response.body.getReader(), chunks: Uint8Array[] = [];
-    let size = 0;
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > MAX_CANVAS_GADGET_RESPONSE_BYTES) {
-        await reader.cancel();
-        return c.json({ error_code: "canvas_gadget_response_too_large", maximum_bytes: MAX_CANVAS_GADGET_RESPONSE_BYTES }, 413);
+    try {
+      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "canvas" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
+      }));
+      if (!response.body) return response;
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > MAX_CANVAS_GADGET_RESPONSE_BYTES) {
+          await reader.cancel();
+          return c.json({ error_code: "canvas_gadget_response_too_large", maximum_bytes: MAX_CANVAS_GADGET_RESPONSE_BYTES }, 413);
+        }
+        chunks.push(chunk.value);
       }
-      chunks.push(chunk.value);
+      const responseBody = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) { responseBody.set(chunk, offset); offset += chunk.byteLength; }
+      return new Response(responseBody, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } finally {
+      await extensionRuntimeWork(c.env, { action: "release", tenantId, spaceId, projectId,
+        installationId, workId, workKind: "gadget_read" });
     }
-    const body = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   });
 }

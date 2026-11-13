@@ -132,17 +132,34 @@ describe("runtime extension installation", () => {
     expect(await retry.json()).toMatchObject({ installationId });
     expect(firstResult).toMatchObject({ release: { version: "1.0.0", artifactSha256: "a".repeat(64), signer: "naelao-host", hostSignature: expect.stringMatching(/^[a-f0-9]{64}$/) } });
     expect((await call("2.0.0")).status).toBe(409);
+    expect((await call("2.0.0", true)).status).toBe(409);
+    expect(storage.sql.exec("SELECT release_version FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ release_version: "1.0.0" }]);
+    const token = await mintInternalToken("release-test-secret", "tenant");
+    const leaseRequest = (action: "acquire" | "release") => space.fetch(new Request("http://space/extension-runtime-work", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action, tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        workId: "update-race", workKind: "channel" }) }));
+    expect((await leaseRequest("acquire")).status).toBe(200);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);
+    const undrainedUpgrade = await call("2.0.0", true);
+    expect(undrainedUpgrade.status).toBe(409);
+    expect(await undrainedUpgrade.json()).toMatchObject({ error: "extension_runtime_work_not_drained" });
+    await leaseRequest("release");
     expect((await call("2.0.0", true)).status).toBe(201);
     const releases = await space.fetch(new Request("http://space/extension-releases?extension_id=ext_versioned"));
     expect(await releases.json()).toMatchObject({ releases: expect.arrayContaining([
       expect.objectContaining({ version: "2.0.0", signatureValid: true }), expect.objectContaining({ version: "1.0.0", signatureValid: true }),
     ]) });
-    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+    const rollbackRequest = () => space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
       extensionId: "ext_versioned", version: "1.0.0", installationId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "2.0.0",
     }) }));
+    expect((await rollbackRequest()).status).toBe(409);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);
+    const rollback = await rollbackRequest();
     expect(rollback.status).toBe(200);
     expect(await rollback.json()).toMatchObject({ rolledBack: true, manifest: { bundle: { version: "1.0.0" } } });
-    const runtime = await space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" })));
+    const runtime = await space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space", include_disabled: "1" })));
     expect(await runtime.json()).toMatchObject({ manifest: { bundle: { version: "1.0.0" } } });
   });
 
@@ -157,7 +174,9 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: version.startsWith("1") ? "1".repeat(64) : "2".repeat(64), upgrade }) }));
     expect((await install("project-a", "1.0.0")).status).toBe(201);
     expect((await install("project-b", "1.0.0")).status).toBe(201);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE extension_id='ext_pinned' AND project_id='project-a'");
     expect((await install("project-a", "2.0.0", true)).status).toBe(201);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE extension_id='ext_pinned' AND project_id='project-b'");
     expect((await install("project-b", "2.0.0", true)).status).toBe(201);
     const lookup = (projectId: string) => space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=" + projectId));
     expect(await (await lookup("project-a")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
@@ -176,8 +195,12 @@ describe("runtime extension installation", () => {
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
       extensionId: "ext_pinned", version: "1.0.0", installationId: projectAInstall!.instance_id, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "2.0.0",
     }) }));
-    expect(rollback.status).toBe(200);
-    expect(await (await lookup("project-a")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
+    expect(rollback.status).toBe(409);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", projectAInstall!.instance_id);
+    const confirmedRollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      extensionId: "ext_pinned", version: "1.0.0", installationId: projectAInstall!.instance_id, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "2.0.0",
+    }) }));
+    expect(confirmedRollback.status).toBe(200);
     expect(await (await lookup("project-b")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
     const inventory = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_pinned"));
     expect(await inventory.json()).toMatchObject({ installations: expect.arrayContaining([
@@ -222,6 +245,7 @@ describe("runtime extension installation", () => {
     const revoke = await space.fetch(new Request("http://space/extension-publisher-revoke?key_id=" + "a".repeat(64), { method: "POST" }));
     expect(revoke.status).toBe(200);
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { revoked: true } } });
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", instanceId);
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0", installationId: instanceId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "1.0.0" }) }));
     expect(rollback.status).toBe(409);
@@ -239,10 +263,14 @@ describe("runtime extension installation", () => {
         artifactSha256: version === "2.0.0" ? "2".repeat(64) : version === "1.0.0" ? "1".repeat(64) : "3".repeat(64), upgrade }) }));
     const first = await install("1.0.0", ["channel.invoke"]);
     expect(first.status, await first.clone().text()).toBe(201);
+    const instanceId = String(storage.sql.exec("SELECT instance_id FROM extension_instances WHERE extension_id='ext_access_review'").toArray()[0]?.instance_id);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", instanceId);
     expect((await install("2.0.0", ["channel.invoke", "repo.read"], true)).status).toBe(201);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", instanceId);
     expect((await install("3.0.0", ["channel.invoke"], true)).status).toBe(201);
     const result = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_access_review"));
     const installation = (await result.json() as { installations: Array<{ instance_id: string }> }).installations[0]!;
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installation.instance_id);
     const rollback = (approved: boolean) => space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
       extensionId: "ext_access_review", version: "2.0.0", installationId: installation.instance_id, tenantId: "tenant", spaceId: "space", projectId: "project-a",
       expectedCurrentVersion: "3.0.0", permissionExpansionApproved: approved,
@@ -380,6 +408,45 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
   });
 
+  it("serializes concurrent runtime admission with pause, replays lost lease responses, and drains after restart", async () => {
+    const storage = createDOStorage(), secret = "runtime-work-lease-secret";
+    let space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
+    const shared = { id: "ext_runtime_work", type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read"],
+      gadgets: [{ id: "runtime_app", name: "Runtime app", viewportComponent: "./app.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
+      daemons: [], commands: [] };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: shared, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: ["space.shared.read"] }) }));
+    expect(installed.status, await installed.clone().text()).toBe(201);
+    const { installationId } = await installed.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const work = (action: "acquire" | "release" | "status", workId: string) => space.fetch(new Request("http://space/extension-runtime-work", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action, tenantId: "tenant", spaceId: "space", projectId: null, instanceId: installationId, workId, workKind: "gadget" }),
+    }));
+
+    const concurrent = await Promise.all([work("acquire", "work-a"), work("acquire", "work-b")]);
+    expect(concurrent.map(response => response.status)).toEqual([200, 200]);
+    expect(await (await work("acquire", "work-a")).json()).toMatchObject({ acquired: true, replayed: true });
+
+    space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    expect(await (await work("status", "status-check")).json()).toMatchObject({ active_work_count: 2, drained: false });
+    const paused = await space.fetch(new Request("http://space/space-shared-extension-lifecycle", { method: "PATCH",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", instanceId: installationId, action: "disable", drainTimeoutMs: 0 }) }));
+    expect(paused.status).toBe(202);
+    expect(await paused.json()).toMatchObject({ status: "disabled", drained: false, active_work_count: 2 });
+    expect((await work("acquire", "work-c")).status).toBe(409);
+    expect(await (await work("release", "work-a")).json()).toMatchObject({ released: true, status: "released" });
+    expect(await (await work("release", "work-a")).json()).toMatchObject({ released: true, status: "released" });
+    expect(await (await work("status", "status-check")).json()).toMatchObject({ active_work_count: 1, drained: false });
+    await work("release", "work-b");
+    expect(await (await space.fetch(new Request("http://space/extension-runtime-work", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action: "status", tenantId: "tenant", spaceId: "space", projectId: null,
+        instanceId: installationId, workId: "status-check", workKind: "gadget" }) }))).json()).toMatchObject({ active_work_count: 0, drained: true });
+  });
+
   it("pauses project extensions at the project boundary and exposes them only in the admin lifecycle view", async () => {
     const storage = createDOStorage(), secret = "project-lifecycle-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
@@ -396,6 +463,10 @@ describe("runtime extension installation", () => {
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId, instanceId: installationId, action }) }));
     expect((await lifecycle("project-b", "disable")).status).toBe(404);
     expect(await (await lifecycle("project-a", "disable")).json()).toMatchObject({ status: "disabled" });
+    const duplicateInstall = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["native-execution"] }) }));
+    expect(duplicateInstall.status).toBe(201);
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()).toEqual([{ status: "disabled" }]);
     const runtimeList = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     expect(await runtimeList.json()).toMatchObject({ installations: [] });
     const runtimeLookup = await space.fetch(new Request(`http://space/workflow-installation?instance_id=${installationId}&tenant_id=tenant&space_id=space`));
@@ -469,11 +540,16 @@ describe("runtime extension installation", () => {
     expect(installedResponse.status).toBe(201);
     const installed = await installedResponse.json() as { installationId: string };
     const check = (appId: string) => space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: appId })));
+    const activeUpgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
+    expect(activeUpgrade.status).toBe(409);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installed.installationId);
     const upgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
     expect(upgrade.status).toBe(201);
     expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
-    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true });
+    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,
+      installationId: "installation:tenant:ext_canvas_runtime:space:space:project:project-a:bound" });
     const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installed.installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a" }), { method: "DELETE" }));
     expect(removed.status).toBe(200);
     expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
@@ -517,7 +593,8 @@ describe("runtime extension installation", () => {
     await expect((await abort("project-b")).json()).resolves.toMatchObject({ aborted: false });
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("staging");
     expect((await activate()).status).toBe(200);
-    expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true });
+    expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true,
+      installationId: "installation:tenant:ext_staged_canvas:space:space:project:project-a:bound" });
     expect((await activate()).status).toBe(200); // idempotent host retry
     expect(await (await abort()).json()).toMatchObject({ aborted: false });
   });
@@ -597,10 +674,16 @@ describe("runtime extension installation", () => {
         version: "1.2.0", manifestJson: JSON.stringify(candidateManifest), artifactSha256: "c".repeat(64), publisherId: "pub_example",
         publisherKeyId, publisherSignature: "signed-candidate-release", publisherPayloadSha256: "e".repeat(64) }) }));
     expect(importCandidate.status).toBe(201);
+    const acquireLease = () => space.fetch(new Request("http://space/extension-runtime-work", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action: "acquire", tenantId: "tenant", spaceId: "space", projectId: null,
+        instanceId: installationId, workId: "canvas-in-flight", workKind: "gadget" }) }));
+    expect((await acquireLease()).status).toBe(200);
     const paused = await space.fetch(new Request("http://space/space-shared-extension-lifecycle", { method: "PATCH",
       headers: { "content-type": "application/json", "x-naelao-internal-token": token },
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", instanceId: installationId, action: "disable" }) }));
-    expect(await paused.json()).toMatchObject({ status: "disabled" });
+    expect(paused.status).toBe(202);
+    expect(await paused.json()).toMatchObject({ status: "disabled", drained: false, active_work_count: 1 });
 
     const claims = { version: 1, purpose: "space_shared_extension_update", tenantId: "tenant", spaceId: "space", actorId: "owner",
       installationId, extensionId: candidateManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0", artifactSha256: "c".repeat(64),
@@ -610,6 +693,13 @@ describe("runtime extension installation", () => {
     const apply = () => space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
       body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken }) }));
+    const blockedByWork = await apply();
+    expect(blockedByWork.status).toBe(409);
+    expect(await blockedByWork.json()).toMatchObject({ error_code: "extension_runtime_work_not_drained" });
+    await space.fetch(new Request("http://space/extension-runtime-work", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action: "release", tenantId: "tenant", spaceId: "space", projectId: null,
+        instanceId: installationId, workId: "canvas-in-flight", workKind: "gadget" }) }));
     const first = await apply();
     expect(first.status, await first.clone().text()).toBe(200);
     const firstBody = await first.json() as { receipt: { request_id: string; created_at: string }; replayed: boolean };

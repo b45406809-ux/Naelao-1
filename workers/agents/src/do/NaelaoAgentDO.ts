@@ -8144,6 +8144,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
   }
 
+  private async extensionRuntimeWork(input: { action: "acquire" | "release"; tenantId: string; spaceId: string;
+    projectId: string | null; instanceId: string; workId: string; workKind: "channel" | "phone_call" | "phone_simulation" }): Promise<{ acquired?: boolean; errorCode?: string }> {
+    if (!this.env.SPACES_WORKER) return { errorCode: "extension_runtime_work_unavailable" };
+    try {
+      const response = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/extensions/runtime-work", {
+        method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
+        body: JSON.stringify({ ...input, tenantId: input.tenantId }),
+      }));
+      const result = await readBoundedResponseJson<{ acquired?: unknown; error_code?: unknown }>(response, 8 * 1024)
+        .catch(() => ({} as { acquired?: unknown; error_code?: unknown }));
+      return { acquired: response.ok && result.acquired === true,
+        ...(typeof result.error_code === "string" ? { errorCode: result.error_code } : response.ok ? {} : { errorCode: "extension_runtime_work_unavailable" }) };
+    } catch { return { errorCode: "extension_runtime_work_unavailable" }; }
+  }
+
   /**
    * Record a run that stopped at a HITL gate so it can be picked up again once a human answers.
    *
@@ -9847,6 +9862,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!body.validateOnly && (row.status !== "active" || !event ||
       (!simulation && !validPhoneExtensionEvent(row.provider, event.type, event.id))))
       return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
+    const workId = crypto.randomUUID();
+    const workKind = simulation ? "phone_simulation" as const : "phone_call" as const;
+    let runtimeLeaseHeld = false;
+    if (!body.validateOnly && !simulation) {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS phone_extension_events (
+        installation_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL,
+        response_json TEXT, updated_at INTEGER NOT NULL,
+        PRIMARY KEY(installation_id,event_id)
+      )`);
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        "DELETE FROM phone_extension_events WHERE rowid IN (SELECT rowid FROM phone_extension_events WHERE updated_at<? ORDER BY updated_at LIMIT 500)",
+        now - 7 * 86_400_000,
+      );
+      const prior = this.ctx.storage.sql.exec(
+        "SELECT status,response_json FROM phone_extension_events WHERE installation_id=? AND event_id=?",
+        row.installation_id, event!.id,
+      ).toArray()[0] as { status: string; response_json: string | null } | undefined;
+      if (prior?.status === "completed" && prior.response_json) {
+        try { return Response.json(JSON.parse(prior.response_json)); }
+        catch { return Response.json({ error_code: "phone_event_receipt_invalid" }, { status: 503 }); }
+      }
+      if (prior) return Response.json({ error_code: prior.status === "running" ? "phone_event_in_progress" : "phone_event_outcome_unknown" }, { status: 409 });
+    }
+    try {
+    if (!body.validateOnly) {
+      const lease = await this.extensionRuntimeWork({ action: "acquire", tenantId: tenant, spaceId: body.spaceId,
+        projectId: row.project_id, instanceId: row.installation_id, workId, workKind });
+      if (lease.acquired !== true) return Response.json({ error_code: lease.errorCode === "extension_installation_inactive"
+        ? "phone_extension_paused" : "phone_runtime_admission_unavailable" }, { status: 409 });
+      runtimeLeaseHeld = true;
+    }
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
       channel: "phone", messageId: event?.id ?? "validation", ...(event?.type ? { inboundEvent: event.type } : {}), instanceId: row.installation_id,
@@ -9892,33 +9939,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ simulation: true, response });
     }
 
-    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS phone_extension_events (
-      installation_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL,
-      response_json TEXT, updated_at INTEGER NOT NULL,
-      PRIMARY KEY(installation_id,event_id)
-    )`);
-    // Receipts exist only to deduplicate Twilio retries. Retain a bounded replay window and a
+    // Receipts exist only to deduplicate provider retries. Retain a bounded replay window and a
     // hard per-Space ceiling so a public phone number cannot grow the SpaceDO without limit.
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      "DELETE FROM phone_extension_events WHERE rowid IN (SELECT rowid FROM phone_extension_events WHERE updated_at<? ORDER BY updated_at LIMIT 500)",
-      now - 7 * 86_400_000,
-    );
-    const prior = this.ctx.storage.sql.exec(
-      "SELECT status,response_json FROM phone_extension_events WHERE installation_id=? AND event_id=?",
-      row.installation_id, event.id,
-    ).toArray()[0] as { status: string; response_json: string | null } | undefined;
-    if (prior?.status === "completed" && prior.response_json) {
-      try { return Response.json(JSON.parse(prior.response_json)); }
-      catch { return Response.json({ error_code: "phone_event_receipt_invalid" }, { status: 503 }); }
-    }
-    if (prior) return Response.json({ error_code: prior.status === "running" ? "phone_event_in_progress" : "phone_event_outcome_unknown" }, { status: 409 });
     const eventCount = Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM phone_extension_events").toArray()[0]?.count ?? 0);
     if (eventCount >= 50_000) return Response.json({ error_code: "phone_event_store_full" }, { status: 503 });
-    this.ctx.storage.sql.exec(
-      "INSERT INTO phone_extension_events(installation_id,event_id,status,updated_at) VALUES(?,?,'running',?)",
+    const claimed = this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO phone_extension_events(installation_id,event_id,status,updated_at) VALUES(?,?,'running',?)",
       row.installation_id, event.id, now,
     );
+    if (claimed.rowsWritten !== 1) {
+      const raced = this.ctx.storage.sql.exec("SELECT status,response_json FROM phone_extension_events WHERE installation_id=? AND event_id=?",
+        row.installation_id, event.id).toArray()[0] as { status: string; response_json: string | null } | undefined;
+      if (raced?.status === "completed" && raced.response_json) {
+        try { return Response.json(JSON.parse(raced.response_json)); }
+        catch { return Response.json({ error_code: "phone_event_receipt_invalid" }, { status: 503 }); }
+      }
+      return Response.json({ error_code: raced?.status === "running" ? "phone_event_in_progress" : "phone_event_outcome_unknown" }, { status: 409 });
+    }
     const failEvent = (code: string, status = 409) => {
       this.ctx.storage.sql.exec("UPDATE phone_extension_events SET status='failed',response_json=?,updated_at=? WHERE installation_id=? AND event_id=? AND status='running'",
         JSON.stringify({ error_code: code }), Date.now(), row.installation_id, event.id);
@@ -9999,6 +10037,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         receipt, Date.now(), row.installation_id, event.id);
     }
     return Response.json(isSms ? response : { response });
+    } finally {
+      if (runtimeLeaseHeld) await this.extensionRuntimeWork({ action: "release", tenantId: tenant, spaceId: body.spaceId,
+        projectId: row.project_id, instanceId: row.installation_id, workId, workKind });
+    }
   }
 
   private async loadActiveChannelHandler(input: {
@@ -10235,6 +10277,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let spendCapped = 0;
 
     for (const msg of pending) {
+      let channelRuntimeLeaseAttempted = false;
       try {
       if (await tenantSuspended()) {
         return stopForSuspension();
@@ -10355,6 +10398,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           msg.id, msg.channel_extension_instance_id, msg.channel_extension_sha256
         );
         if (claim.rowsWritten !== 1) { takeover("The handler event was already claimed and its delivery state could not be confirmed. Review the conversation before replying."); escalated++; continue; }
+        channelRuntimeLeaseAttempted = true;
+        const runtimeLease = await this.extensionRuntimeWork({ action: "acquire", tenantId, spaceId, projectId: msg.project_id,
+          instanceId: msg.channel_extension_instance_id, workId: msg.id, workKind: "channel" });
+        if (runtimeLease.acquired !== true) {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
+            runtimeLease.errorCode === "extension_installation_inactive" ? "extension_paused" : "runtime_lease_unavailable", msg.id);
+          takeover(runtimeLease.errorCode === "extension_installation_inactive"
+            ? "The installed handler is paused. This event was not processed; review it manually or resume the extension."
+            : "The handler could not obtain its durable runtime admission lease. This event was not processed; review it manually.");
+          escalated++;
+          continue;
+        }
         try {
           const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
             [tenantId, spaceId, msg.project_id, msg.channel, msg.channel_user_id]);
@@ -10622,6 +10677,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       } finally {
+        if (channelRuntimeLeaseAttempted && msg.project_id && msg.channel_extension_instance_id) {
+          await this.extensionRuntimeWork({ action: "release", tenantId, spaceId, projectId: msg.project_id,
+            instanceId: msg.channel_extension_instance_id, workId: msg.id, workKind: "channel" });
+        }
         // Release the claim for any message that didn't reach a real terminal state this
         // iteration (markOutbound already moved it to 1; human_takeover moved the SESSION out of
         // the WHERE clause entirely) — safe no-op via the `answered = 2` guard otherwise.

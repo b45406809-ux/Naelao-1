@@ -57,6 +57,7 @@ export default function ExtensionsPage() {
   const [savingGrants, setSavingGrants] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<string | null>(null);
   const [changingLifecycle, setChangingLifecycle] = React.useState<string | null>(null);
+  const [lifecycleNotice, setLifecycleNotice] = React.useState<string | null>(null);
   const [reviewingUpdate, setReviewingUpdate] = React.useState<string | null>(null);
   const [updateReviews, setUpdateReviews] = React.useState<Record<string, SpaceSharedExtensionUpdateReview>>({});
   const [updateReceipts, setUpdateReceipts] = React.useState<SpaceSharedExtensionUpdateReceipt[]>([]);
@@ -134,9 +135,26 @@ export default function ExtensionsPage() {
     if (!credentials || changingLifecycle) return;
     const enabled = app.status !== "active";
     if (!enabled && !window.confirm(`Pause ${app.name}? New invocations will stop. Running jobs may finish; data and access grants will be retained.`)) return;
-    setChangingLifecycle(app.installation_id); setError(null);
-    try { await setSpaceSharedExtensionEnabled(activeSpaceId, app.installation_id, credentials, enabled); await refresh(); }
+    setChangingLifecycle(app.installation_id); setError(null); setLifecycleNotice(null);
+    try {
+      const result = await setSpaceSharedExtensionEnabled(activeSpaceId, app.installation_id, credentials, enabled);
+      if (!enabled && result.drained === false) setLifecycleNotice(`${app.name} is paused. ${result.active_work_count ?? 0} admitted operation(s) are still running; wait for drain before applying an update.`);
+      else if (!enabled) setLifecycleNotice(`${app.name} is paused and its admitted work has drained.`);
+      await refresh();
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update extension status."); }
+    finally { setChangingLifecycle(null); }
+  }
+  async function waitForDrain(app: SpaceSharedExtensionApp) {
+    if (!credentials || changingLifecycle) return;
+    setChangingLifecycle(app.installation_id); setError(null); setLifecycleNotice(null);
+    try {
+      const result = await setSpaceSharedExtensionEnabled(activeSpaceId, app.installation_id, credentials, false);
+      setLifecycleNotice(result.drained
+        ? `${app.name} is paused and its admitted work has drained.`
+        : `${app.name} remains paused with ${result.active_work_count ?? 0} admitted operation(s) still running. Check again before updating.`);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not check extension drain status."); }
     finally { setChangingLifecycle(null); }
   }
   async function reviewUpdate(app: SpaceSharedExtensionApp, candidate: SpaceSharedExtensionCatalogEntry) {
@@ -192,10 +210,12 @@ export default function ExtensionsPage() {
       {active.settings_schema && active.capabilities.includes("extension.settings.read") && <ExtensionSettingsForm spaceId={activeSpaceId} appId={active.app_id} schema={active.settings_schema} session={credentials} canConfigure={active.capabilities.includes("extension.settings.configure")}
         loadAudit={() => callSpaceExtensionSettingsAudit(activeSpaceId, active.installation_id, credentials)} />}
       <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials} capabilities={active.capabilities} onAction={() => {}} />
-    </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
+    </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <>
+      {lifecycleNotice && <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{lifecycleNotice}</p>}
+      <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
-      {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Existing runs may finish; saved data and grants are retained.</p>}
+      {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Previously admitted work must finish before a package update; saved data and grants are retained.</p>}
       {app.release_version && <p style={{ color: "var(--text3)", fontSize: 12 }}>Installed signed release: {app.release_version}</p>}
       {catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version) && (() => {
         const candidate = catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version)!;
@@ -229,9 +249,11 @@ export default function ExtensionsPage() {
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : "Resume extension"}</Button>
+      {app.status === "disabled" && <Button variant="secondary" disabled={changingLifecycle !== null} onClick={() => void waitForDrain(app)}>{changingLifecycle === app.installation_id ? "Checking drain…" : "Wait for running work"}</Button>}
       <Button variant="secondary" disabled={removing !== null} onClick={() => void remove(app)}>{removing === app.installation_id ? "Removing…" : "Remove extension"}</Button>
       <Button disabled={app.status !== "active"} onClick={() => setActive(app)}>Open extension</Button>
-      </Card>)}</div> : null}
+      </Card>)}</div>
+    </> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => {
       const review = installReviews[entry.id];
       const reviewedPackages = review ? [review.requested_package, ...review.dependency_packages] : [];

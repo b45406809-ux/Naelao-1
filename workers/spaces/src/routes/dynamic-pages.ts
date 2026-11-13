@@ -2,6 +2,7 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
 import { readBoundedRequestBytes, requireInternalHmac } from "@naelao/http";
+import { extensionRuntimeWork, releaseRuntimeWorkAfterResponse, sharedExtensionRuntimeError } from "./gadget-mcp.js";
 
 function identity(c: Context<{ Bindings: Env }>) {
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", role: c.req.header("x-naelao-role") ?? "viewer" };
@@ -33,6 +34,24 @@ async function publicTenant(c: Context<{ Bindings: Env }>, spaceId: string): Pro
   return space.tenant_id;
 }
 
+async function acquirePageRuntime(env: Env, tenantId: string, spaceId: string, appId: string) {
+  const runtime = await sharedExtensionRuntimeError(env, tenantId, spaceId, appId);
+  if (runtime.error) return { error: runtime.error };
+  if (!runtime.managed) return {};
+  if (!runtime.installationId) return { error: "space_extension_runtime_unavailable" };
+  const workId = crypto.randomUUID();
+  const lease = await extensionRuntimeWork(env, { action: "acquire", tenantId, spaceId, projectId: null,
+    installationId: runtime.installationId, workId, workKind: "gadget" });
+  if (lease.acquired !== true) return { error: lease.errorCode ?? "extension_installation_inactive" };
+  return { installationId: runtime.installationId, workId };
+}
+
+async function releasePageRuntime(env: Env, tenantId: string, spaceId: string, lease: { installationId?: string; workId?: string }) {
+  if (!lease.installationId || !lease.workId) return;
+  await extensionRuntimeWork(env, { action: "release", tenantId, spaceId, projectId: null,
+    installationId: lease.installationId, workId: lease.workId, workKind: "gadget" });
+}
+
 export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
   // Publishing trusts gateway-supplied tenant and role headers. Public preview
   // render/action routes below have their own host, origin, and token checks.
@@ -50,10 +69,15 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     let body: Uint8Array;
     try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
     catch { return c.json({ error_code: "payload_too_large" }, 413); }
-    const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/publish", {
-      method: "POST", body, headers: { "content-type": "application/json" },
-    }));
-    return new Response(response.body, { status: response.status, headers: response.headers });
+    const lease = await acquirePageRuntime(c.env, tenantId, spaceId, appId);
+    if (lease.error) return c.json({ error_code: lease.error }, 409);
+    const release = () => releasePageRuntime(c.env, tenantId, spaceId, lease);
+    try {
+      const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/publish", {
+        method: "POST", body, headers: { "content-type": "application/json" },
+      }));
+      return await releaseRuntimeWorkAfterResponse(new Response(response.body, { status: response.status, headers: response.headers }), release);
+    } catch (error) { await release(); throw error; }
   });
 
   app.get("/p/:spaceId/:appId/:slug", async c => {
@@ -61,9 +85,13 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!validIdentity(spaceId, appId, slug)) return c.notFound();
     const tenant = await publicTenant(c, spaceId);
     if (tenant instanceof Response) return tenant;
+    const lease = await acquirePageRuntime(c.env, tenant, spaceId, appId);
+    if (lease.error) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
     const query = new URLSearchParams({ spaceId, slug });
-    return c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/render?${query}`));
+    const release = () => releasePageRuntime(c.env, tenant, spaceId, lease);
+    try { return await releaseRuntimeWorkAfterResponse(await c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/render?${query}`)), release); }
+    catch (error) { await release(); throw error; }
   });
 
   app.post("/p/:spaceId/:appId/:slug/actions/:action", async c => {
@@ -73,13 +101,18 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (tenant instanceof Response) return tenant;
     const url = new URL(c.req.url);
     if (c.req.header("origin") !== url.origin) return c.json({ error_code: "origin_rejected" }, 403);
-    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
-    const query = new URLSearchParams({ spaceId, slug, action });
     let body: Uint8Array;
     try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
     catch { return c.json({ error_code: "payload_too_large" }, 413); }
-    return c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/action?${query}`, {
-      method: "POST", body, headers: { "content-type": "application/json" },
-    }));
+    const lease = await acquirePageRuntime(c.env, tenant, spaceId, appId);
+    if (lease.error) return c.notFound();
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
+    const query = new URLSearchParams({ spaceId, slug, action });
+    const release = () => releasePageRuntime(c.env, tenant, spaceId, lease);
+    try {
+      return await releaseRuntimeWorkAfterResponse(await c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/action?${query}`, {
+        method: "POST", body, headers: { "content-type": "application/json" },
+      })), release);
+    } catch (error) { await release(); throw error; }
   });
 }

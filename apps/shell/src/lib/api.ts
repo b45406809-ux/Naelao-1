@@ -1723,7 +1723,7 @@ export function removeSpaceSharedExtension(spaceId: string, installationId: stri
   return apiFetch<{ removed: true; instance_id: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}`, { method: "DELETE", session });
 }
 export function setSpaceSharedExtensionEnabled(spaceId: string, installationId: string, session: SessionCredentials, enabled: boolean) {
-  return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
+  return apiFetch<{ instance_id: string; status: "active" | "disabled"; drained?: boolean; active_work_count?: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable", drain_timeout_ms: enabled ? 0 : 5_000 }) });
 }
 export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read" | "blackboard.policy" | "blackboard.sharing";
 export function callSpaceSharedExtensionOperation(spaceId: string, session: SessionCredentials, capability: SpaceExtensionHostCapability, input: unknown) {

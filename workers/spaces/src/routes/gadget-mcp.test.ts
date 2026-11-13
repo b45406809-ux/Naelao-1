@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { errorResponse, mintInternalToken } from "@naelao/http";
-import { registerGadgetMcpRoutes } from "./gadget-mcp.js";
+import { registerGadgetMcpRoutes, releaseRuntimeWorkAfterResponse } from "./gadget-mcp.js";
 
 function testApp() { const app = new Hono(); app.onError(error => errorResponse(error, "test")); return app; }
 
@@ -10,6 +10,23 @@ async function auth(tenantId: string, values: Record<string, string> = {}) {
 }
 
 describe("gadget MCP host adapter", () => {
+  it("holds a runtime lease until a streamed response ends or is cancelled", async () => {
+    const release = vi.fn(async () => undefined);
+    const response = await releaseRuntimeWorkAfterResponse(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("first")); controller.enqueue(new TextEncoder().encode("second")); controller.close(); },
+    })), release);
+    expect(release).not.toHaveBeenCalled();
+    expect(await response.text()).toBe("firstsecond");
+    expect(release).toHaveBeenCalledOnce();
+
+    const cancelRelease = vi.fn(async () => undefined);
+    const streamed = await releaseRuntimeWorkAfterResponse(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("pending")); },
+    })), cancelRelease);
+    await streamed.body?.cancel();
+    expect(cancelRelease).toHaveBeenCalledOnce();
+  });
+
   it("checks tenant ownership before routing app, storage, and MCP requests", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method }));
@@ -223,7 +240,8 @@ describe("gadget MCP host adapter", () => {
   it("runs the installed phone handler only for its exact active signed installation and binding", async () => {
     const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", phoneChannel: true,
       phoneDashboardAllowed: true, phoneSimulationAllowed: true };
-    const spaceFetch = vi.fn(async () => Response.json(runtime));
+    const spaceFetch = vi.fn(async (request: Request) => new URL(request.url).pathname === "/extension-runtime-work"
+      ? Response.json({ acquired: true, released: true }) : Response.json(runtime));
     let lineInstallation = "install-a";
     let secondInstallation = "install-b";
     const agentsFetch = vi.fn(async (request: Request) => {
