@@ -2,16 +2,33 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code commit `36ff9179` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It adds a separate, versioned
-Space coordination registry alongside the project-permission-filtered Blackboard. Owners/admins
-publish bounded explicit facts only after previewing disclosure to every active Space member;
-members read bounded keyset pages; publication/revocation is versioned and auditable. Facts are
-advisory and grant no authority. The registry does not read private project data, link projects,
-enforce singleton rules or expose actor IDs in member responses. Local evidence: SDK tests **2/2**,
-Spaces gateway/DO/migration tests **11/11**, Router allowlist tests **39/39**, SDK build, Spaces,
-Shell and Router typechecks, and `git diff --check`. These are local/mocked checks, not deployed,
-multi-user non-disclosure or live acceptance.
+Current continuation checkpoint (2026-11-13): code commits `e523ca4d` and `ffdeb51f` are pushed
+to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. They separate owner-managed
+customer phone-extension setup from the independent Space Assistant phone preference. Assignment,
+handler validation and legacy-number migration remain owner-only, check active Space access and
+network-egress policy, and use the existing managed-phone bindings. Assistant calls/messages and
+assistant-owned policy controls remain preference-gated. The retired `/customer-voice/*` routes
+remain fail-closed and public extension streaming is unchanged. Local evidence: Agents phone suite
+**33/33**, Agents and Shell typechecks, and `git diff --check`; these are mocks/static checks, not
+deployed carrier or live acceptance.
+
+The S2–S9/U01–U12 ledger remains the source of truth; do not call the mission fully complete while
+its named partial rows remain. Current U05 source evidence is specific: Sandboxes stores new
+computers as `snapshot_diff`; the supported allocation caller is Agent37, while Cloudflare computer
+creation is configuration-only and unallocated. The live verifier requires a current Cloudflare
+`live_mount` allocation, reservations and fresh attested capability observations. Its candidate
+allocation/observation producer is still uncoded, and the pinned runtime lacks the U06 authenticated
+writer admission, drain/flush and generation-bound handoff contract. This is a contract-coupled gap,
+not a credential blocker. Keep live runtime disabled; do not synthesize trusted records.
+
+Exact next task: implement a host-validated, per-installation runtime reader for the already persisted
+Space Template setup values. Reuse the versioned setup schema and existing signed installation/
+capability checks; expose only approved settings to the matching active template runtime/microapp,
+with optimistic versioning and no provider-secret access. Add caller-level local tests and update the
+progress record. Then continue the platform plan in dependency order, keeping P01/P02 evidence gates
+and P03/P20 policy/identity gaps distinct from unwritten code. Preserve rollout flags, keep local,
+mocked, deployed and live acceptance distinct, preserve `infra/scripts/__pycache__/`, and do not
+deploy, buy services, or force-push.
 
 Earlier code commits `07af44c2` and `9919963e` add per-install extension settings and a reference
 Assistant Voice preferences microapp. The dashboard edits Space Assistant preferences only; a

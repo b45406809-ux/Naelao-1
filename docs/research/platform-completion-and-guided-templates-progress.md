@@ -2,7 +2,28 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
+Updated 2026-11-13 after phone-extension commits `e523ca4d` and `ffdeb51f` were pushed to
+`origin/Mcbt5s-Backup-2`. The reachable Shell setup now separates owner-managed customer extension
+lines from the Space Assistant phone preference. Owner handler assignment and retired customer
+number migration still use the existing phone binding, provider credential and cost ledgers. The
+Agents host enforces current Space access and egress for these setup actions; assistant calls,
+messages and policy edits remain gated. Local evidence: Agents phone suite **33/33**, Agents/Shell
+typechecks and `git diff --check`; these are local mocks/static checks, not deployed or carrier-live
+acceptance. The retired customer route remains closed and public streaming remains unavailable.
+
+U05 remains partial. Current Sandboxes creation stores `snapshot_diff`, and its only allocated
+provider caller is Agent37; Cloudflare computers can be configured but are not allocated. The live
+verifier requires an active Cloudflare `live_mount` allocation, held reservations and fresh attested
+capabilities. The producer remains blocked by the unsupported pinned Cloudflare runtime contract
+recorded under U06, not by credentials. No trusted producer or operator evidence was fabricated.
+
+Exact next task: expose persisted Space Template setup values to the exact active template runtime/
+microapp through a host-validated, installation-scoped read/write API using existing setup-schema,
+signature, capability and optimistic-revision checks. Keep provider secrets host-managed. Then
+continue §5 lifecycle and cost gaps, followed by customer voice dashboard gaps and §10 coordination
+policy/lifecycle gaps. Keep rollout, local/mock, deployed and live evidence distinct.
+
+Prior checkpoint — updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
 coordination-registry code is IMPLEMENTED_LOCAL: migration 114 persists bounded Space-owned facts,
 approval actor/role, fixed `space_members` audience, advisory-only status, timestamps and revocation
 version. A Spaces gateway checks active tenant-owned Space and current membership on each read;
