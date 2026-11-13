@@ -14,18 +14,29 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-13
 
-Code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. It adds migration 0240 for durable
-project-channel provider-cleanup outcomes and routes both direct connection disconnect and full
-channel-extension uninstall through exact-scope cleanup/retry receipts. Local route deletion is
-authoritative first; the owner UI can retry pending provider work, and SpaceDO removal retries
-reconcile an exact already-removed installation. Slack's token revoke is distinguished from
-Telegram webhook deletion and WhatsApp app unsubscription; those actions do not invalidate Telegram
-or Meta tokens, so manual token revocation remains required. Unsupported provider effects stay
-visible as `not_supported`; vault deletion must be confirmed before an outcome completes. Local
-evidence: Agents **14/14**, Spaces uninstall **3/3**, Router **53/53**, Agents/Spaces/Router/Shell
-typechecks, release manifest/deployment validators, release migration tests **13/13**, and
-`git diff --check`. Provider calls in tests are mocked; no migration was applied, deployment or live
-provider acceptance occurred. Preserve `infra/scripts/__pycache__/` and keep rollouts disabled.
+Code `eea08cc7` is pushed to `origin/Mcbt5s-Backup-2`. It adds migration 0241 and changes cleanup
+receipts from a reusable installation/connection key to a unique operation ID with an immutable
+snapshot of that credential generation. Telegram, WhatsApp and Slack retries resolve only the
+saved randomized vault names; a reconnect cannot redirect an old retry to a newer token. Old
+pending migration-0240 receipts whose generation was never recorded are preserved as
+`legacy_generation_unknown` and are not replayed. Release preflight now checks the new required
+table. Shared Telegram bots retain a webhook while another active connection uses that bot; the
+owner sees that state explicitly. This builds on `a75c0862`, which records provider cleanup outcomes,
+revokes local routes first, and supports retryable disconnect/uninstall cleanup.
+
+Local evidence for `eea08cc7`: Agents cleanup tests **11/11**, Agents/Spaces/Shell typechecks, Spaces
+uninstall tests **3/3**, release migration tests **15/15** including SQLite replay of migrations 0240
+and 0241, schema/deployment manifest validators, and `git diff --check`. Provider calls were mocked;
+no D1 migration was applied, deployment or live provider acceptance occurred. The worktree keeps the
+pre-existing `infra/scripts/__pycache__/` untracked; rollouts remain disabled.
+
+The exact next action is to make Telegram `setWebhook` and WhatsApp `subscribed_apps` setup durable
+before either external side effect. Persist a pending operation and exact randomized credential
+generation first; commit an active connection only after provider acceptance; on rejection or
+ambiguous outcome revoke local routing, compensate through the saved operation, retain credentials
+when cleanup is unconfirmed, and expose the outcome to the owner retry view. Then continue the
+remaining S3–S9/U01–U12 and platform-plan code gaps. Ordinary unwritten code is not a credential
+blocker. Keep live rollout disabled until its acceptance gates pass.
 
 P08's bounded video-frame code is pushed to `origin/Mcbt5s-Backup-2` as
 `87374fc2da4ae44a4c361ea145109308782571e5`. It adds a separate default-off owner setting, task-owned
@@ -39,14 +50,12 @@ P08 remains PARTIAL for deployed/provider acceptance. Keep rollouts disabled and
 `infra/scripts/__pycache__/`.
 
 S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 keep their ledgered partial code,
-runtime, policy/feed and acceptance gaps. P05/P10/P23 remain partial for broader setup/update and
-uninstall effects, provider-specific token revocation, retention/replay policy and deployed/live
-acceptance. §10 maintenance proposals/delegation remain uncoded because approver authority and
-allowed actions need a product contract. Exact next action: make the Telegram and WhatsApp provider
-setup side effects recoverable when `setWebhook`/`subscribed_apps` succeeds or becomes ambiguous
-before the local active connection is durably committed; preserve credentials until a confirmed
-provider cleanup or active connection state exists. Then continue S3–S9/U01–U12 and the platform plan
-without repeating completed audits. Keep rollouts disabled and preserve the Python cache.
+runtime, policy/feed and acceptance gaps. P05/P10/P23 remain PARTIAL for setup recovery, broader
+update/uninstall effects, provider-specific token revocation, retention/replay policy and
+deployed/live acceptance. §10 maintenance proposals/delegation remain uncoded because approver
+authority and allowed actions need a product contract. Do not repeat completed audits without new
+source evidence; inspect both plans and both ledgers before each resumed work session. Preserve the
+untracked Python cache.
 
 ## Recent completed-work record
 

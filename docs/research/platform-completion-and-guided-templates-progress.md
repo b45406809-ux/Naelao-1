@@ -3,20 +3,27 @@
 
 ## Active checkpoint — 2026-11-13
 
-P05/P10/P23 code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0240 adds a durable,
-tenant/Space/project/installation/connection-scoped cleanup ledger. Both provider disconnect and
-channel-package uninstall revoke local bindings first, record bounded outcome codes, retain
-credentials for retry, and return owner-visible pending/manual-cleanup states. SpaceDO removal is
-safe to retry after an ambiguous response. The Shell includes a retry control and the Router admits
-the exact owner/admin receipt path. Agents tests **14/14**, Spaces uninstall **3/3**, Router **53/53**,
-four affected typechecks, release validators, release migration tests **13/13**, and `git diff --check`
-pass. Tests mock provider calls; migration/deployment/live acceptance were not run. Slack
-token revoke is confirmed separately; Telegram webhook deletion and WhatsApp app unsubscription do
-not invalidate provider tokens and require manual token revocation. P05/P10/P23 remain PARTIAL for
-provider setup recovery, wider lifecycle effects, approved retention/replay policy and live
-acceptance. Exact next action: persist and reconcile Telegram/WhatsApp setup operations around their
-external side effects so a success/timeout before connection commit cannot leave an untracked remote
-webhook/subscription. Keep all rollouts disabled.
+Code `eea08cc7` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0241 gives each provider cleanup
+attempt a unique operation ID and immutable randomized credential/webhook-secret snapshot, so
+reconnects cannot redirect retries to a newer generation. Pending 0240 receipts with unknown
+generation are preserved as `legacy_generation_unknown` and not replayed. Release preflight checks
+the new table; shared Telegram bots retain their webhook while another active connection uses that
+bot. This extends `a75c0862`'s durable cleanup outcomes, local-first disconnect/uninstall, owner retry
+view and ambiguous SpaceDO removal recovery.
+
+Local evidence: Agents cleanup tests **11/11**, Spaces uninstall **3/3**, Agents/Spaces/Shell
+typechecks, release migration tests **15/15** including SQLite replay of 0240/0241, release manifest
+and deployment validators, and `git diff --check`. Provider calls are mocked; no D1 migration,
+deployment, provider account or live acceptance ran. Telegram webhook deletion and WhatsApp app
+unsubscription do not revoke provider tokens. Rollouts remain disabled.
+
+P05/P10/P23 remain PARTIAL: provider setup recovery and broader lifecycle effects are not yet coded;
+generation-scoped disconnect/uninstall cleanup is implemented, but no provider setup acceptance is
+claimed. Exact next action: persist a pending operation and exact randomized credential names before
+Telegram `setWebhook` or WhatsApp `subscribed_apps`; commit active connection state only after provider
+acceptance; on rejection or ambiguity revoke local routing, compensate from the saved operation,
+retain credentials while cleanup is unconfirmed, and refresh the owner retry view. Then proceed to
+the next ordinary uncoded requirement in either ledger. Keep every rollout disabled.
 
 Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
 events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry

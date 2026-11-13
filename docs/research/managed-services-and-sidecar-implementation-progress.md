@@ -3,17 +3,20 @@
 
 ## Current checkpoint — 2026-11-13
 
-P05/P10/P23 code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0240 records direct
-provider disconnect and project channel-extension uninstall outcomes; local routes are revoked
-before external calls, retryable outcomes retain credentials, and the owner panel distinguishes
-Slack token revocation from Telegram webhook deletion and WhatsApp subscription removal. Full
-uninstall is idempotent across pause/drain, Agents cleanup, SpaceDO removal and a lost removal
-response; Router now admits the owner/admin cleanup receipt path. Local evidence: Agents **14/14**,
-Spaces uninstall **3/3**, Router **53/53**, Agents/Spaces/Router/Shell typechecks, release validators,
-release migration tests **13/13**, `git diff --check`. Provider tests are mocked; no deployed schema,
-DO, provider or live acceptance was used. Telegram/Meta token invalidation is unsupported by these
-actions and requires owner cleanup at the provider. Keep rollout disabled and preserve the Python
-cache.
+Code `eea08cc7` is pushed to `origin/Mcbt5s-Backup-2`. P05/P10/P23 cleanup retries now use migration
+0241's unique operation ID and immutable snapshot of the randomized credential/webhook-secret names,
+account and routing scope. A reconnect cannot cause an older retry to revoke or delete the newer
+credential generation. Migration 0240 pending rows without a saved generation are retained as
+`legacy_generation_unknown`, never replayed against an ambiguous credential. Release preflight
+checks the required cleanup table. Shared Telegram bot cleanup keeps the webhook while any active
+connection still uses that bot. The earlier `a75c0862` work remains: local routes are revoked first,
+cleanup outcomes are durable/retryable, and uninstall can recover from an ambiguous SpaceDO removal.
+
+Local verification: Agents cleanup tests **11/11**, Agents/Spaces/Shell typechecks, Spaces uninstall
+tests **3/3**, release migration tests **15/15** including local SQLite replay of 0240/0241, release
+manifest and deployment validators, and `git diff --check`. Provider calls are mocked. No D1
+migration, deployment, provider account or live acceptance ran. Preserve the pre-existing untracked
+Python cache and keep rollouts disabled.
 
 Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
 `origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
@@ -33,12 +36,16 @@ gates. Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` remain pus
 Space-shared page shows runtime and dependency metadata, and the assistant inventory returns valid
 active project packages after actor/project-grant checks. Local verification is recorded above.
 
-Platform §10 remains PARTIAL. Maintenance proposals/delegation are uncoded because approver authority
-and allowed actions need a product contract. Exact next action: make Telegram and WhatsApp provider
-setup side effects recoverable when `setWebhook`/`subscribed_apps` succeeds or becomes ambiguous
-before the local active connection is durably committed; preserve credentials until provider cleanup
-or active connection state is confirmed. Then continue the remaining managed-services and platform
-requirements. Keep rollouts disabled and preserve the Python cache.
+Managed S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain at their ledgered
+PARTIAL code, runtime, policy/feed and live-evidence gaps. Platform §10 remains PARTIAL; maintenance
+proposal/delegation authority and allowed actions still need a product contract. P05/P10/P23 remain
+PARTIAL while provider setup recovery and broader lifecycle effects are uncoded; credential-generation
+cleanup is implemented, but no provider setup success is claimed. Exact next action: persist a pending
+operation with immutable credential names before Telegram `setWebhook` or WhatsApp `subscribed_apps`;
+write the active connection only after provider acceptance; on rejection/ambiguity remove local routes,
+compensate from that saved operation and preserve credentials while cleanup is unconfirmed. Connect
+that outcome to the owner retry view. Then work the next uncoded requirements in both ledgers. Keep
+rollouts disabled and preserve the Python cache.
 
 ## Prior checkpoint details
 
