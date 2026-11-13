@@ -12,7 +12,25 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
+Current checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
+untracked `infra/scripts/__pycache__/`. The new signed-extension example
+`packages/agent-sdk/examples/bounded-phone-menu/` defines a two-choice keypad menu, per-installation
+settings schema and dashboard, and a deterministic handler using the host's versioned `say`/DTMF/
+`hangup` contract. It does not use speech recognition, an LLM, call transfer, or outbound dialing.
+Local evidence: SDK package/response tests **10/10**, Agents phone/Telnyx/response tests **42/42**,
+Spaces extension settings/install tests **29/29**, SDK typecheck, standalone handler typecheck, and
+`git diff --check`. No package was published, provider account or deployed database was exercised,
+and no live call was made. §9.5 remains PARTIAL: this bounded keypad IVR is not a conversational
+voice-agent product; provider provisioning, speech/streaming, full lifecycle, invoice reconciliation
+and live acceptance remain open.
+
+Exact next action: trace the owner `phone-handler-test` API and Shell caller. Extend its local-only
+simulation contract to represent `call.received` and `call.digits` explicitly, then route the test
+response through the existing host validator/renderer without sending carrier commands. Add scoped
+authorization and DTMF preview tests. Continue with other uncoded requirements after that slice.
+
+Prior voice-catalog checkpoint (2026-11-13): code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the only
 untracked work, `infra/scripts/__pycache__/`. Code `2ef44afa` exposes host-approved speech and
 transcription models, sample rates, supported catalog languages, per-unit published list rates and

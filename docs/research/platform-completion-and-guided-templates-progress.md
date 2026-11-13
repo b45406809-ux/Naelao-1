@@ -2,6 +2,24 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after code `b4c0100f1d5c898ddde137ebf88fea294f99d386` was pushed to
+`origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. Added the signed-extension
+example `packages/agent-sdk/examples/bounded-phone-menu/`: a bounded two-choice keypad IVR with a
+per-installation settings schema, settings dashboard, and deterministic versioned response handler.
+The existing host supplies its settings snapshot, checks the signed artifact and owner-confirmed phone
+binding, validates response data and renders carrier actions. Local evidence: SDK package/response
+tests **10/10**, Agents phone/Telnyx/renderer tests **42/42**, Spaces signed-install/settings tests
+**29/29**, SDK/handler typechecks and `git diff --check`. This is local evidence only; no package
+listing, provider, deployed DB or live call was exercised.
+
+§9.5 remains PARTIAL. The sample is a keypad IVR, not a conversational voice agent; public speech or
+streaming, provider provisioning, package publication/version/rollback, invoice reconciliation and
+live acceptance remain open. Exact next action: inspect the owner phone-handler simulator API and Shell
+caller, add a test-only `call.received`/`call.digits` input through the existing response validator and
+renderer, and verify authorization without sending carrier commands. Continue other uncoded plan gaps
+after that slice. The earlier §10.2 expected-version-fenced, audience-confirmed amendment remains
+implemented and pushed in `bfc22ce6`.
+
 Updated 2026-11-13 after code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` was pushed to
 `origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. The owner voice-settings
 API now returns the current host-approved speech/transcription model IDs, voice IDs, sample rates,

@@ -2,6 +2,28 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; bounded keypad phone menu `b4c0100f` pushed)
+
+- Code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to `origin/Mcbt5s-Backup-2` after
+  fetch confirmed the remote was an ancestor. Preserve `infra/scripts/__pycache__/`.
+- Added a signed-extension example with a two-option DTMF handler, bounded v1 response actions,
+  per-installation settings schema and a Canvas dashboard using the existing optimistic settings
+  API. The installed handler receives the host-validated settings snapshot; phone assignment still
+  requires the existing owner confirmation and runtime signature/digest recheck. This is an IVR
+  keypad menu, not a conversational voice agent. No speech, AI, transfer, or outbound dialing is
+  implemented.
+- Local evidence: SDK package/response tests **10/10**; Agents phone/Telnyx/response tests **42/42**;
+  Spaces extension settings/install tests **29/29**; SDK and standalone handler typechecks;
+  `git diff --check`. These are local tests only; no Marketplace release, provider account, deployed
+  DB or live call was exercised. No external credential blocker prevents this code slice.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 retain their ledger-specific
+  partials. §9.5 remains PARTIAL; streaming/provider acceptance is disabled, and this sample does not
+  close the full customer voice-agent product. Rollouts remain disabled.
+- Exact next action: trace the owner `phone-handler-test` API and Shell caller, then add an explicit
+  `call.received`/`call.digits` input to the local-only simulator. Route output through the existing
+  host validator/renderer without issuing carrier commands; add authorization and DTMF preview tests.
+  Continue other uncoded requirements after this slice.
+
 ### Active continuation (2026-11-13; owner voice catalog and estimate `2ef44afa` pushed)
 
 - Code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
