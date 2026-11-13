@@ -2,6 +2,34 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; Template setup runtime API `99a036cd` pushed)
+
+- Code commit `99a036cd` is pushed to `origin/Mcbt5s-Backup-2` from
+  `autonomous-managed-services-20261111`. SpaceDO migration 115 persists the validated setup schema
+  and an optimistic revision beside the activation artifact hash and normalized values. An exact
+  matching activation retry can backfill a legacy schema only when its artifact hash and values
+  still match. The runtime API exposes one project group at a time to an active SPACE_SHARED
+  extension that is both declared by that Template installation and declares
+  `template.setup.read`/`template.setup.configure`; host validation, owner/admin writes, current
+  installation checks and revision compare-and-set apply on every request. No provider credentials
+  or other project groups are returned. The Spaces gateway, product-session route allowlist, Shell
+  RPC and typed Agent SDK bridge reach this API.
+- Local evidence: Agent SDK setup/manifest/canvas suites **40/40**, Spaces Template/runtime/gateway/
+  migration suites **25/25**, Router product-session paths **40/40**, SDK/Spaces/Router/Shell
+  typechecks and `git diff --check`. These are local tests/SQLite/Worker mocks and static checks;
+  no deployment, signed production extension runtime or live acceptance occurred.
+- This closes the uncoded host/runtime consumer for the current bounded setup-fields contract. §5
+  remains PARTIAL for browser draft/resume, conditional/localized fields, expected-usage inputs,
+  complete provider/runtime rates, package lifecycle/update/uninstall and end-to-end acceptance.
+  It does not change S2–S9/U01–U12 classifications. U05/U06 remain partial on the exact absent
+  candidate/observation producer and unsupported pinned runtime writer-drain/handoff contract.
+- Exact next task: continue S4/MS03c–d. Trace the durable sidecar artifact transfer receipts and
+  conflict outcomes from `environment.sidecar_artifact_import/export` through current agent and owner
+  callers. Add a bounded, installation-scoped owner status and conflict-review path if no first-party
+  caller exists; keep conflicting outputs staged and never auto-publish them. Then close the remaining
+  independent S4–S9/U01–U12 code gaps before returning to the platform plan. Preserve
+  `infra/scripts/__pycache__/`, disabled rollouts, and separate local/mock/deployed/live evidence.
+
 ### Active continuation (2026-11-13; customer phone-extension preference separation `ffdeb51f` pushed)
 
 - Code `e523ca4d` and follow-up `ffdeb51f` are pushed to `origin/Mcbt5s-Backup-2`. Owner-managed

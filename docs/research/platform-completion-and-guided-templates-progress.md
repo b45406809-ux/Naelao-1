@@ -2,14 +2,16 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after phone-extension commits `e523ca4d` and `ffdeb51f` were pushed to
-`origin/Mcbt5s-Backup-2`. The reachable Shell setup now separates owner-managed customer extension
-lines from the Space Assistant phone preference. Owner handler assignment and retired customer
-number migration still use the existing phone binding, provider credential and cost ledgers. The
-Agents host enforces current Space access and egress for these setup actions; assistant calls,
-messages and policy edits remain gated. Local evidence: Agents phone suite **33/33**, Agents/Shell
-typechecks and `git diff --check`; these are local mocks/static checks, not deployed or carrier-live
-acceptance. The retired customer route remains closed and public streaming remains unavailable.
+Updated 2026-11-13 after template runtime API commit `99a036cd` was pushed to
+`origin/Mcbt5s-Backup-2`. SpaceDO migration 115 persists versioned setup schema plus optimistic
+revision with each new activation. The `/api/template-setup` host path returns one project group to
+the exact active, required SPACE_SHARED extension and revalidates declared read/configure grants,
+schema, values and revisions. Owner/admin writes use compare-and-set; provider credentials and other
+project groups are not returned. The signed-installation path, Space gateway membership check,
+Router product-session path, Shell RPC and typed Agent SDK consumer are connected. Local evidence:
+Agent SDK **40/40**, Spaces **25/25**, Router **40/40**, SDK/Spaces/Router/Shell typechecks and
+`git diff --check`. These are local mocks/static checks; no deployed template microapp or live
+acceptance occurred.
 
 U05 remains partial. Current Sandboxes creation stores `snapshot_diff`, and its only allocated
 provider caller is Agent37; Cloudflare computers can be configured but are not allocated. The live
@@ -17,11 +19,19 @@ verifier requires an active Cloudflare `live_mount` allocation, held reservation
 capabilities. The producer remains blocked by the unsupported pinned Cloudflare runtime contract
 recorded under U06, not by credentials. No trusted producer or operator evidence was fabricated.
 
-Exact next task: expose persisted Space Template setup values to the exact active template runtime/
-microapp through a host-validated, installation-scoped read/write API using existing setup-schema,
-signature, capability and optimistic-revision checks. Keep provider secrets host-managed. Then
-continue §5 lifecycle and cost gaps, followed by customer voice dashboard gaps and §10 coordination
-policy/lifecycle gaps. Keep rollout, local/mock, deployed and live evidence distinct.
+§5 remains PARTIAL: browser draft/resume, conditional/localized fields, expected usage and a complete
+provider/runtime cost calculator remain uncoded, alongside package update/uninstall lifecycle and
+end-to-end acceptance. No template field provides provider-secret access. The separate owner-managed
+customer phone-extension controls are available through the existing phone ledgers, while the retired
+`/customer-voice/*` route remains closed and public extension streaming remains unavailable.
+
+The managed-services mission is not yet code-complete. Continue S4/MS03c–d first: trace durable
+sidecar transfer receipts and conflicts through their agent and owner callers; add an installation-
+scoped status/conflict-review path where no first-party caller exists, keeping conflict data staged.
+Then close independent S4–S9/U01–U12 code gaps before resuming the platform plan in dependency order
+(release/environment safety, commercial integrity/recovery, guided templates, voice extension
+dashboards, and Shared-Space coordination). Keep rollout, local/mock, deployed and live evidence
+distinct.
 
 Prior checkpoint — updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
 coordination-registry code is IMPLEMENTED_LOCAL: migration 114 persists bounded Space-owned facts,

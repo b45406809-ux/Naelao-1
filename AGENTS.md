@@ -2,53 +2,52 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code commits `e523ca4d` and `ffdeb51f` are pushed
-to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. They separate owner-managed
-customer phone-extension setup from the independent Space Assistant phone preference. Assignment,
-handler validation and legacy-number migration remain owner-only, check active Space access and
-network-egress policy, and use the existing managed-phone bindings. Assistant calls/messages and
-assistant-owned policy controls remain preference-gated. The retired `/customer-voice/*` routes
-remain fail-closed and public extension streaming is unchanged. Local evidence: Agents phone suite
-**33/33**, Agents and Shell typechecks, and `git diff --check`; these are mocks/static checks, not
-deployed carrier or live acceptance.
+Current continuation checkpoint (2026-11-13): code `99a036cd` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It adds a host-validated
+Space Template setup runtime API. Activation persists the validated schema with the exact artifact
+hash and initial values; old matching installations can backfill the schema only when the artifact
+hash and values match. A caller is scoped to one installed Template/project and one active required
+SPACE_SHARED extension, with declared read/configure capabilities, no-store responses, host-side
+value validation, and optimistic revisions. SpaceDO, the Space gateway, Router product-session
+allowlist, Shell RPC and typed Agent SDK consumer are connected. Local evidence: Agent SDK **40/40**,
+Spaces **25/25**, Router **40/40**, SDK/Spaces/Router/Shell typechecks and `git diff --check`.
+These are local tests/mocks and static checks; no deployment or live provider/runtime acceptance ran.
 
-The S2–S9/U01–U12 ledger remains the source of truth; do not call the mission fully complete while
-its named partial rows remain. Current U05 source evidence is specific: Sandboxes stores new
-computers as `snapshot_diff`; the supported allocation caller is Agent37, while Cloudflare computer
-creation is configuration-only and unallocated. The live verifier requires a current Cloudflare
-`live_mount` allocation, reservations and fresh attested capability observations. Its candidate
-allocation/observation producer is still uncoded, and the pinned runtime lacks the U06 authenticated
-writer admission, drain/flush and generation-bound handoff contract. This is a contract-coupled gap,
-not a credential blocker. Keep live runtime disabled; do not synthesize trusted records.
+S2–S9/U01–U12 remains the source of truth; do not claim the managed-services mission complete while
+its named partial rows remain. U05 still lacks a candidate allocator and trusted runtime observation
+producer. Sandboxes stores new computers as `snapshot_diff`; the supported allocation caller is
+Agent37, and Cloudflare computer creation is configuration-only and unallocated. The live verifier
+requires a current Cloudflare `live_mount` allocation, reservations and fresh attested capability
+observations. This producer is coupled to U06's unsupported pinned-runtime writer admission,
+drain/flush and generation-bound handoff contract. This is not a credential blocker. Keep live
+runtime disabled and do not synthesize trusted records.
 
-Exact next task: implement a host-validated, per-installation runtime reader for the already persisted
-Space Template setup values. Reuse the versioned setup schema and existing signed installation/
-capability checks; expose only approved settings to the matching active template runtime/microapp,
-with optimistic versioning and no provider-secret access. Add caller-level local tests and update the
-progress record. Then continue the platform plan in dependency order, keeping P01/P02 evidence gates
-and P03/P20 policy/identity gaps distinct from unwritten code. Preserve rollout flags, keep local,
-mocked, deployed and live acceptance distinct, preserve `infra/scripts/__pycache__/`, and do not
-deploy, buy services, or force-push.
+Exact next task: continue the managed-services mission at S4/MS03c–d. Trace the durable sidecar
+artifact transfer receipts and conflict outcomes from `environment.sidecar_artifact_import/export`
+through their current agent and owner callers. Add a bounded, installation-scoped owner status and
+conflict-review path where no first-party caller exists; preserve staged changes and never auto-publish
+a conflict. Then continue the remaining independent S4–S9/U01–U12 code gaps before resuming platform
+plan lifecycle, voice-dashboard and Shared-Space work. Preserve all rollout flags, local/mock/deployed/
+live distinctions and `infra/scripts/__pycache__/`; do not deploy, buy services, reset, clean, switch
+branches or force-push.
 
 Earlier code commits `07af44c2` and `9919963e` add per-install extension settings and a reference
 Assistant Voice preferences microapp. The dashboard edits Space Assistant preferences only; a
 customer-agent package, call preview, custom voices, streaming, provider tests and deployed behavior
-remain open. Space Template setup values still lack a runtime consumer, browser draft/resume,
-conditional/localized fields, expected-usage estimates and complete rate coverage.
+remain open. The Template setup runtime reader is implemented locally; browser draft/resume,
+conditional/localized fields, expected-usage estimates, complete rates and full lifecycle remain open.
 
 Managed-services S2–S9/U01–U12 remains reconciled in the progress ledger, with named policy,
 unsupported runtime/platform contract, external evidence and live acceptance gaps kept distinct.
 P01/P02 remain fail-closed on environment-resource separation, ownership receipts and
 operator-attested migration baselines. P03/P20 still need approved grace/restriction and
 refund/dispute/author-accounting policies plus an independently authenticated operator identity.
-Exact next task: continue platform plan §9.5 from the current checkout. Trace customer voice package
-configuration from the retired `/customer-voice/*` routes through phone-extension installation,
-line assignment, existing Shell controls, settings persistence and SDK callers. Reuse supported
-extension lifecycle and cost ledgers; implement only caller-reachable controls against supported
-contracts. Keep the retired route fail-closed and preserve public phone-extension streaming rejection.
-Then continue §10 policy, lifecycle, concurrency and non-disclosure gaps. Preserve current rollout
-flags, keep local/mock/deployed/live evidence separate, preserve `infra/scripts/__pycache__/`, and do
-not deploy, buy services, or force-push.
+After the managed-services mission reaches a documented code-complete state with only named policy,
+platform-contract, external evidence or live acceptance gates, resume the platform plan in dependency
+order: release/environment safety, commercial integrity/recovery, guided-template lifecycle and cost,
+voice-extension dashboards, then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route
+stays closed and public extension streaming stays unavailable. Do not repeat completed audits without
+new source evidence.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
