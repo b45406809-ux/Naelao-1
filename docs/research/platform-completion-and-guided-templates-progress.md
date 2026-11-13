@@ -2,19 +2,17 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `61d1b6498f36c2f3c227d155e0e254a52b39dccf` was pushed to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The owner phone panel now invokes a
-manager-authorized text simulation for the exact active extension binding. The host revalidates its
-active signed installation, artifact and settings, passes synthetic speech to the same bounded isolated
-runtime, and validates the bounded voice response. No call record or simulated session is read or
-written; the UI labels the result as simulated and states no carrier call occurs.
+Updated 2026-11-13 after code `249c79305b4f7aeb88a0476f369b5b98ada19708` was pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The generic Shell shared-app list
+and install path now accepts the exact Space-local signed package release after host attestation,
+active-publisher, schema/capability, artifact and scope checks; it initializes Canvas/Gadget actors and
+rechecks publisher trust before activation and at runtime. This is not public Marketplace listing,
+visual package authoring, release upgrade or rollback.
 
-Local/mock evidence: Agents phone + DO tests **40/40**, Agents and Shell typechecks, and
-`git diff --check`. Coverage includes owner authorization, handler revocation/unavailability, settings
-delivery, input/output bounds, no carrier fetch and zero call/session writes. Earlier settings bridge
-verification remains Agents **8/8**, Spaces **28/28**, Agent SDK **29/29**. No provider egress, deployed
-DB, deployment or live call acceptance was exercised. Preserve untracked
-`infra/scripts/__pycache__/`.
+Local/mock evidence: SpaceDO/shared package/gadget suites **42/42**, Spaces and Shell typechecks, and
+`git diff --check`. The previous owner phone simulation remains locally verified at Agents **40/40**
+with Agents/Shell typechecks. No provider egress, deployed DB, deployment, Marketplace acceptance or
+live call was exercised. Preserve untracked `infra/scripts/__pycache__/`.
 
 The older “U11 next” note is stale; the managed-services matrix already reconciles U11/U12 for
 supported local callers/toolchain. Invoices, billed idle and CPU/size measurements, approved policies
@@ -28,24 +26,24 @@ Permission/price changes, general upgrade/rollback/uninstall, project/provider-r
 lifecycle, verified rates, visual authoring and live acceptance remain uncoded or lack approved
 contracts.
 
-**§9.5 — PARTIAL.** Per-installation settings, signed handler discovery, masked owner call history and
-non-persistent text simulation are local. Generic package-owned dashboard installation and artifact
-initialization, voice/model catalogs and verified rates, publish/version/rollback, operations and
-composition remain. Streaming is unavailable; keypad behavior remains. No provider/account acceptance
-is claimed.
+**§9.5 — PARTIAL.** Per-installation settings, signed handler discovery, masked owner call history,
+non-persistent text simulation, and generic installation of Space-local signed packages with
+Canvas/Gadget artifact initialization are local. Provider-reported call-cost receipts are persisted,
+but are not yet joined to owner-visible recent call rows. Voice/model catalogs and verified rates,
+publish/version/rollback, richer operations and composition remain. Streaming is unavailable; keypad
+behavior remains. No provider/account acceptance is claimed.
 
 **§10 — PARTIAL.** Audience-filtered facts, receipts, amendments/revocation, published cards/proposals
 and access rechecks have local code. Configurable posture/defaults, private publication/request
 authority, extension/dependency ownership, reservations, expiry/concurrency policy and broad
 non-disclosure acceptance remain.
 
-Exact next action: trace the §9.5 package-owned dashboard path from signed extension release through
-Space-shared installation, microapp artifact initialization and the Shell generic app list. Current
-installed-app discovery accepts shared manifests, but catalog/install appears first-party-only. Confirm
-the source boundary and implement the first missing signed-package caller/persistence link with focused
-authorization/lifecycle coverage. Then continue §9.5 publish/operations and remaining §5/§10 plus
-S2–S9/U01–U12 implementation gaps. After compaction or interruption, reread both plans, both progress
-records, AGENTS.md and the actual worktree.
+Exact next action: add a binding-scoped hash for admitted Telnyx call-control IDs in the durable call
+cost receipt, join bounded receipts to owner-visible recent extension calls, and show provider-reported
+amounts with explicit missing/unknown and non-invoice labels. Cover the webhook, authorization scope,
+and UI callers. Then continue §9.5 publish/operations and remaining §5/§10 plus S2–S9/U01–U12 gaps.
+After compaction, interruption, or a new session, reread both plans, both progress records, AGENTS.md,
+and inspect the actual worktree and branch before resuming from this action.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting

@@ -2,45 +2,32 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; owner phone-handler text simulation `61d1b649` pushed)
+### Active continuation (2026-11-13; signed Space-shared package install `249c7930` pushed)
 
-- Code `61d1b6498f36c2f3c227d155e0e254a52b39dccf` is pushed to `origin/Mcbt5s-Backup-2`; branch
-  `autonomous-managed-services-20261111` is synchronized. Preserve unrelated untracked
+- Code `249c79305b4f7aeb88a0476f369b5b98ada19708` is pushed to `origin/Mcbt5s-Backup-2`; branch
+  `autonomous-managed-services-20261111` matches the remote. Preserve unrelated untracked
   `infra/scripts/__pycache__/`.
-- Owner phone action requires manager authority, the active extension binding and bounded synthetic
-  text. The Agent DO reloads the exact active signed handler and saved settings, runs the same isolated
-  channel runtime at its declared limits, validates bounded host-renderable voice actions, and returns
-  a simulation response. It does not create a call event, read or write persisted extension session
-  state, or contact the carrier. The owner phone panel exposes this only for active assigned handlers.
-- Local/mock evidence: Agents phone + DO simulation tests **40/40**, Agents and Shell typechecks,
-  `git diff --check`. Coverage includes role denial, stale/revoked handler denial, settings in runtime,
-  input/output bounds, no provider fetch and zero call/session writes. Earlier settings bridge suites
-  remain Agents **8/8**, Spaces **28/28**, Agent SDK **29/29**. No provider egress, deployed DB,
-  deployment or live call ran.
-- The phone handler now receives settings saved for its exact active signed extension installation.
-  Spaces checks tenant/Space/instance and Project or SPACE_SHARED scope, current host-signed release
-  version and artifact digest, exact phone declaration, `extension.settings.read` capability and
-  permission, schema revision, strict required-value validation and an 8 KiB bound. The Spaces
-  worker also requires the publisher key to remain active. Settings are read-only, no-store, passed
-  with schema version/revision through the typed Agent SDK and frozen handler context. Old release,
-  malformed/incomplete values, disabled installs and undeclared settings fail closed. Packages with no
-  settings grant keep the previous path.
-- Local/mock evidence: Agents phone/runtime harness tests **8/8** and typecheck; Spaces settings,
-  internal route and signed installation suites **28/28** and typecheck; Agent SDK **29/29** and
-  typecheck; Shell typecheck; `git diff --check`. No provider, deployed DB, deployment or live call
-  ran. This proves local caller behavior, not deployed publisher registry, storage or provider acceptance.
-- S2 remains IMPLEMENTED_LOCAL for supported lanes. U11/U12 are already reconciled for supported
-  callers/toolchain; invoices, billed idle/CPU-size feeds, policy and live evidence remain. S3–S9 and
-  U01–U12 retain their row-level statuses and gaps; U05/U06 trusted observation and pinned runtime
-  writer-admission/drain/handoff contracts are unsupported, not credential blockers. P01/P02 remain
-  fail-closed on shared IDs, unresolved `naelao-calls`, missing receipts and operator-attested D1
-  baselines. §5/§9.5/§10 remain PARTIAL; rollouts stay disabled.
-- Exact next action: trace the §9.5 package-owned dashboard path from signed extension release through
-  Space-shared installation, microapp artifact initialization and the Shell generic app list. Current
-  installed-app discovery accepts shared manifests, but catalog/install appears first-party-only.
-  Confirm the source boundary and implement the first missing signed-package caller/persistence link
-  with focused authorization/lifecycle coverage. Then continue §9.5 publish/operations and remaining
-  §5/§10 plus S2–S9/U01–U12 rows. Do not repeat closed U11/U12 audits absent new evidence.
+- The generic Shell shared-app catalog/install path now accepts the exact Space-local release only
+  when its host attestation is valid and its publisher key remains active. It validates the package
+  profile, schema, capabilities and bounded artifact bytes/digest, stages the shared installation,
+  initializes its Canvas/Gadget actors, rechecks publisher trust, then activates. Shared runtime,
+  settings, voice and template access rechecks active installation/release/key state and is denied
+  after pause, removal, revocation or invalid release. This is Space-local installation, not a public
+  Marketplace listing, package authoring, upgrade or rollback.
+- Local/mock evidence: SpaceDO install, signed package and gadget suites **42/42**, Spaces and Shell
+  typechecks, `git diff --check`. No deployed DB, provider, deployment or live acceptance ran.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9 and U01–U12 retain their row statuses;
+  U05/U06's trusted runtime observation and pinned writer-admission/drain/handoff contract is not a
+  credential blocker. P01/P02 still fail closed on actual resource separation/ownership, missing
+  read-only receipts and operator-attested D1 baselines. Invoices, billed idle/CPU-size feeds, policy
+  decisions and deployed/live acceptance remain distinct gates. §5/§9.5/§10 remain PARTIAL; rollouts
+  stay disabled.
+- Exact next action: join admitted Telnyx call-cost receipts to the 50 recent extension-call rows
+  without storing raw call-control IDs. Add a binding-scoped hash in an additive migration, bounded
+  receipt aggregation in the owner-authorized status caller, and UI labels that identify provider-
+  reported cost and distinguish missing from zero. Test webhook idempotency/conflicts, scope and UI;
+  then resume §9.5 publish/operations and remaining independent gaps. Do not repeat completed audits
+  without new source evidence.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

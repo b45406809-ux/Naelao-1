@@ -12,15 +12,16 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `61d1b6498f36c2f3c227d155e0e254a52b39dccf` is pushed to
+Current checkpoint (2026-11-13): code `249c79305b4f7aeb88a0476f369b5b98ada19708` is pushed to
 `origin/Mcbt5s-Backup-2`; local branch `autonomous-managed-services-20261111` is synchronized. The
-only untracked work is the preserved `infra/scripts/__pycache__/`. The owner phone panel now runs a
-clearly labeled synthetic text simulation against the binding's current active signed handler. The
-host rechecks installation, release, artifact and settings, uses the same bounded channel isolate,
-validates the voice response, and writes no call receipt or simulated session. Local/mock evidence:
-Agents phone and DO tests **40/40**, Agents and Shell typechecks, `git diff --check`. Earlier settings
-verification remains Agents **8/8**, Spaces **28/28**, Agent SDK **29/29**. No provider egress,
-deployed database, deployment or live call was exercised.
+only untracked work is the preserved `infra/scripts/__pycache__/`. A generic Shell shared-app catalog
+and install path now accepts exact, host-attested signed extension releases from an active Space
+publisher key, initializes their Space-scoped Canvas/Gadget artifacts, and checks the signed shared
+runtime and publisher status on every request. This does not create a public Marketplace, visual
+authoring, upgrades or rollback. Local/mock evidence: SpaceDO/shared package/gadget suites **42/42**,
+Spaces and Shell typechecks, and `git diff --check`. Earlier phone simulation remains locally verified
+at Agents **40/40** with Agents/Shell typechecks. No provider egress, deployed database, deployment,
+or live acceptance was exercised.
 
 The detailed S2–S9/U01–U12 ledger already reconciles U11/U12 for supported local callers/toolchain;
 actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence remain. Do not repeat
@@ -29,14 +30,14 @@ U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTI
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
 product, policy, runtime contract and live acceptance gates remain in both progress records.
 
-Exact next action: trace the §9.5 package-owned dashboard path from signed extension release through
-Space-shared installation, microapp artifact initialization and the Shell's generic app list. The
-current app list accepts installed shared manifests, while the install/catalog caller appears
-first-party-only. Confirm the current source boundary and implement the first missing signed-package
-caller/persistence link with focused auth/lifecycle tests. Then continue §9.5 publish/operations and
-remaining §5/§10 plus S2–S9/U01–U12 rows. After compaction, interruption or a new session, reread both
-plans, both progress records and this file; inspect the actual worktree and resume from the exact next
-unfinished action.
+Exact next action: add a privacy-preserving join from admitted Telnyx call-cost receipts to the 50
+recent extension-call rows in the owner phone panel. Add a binding-scoped hash of the call-control ID
+to the durable receipt via an additive migration; return bounded per-call provider-reported totals,
+never infer zero when no receipt exists, and label them as provider observations rather than invoices.
+Cover duplicate/corrected webhook receipts, tenant/binding scoping and Shell rendering. Then continue
+§9.5 publish/operations and the remaining §5/§10 plus S2–S9/U01–U12 gaps. After compaction,
+interruption, or a new session, read both plans and both progress records, inspect the actual worktree,
+branch and dirty state, and resume from that exact action.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing
