@@ -641,6 +641,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/memberships$/,
   /^\/spaces\/([^/]+)\/sub-spaces(?:\/[^/]+(?:\/(?:projects|members)(?:\/[^/]+)?)?)?$/,
   /^\/spaces\/([^/]+)\/preferences$/,
+  // The Spaces worker resolves current membership for registry reads and owner/admin for writes;
+  // each published fact is disclosed to every active member and remains advisory only.
+  /^\/spaces\/([^/]+)\/coordination-registry(?:\/(?:preview|[^/]+))?$/,
   /^\/spaces\/([^/]+)\/template-listings\/([^/]+)\/fork$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,

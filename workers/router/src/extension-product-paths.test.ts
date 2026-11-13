@@ -60,6 +60,20 @@ describe("Space presentation preferences", () => {
   });
 });
 
+describe("Space coordination registry routing", () => {
+  it.each([
+    "/spaces/s/coordination-registry",
+    "/spaces/s/coordination-registry/preview",
+    "/spaces/s/coordination-registry/entry-a",
+  ])("resolves product session identity for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it("does not allow nested registry operations", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/coordination-registry/entry-a/private"))).toBe(false);
+  });
+});
+
 describe("Space Template activation and shared-extension lifecycle routing", () => {
   it.each([
     "/spaces/s/blueprints/tpl_demo/activation-preview",

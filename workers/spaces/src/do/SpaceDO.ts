@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupValues, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupValues, validateSpaceCoordinationDraft, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2399,6 +2399,33 @@ const MIGRATIONS: Migration[] = [
       updated_at TEXT NOT NULL
     );`,
   },
+  {
+    version: 114,
+    description: "store explicitly approved advisory Space coordination facts",
+    up: `CREATE TABLE space_coordination_entries (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      entry_id TEXT NOT NULL,
+      capability_key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      description TEXT,
+      audience TEXT NOT NULL CHECK (audience = 'space_members'),
+      status TEXT NOT NULL CHECK (status IN ('active','revoked')),
+      advisory_only INTEGER NOT NULL CHECK (advisory_only = 1),
+      version INTEGER NOT NULL CHECK (version >= 1),
+      provenance TEXT NOT NULL CHECK (provenance = 'explicit_owner_or_admin_approval'),
+      created_by TEXT NOT NULL,
+      approved_by TEXT NOT NULL,
+      approved_role TEXT NOT NULL CHECK (approved_role IN ('admin','owner')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT,
+      PRIMARY KEY (tenant_id, space_id, entry_id)
+    );
+    CREATE INDEX idx_space_coordination_active
+      ON space_coordination_entries(tenant_id, space_id, status, created_at, entry_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2607,6 +2634,99 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ON CONFLICT(space_id, term_norm, locale) DO UPDATE SET term = excluded.term, meaning = excluded.meaning, notes = excluded.notes, updated_at = excluded.updated_at`,
       body.space_id, normalizeGlossaryTerm(term), term, locale, meaning, notes, body.actor_id, now, now);
     return Response.json({ entry: { term, meaning, locale, ...(notes ? { notes } : {}) } }, { status: (duplicate?.n ?? 0) > 0 ? 200 : 201 });
+  }
+
+  private listSpaceCoordination(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const requested = Number(params.get("limit") ?? "50");
+    const limit = Number.isInteger(requested) ? Math.min(100, Math.max(1, requested)) : 50;
+    const after = params.get("after");
+    const sql = this.ctx.storage.sql as never;
+    let rows: Array<Record<string, unknown>>;
+    if (after) {
+      const split = after.indexOf("~");
+      let cursorTime = "", cursorId = "";
+      try {
+        if (split <= 0 || split === after.length - 1) throw new Error("cursor_invalid");
+        cursorTime = decodeURIComponent(after.slice(0, split));
+        cursorId = decodeURIComponent(after.slice(split + 1));
+        if (!Number.isFinite(Date.parse(cursorTime)) || !/^[A-Za-z0-9_-]{1,128}$/.test(cursorId)) throw new Error("cursor_invalid");
+      } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+      rows = queryAll(sql,
+        `SELECT entry_id,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at
+         FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active'
+           AND (created_at>? OR (created_at=? AND entry_id>?)) ORDER BY created_at,entry_id LIMIT ?`,
+        tenantId, spaceId, cursorTime, cursorTime, cursorId, limit + 1);
+    } else {
+      rows = queryAll(sql,
+        `SELECT entry_id,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at
+         FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active'
+         ORDER BY created_at,entry_id LIMIT ?`, tenantId, spaceId, limit + 1);
+    }
+    const hasMore = rows.length > limit;
+    const entries = rows.slice(0, limit).map(row => ({ schema_version: 1, ...row, advisory_only: true, entry_id: String(row.entry_id ?? "") }));
+    const last = rows.slice(0, limit).at(-1);
+    const nextAfter = hasMore && last
+      ? `${encodeURIComponent(String(last.created_at))}~${encodeURIComponent(String(last.entry_id))}`
+      : null;
+    return Response.json({ schema_version: 1, entries, next_after: nextAfter });
+  }
+
+  private async publishSpaceCoordination(request: Request): Promise<Response> {
+    const body = await request.json<{ tenant_id?: string; space_id?: string; entry_id?: string; actor_id?: string; approved_role?: string; confirmed?: unknown; draft?: unknown }>().catch(() => null);
+    if (!body?.tenant_id || !body.space_id || !body.entry_id || !body.actor_id || !["owner", "admin"].includes(body.approved_role ?? "") || body.confirmed !== true) {
+      return Response.json({ error_code: "coordination_disclosure_confirmation_required" }, { status: 400 });
+    }
+    const parsed = validateSpaceCoordinationDraft(body.draft);
+    if (!parsed.ok) return Response.json({ error_code: parsed.error }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const existing = queryOne<Record<string, unknown>>(sql,
+      "SELECT * FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, body.entry_id);
+    if (existing) {
+      const same = existing.capability_key === parsed.value.capability_key && existing.label === parsed.value.label &&
+        (existing.description ?? "") === (parsed.value.description ?? "") && existing.created_by === body.actor_id &&
+        existing.approved_role === body.approved_role && existing.status === "active";
+      const publicEntry = same ? queryOne<Record<string, unknown>>(sql,
+        "SELECT entry_id,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+        body.tenant_id, body.space_id, body.entry_id) : null;
+      return same
+        ? Response.json({ entry: { schema_version: 1, ...publicEntry, advisory_only: true } })
+        : Response.json({ error_code: "coordination_entry_id_conflict" }, { status: 409 });
+    }
+    const now = new Date().toISOString();
+    execute(sql,
+      `INSERT INTO space_coordination_entries
+       (tenant_id,space_id,entry_id,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,'space_members','active',1,1,'explicit_owner_or_admin_approval',?,?,?,?,?)`,
+      body.tenant_id, body.space_id, body.entry_id, parsed.value.capability_key, parsed.value.label,
+      parsed.value.description ?? null, body.actor_id, body.actor_id, body.approved_role, now, now);
+    const entry = queryOne<Record<string, unknown>>(sql,
+      "SELECT entry_id,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, body.entry_id);
+    return Response.json({ entry: { schema_version: 1, ...entry, advisory_only: true } }, { status: 201 });
+  }
+
+  private async revokeSpaceCoordination(request: Request, entryId: string): Promise<Response> {
+    const body = await request.json<{ tenant_id?: string; space_id?: string; actor_id?: string; expected_version?: number }>().catch(() => null);
+    if (!body?.tenant_id || !body.space_id || !body.actor_id || !Number.isInteger(body.expected_version) || (body.expected_version ?? 0) < 1) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    const changed = this.ctx.storage.sql.exec(
+      `UPDATE space_coordination_entries SET status='revoked',version=version+1,updated_at=?,revoked_at=?,revoked_by=?
+       WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=?`,
+      now, now, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version);
+    const entry = queryOne<Record<string, unknown>>(sql,
+      "SELECT entry_id,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, entryId);
+    if (!entry) return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
+    if (changed.rowsWritten !== 1) {
+      return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
+    }
+    return Response.json({ entry: { schema_version: 1, ...entry, advisory_only: true } });
   }
 
   private deleteDomainGlossary(params: URLSearchParams): Response {
@@ -3218,6 +3338,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/internal/domain-glossary" && method === "POST") return this.putDomainGlossary(request);
       if (url.pathname === "/internal/domain-glossary" && method === "DELETE") return this.deleteDomainGlossary(url.searchParams);
       if (url.pathname === "/internal/domain-glossary/lookup" && method === "POST") return this.lookupDomainGlossary(request);
+      if (url.pathname === "/space-coordination-registry" && method === "GET") return this.listSpaceCoordination(url.searchParams);
+      if (url.pathname === "/space-coordination-registry" && method === "POST") return this.publishSpaceCoordination(request);
+      const coordinationRevoke = url.pathname.match(/^\/space-coordination-registry\/([^/]+)$/);
+      if (coordinationRevoke?.[1] && method === "DELETE") return this.revokeSpaceCoordination(request, decodeURIComponent(coordinationRevoke[1]));
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/extension-installation/activate" && method === "POST") return this.activateExtensionInstallation(request);
       if (url.pathname === "/extension-installation/abort" && method === "POST") return this.abortStagedExtensionInstallation(request);

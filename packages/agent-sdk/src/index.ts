@@ -16,6 +16,9 @@ export { toNormalizedInboundMessage, type InboundEnvelopeInput, type NormalizedI
 export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";
 export { resolveConnectorProvider, pinConnectorProvider, type ConnectorProvider, type ConnectorProviderChoice, type ConnectorProviderPreference, type ConnectorProviderRegistry } from "./connector-provider.js";
 export { presentAutonomyPolicy, type AutonomyLevel, type AutonomyPresentation, type StoredApprovalMode, type StoredAutonomyPolicy } from "./autonomy-policy.js";
+export { SPACE_COORDINATION_DISCLOSURE_V1, validateSpaceCoordinationDraft, createSpaceCoordinationClient,
+  type SpaceCoordinationDraftV1, type SpaceCoordinationEntryV1, type SpaceCoordinationDisclosureV1,
+  type SpaceCoordinationPageV1, type SpaceCoordinationClientOptions } from "./space-coordination.js";
 
 // ── Agent tool definition ────────────────────────────────────────────────────
 

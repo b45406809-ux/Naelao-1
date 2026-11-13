@@ -1,4 +1,5 @@
 import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
+import { registerSpaceCoordinationRoutes } from "./routes/space-coordination.js";
 import { standingBlackboardPeer } from "./blackboard-sharing.js";
 import { persistBlackboardWakePolicy } from "./blackboard-wake-policy.js";
 import { Hono, type Context } from "hono";
@@ -390,6 +391,7 @@ registerGraduationRoutes(app);
 registerWebsiteConnectionRoutes(app);
 registerAssistantChannelRoutes(app);
 registerAssistantVoiceRoutes(app);
+registerSpaceCoordinationRoutes(app);
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {
