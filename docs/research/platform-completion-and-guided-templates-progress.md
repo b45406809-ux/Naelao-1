@@ -2,6 +2,24 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after P02 source-isolation commits `3e456061` and `a1827a05` were pushed to
+`origin/Mcbt5s-Backup-2`. Current Wrangler map covers **28** config files, **100** binding rows,
+**56** Worker/environment surfaces, **2** declared routes and **30** endpoint-host entries, without
+storing variable values. P02 preflight detects mutable target sharing across D1, KV, R2, Vectorize,
+Queues, Workflows, DO script targets and service bindings; it requires **158** read-only receipts
+across both environments and rejects shared observed DO namespace IDs. Local evidence: resource
+validator **9/9**, Wrangler isolation **6/6**, release-manifest tests **5/5**, 232 migration hashes,
+fresh source-map generation and `git diff --check`. P02 remains blocked on one shared D1, eleven
+shared KV IDs, unresolved `naelao-calls` ownership and all 158 absent receipts. Provider secret
+presence, callback registration and jurisdiction require separate read-only evidence; no account,
+provider or deployment was inspected. P01 remains partial for absent operator-attested D1 baselines
+and isolated/live release acceptance. Exact next task: continue P03/P20 by adding durable
+provider-acceptance outcomes linked to stable dunning notification IDs, without treating provider
+acceptance as inbox delivery or inventing commercial/operator policy. Then proceed through P04
+recovery gaps before guided-template lifecycle, voice dashboards and Shared-Space coordination.
+
+Prior S4/MS03c-d continuation (2026-11-13, code `ebe98120`):
+
 Updated 2026-11-13 after S4/MS03c-d code commit `ebe98120` was pushed to
 `origin/Mcbt5s-Backup-2`. Sidecar import failures/conflicts now receive durable terminal outcomes;
 export receipts bind workspace path/revision and track immutable artifact staging separately from
@@ -34,12 +52,10 @@ customer phone-extension controls are available through the existing phone ledge
 `/customer-voice/*` route remains closed and public extension streaming remains unavailable.
 
 The managed-services matrix still contains PARTIAL rows for the unsupported U05/U06 writer/runtime
-contract, policy/product decisions, external evidence and deployed/live acceptance; this code does not
-change those classifications. The traced MS03c/d caller gap is closed locally. Continue the platform
-plan at P01/P02 release and environment safety, checking current sources for independent code gaps
-while keeping missing operator baselines, resource receipts and environment separation fail closed.
-Then proceed through commercial integrity/recovery, guided-template lifecycle, voice-extension
-dashboards and Shared-Space coordination. Keep rollout and local/mock/deployed/live evidence distinct.
+contract, policy/product decisions, external evidence and deployed/live acceptance; this S4 code did
+not change those classifications. The traced MS03c/d caller gap is closed locally. The later P01/P02
+source-isolation checkpoint and exact next task are recorded at the top of this progress file. Keep
+rollout and local/mock/deployed/live evidence distinct.
 
 Prior checkpoint — updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
 coordination-registry code is IMPLEMENTED_LOCAL: migration 114 persists bounded Space-owned facts,
@@ -237,20 +253,27 @@ separate P04 backup gap.
 
 ### P02 — isolated environments: PARTIAL, fail-closed
 
-Current code has a source-derived inventory generator, exact configured-resource receipt checks,
-staging/production D1 and KV cross-binding detectors, and these checks run in both deployment
-preflights. The stale source inventory was regenerated from the current Wrangler TOMLs. Current
-source still assigns staging and production the same `PLATFORM_DB` D1 and **11** mutable KV IDs;
-both validators reject these bindings. The resource receipt file contains no observed account,
-timestamp, or resource rows, so all required existence receipts are absent. `naelao-calls` is a
-service target with no named Worker owner. Evaluation Worker source points staging to
-`naelao-agents-staging` and production to `naelao-agents-production`; these are distinct in the
-checked-in TOML, though deployed bindings have not been inspected.
+Code `3e456061` extends source and preflight isolation checks from D1/KV to R2, Vectorize, Queues,
+Workflows, Durable Object script targets and service bindings. It records configured Durable Object
+classes and requires current read-only namespace receipts to prove staging/production namespace IDs
+are distinct. Code `a1827a05` adds a redacted per-environment Wrangler surface inventory: Worker
+targets, routes, endpoint hostnames, variable names and declared jurisdiction fields. Values are
+never copied to the map. The map is current for **28** Wrangler files, **100** binding rows, **56**
+Worker/environment surfaces, **2** configured routes and **30** endpoint-variable entries. No
+jurisdiction is declared in the current Wrangler/D1 source.
 
-The distinct D1/KV IDs, actual Cloudflare resource existence/account, service owner for
-`naelao-calls`, and read-only receipts require verified environment configuration/evidence. Do not
-substitute guessed IDs, account names, timestamps, or ownership. Deployment preflight remains
-blocked until source configuration and operator-observed receipts satisfy the validators.
+Local evidence: environment resource validator **9/9**, Wrangler isolation **6/6**, release manifest
+validator tests **5/5**, `validate_release_manifest.py` confirms **232** migration hashes, source-map
+freshness and `git diff --check`. These are local Python/config checks only. The environment preflight
+correctly remains blocked on **158** missing read-only receipts. Source still shares one D1 and eleven
+KV IDs; `naelao-calls` is shared/unresolved and has no named Worker owner. No account, credential,
+namespace, service owner or deployment was inspected.
+
+Provider secret presence, provider-side webhook/callback registration and account-level jurisdiction
+still need separate read-only inventories; the source map intentionally stores no secret values and
+cannot attest those account facts. Distinct configured resources, those external observations, and
+authorized isolated staging acceptance remain open. Do not guess IDs, account names, timestamps,
+evidence sources or ownership.
 
 ### Verification recorded at the initial P01/P02 source reconciliation
 

@@ -2,16 +2,19 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `ebe98120` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It closes the MS03c/d sidecar
-artifact receipt caller gap. Sidecar transfers now persist terminal import conflicts and failures,
-bound the recent owner-visible receipt index to 50, distinguish exported immutable artifacts from
-confirmed workspace publication, and record checked-publisher conflicts. The owner/admin-only
-Agents route is connected to Shell runtime settings, supports branch selection, and exposes request
-IDs, paths, expected/current hashes, status and artifact digest without a publish action. Conflicted
-outputs remain staged. Focused local evidence: Agents **40/40** across the sidecar DO, prebuilt and
-route suites; Shell **1/1**; Agents/Shell typechecks and `git diff --check`. These are local R2/DO/
-Worker mocks and static checks; no deployed Durable Object, R2, extension or live acceptance ran.
+Current continuation checkpoint (2026-11-13): P02 source-isolation code `3e456061` and `a1827a05`
+are pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. The preflight now
+checks mutable cross-environment D1, KV, R2, Vectorize, Queue, Workflow, Durable Object script and
+service targets; requires 158 read-only receipts for configured resources in both environments; and
+checks distinct observed Durable Object namespace IDs. A redacted Wrangler surface inventory records
+28 config files, 100 binding rows, 56 Worker/environment surfaces, two routes and 30 endpoint-host
+entries without copying variable values. Local evidence: resource validator **9/9**, Wrangler
+isolation **6/6**, release-manifest tests **5/5**, 232 migration hashes, current map generation and
+`git diff --check`. The preflight correctly remains blocked on one shared D1, eleven shared KV IDs,
+the shared/unresolved `naelao-calls` target, and all 158 absent read-only receipts. Secret presence,
+provider webhook/callback registration, account jurisdiction, deployed resources and D1 baselines
+remain uninspected. P01 release probes are present in both workflows; no deployment/live acceptance
+was run.
 
 The prior code `99a036cd` also exposes persisted Template setup values to the exact active required
 SPACE_SHARED extension through host validation, capability checks and optimistic revisions.
@@ -28,12 +31,13 @@ runtime disabled and do not synthesize trusted records.
 S2–S9/U01–U12 remains reconciled in the implementation-progress matrix; do not claim the managed
 services mission fully complete. Its recorded partial requirements still include the unsupported
 U05/U06 live-writer contract, product/payment and retention decisions, missing provider evidence,
-external consumer durability, and deployed/live acceptance. Reopen a row only when new source evidence
-shows an independent code gap. Exact next task: start the new platform plan at P01/P02 release and
-environment safety using the existing ordered migration runner, deployment manifest, resource map and
-preflights. Verify against current source and close any independent local code gap before moving to the
-commercial integrity/recovery sections; do not bypass missing baselines, resource ownership receipts
-or environment separation. Then continue guided-template lifecycle, voice-extension dashboards and
+external consumer durability, and deployed/live acceptance. P01 is partial for absent operator-attested
+D1 baselines and live release acceptance. P02 is partial for shared configured IDs, the unresolved
+`naelao-calls` owner, 158 missing receipts, and external secret/callback/jurisdiction inventory. Exact
+next task: continue P03/P20 commercial recovery by adding durable notification-provider acceptance
+outcomes linked to the existing stable dunning notification IDs; keep provider acceptance distinct
+from inbox delivery and do not invent grace/restriction, refund/dispute, payout or operator-identity
+policy. Then continue P04 recovery requirements and guided-template lifecycle, voice dashboards and
 Shared-Space coordination in dependency order. Preserve all rollout flags, local/mock/deployed/live
 distinctions and `infra/scripts/__pycache__/`; do not deploy, buy services, reset, clean, switch branches
 or force-push.

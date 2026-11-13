@@ -2,6 +2,42 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; P02 source isolation `3e456061` / `a1827a05` pushed)
+
+- Code `3e456061` and `a1827a05` are pushed to `origin/Mcbt5s-Backup-2` from
+  `autonomous-managed-services-20261111`. The source-derived environment preflight now checks
+  staging/production separation for mutable D1, KV, R2, Vectorize, Queue, Workflow, Durable Object
+  script and service targets. It inventories Durable Object classes and requires read-only namespace
+  receipts for both environments, rejecting reused observed namespace IDs. The Wrangler map also
+  records routes, public endpoint hostnames, variable names and explicit jurisdiction fields without
+  storing variable values.
+- Current inventory: **28** Wrangler TOMLs, **100** binding rows, **56** Worker/environment surfaces,
+  **2** declared routes, **30** endpoint-variable entries and **158** required read-only resource
+  receipts. Current config declares no jurisdiction. Secret presence, provider callback registration
+  and account jurisdiction require separate read-only account/provider evidence; no secret values are
+  stored.
+- Fresh local evidence: environment resource validator **9/9**, Wrangler isolation **6/6**, release
+  manifest tests **5/5**, release manifest confirms **232** migrations, source map regenerates without
+  drift, and `git diff --check` passes. The environment preflight intentionally still fails closed on
+  one shared D1, eleven shared KV IDs, the shared/unresolved `naelao-calls` service with no named
+  Worker owner, and all **158** missing receipts. No Cloudflare account/resource, provider callback,
+  secret presence, namespace ID, D1 baseline or deployment was inspected.
+- P01's ordered migration runner, deployment manifest and post-Worker health gate are implemented
+  locally. Its remaining gates are operator-attested staging/production D1 baselines, actual applied
+  history/data evidence, and isolated/deployed health acceptance. The release runbook was corrected
+  to describe the existing worker health probes and their acceptance limits.
+- S2–S9/U01–U12 remains partial for the exact runtime/platform contracts, policy choices, missing
+  provider evidence, external consumer durability and deployed/live acceptance listed in the matrix.
+  P03/P20 policy remains unresolved; no access restriction, refund/dispute, payout or operator
+  identity rule was invented. P04 retains archive size/row limits, merge restore semantics and
+  isolated/live recovery evidence gaps.
+- Exact next task: continue P03/P20 with durable notification-provider acceptance outcomes linked to
+  the existing stable dunning notification IDs. Report provider acceptance separately from inbox
+  delivery; do not implement grace/restriction, refund/dispute, author payout or privileged operator
+  resolution without the missing policy/identity contract. Then continue P04 independent recovery
+  code gaps before guided-template lifecycle work. Preserve `infra/scripts/__pycache__/`, disabled
+  rollouts, and separate local/mock/deployed/live evidence.
+
 ### Active continuation (2026-11-13; S4/MS03c-d sidecar receipts `ebe98120` pushed)
 
 - Code `ebe98120581eb0cbed5e0084dd36792be0c2e5c9` is pushed to `origin/Mcbt5s-Backup-2` from
@@ -424,7 +460,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | Requirement | Status | Current implementation, evidence, and remaining work |
 | --- | --- | --- |
 | §1 / P01 migration and release safety | PARTIAL | `infra/release/schema-manifest.json` pins SHA-256 for all **232** exact migration filenames, with `0232_semantic_cache_cleanup_operations` required by release probes. Code `01326eca` replaces raw `|| true` loops and manual replays with `infra/scripts/release_migrations.py`: operator-attested legacy baseline and schema fingerprint, durable per-migration checksum/status rows, a non-expiring D1 owner lock, atomic D1 file execution plus receipt, same-run resume, required-version/column checks, and 27 consumer probes. Code `f676408a` adds the auth-email receipt column probe; code `2d4bde5a` adds source-validated post-worker health checks before frontend publication; `7b6942e8` adds deletion-ledger and erasure-status probes. Local evidence includes the Python release/migration suite **47/47**, manifest validator, deployment-manifest validator, P01 health suites **15/15 across 13 Workers**, Python probe **5/5**, deployment manifest tests **7/7**, and YAML parse. No live endpoint, deployment or remote D1 was queried. Staging/production legacy baselines and verified applied-history/data evidence are absent, so the migration runner stops before mutation; P02 still has shared real resource IDs and missing ownership/existence receipts. No isolated staging rehearsal or live health acceptance is claimed.
-| §1 / P02 and §8 / P19 environment isolation | PARTIAL | Codes `91d12419`/`87a9be02` update service targets, staging queues/DLQs, workflow names, DO targets, R2 names and Vectorize indexes; `b8399b4c` adds a source-hash-validated map for all **28** Wrangler TOMLs and **71** binding entries plus read-only existence receipt checks in both deploy preflights. Fresh current-source validation still fails closed with **38** per-Worker binding conflicts across **13** resource identities: one D1 ID shared by 24 Workers, eleven staging/production KV ID collisions, and `naelao-calls` without a named Worker owner. The configured staging queues/Workflows, R2 buckets and indexes plus D1/KV IDs require **62** read-only existence receipts; no account ID or observation timestamp was fabricated. Python validators report the exact conflicts and missing receipts; no Cloudflare account, credential or deployment was queried. Next: resolve ownership, provide distinct real resource IDs and authorized current receipts, then perform isolated staging acceptance.
+| §1 / P02 and §8 / P19 environment isolation | PARTIAL | Codes `91d12419`/`87a9be02` update service targets, staging queues/DLQs, workflow names, DO targets, R2 names and Vectorize indexes; `b8399b4c` adds the source-hash-validated Wrangler resource map. Code `3e456061` extends cross-environment mutable-target checks to R2, Vectorize, Queues, Workflows, DO script targets and service bindings; it adds Durable Object class/namespace receipts for both environments and rejects reused observed namespace IDs. Code `a1827a05` adds a redacted per-environment deployment-surface map for routes, endpoint hostnames, variable names and explicit jurisdiction settings. It currently covers **28** Wrangler TOMLs, **100** binding rows, **56** Worker/environment surfaces, **2** routes and **30** endpoint-variable entries; no jurisdiction is declared. Local evidence: environment resource tests **9/9**, Wrangler isolation **6/6**, release-manifest tests **5/5**, 232 migration hashes, fresh map generation and `git diff --check`. The preflight remains blocked on **158** missing read-only resource receipts, one shared D1, eleven shared KV IDs, and the shared/unresolved `naelao-calls` target with no named Worker owner. Cloudflare resources, actual DO namespace IDs, account, secret presence, provider callback registrations, jurisdiction and deployment remain uninspected. Next: continue P03/P20 commercial recovery caller work without inventing grace, refund, dispute or operator-identity policy; keep P02 deployment blocked until configured IDs, service ownership and authorized read-only receipts are supplied.
 | §2 / P03 and P12 dunning | PARTIAL | Code `144c02f5` adds atomic current-subscription transitions and a migration-0225 outbox for Lemon Squeezy/Whop failures, a bounded lease/backoff dispatcher and deterministic notification workflow IDs. Code `2625ea34` adds one shared strict `DunningEventV1` validator for Billing and Workflows while retaining compatibility for pending unversioned v1 rows; stale or reordered provider states cannot overwrite a newer subscription. P11 simulation is restricted to explicit local/development/test configuration. Latest local evidence: dunning/checkout/queue tests **31/31**, queue migration **3/3**, release runner **9/9**, Billing/Workflows/shared-types typechecks, and 231-file release validation. No provider or deployed delivery was exercised. Grace/restriction/manual intervention, repeated reminder, refund/dispute and verified delivery policies remain undecided; keep existing access policy unchanged.
 | §2 / P11 checkout | PARTIAL | `workers/billing/src/index.ts` now returns the development URL only when `ALLOW_DEV_CHECKOUTS=true` and `ENVIRONMENT` is development/local/test; staging and production return `checkout_provider_unavailable` even if the flag is mis-set. Wrangler names the switch true only in top-level development vars and false in staging/production. Checkout route tests pass 6/6, Billing typecheck passes, Wrangler variable-parity passes 82/82. Purchased plan/price snapshots and live signed webhook-to-entitlement acceptance remain. |
 | §2 / P20 license refunds/disputes | PARTIAL | Code `894ec60f` adds migration 0226 and a signed Lemon Squeezy refund caller that writes a body-hash-idempotent review case with explicit/unknown refund amount, tenant/listing/order references, reason, and matched/unmatched/conflict state. Refunds arriving before payment are linked during license settlement. An exact full refund can close only an already-recorded duplicate-charge task. A tenant-scoped HMAC read route exposes cases. Code `086675c8` adds a dedicated-secret-protected, bounded read-only operator list API with filters, lookahead pagination and a minimal audit record; it does not mutate license or payout state. Local evidence for the new slice: Billing route **4/4**, Billing typecheck, diff check. No provider webhook, deployed database or payout was exercised. The caller-supplied operator ID is audit attribution rather than independent identity and no first-party UI is wired. The normalized Lemon Squeezy contract contains no dispute event; dispute ingestion, approved full/partial refund behavior, author-earnings/payout reversal, stronger operator identity and resolution UX remain open. Do not treat unknown refunds as zero or claim provider dispute support. |

@@ -22,8 +22,10 @@ checked-in workflows. `schema-manifest.json` remains the ordered checksum invent
   deployment jobs can publish. Production deploys Workers before its Pages and widget job. The worker
   loops record all failures and fail their deployment job; dependent jobs do not promote frontends
   after that failure.
-- There is no post-deploy Worker health probe or automatic rollback in either workflow. CI tests and
-  zero-row D1 schema probes are not runtime health or customer-journey acceptance.
+- After Workers deploy, both workflows retry bounded HTTPS probes for the Router, its eleven
+  service dependencies, and the separately routed AgentPort before dependent frontends can publish.
+  These probes establish release health responses, not customer-journey or provider acceptance.
+  There is no automatic rollback; use a reviewed compatible release or forward repair.
 
 ## Existing D1 adoption and interrupted migrations
 
@@ -62,12 +64,23 @@ follow-up checks in the release record.
 ## Environment inventory gate
 
 `infra/environment/resource-map.json` is generated from checked-in Wrangler source and is not proof
-that a named Cloudflare resource exists. `resource-receipts.json` must come from fresh read-only
-Cloudflare inspection and match every configured D1/KV ID and required staging Queue, Workflow, R2,
-and Vectorize resource. Do not invent IDs, account IDs, timestamps, evidence sources, service owners,
-or receipt status. Assign different mutable D1/KV resources to staging and production. Resolve the
-`naelao-calls` service target to its real Worker owner. Then obtain a separate schema baseline for
-each D1 database. Keep secrets, webhook endpoints and provider resources environment-specific.
+that a named Cloudflare resource exists. It inventories D1/KV/R2/Vectorize/Queue/Workflow targets,
+Durable Object classes and script targets for both environments, plus declared routes, endpoint
+hostnames, variable names and jurisdiction settings. It never stores variable values. The current
+map covers 28 Wrangler files, 100 binding rows, 56 Worker/environment surfaces, two configured
+routes, 30 public endpoint-variable entries and 158 required existence receipts. A receipt must come
+from fresh read-only Cloudflare inspection, identify the observed account and timestamp, and match
+the configured D1/KV IDs, both environments' Queue/Workflow/R2/Vectorize resources, and observed
+Durable Object namespace IDs. The validator rejects shared mutable D1/KV/R2/Vectorize/Queue/
+Workflow/DO-script targets and shared observed DO namespaces across staging and production.
+
+Do not invent IDs, account IDs, timestamps, evidence sources, service owners, or receipt status. The
+current source still shares one D1 and eleven KV IDs; `naelao-calls` is unresolved; no resource
+receipts or D1 baselines exist. The source map does not verify Cloudflare secret presence, provider
+webhook/callback registration, or account-level jurisdiction. Obtain separate read-only inventories
+for those provider-managed facts; secret values must never be written to this map. Resolve the
+`naelao-calls` service target to its real Worker owner, assign distinct mutable resources, and obtain
+a separate schema baseline for each D1 database before any release mutation.
 
 The current code validators correctly reject the source configuration until these account-owned
 facts are supplied. No resources were inspected or created while writing this runbook.
