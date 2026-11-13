@@ -2,20 +2,22 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `08c9e4b9` was pushed to `origin/Mcbt5s-Backup-2`. Project Canvas
-extensions now use an exact installation-scoped settings API and host-rendered schema form. Project
-read/manage authority, declared permissions/capabilities and submitted values are checked server
-side; updates use optimistic revisions. PROJECT_USER installs are visible only to their owner,
-while readable members cannot change PROJECT_BOUND/PROJECT_SHARED settings without project manage
-authority. The iframe RPC admits only `/api/settings` on this project path. Local evidence: Spaces
-route/DO tests **7/7**, Router product-path **47/47**, Spaces/Router/Shell typechecks and
-`git diff --check`. No deployed installation or provider acceptance occurred.
+Updated 2026-11-13 after phone history UI code `e6c956d9` was pushed, following project settings
+code `08c9e4b9`. Project Canvas extensions have an exact installation-scoped settings API, server
+checks for project read/manage authority and declared grants, host schema/value validation, revision
+fencing, and an iframe path limited to `/api/settings`. The owner phone panel now consumes the
+existing separate 50-row cursors for actions and incoming call/event history. Local evidence for the
+latest slice: Agents phone cursor regression **1/1** (33 unrelated tests skipped), Shell typecheck and
+`git diff --check`. Prior settings slice: Spaces route/DO **7/7**, Router product-path **47/47**,
+Spaces/Router/Shell typechecks. No deployed installation, provider call or invoice reconciliation
+occurred.
 
-This implements installation settings plumbing only. §9.5 remains PARTIAL for customer voice-agent
-runtime, verified provider catalogs/rates, safe browser tests and publish, knowledge/tools, signed
-package composition, call receipts and live acceptance. The separate owner phone dashboard already
-has bounded action/event APIs but its UI reads only the first page. §10 coordination and P01/P02/P03/
-P04 gaps remain as recorded in the managed-services ledger; no live evidence is inferred.
+The phone history is the existing Space Assistant phone operations feed; it is not customer
+voice-agent call history. §9.5 remains PARTIAL for customer voice runtime, verified provider
+catalogs/rates, safe tests/publish, knowledge/tools, signed package composition, customer call
+receipts and live acceptance. Project settings are reachable from a Canvas; the project extension
+management screen still lacks the required basic host-rendered form for active non-Canvas packages.
+§10 coordination and P01/P02/P03/P04 gaps remain as recorded in the managed-services ledger.
 
 §10 remains PARTIAL for owner-configured posture/publication authority, extension and dependency
 lifecycle, reservations/cardinality, expiry, concurrency and broad non-disclosure. P01/P02 local
@@ -28,10 +30,10 @@ apply updates. A safe update/uninstall contract for generated projects, extensio
 resources, license state and retained receipts has not been decided, so update mutation and deletion
 remain unimplemented product/lifecycle work rather than credential blocks.
 
-Exact next task: connect the owner phone dashboard's existing bounded `phone-actions` and
-`phone-events` cursor responses to separate load-older controls, keeping operation pages bounded and
-Space/owner scoped. Do not equate provider API cost observations with invoices or label this feature
-as the customer voice-agent runtime. Then continue remaining §9.5 requirements in dependency order.
+Exact next task: add a basic host-rendered form in project extension management for active non-Canvas
+installations that declare a validated settings schema and read capability. Reuse the exact
+project/installation API and keep other users' PROJECT_USER settings hidden. Then continue remaining
+§9.5 requirements in dependency order.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting

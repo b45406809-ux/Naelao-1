@@ -2,20 +2,19 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; project extension settings `08c9e4b9` pushed)
+### Active continuation (2026-11-13; owner phone history cursor UI `e6c956d9` pushed)
 
-- Code `08c9e4b9` is pushed to `origin/Mcbt5s-Backup-2`. Project Canvas settings now flow through an
-  exact installation-scoped product route to SpaceDO. Current project read/manage authorization is
-  rechecked at the gateway; SpaceDO requires declared settings read/configure capability and
-  permission, validates values with the installed schema, and persists with optimistic revision
-  fencing. PROJECT_USER installations are visible only to their owner; for PROJECT_BOUND and
-  PROJECT_SHARED installations, readable members may review settings while only project managers
-  can write. The Shell host form and the iframe's narrowly scoped `/api/settings` RPC use this path.
-- Local evidence: Spaces route/DO tests **7/7**, Router product-path tests **47/47**, Spaces/Router/
-  Shell typechecks, and `git diff --check`. No deployed installation or provider acceptance ran.
-- This closes per-installation settings plumbing only. It does not establish a customer voice-agent
-  runtime or provide voice catalogs, rates, test/publish operations, knowledge/tools, call receipts or
-  provider invoice reconciliation. The owner phone panel remains a distinct supported feature.
+- Code `e6c956d9` is pushed to `origin/Mcbt5s-Backup-2`, after project settings code `08c9e4b9`. The
+  owner phone dashboard now consumes separate bounded `phone-actions` and `phone-events` cursors and
+  exposes load-older controls. Each backend request remains capped at 50 rows and scoped to the exact
+  phone binding; the UI prevents overlapping history requests and ignores results after scope refresh.
+- Local evidence: Agents phone tied-timestamp cursor regression **1/1** (33 unrelated tests skipped),
+  Shell typecheck, and `git diff --check`. No provider call, deployment or invoice reconciliation
+  ran.
+- This improves the existing Space Assistant phone operations panel; it does not establish customer
+  voice-agent call history. Project Canvas extension settings from `08c9e4b9` remain exact-installation
+  scoped with host validation and current read/manage authority. Customer voice runtime, catalogs,
+  rates, test/publish operations, provider receipts and live acceptance remain partial.
 - The managed-services S2–S9/U01–U12 matrix remains the status source of truth. S2 is
   IMPLEMENTED_LOCAL for supported provider lanes; unsupported U05/U06 trusted runtime allocation,
   observation, writer admission/drain/handoff remain non-credential platform-contract gaps. Other
@@ -25,12 +24,12 @@
   lifecycle, reservation/cardinality, expiry, concurrency and broad non-disclosure. The published
   template lifecycle status path is read-only and signed-source-checked; there is no agreed contract
   for removing generated projects, extensions, provider resources, licenses or retained receipts.
-- Exact next task: connect the owner phone panel to its already bounded `phone-actions` and
-  `phone-events` cursor responses with separate load-older controls, preserving bounded pages and
-  owner/Space scoping. Keep carrier API observations distinct from invoices and customer voice-agent
-  runtime. Then continue §9.5 against supported source contracts. The S2–S9/U01–U12 matrix remains
-  the managed-services status source; its named platform-contract, policy, external evidence and
-  deployed/live acceptance gaps remain open. Preserve `infra/scripts/__pycache__/` and rollout flags.
+- Exact next task: add a basic host-rendered settings form in project extension management for active
+  non-Canvas installations that declare the validated schema and read capability. Reuse the exact
+  project/installation API and keep other users' PROJECT_USER settings hidden. Then continue §9.5
+  against supported source contracts. The S2–S9/U01–U12 matrix remains the managed-services status
+  source; its named platform-contract, policy, external evidence and deployed/live acceptance gaps
+  remain open. Preserve `infra/scripts/__pycache__/` and rollout flags.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
