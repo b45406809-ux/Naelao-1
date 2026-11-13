@@ -1,4 +1,4 @@
-import type { WorkflowClass } from "@naelao/agent-sdk";
+import { validateExtensionManifest, type ExtensionManifest, type WorkflowClass, type WorkflowContract } from "@naelao/agent-sdk";
 import { readBoundedResponseJson } from "@naelao/http";
 import type { OrchestrationHooks } from "../script-engine/types.js";
 import type { ScriptToolSurface } from "../script-engine/tool-surface.js";
@@ -6,11 +6,7 @@ import { readWorkflowGrant, startDurableWorkflow, workflowHash, workflowHeaders,
 
 interface WorkflowInventoryRow {
   instance?: { instance_id?: string; project_id?: string | null; status?: string; scope?: string };
-  manifest?: { id?: string; bundle?: {
-    id?: string; version?: string;
-    primitives?: Array<{ kind?: string; id?: string; entry?: string; toolNames?: string[] }>;
-    workerRoles?: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[] }>;
-  } };
+  manifest?: unknown;
 }
 
 export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenantId: string; spaceId: string; projectId?: string; agentId: string; actorId?: string }, parentRunId: string, tools: ScriptToolSurface): Partial<OrchestrationHooks> {
@@ -28,15 +24,22 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
       if (!response.ok) throw new Error("extension_workflow_inventory_unavailable");
       const result = await readBoundedResponseJson<{ installations?: WorkflowInventoryRow[] }>(response, 2 * 1024 * 1024);
       return (result.installations ?? []).flatMap(item => {
-        const instanceId = item.instance?.instance_id, bundle = item.manifest?.bundle;
-        if (!instanceId || item.instance?.status !== "active" || (scope.projectId && item.instance.project_id !== scope.projectId)
-          || !bundle?.id || bundle.id !== item.manifest?.id || !bundle.version) return [];
+        const instance = item.instance;
+        let manifest: ExtensionManifest;
+        try { manifest = validateExtensionManifest(item.manifest); } catch { return []; }
+        const instanceId = instance?.instance_id, bundle = manifest.bundle;
+        if (!instanceId || instance?.status !== "active" || !scope.projectId || instance.project_id !== scope.projectId
+          || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "")
+          || !bundle?.id || bundle.id !== manifest.id || !bundle.version) return [];
         const parts = (bundle.primitives ?? []).filter((part): part is typeof part & { id: string; kind: string } => typeof part.id === "string" && typeof part.kind === "string")
           .map(part => ({ id: part.id, kind: part.kind }));
-        const workflows = (bundle.primitives ?? []).filter(part => part.kind === "workflow" && typeof part.id === "string" && typeof part.entry === "string")
-          .map(part => ({ id: part.id!, entry: part.entry!, toolNames: (part.toolNames ?? []).filter((name): name is string => typeof name === "string"),
+        const workflows = (bundle.primitives ?? []).filter((part): part is WorkflowContract => part.kind === "workflow")
+          .map(part => ({ id: part.id, entry: part.entry, toolNames: [...part.toolNames],
             workerRoles: (bundle.workerRoles ?? []).filter(role => role.primitiveIds?.includes(part.id!)).map(role => ({ id: role.id, principal: role.principal, invocation: role.invocation, execution: role.execution, entry: role.entry })) }));
-        return workflows.length ? [{ extensionId: bundle.id, version: bundle.version, installationId: instanceId, parts, workflows }] : [];
+        return workflows.length ? [{ extensionId: bundle.id, version: bundle.version, installationId: instanceId,
+          scope: instance.scope as "PROJECT_BOUND" | "PROJECT_SHARED", status: "active" as const,
+          runtime: "Cloudflare Workflows" as const,
+          dependencyPins: (manifest.dependencies ?? []).map(dependency => ({ ...dependency })), parts, workflows }] : [];
       });
     },
     workflowCreate: async (name, code, options) => {

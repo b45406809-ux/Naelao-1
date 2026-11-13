@@ -1633,7 +1633,7 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; runtime_primitive?: "gadget" | "canvas"; dependency_pins?: Array<{ extensionId: string; version: string; manifestSha256: string }>; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[];
   dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> }
 export interface SpaceSharedExtensionUpdateReview {

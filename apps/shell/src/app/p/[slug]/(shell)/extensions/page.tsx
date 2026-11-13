@@ -215,6 +215,12 @@ export default function ExtensionsPage() {
       <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>Runtime: Space-shared {app.runtime_primitive === "gadget" ? "Gadget tier 3" : app.runtime_primitive === "canvas" ? "Canvas" : "runtime details unavailable"} · hosted extension view with Space-scoped app state</p>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>Installation: <code>{app.installation_id}</code> · instance key: <code>{app.instance_key}</code></p>
+      {app.dependency_pins === undefined
+        ? <p style={{ color: "var(--text3)", fontSize: 12 }}>Dependency pins are unavailable for this legacy manifest.</p>
+        : <p style={{ color: "var(--text3)", fontSize: 12 }}>Declared exact dependency pins: {app.dependency_pins.length
+          ? app.dependency_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") : "none"}</p>}
       {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Previously admitted work must finish before a package update; saved data and grants are retained.</p>}
       {app.release_version && <p style={{ color: "var(--text3)", fontSize: 12 }}>Installed signed release: {app.release_version}</p>}
       {catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version) && (() => {

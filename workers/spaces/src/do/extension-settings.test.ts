@@ -23,7 +23,7 @@ describe("Space-shared extension settings", () => {
     expect(install.status).toBe(201);
     const { installationId: spaceInstallationId } = await install.json() as { installationId: string };
     expect(await (await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))).json()).toMatchObject({
-      apps: [expect.objectContaining({ app_id: "voice_dashboard", settings_schema: manifest.settingsSchema })],
+      apps: [expect.objectContaining({ app_id: "voice_dashboard", runtime_primitive: "gadget", dependency_pins: [], settings_schema: manifest.settingsSchema })],
     });
     const token = await mintInternalToken(secret, "tenant");
     const request = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard", userId = "owner_a") => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {

@@ -12540,15 +12540,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
     );
     const apps = rows.flatMap(row => {
-      const manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
+      let manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
       let settingsSchema = undefined as ExtensionManifest["settingsSchema"];
-      try { settingsSchema = validateExtensionManifest(manifest).settingsSchema; } catch { /* Invalid legacy schemas are not exposed to the host form. */ }
+      let dependencyPins: ExtensionManifest["dependencies"] | undefined;
+      try {
+        manifest = validateExtensionManifest(manifest);
+        settingsSchema = manifest.settingsSchema;
+        dependencyPins = manifest.dependencies ?? [];
+      } catch { /* Legacy installations stay visible, but invalid package details are not asserted. */ }
       const gadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
       const canvases = (manifest.bundle?.primitives ?? []).filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
-      const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name })), ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id }))];
+      const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name, runtime_primitive: "gadget" as const })),
+        ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id, runtime_primitive: "canvas" as const }))];
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
         app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
-        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status, release_version: row.release_version,
+        name: item.name, runtime_primitive: item.runtime_primitive, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status, release_version: row.release_version,
+        ...(dependencyPins ? { dependency_pins: dependencyPins } : {}),
         // Filesystem grants are worker-only and must never flow into the iframe's host API list.
         capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],
         ...(settingsSchema ? { settings_schema: settingsSchema } : {}),
