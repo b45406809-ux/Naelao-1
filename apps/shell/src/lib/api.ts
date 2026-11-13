@@ -1424,8 +1424,8 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
   return apiFetch<{ images: RuntimeCatalogueEntry[]; installed_slots_per_workspace: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
 export interface ContainerInstallation {
-  instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };
-  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
+  instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null };
+  manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -1891,10 +1891,14 @@ export interface ChannelConnectResult {
 export interface ChannelExtensionInstallation {
   instance_id: string;
   extension_id: string;
+  instance_key?: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED";
   status: "active" | "disabled";
   name: string;
   version?: string;
+  release_version: string | null;
+  permissions?: string[];
+  capabilities?: string[];
   channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
 }
@@ -1940,7 +1944,7 @@ export async function disconnectExtensionProvider(spaceId: string, projectId: st
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE", session });
 }
 
-export interface ExtensionRelease { version: string; artifactSha256: string; hostSignature: string; signatureValid: boolean; createdAt: string }
+export interface ExtensionRelease { version: string; artifactSha256: string; hostSignature: string; signatureValid: boolean; createdAt: string; permissions?: string[]; capabilities?: string[]; publisher?: { id?: string | null; keyId?: string; revoked?: boolean } }
 
 export interface ExtensionPublisherKey {
   publisher_id: string;
@@ -1971,8 +1975,9 @@ export async function listProjectExtensionReleases(spaceId: string, projectId: s
   return result.releases;
 }
 
-export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, version: string, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-releases/rollback`, { method: "POST", body: JSON.stringify({ project_id: projectId, extension_id: extensionId, version }), session });
+export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, installationId: string, expectedCurrentVersion: string | null, version: string, permissionExpansionApproved: boolean, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-releases/rollback`, { method: "POST", body: JSON.stringify({ project_id: projectId, extension_id: extensionId, installation_id: installationId,
+    expected_current_version: expectedCurrentVersion, version, permission_expansion_approved: permissionExpansionApproved }), session });
 }
 
 export interface ChannelExtensionSessionSummary {
@@ -2099,19 +2104,21 @@ export async function installProjectChannelExtension(
   manifest: unknown,
   scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND",
   handlerSources?: Record<string, string>,
-  upgrade = false
+  upgrade = false,
+  permissionExpansionApproved = false
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/channel-extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}), ...(upgrade ? { upgrade: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}) }), session,
   });
 }
 
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
   artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
+  permissionExpansionApproved = false,
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}) }), session,
   });
 }
 

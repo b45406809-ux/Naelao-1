@@ -406,17 +406,46 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   </details>;
 }
 
-function ExtensionReleaseControls({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: { extension_id: string; version?: string } }) {
+function confirmExtensionAuthorityExpansion(
+  current: { permissions?: string[]; capabilities?: string[] } | undefined,
+  target: { declaredPermissions?: string[]; capabilityRequirements?: string[] },
+): boolean | null {
+  if (!current) return false;
+  const permissions = (target.declaredPermissions ?? []).filter(value => !(current.permissions ?? []).includes(value)).sort();
+  const capabilities = (target.capabilityRequirements ?? []).filter(value => !(current.capabilities ?? []).includes(value)).sort();
+  if (!permissions.length && !capabilities.length) return false;
+  return window.confirm([
+    "This package update adds authority to the selected installation.",
+    ...(permissions.length ? [`Added permissions: ${permissions.join(", ")}`] : []),
+    ...(capabilities.length ? [`Added capabilities: ${capabilities.join(", ")}`] : []),
+    "Approve this permission and capability expansion?",
+  ].join("\n\n"));
+}
+
+function ExtensionReleaseControls({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: { instance_id: string; extension_id: string; version?: string; release_version?: string | null; permissions?: string[]; capabilities?: string[] } }) {
   const [releases, setReleases] = React.useState<ExtensionRelease[]>([]);
   const [selected, setSelected] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const refresh = React.useCallback(() => listProjectExtensionReleases(spaceId, projectId, installation.extension_id, session).then(setReleases), [spaceId, projectId, installation.extension_id, session]);
   React.useEffect(() => { let live = true; void refresh().catch(err => { if (live) setError(err instanceof Error ? err.message : "Release history unavailable."); }); return () => { live = false; }; }, [refresh]);
+  const target = releases.find(release => release.version === selected);
+  const addedPermissions = (target?.permissions ?? []).filter(permission => !(installation.permissions ?? []).includes(permission)).sort();
+  const addedCapabilities = (target?.capabilities ?? []).filter(capability => !(installation.capabilities ?? []).includes(capability)).sort();
+  const expandsAccess = addedPermissions.length > 0 || addedCapabilities.length > 0;
   async function rollback() {
-    if (!selected || !window.confirm(`Roll back ${installation.extension_id} to version ${selected}? This changes the active package version in this Space.`)) return;
+    if (!selected) return;
+    const authority = [
+      ...(addedPermissions.length ? [`Added permissions: ${addedPermissions.join(", ")}`] : []),
+      ...(addedCapabilities.length ? [`Added capabilities: ${addedCapabilities.join(", ")}`] : []),
+    ];
+    const prompt = [`Roll back this installation of ${installation.extension_id} to version ${selected}?`,
+      `This affects installation ${installation.instance_id} in project ${projectId}.`,
+      ...(authority.length ? [authority.join("\n"), "Approve this permission and capability expansion?"] : []),
+    ].join("\n\n");
+    if (!window.confirm(prompt)) return;
     setBusy(true); setError(null);
-    try { await rollbackProjectExtension(spaceId, projectId, installation.extension_id, selected, session); setSelected(""); await refresh(); window.location.reload(); }
+    try { await rollbackProjectExtension(spaceId, projectId, installation.extension_id, installation.instance_id, installation.release_version ?? null, selected, expandsAccess, session); setSelected(""); await refresh(); window.location.reload(); }
     catch (err) { setError(err instanceof Error ? err.message : "Rollback failed."); }
     finally { setBusy(false); }
   }
@@ -427,6 +456,10 @@ function ExtensionReleaseControls({ spaceId, projectId, session, installation }:
       {releases.filter(release => release.signatureValid && release.version !== installation.version).map(release => <option key={release.version} value={release.version}>{release.version}</option>)}
     </select>
     <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => void rollback()}>{busy ? "Rolling back…" : "Rollback"}</button>
+    {selected && expandsAccess && <div role="status" style={{ marginTop: 5, color: "var(--warning, #b54708)" }}>
+      This release adds authority: {[...(addedPermissions.length ? [`permissions: ${addedPermissions.join(", ")}`] : []), ...(addedCapabilities.length ? [`capabilities: ${addedCapabilities.join(", ")}`] : [])].join("; ")}.
+      Review and explicitly approve this change in the confirmation before rollback.
+    </div>}
     {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
   </div>;
 }
@@ -637,7 +670,11 @@ export function ChannelConnect({
       const handlerSources = installSourcesDraft.trim()
         ? JSON.parse(installSourcesDraft) as Record<string, string>
         : undefined;
-      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources, confirmUpgrade);
+      const candidate = manifest && typeof manifest === "object" ? manifest as { id?: string; declaredPermissions?: string[]; capabilityRequirements?: string[] } : {};
+      const current = extensionInstallations.find(item => item.extension_id === candidate.id && item.scope === installScope && (item.instance_key ?? "default") === "default");
+      const permissionExpansionApproved = confirmExtensionAuthorityExpansion(current, candidate);
+      if (permissionExpansionApproved === null) return;
+      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources, confirmUpgrade, permissionExpansionApproved);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Channel package installation failed");
       const updated = await listChannelExtensionInstallations(spaceId, projectId, session);
       setExtensionInstallations(updated);
@@ -655,7 +692,12 @@ export function ChannelConnect({
     try {
       const manifest = JSON.parse(canvasManifestDraft) as unknown;
       const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
-      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() });
+      const candidate = manifest && typeof manifest === "object" ? manifest as { id?: string; declaredPermissions?: string[]; capabilityRequirements?: string[] } : {};
+      const current = otherProjectInstallations.find(item => item.instance.extension_id === candidate.id && item.instance.scope === "PROJECT_BOUND"
+        && (item.instance.instance_key ?? "default") === canvasInstanceKey.trim());
+      const permissionExpansionApproved = confirmExtensionAuthorityExpansion(current ? { permissions: current.manifest.declaredPermissions ?? [], capabilities: current.manifest.capabilityRequirements ?? [] } : undefined, candidate);
+      if (permissionExpansionApproved === null) return;
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() }, permissionExpansionApproved);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
       setExtensionNotice(installed.canvas_mount_warning ?? null);
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
@@ -883,7 +925,9 @@ export function ChannelConnect({
               </div>
             </div>
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
-            {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ extension_id: extensionId, version: item.manifest.bundle.version }} />}
+            {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,
+              version: item.manifest.bundle.version, release_version: item.instance.release_version ?? null,
+              permissions: item.manifest.declaredPermissions ?? [], capabilities: item.manifest.capabilityRequirements ?? [] }} />}
           </div>;
         })}
       </details>}

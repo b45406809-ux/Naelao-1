@@ -56,6 +56,9 @@ describe("runtime extension installation", () => {
     expect(first.status).toBe(201);
     const firstResult = await first.json() as { installationId: string };
     const installationId = firstResult.installationId;
+    const retry = await call("1.0.0");
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toMatchObject({ installationId });
     expect(firstResult).toMatchObject({ release: { version: "1.0.0", artifactSha256: "a".repeat(64), signer: "naelao-host", hostSignature: expect.stringMatching(/^[a-f0-9]{64}$/) } });
     expect((await call("2.0.0")).status).toBe(409);
     expect((await call("2.0.0", true)).status).toBe(201);
@@ -63,7 +66,9 @@ describe("runtime extension installation", () => {
     expect(await releases.json()).toMatchObject({ releases: expect.arrayContaining([
       expect.objectContaining({ version: "2.0.0", signatureValid: true }), expect.objectContaining({ version: "1.0.0", signatureValid: true }),
     ]) });
-    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: "ext_versioned", version: "1.0.0" }) }));
+    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      extensionId: "ext_versioned", version: "1.0.0", installationId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "2.0.0",
+    }) }));
     expect(rollback.status).toBe(200);
     expect(await rollback.json()).toMatchObject({ rolledBack: true, manifest: { bundle: { version: "1.0.0" } } });
     const runtime = await space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" })));
@@ -82,15 +87,31 @@ describe("runtime extension installation", () => {
     expect((await install("project-a", "1.0.0")).status).toBe(201);
     expect((await install("project-b", "1.0.0")).status).toBe(201);
     expect((await install("project-a", "2.0.0", true)).status).toBe(201);
+    expect((await install("project-b", "2.0.0", true)).status).toBe(201);
     const lookup = (projectId: string) => space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=" + projectId));
     expect(await (await lookup("project-a")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
-    expect(await (await lookup("project-b")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
+    expect(await (await lookup("project-b")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
     expect((await install("project-c", "1.0.0")).status).toBe(201);
     expect(await (await lookup("project-c")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
+    const projectAInstances = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_pinned"));
+    const projectAInstall = (await projectAInstances.json() as { installations: Array<{ instance_id: string; project_id: string | null; release_version: string | null }> }).installations
+      .find(item => item.project_id === "project-a");
+    expect(projectAInstall).toBeDefined();
+    const rollbackFor = (tenantId: string, expectedCurrentVersion: string | null) => space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      extensionId: "ext_pinned", version: "1.0.0", installationId: projectAInstall!.instance_id, tenantId, spaceId: "space", projectId: "project-a", expectedCurrentVersion,
+    }) }));
+    expect((await rollbackFor("other-tenant", "2.0.0")).status).toBe(404);
+    expect((await rollbackFor("tenant", "1.0.0")).status).toBe(409);
+    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      extensionId: "ext_pinned", version: "1.0.0", installationId: projectAInstall!.instance_id, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "2.0.0",
+    }) }));
+    expect(rollback.status).toBe(200);
+    expect(await (await lookup("project-a")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
+    expect(await (await lookup("project-b")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
     const inventory = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_pinned"));
     expect(await inventory.json()).toMatchObject({ installations: expect.arrayContaining([
-      expect.objectContaining({ project_id: "project-a", release_version: "2.0.0" }),
-      expect.objectContaining({ project_id: "project-b", release_version: "1.0.0" }),
+      expect.objectContaining({ project_id: "project-a", release_version: "1.0.0" }),
+      expect.objectContaining({ project_id: "project-b", release_version: "2.0.0" }),
     ]) });
     const template = await space.exportBlueprint("space", { projectId: "project-b", requiredExtensions: ["ext_pinned"], requiredExtensionVersions: { ext_pinned: "1.0.0" } });
     expect(template.requiredExtensionVersions).toEqual({ ext_pinned: "1.0.0" });
@@ -124,12 +145,41 @@ describe("runtime extension installation", () => {
     const instanceId = String(instances[0]?.instance_id);
     const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: instanceId, tenant_id: "tenant", space_id: "space" })));
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: true, publisher: { id: "pub_example", keyId: "a".repeat(64), revoked: false } } });
+    storage.sql.exec("UPDATE extension_releases SET publisher_key_id=NULL WHERE extension_id='ext_publisher_lifecycle' AND version='1.0.0'");
+    expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { id: "pub_example", keyId: null } } });
+    storage.sql.exec("UPDATE extension_releases SET publisher_key_id=? WHERE extension_id='ext_publisher_lifecycle' AND version='1.0.0'", "a".repeat(64));
     const revoke = await space.fetch(new Request("http://space/extension-publisher-revoke?key_id=" + "a".repeat(64), { method: "POST" }));
     expect(revoke.status).toBe(200);
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { revoked: true } } });
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0" }) }));
+      body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0", installationId: instanceId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "1.0.0" }) }));
     expect(rollback.status).toBe(409);
+  });
+
+  it("requires an explicit acknowledgement before a scoped rollback expands permissions", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "release-expansion-secret" } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const bundleManifest = (version: string, capabilities: string[]) => ({ id: "ext_access_review", type: "extension", declaredPermissions: capabilities, capabilityRequirements: capabilities, gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_access_review", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "telegram", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
+    const install = (version: string, capabilities: string[], upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: bundleManifest(version, capabilities), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: capabilities,
+        artifactSha256: version === "2.0.0" ? "2".repeat(64) : version === "1.0.0" ? "1".repeat(64) : "3".repeat(64), upgrade }) }));
+    const first = await install("1.0.0", ["channel.invoke"]);
+    expect(first.status, await first.clone().text()).toBe(201);
+    expect((await install("2.0.0", ["channel.invoke", "repo.read"], true)).status).toBe(201);
+    expect((await install("3.0.0", ["channel.invoke"], true)).status).toBe(201);
+    const result = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_access_review"));
+    const installation = (await result.json() as { installations: Array<{ instance_id: string }> }).installations[0]!;
+    const rollback = (approved: boolean) => space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      extensionId: "ext_access_review", version: "2.0.0", installationId: installation.instance_id, tenantId: "tenant", spaceId: "space", projectId: "project-a",
+      expectedCurrentVersion: "3.0.0", permissionExpansionApproved: approved,
+    }) }));
+    const denied = await rollback(false);
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ error: "permission_expansion_approval_required", added_permissions: ["repo.read"], added_capabilities: ["repo.read"] });
+    expect((await rollback(true)).status).toBe(200);
   });
 
   it("installs a project-bound code indexer only for the selected project and preserves scope through restart", async () => {

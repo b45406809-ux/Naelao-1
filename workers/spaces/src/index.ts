@@ -56,6 +56,7 @@ import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
 import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
+import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -670,6 +671,9 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   }));
   if (!rawResponse.ok) return new Response(rawResponse.body, { status: rawResponse.status });
   const rawBlueprint = await rawResponse.json<SpaceBlueprint>();
+  const publisherTrust = await blueprintPublisherTrust(c.env, c.env.SPACE_DO.get(sourceId), tenantId, spaceId, rawBlueprint);
+  if (publisherTrust === "unavailable") return c.json({ error_code: "extension_release_trust_unavailable" }, 503);
+  if (publisherTrust !== "trusted") return c.json({ error_code: "extension_release_publisher_untrusted" }, 409);
   if (exportOptions.stateDeltaSuite) rawBlueprint.metadata.stateDeltaSuite = exportOptions.stateDeltaSuite;
   for (const project of rawBlueprint.projects) {
     const entry = project.id ? exportOptions.entries?.[project.id] : undefined;
@@ -762,8 +766,9 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const result = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!result.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
-  const rows = await result.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
-  const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(rows.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
+  const rows = await result.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; publisher_key_id?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
+  const trustedInstallations = await trustedExtensionInstallations(c.env, tenantId, spaceId, rows.installations ?? []);
+  const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedInstallations), await installableSpaceExtensionPins(), runtimeReadiness);
   return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
@@ -841,8 +846,9 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
   const dependenciesResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!dependenciesResponse.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
-  const dependencies = await dependenciesResponse.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
-  const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(dependencies.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
+  const dependencies = await dependenciesResponse.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; publisher_key_id?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
+  const trustedDependencies = await trustedExtensionInstallations(c.env, tenantId, spaceId, dependencies.installations ?? []);
+  const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedDependencies), await installableSpaceExtensionPins(), runtimeReadiness);
   if (!readiness.ready) {
     const runtimeBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_runtime_unavailable:"));
     if (runtimeBlockers.length) return c.json({ error_code: "required_runtime_unavailable", runtime_requirements: readiness.runtime_requirements, blockers: runtimeBlockers }, 422);
@@ -1622,6 +1628,61 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+async function activePublisherKeyIds(env: Env, tenantId: string, spaceId: string, keyIds: string[]): Promise<Set<string>> {
+  const unique = [...new Set(keyIds.filter(keyId => /^[a-f0-9]{64}$/.test(keyId)))];
+  if (!unique.length) return new Set();
+  const placeholders = unique.map(() => "?").join(",");
+  const rows = await env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`)
+    .bind(tenantId, spaceId, ...unique).all<{ key_id: string }>();
+  return new Set((rows.results ?? []).map(row => row.key_id));
+}
+
+async function trustedExtensionInstallations<T extends { publisher_key_id?: string | null }>(
+  env: Env,
+  tenantId: string,
+  spaceId: string,
+  installations: T[],
+): Promise<T[]> {
+  const keyIds = installations.flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []);
+  const active = await activePublisherKeyIds(env, tenantId, spaceId, keyIds);
+  return retainActivePublisherInstallations(installations, active);
+}
+
+async function currentPublisherReleases<T extends PublisherTaggedRelease>(
+  env: Env,
+  tenantId: string,
+  spaceId: string,
+  releases: T[],
+): Promise<T[]> {
+  const keyIds = releases.flatMap(release => release.publisher?.keyId ? [release.publisher.keyId] : []);
+  const active = await activePublisherKeyIds(env, tenantId, spaceId, keyIds);
+  return releases.map(release => applyPublisherKeyRegistry(release, active));
+}
+
+async function blueprintPublisherTrust(
+  env: Env,
+  stub: Fetcher,
+  tenantId: string,
+  spaceId: string,
+  blueprint: SpaceBlueprint,
+): Promise<"trusted" | "unavailable" | "untrusted"> {
+  const pinnedReleases = Object.entries(blueprint.requiredExtensionVersions ?? {});
+  if (!pinnedReleases.length) return "trusted";
+  const summaries = await Promise.all(pinnedReleases.map(async ([extensionId, version]) => {
+    const response = await stub.fetch(new Request(`http://space-do/extension-releases?extension_id=${encodeURIComponent(extensionId)}`));
+    if (!response.ok) return null;
+    const result = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string }> }>(response, 256 * 1024).catch(() => null);
+    return result?.releases?.find(release => release.version === version) ?? false;
+  }));
+  if (summaries.some(release => release === null)) return "unavailable";
+  const releases = summaries.filter((release): release is PublisherTaggedRelease & { version?: string } => release !== false && release !== null);
+  if (releases.length !== pinnedReleases.length || releases.some(release => release.signatureValid !== true)) return "untrusted";
+  const active = await activePublisherKeyIds(env, tenantId, spaceId,
+    releases.flatMap(release => release.publisher?.keyId ? [release.publisher.keyId] : []));
+  return releases.every(release => isTrustedPublisherRelease(release, active)) ? "trusted" : "untrusted";
+}
+
 app.post("/internal/spaces/:spaceId/widget-event-subscribers", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -1659,14 +1720,17 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId, ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
-  const result = await response.json<{ installations?: Array<{ publisher_key_id?: string }> }>();
-  const keyIds = [...new Set((result.installations ?? []).flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []))];
-  if (!keyIds.length) return c.json(result);
-  const placeholders = keyIds.map(() => "?").join(",");
-  const trusted = await c.env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
-    WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`).bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
-  const activeKeys = new Set((trusted.results ?? []).map(row => row.key_id));
-  return c.json({ ...result, installations: (result.installations ?? []).filter(item => !item.publisher_key_id || activeKeys.has(item.publisher_key_id)) });
+  const result = await response.json<{ installations?: Array<{ publisher_key_id?: string; publisher_attestation_valid?: boolean }> }>();
+  const installations = result.installations ?? [];
+  const keyIds = [...new Set(installations.flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []))];
+  let activeKeys = new Set<string>();
+  if (keyIds.length) {
+    const placeholders = keyIds.map(() => "?").join(",");
+    const trusted = await c.env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`).bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
+    activeKeys = new Set((trusted.results ?? []).map(row => row.key_id));
+  }
+  return c.json({ ...result, installations: retainActivePublisherInstallations(installations, activeKeys) });
 });
 
 app.get("/spaces/:spaceId/container-installations", async (c) => {
@@ -2455,7 +2519,8 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
     const active=await c.env.PLATFORM_DB.prepare("SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'").bind(spaceId,identity.tenantId).first();
     if(!active)return c.json({error_code:"space_unavailable"},403);
   }
-  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }));
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean }>()
+    .catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -2483,6 +2548,21 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
       || (bundle.connections ?? []).some(connection => !usedConnections.has(connection.id))) throw new Error("channel_connection_requirement_missing");
   } catch (error) {
     return c.json({ error_code: "channel_manifest_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
+  }
+  const scope = !projectId ? "SPACE_SHARED" : body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  if (body.upgrade === true) {
+    const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, extension_id: manifest.id })}`));
+    if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
+    const installs = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; project_id: string | null; scope: string; instance_key?: string; status: string; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
+    const currentInstall = installs.installations?.find(item => item.project_id === projectId && item.scope === scope && (item.instance_key ?? "default") === instanceKey
+      && ["active", "disabled", "staging"].includes(item.status));
+    if (currentInstall) {
+      const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
+      if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
+        return c.json({ error_code: "permission_expansion_approval_required", added_permissions: expansion.permissions, added_capabilities: expansion.capabilities }, 409);
+      }
+    }
   }
   const sourceEntries: Array<[string, string]> = [];
   if (body.handlerSources !== undefined) {
@@ -2538,8 +2618,6 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
   const artifactPayload = JSON.stringify(sourceEntries.sort(([a], [b]) => a.localeCompare(b)));
   const artifactDigestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(artifactPayload));
   const artifactSha256 = [...new Uint8Array(artifactDigestBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  const scope = !projectId ? "SPACE_SHARED" : body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
-  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const response = await stub.fetch(new Request("http://space-do/extensions", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope,
@@ -2604,7 +2682,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>()
+    .catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -2739,11 +2818,19 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     })}`));
     if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
     const currentInstalls = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
-      scope: string; instance_key?: string; status: string; release_version?: string | null }> }>(current, 2 * 1024 * 1024);
+      scope: string; instance_key?: string; status: string; release_version?: string | null; permissions?: string[]; capabilities?: string[] }> }>(current, 2 * 1024 * 1024);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
       message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
       affected_installations: otherInstances.length }, 409);
+    const currentInstall = currentInstalls.installations?.find(item => item.project_id === projectId && item.scope === "PROJECT_BOUND"
+      && (item.instance_key ?? "default") === instanceKey && ["active", "disabled", "staging"].includes(item.status));
+    if (currentInstall) {
+      const expansion = extensionReleaseAccessExpansion(currentInstall, { permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements });
+      if ((expansion.permissions.length || expansion.capabilities.length) && body.permissionExpansionApproved !== true) {
+        return c.json({ error_code: "permission_expansion_approval_required", added_permissions: expansion.permissions, added_capabilities: expansion.capabilities }, 409);
+      }
+    }
   }
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
   for (const [path, source] of sourceEntries) {
@@ -2761,7 +2848,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256,
       ...(requiresRuntimeActivation ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
-  const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string } }>(installed.clone(), 64 * 1024);
+  const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string; publisher?: { keyId?: string } } }>(installed.clone(), 64 * 1024);
   const abortStagedInstall = async () => {
     if (!requiresRuntimeActivation || typeof installedResult.installationId !== "string") return;
     await stub.fetch(new Request("http://space-do/extension-installation/abort", {
@@ -2802,6 +2889,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
   if (requiresRuntimeActivation) {
+    const publisherKeyId = installedResult.release?.publisher?.keyId;
+    if (publisherKeyId) {
+      const activePublisher = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+        WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.tenantId, spaceId, publisherKeyId).first();
+      if (!activePublisher) return stagedFailure("extension_publisher_key_untrusted_or_revoked", 409, "The publisher key was revoked before this installation could activate.");
+    }
     const activation = await stub.fetch(new Request("http://space-do/extension-installation/activate", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
@@ -2824,16 +2917,35 @@ app.use("/spaces/:spaceId/extension-releases/rollback", requireSpaceMembership({
 app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
   const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
   if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
-  const body = await c.req.json<{ extension_id?: string; version?: string; project_id?: string }>().catch(() => ({} as { extension_id?: string; version?: string; project_id?: string }));
-  if (!body.extension_id || !body.version || !body.project_id) return c.json({ error_code: "rollback_scope_required" }, 400);
+  const body = await c.req.json<{ extension_id?: string; version?: string; project_id?: string; installation_id?: string; expected_current_version?: string | null; permission_expansion_approved?: boolean }>()
+    .catch(() => ({} as { extension_id?: string; version?: string; project_id?: string; installation_id?: string; expected_current_version?: string | null; permission_expansion_approved?: boolean }));
+  if (!body.extension_id || !body.version || !body.project_id || !body.installation_id
+    || !Object.prototype.hasOwnProperty.call(body, "expected_current_version")
+    || (body.expected_current_version !== null && typeof body.expected_current_version !== "string")) return c.json({ error_code: "rollback_scope_required" }, 400);
   const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
   if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const installed = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: body.extension_id })));
   if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
-  const rows = await readBoundedResponseJson<{ installations: Array<{ project_id: string | null }> }>(installed, 2 * 1024 * 1024);
-  if (!rows.installations.some(item => item.project_id === body.project_id)) return c.json({ error_code: "project_extension_not_installed" }, 404);
-  const response = await stub.fetch(new Request("http://space-do/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: body.extension_id, version: body.version }) }));
+  const rows = await readBoundedResponseJson<{ installations: Array<{ instance_id: string; project_id: string | null; release_version: string | null; permissions?: string[]; capabilities?: string[] }> }>(installed, 2 * 1024 * 1024);
+  const current = rows.installations.find(item => item.instance_id === body.installation_id && item.project_id === body.project_id);
+  if (!current) return c.json({ error_code: "project_extension_not_installed" }, 404);
+  if (current.release_version !== body.expected_current_version) return c.json({ error_code: "extension_installation_version_changed", current_version: current.release_version }, 409);
+  const releasesResponse = await stub.fetch(new Request(`http://space-do/extension-releases?extension_id=${encodeURIComponent(body.extension_id)}`));
+  if (!releasesResponse.ok) return c.json({ error_code: "extension_release_trust_unavailable" }, 503);
+  const releases = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string }> }>(releasesResponse, 256 * 1024);
+  const targetRelease = releases.releases?.find(release => release.version === body.version);
+  if (!targetRelease) return c.json({ error_code: "extension_release_not_found" }, 404);
+  const [trustedTarget] = await currentPublisherReleases(c.env, tenantId, spaceId, [targetRelease]);
+  if (!trustedTarget || trustedTarget.signatureValid !== true) return c.json({ error_code: "extension_release_publisher_untrusted" }, 409);
+  const accessExpansion = extensionReleaseAccessExpansion(current, targetRelease);
+  if ((accessExpansion.permissions.length || accessExpansion.capabilities.length) && body.permission_expansion_approved !== true) {
+    return c.json({ error_code: "permission_expansion_approval_required", added_permissions: accessExpansion.permissions, added_capabilities: accessExpansion.capabilities }, 409);
+  }
+  const response = await stub.fetch(new Request("http://space-do/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+    extensionId: body.extension_id, version: body.version, installationId: body.installation_id, tenantId, spaceId, projectId: body.project_id,
+    expectedCurrentVersion: body.expected_current_version, permissionExpansionApproved: body.permission_expansion_approved === true,
+  }) }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
@@ -2850,7 +2962,10 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases",
   if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
   const rows = await readBoundedResponseJson<{ installations: Array<{ project_id: string | null }> }>(installed, 2 * 1024 * 1024);
   if (!rows.installations.some(item => item.project_id === projectId)) return c.json({ error_code: "project_extension_not_installed" }, 404);
-  return stub.fetch(new Request("http://space-do/extension-releases?extension_id=" + encodeURIComponent(extensionId)));
+  const response = await stub.fetch(new Request("http://space-do/extension-releases?extension_id=" + encodeURIComponent(extensionId)));
+  if (!response.ok) return response;
+  const releases = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string }> }>(response, 256 * 1024);
+  return c.json({ releases: await currentPublisherReleases(c.env, identity.tenantId, spaceId, releases.releases ?? []) });
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

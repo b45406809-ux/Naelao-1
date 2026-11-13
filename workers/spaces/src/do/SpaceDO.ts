@@ -107,6 +107,36 @@ function safeJsonParseArr(text: string): unknown[] {
   }
 }
 
+function extensionManifestAccessExpansion(current: ExtensionManifest, target: ExtensionManifest) {
+  const added = (before: string[] | undefined, after: string[] | undefined) =>
+    [...new Set(after ?? [])].filter(value => !(before ?? []).includes(value)).sort();
+  return {
+    permissions: added(current.declaredPermissions, target.declaredPermissions),
+    capabilities: added(current.capabilityRequirements, target.capabilityRequirements),
+  };
+}
+
+interface PublisherReleaseFields {
+  publisher_id: string | null;
+  publisher_key_id: string | null;
+  publisher_signature: string | null;
+  publisher_payload_sha256: string | null;
+  publisher_revoked_at: string | null;
+}
+
+function hasPublisherReleaseFields(release: PublisherReleaseFields): boolean {
+  return release.publisher_id !== null || release.publisher_key_id !== null || release.publisher_signature !== null || release.publisher_payload_sha256 !== null;
+}
+
+function publisherReleaseFieldsValid(release: PublisherReleaseFields): boolean {
+  if (!hasPublisherReleaseFields(release)) return release.publisher_revoked_at === null;
+  return release.publisher_revoked_at === null
+    && typeof release.publisher_id === "string" && /^pub_[a-z0-9_-]{1,48}$/.test(release.publisher_id)
+    && typeof release.publisher_key_id === "string" && /^[a-f0-9]{64}$/.test(release.publisher_key_id)
+    && typeof release.publisher_signature === "string" && release.publisher_signature.length > 0 && release.publisher_signature.length <= 256
+    && typeof release.publisher_payload_sha256 === "string" && /^[a-f0-9]{64}$/.test(release.publisher_payload_sha256);
+}
+
 function safeJsonParseCondition(text: string): TriggerCondition {
   try {
     const v = JSON.parse(text) as unknown;
@@ -3118,18 +3148,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
-            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,
+              r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
+            FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+            WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`
+            : `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,
+                r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
+              FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+              WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at`,
           ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
         const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
           try {
             const manifest = JSON.parse(manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
-            const parsed = JSON.parse(manifest_json) as ExtensionManifest;
-            return { ...row, release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null,
+            const parsed = validateExtensionManifest(JSON.parse(manifest_json));
+            return { ...row, publisher_attestation_valid: publisherReleaseFieldsValid(row), release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null,
+              permissions: [...new Set(parsed.declaredPermissions)].sort(), capabilities: [...new Set(parsed.capabilityRequirements)].sort(),
               manifest_sha256: await digestExtensionManifest(parsed), activation_summary: { ...summarizeExtensionForActivation(parsed),
                 approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) } };
-          } catch { return { ...row, release_version: null, manifest_sha256: null }; }
+          } catch { return { ...row, publisher_attestation_valid: false, release_version: null, manifest_sha256: null }; }
         }));
         return Response.json({ installations });
       }
@@ -3158,13 +3195,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (!currentMatches && !historicallyManaged) continue;
           managed = true;
           if (row.status !== "active" || !currentMatches || !manifest.bundle) continue;
-          const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_key_id: string | null; publisher_signature: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-            "SELECT manifest_json,artifact_sha256,host_signature,publisher_key_id,publisher_signature,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
+          const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
             manifest.bundle.id, manifest.bundle.version);
           if (!release) continue;
           const expected = await this.signExtensionRelease(manifest.bundle.id, manifest.bundle.version, release.manifest_json, release.artifact_sha256);
-          if (release.manifest_json === row.manifest_json && expected === release.host_signature
-            && (!release.publisher_signature || !release.publisher_revoked_at)) {
+          if (release.manifest_json === row.manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release)) {
             active = true;
             releaseValid = true;
             if (release.publisher_key_id) publisherKeyId = release.publisher_key_id;
@@ -3186,12 +3222,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const bundle = manifest.bundle;
         const approved_shared_filesystem = this.listApprovedSharedFilesystemGrants(instance.instance_id);
         if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem });
-        const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+        const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
         return Response.json({ instance, manifest, approved_shared_filesystem, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
-          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature && (!release.publisher_signature || !release.publisher_revoked_at), signer: "naelao-host",
-          ...(release.publisher_key_id ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
+          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release), signer: "naelao-host",
+          ...(hasPublisherReleaseFields(release) ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
             payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null });
       }
       if (url.pathname === "/extension-installation" && method === "DELETE") {
@@ -3226,16 +3262,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, url.searchParams.get("space_id"))) {
           return Response.json({ error: "project_not_found" }, { status: 404 });
         }
-        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.extension_id,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
+        const rows = queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
         const installations = rows.flatMap(row => {
-          const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
+          let manifest: ExtensionManifest;
+          try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return []; }
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
-          const publisherKeyId = row.release_version ? queryOne<{ publisher_key_id: string | null }>(this.ctx.storage.sql as never,
-            "SELECT publisher_key_id FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, row.release_version)?.publisher_key_id : null;
-          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy",
-            ...(publisherKeyId ? { publisher_key_id: publisherKeyId } : {}),
+          const publisher = row.release_version ? queryOne<PublisherReleaseFields>(this.ctx.storage.sql as never,
+            "SELECT publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, row.release_version) : null;
+          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, instance_key: row.instance_key, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy", release_version: row.release_version,
+            ...(publisher?.publisher_key_id ? { publisher_key_id: publisher.publisher_key_id } : {}), publisher_attestation_valid: publisher ? publisherReleaseFieldsValid(publisher) : row.release_version === null,
+            permissions: [...new Set(manifest.declaredPermissions)].sort(), capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
@@ -4390,9 +4428,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const selectedExtensionIds = new Set(requestedExtensions);
     if (Object.keys(options.requiredExtensionVersions ?? {}).some(id => !selectedExtensionIds.has(id))) throw new Error("required_extension_version_not_selected");
     for (const [extensionId, version] of Object.entries(options.requiredExtensionVersions ?? {})) {
-      const release = queryOne<{ manifest_json: string; host_signature: string; artifact_sha256: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-        "SELECT manifest_json,host_signature,artifact_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", extensionId, version);
-      if (!release || release.publisher_revoked_at || await this.signExtensionRelease(extensionId, version, release.manifest_json, release.artifact_sha256) !== release.host_signature)
+          const release = queryOne<PublisherReleaseFields & { manifest_json: string; host_signature: string; artifact_sha256: string }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,host_signature,artifact_sha256,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", extensionId, version);
+          if (!release || !publisherReleaseFieldsValid(release) || await this.signExtensionRelease(extensionId, version, release.manifest_json, release.artifact_sha256) !== release.host_signature)
         throw new Error("required_extension_release_unavailable");
       let manifest: ExtensionManifest;
       try { manifest = validateExtensionManifest(JSON.parse(release.manifest_json)); }
@@ -11972,12 +12010,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
-    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null; manifest_json: string; artifact_sha256: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.project_id,i.manifest_json,r.artifact_sha256,r.publisher_revoked_at
+    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null; manifest_json: string; artifact_sha256: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.project_id,i.manifest_json,r.artifact_sha256,r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
        FROM extension_installation_manifests i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.instance_id=?`, body.installationId);
     if (!row || row.extension_id !== body.extensionId || row.tenant_id !== body.tenantId || row.space_id !== body.spaceId
-      || row.project_id !== body.projectId || row.artifact_sha256 !== body.artifactSha256 || row.publisher_revoked_at)
+      || row.project_id !== body.projectId || row.artifact_sha256 !== body.artifactSha256 || !publisherReleaseFieldsValid(row))
       return Response.json({ error_code: "staged_extension_release_mismatch" }, { status: 409 });
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return Response.json({ error_code: "staged_extension_manifest_invalid" }, { status: 409 }); }
@@ -12031,19 +12069,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async rollbackExtensionRelease(request: Request): Promise<Response> {
-    const body = await request.json<{ extensionId?: string; version?: string }>().catch(() => ({} as { extensionId?: string; version?: string }));
-    if (!body.extensionId || !body.version) return Response.json({ error: "rollback_request_invalid" }, { status: 400 });
-    const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-      "SELECT manifest_json,artifact_sha256,host_signature,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version);
+    const body = await request.json<{ extensionId?: string; version?: string; installationId?: string; tenantId?: string; spaceId?: string; projectId?: string; expectedCurrentVersion?: string | null; permissionExpansionApproved?: boolean }>()
+      .catch(() => ({} as { extensionId?: string; version?: string; installationId?: string; tenantId?: string; spaceId?: string; projectId?: string; expectedCurrentVersion?: string | null; permissionExpansionApproved?: boolean }));
+    if (!body.extensionId || !body.version || !body.installationId || !body.tenantId || !body.spaceId || !body.projectId
+      || !Object.prototype.hasOwnProperty.call(body, "expectedCurrentVersion")
+      || (body.expectedCurrentVersion !== null && typeof body.expectedCurrentVersion !== "string")) {
+      return Response.json({ error: "rollback_scope_required" }, { status: 400 });
+    }
+    const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+      "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version);
     if (!release) return Response.json({ error: "extension_release_not_found" }, { status: 404 });
-    if (release.publisher_revoked_at) return Response.json({ error: "extension_publisher_release_revoked" }, { status: 409 });
+    if (!publisherReleaseFieldsValid(release)) return Response.json({ error: "extension_publisher_release_untrusted" }, { status: 409 });
     const expected = await this.signExtensionRelease(body.extensionId, body.version, release.manifest_json, release.artifact_sha256);
     if (expected !== release.host_signature) return Response.json({ error: "extension_release_signature_invalid" }, { status: 409 });
-    const manifest = JSON.parse(release.manifest_json) as ExtensionManifest;
-    this.ctx.storage.transactionSync(() => {
-      execute(this.ctx.storage.sql as never, "UPDATE installed_extensions SET manifest_json=?,updated_at=datetime('now') WHERE extension_id=?", release.manifest_json, body.extensionId);
-      execute(this.ctx.storage.sql as never, "UPDATE extension_instances SET release_version=? WHERE extension_id=? AND status IN ('active','disabled','staging')", body.version, body.extensionId);
+    let manifest: ExtensionManifest, currentManifest: ExtensionManifest;
+    try {
+      manifest = validateExtensionManifest(JSON.parse(release.manifest_json));
+    } catch { return Response.json({ error: "extension_release_manifest_invalid" }, { status: 409 }); }
+    const current = queryOne<{ release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.release_version,v.manifest_json FROM extension_instances i
+       JOIN extension_installation_manifests v ON v.instance_id=i.instance_id
+       WHERE i.instance_id=? AND i.extension_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id=?
+         AND i.status IN ('active','disabled','staging') AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
+      body.installationId, body.extensionId, body.tenantId, body.spaceId, body.projectId);
+    if (!current) return Response.json({ error: "project_extension_not_installed" }, { status: 404 });
+    if (current.release_version !== body.expectedCurrentVersion) return Response.json({ error: "extension_installation_version_changed" }, { status: 409 });
+    try {
+      currentManifest = validateExtensionManifest(JSON.parse(current.manifest_json));
+    } catch { return Response.json({ error: "installed_extension_manifest_invalid" }, { status: 409 }); }
+    const access = extensionManifestAccessExpansion(currentManifest, manifest);
+    if ((access.permissions.length || access.capabilities.length) && body.permissionExpansionApproved !== true) {
+      return Response.json({ error: "permission_expansion_approval_required", added_permissions: access.permissions, added_capabilities: access.capabilities }, { status: 409 });
+    }
+    const changed = this.ctx.storage.transactionSync(() => {
+      const activeTarget = queryOne<{ version: string }>(this.ctx.storage.sql as never,
+        "SELECT version FROM extension_releases WHERE extension_id=? AND version=? AND publisher_revoked_at IS NULL", body.extensionId, body.version);
+      if (!activeTarget) return false;
+      return this.ctx.storage.sql.exec(`UPDATE extension_instances SET release_version=?
+        WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND project_id=? AND release_version IS ?
+          AND status IN ('active','disabled','staging') AND scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
+      body.version, body.installationId, body.extensionId, body.tenantId, body.spaceId, body.projectId, body.expectedCurrentVersion).rowsWritten === 1;
     });
+    if (!changed) return Response.json({ error: "extension_installation_version_changed_or_release_revoked" }, { status: 409 });
     return Response.json({ rolledBack: true, manifest, release: { version: body.version, artifactSha256: release.artifact_sha256, hostSignature: release.host_signature, signer: "naelao-host" } });
   }
 
@@ -12055,12 +12122,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async listExtensionReleases(extensionId: string): Promise<Response> {
     if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)) return Response.json({ error: "extension_id_invalid" }, { status: 400 });
-    const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+    const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
       "SELECT version,manifest_json,artifact_sha256,host_signature,created_at,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC", extensionId);
-    const releases = await Promise.all(rows.map(async row => ({ version: row.version, artifactSha256: row.artifact_sha256, hostSignature: row.host_signature,
-      signatureValid: await this.signExtensionRelease(extensionId, row.version, row.manifest_json, row.artifact_sha256) === row.host_signature && (!row.publisher_signature || !row.publisher_revoked_at),
-      createdAt: row.created_at, ...(row.publisher_key_id ? { publisher: { id: row.publisher_id, keyId: row.publisher_key_id, signature: row.publisher_signature,
-        payloadSha256: row.publisher_payload_sha256, revoked: Boolean(row.publisher_revoked_at) } } : {}) })));
+    const releases = await Promise.all(rows.map(async row => {
+      let permissions: string[] = [], capabilities: string[] = [], manifestValid = true;
+      try {
+        const manifest = validateExtensionManifest(JSON.parse(row.manifest_json));
+        permissions = [...new Set(manifest.declaredPermissions)].sort();
+        capabilities = [...new Set(manifest.capabilityRequirements)].sort();
+      } catch { manifestValid = false; }
+      return { version: row.version, artifactSha256: row.artifact_sha256, hostSignature: row.host_signature,
+        signatureValid: manifestValid && await this.signExtensionRelease(extensionId, row.version, row.manifest_json, row.artifact_sha256) === row.host_signature && publisherReleaseFieldsValid(row),
+        permissions, capabilities, createdAt: row.created_at, ...(hasPublisherReleaseFields(row) ? { publisher: { id: row.publisher_id, keyId: row.publisher_key_id, signature: row.publisher_signature,
+          payloadSha256: row.publisher_payload_sha256, revoked: Boolean(row.publisher_revoked_at) } } : {}) };
+    }));
     return Response.json({ releases });
   }
 
