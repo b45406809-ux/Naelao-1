@@ -3620,6 +3620,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
+        const includeManifest = url.searchParams.get("include_manifest") === "1";
         const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
           extensionId === "__all__" ? `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version,
               r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
@@ -3636,6 +3637,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             const parsed = validateExtensionManifest(JSON.parse(manifest_json));
             return { ...row, publisher_attestation_valid: publisherReleaseFieldsValid(row), release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null,
               permissions: [...new Set(parsed.declaredPermissions)].sort(), capabilities: [...new Set(parsed.capabilityRequirements)].sort(),
+              ...(includeManifest ? { manifest: parsed } : {}),
               manifest_sha256: await digestExtensionManifest(parsed), activation_summary: { ...summarizeExtensionForActivation(parsed),
                 approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) } };
           } catch { return { ...row, publisher_attestation_valid: false, release_version: null, manifest_sha256: null }; }
@@ -12268,9 +12270,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSpaceSharedExtensions(params: URLSearchParams): Response {
     const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
     if (!tenantId || !spaceId) return Response.json({ error_code: "extension_scope_required" }, { status: 400 });
-    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string }>(
+    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string; release_version: string | null }>(
       this.ctx.storage.sql as never,
-      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,i.manifest_json
+      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,i.manifest_json,i.release_version
        FROM extension_installation_manifests i
        WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status IN ('active','disabled')
        ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
@@ -12284,7 +12286,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name })), ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id }))];
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
         app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
-        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status,
+        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status, release_version: row.release_version,
         // Filesystem grants are worker-only and must never flow into the iframe's host API list.
         capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],
         ...(settingsSchema ? { settings_schema: settingsSchema } : {}),

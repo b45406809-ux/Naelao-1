@@ -504,12 +504,13 @@ describe("runtime extension installation", () => {
         tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", ...body }),
     }));
     expect((await activate({ artifactSha256: "f".repeat(64) })).status).toBe(409);
-    const staged = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_shared_package"));
-    expect(await staged.json()).toMatchObject({ installations: [{ status: "staging", scope: "SPACE_SHARED", project_id: null }] });
+    const staged = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_shared_package&include_manifest=1"));
+    expect(await staged.json()).toMatchObject({ installations: [{ status: "staging", scope: "SPACE_SHARED", project_id: null,
+      manifest: { bundle: { version: "1.0.0" } } }] });
     expect((await activate({})).status).toBe(200);
     expect((await activate({})).status).toBe(200);
     expect(await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))
-      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active" }] });
+      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active", release_version: "1.0.0" }] });
     const runtime = () => space.fetch(new Request("http://space/space-shared-extension-runtime?tenant_id=tenant&space_id=space&app_id=dashboard"));
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: true, releaseValid: true,
       publisherKeyId: "a".repeat(64), installationId, extensionId: "ext_shared_package", phoneChannel: true,

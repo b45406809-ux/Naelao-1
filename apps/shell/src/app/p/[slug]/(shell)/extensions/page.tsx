@@ -6,7 +6,7 @@ import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
+import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, previewSpaceSharedExtensionUpdate, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry, type SpaceSharedExtensionUpdateReview } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -38,6 +38,8 @@ export default function ExtensionsPage() {
   const [savingGrants, setSavingGrants] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<string | null>(null);
   const [changingLifecycle, setChangingLifecycle] = React.useState<string | null>(null);
+  const [reviewingUpdate, setReviewingUpdate] = React.useState<string | null>(null);
+  const [updateReviews, setUpdateReviews] = React.useState<Record<string, SpaceSharedExtensionUpdateReview>>({});
   React.useEffect(() => setSelectedGrants(current => {
     const next = { ...current };
     for (const entry of catalog) if (!(entry.id in next)) next[entry.id] = [];
@@ -82,6 +84,15 @@ export default function ExtensionsPage() {
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update extension status."); }
     finally { setChangingLifecycle(null); }
   }
+  async function reviewUpdate(app: SpaceSharedExtensionApp, candidate: SpaceSharedExtensionCatalogEntry) {
+    if (!credentials || !app.release_version || !candidate.version) return;
+    setReviewingUpdate(app.installation_id); setError(null);
+    try {
+      const review = await previewSpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, app.release_version, candidate.version);
+      setUpdateReviews(current => ({ ...current, [app.installation_id]: review }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not review the signed package update."); }
+    finally { setReviewingUpdate(null); }
+  }
   function grantsEditor(key: string, requested: SharedFilesystemGrant[], current: SharedFilesystemGrant[], allowSave = false) {
     if (!requested.length) return <p style={{ color: "var(--text3)", fontSize: 12 }}>This extension requests no shared-drive access.</p>;
     const selected = selectedGrants[key] ?? current;
@@ -113,6 +124,29 @@ export default function ExtensionsPage() {
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
       {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Existing runs may finish; saved data and grants are retained.</p>}
+      {app.release_version && <p style={{ color: "var(--text3)", fontSize: 12 }}>Installed signed release: {app.release_version}</p>}
+      {catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version) && (() => {
+        const candidate = catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version)!;
+        const review = updateReviews[app.installation_id];
+        return <section style={{ margin: "12px 0", padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
+          <strong>Signed update available: {candidate.version}</strong>
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>Review the pinned release, requested authority and schema before any update. Preview does not change the installation.</p>
+          <Button variant="secondary" disabled={reviewingUpdate !== null} onClick={() => void reviewUpdate(app, candidate)}>
+            {reviewingUpdate === app.installation_id ? "Reviewing…" : "Review update"}
+          </Button>
+          {review && <div role="status" style={{ marginTop: 12, fontSize: 12 }}>
+            <p>Verified publisher: {review.candidate.publisher_id} · {review.current.version} → {review.candidate.version}</p>
+            <p>Permissions added: {review.permissions.added.join(", ") || "none"}; removed: {review.permissions.removed.join(", ") || "none"}</p>
+            <p>Capabilities added: {review.capabilities.added.join(", ") || "none"}; removed: {review.capabilities.removed.join(", ") || "none"}</p>
+            <p>Schema changes — added: {review.schema_changes.added.join(", ") || "none"}; removed: {review.schema_changes.removed.join(", ") || "none"}; changed: {review.schema_changes.changed.join(", ") || "none"}</p>
+            <p>Package dependencies: {review.dependencies.package.status}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
+            <p>Shared folders — added: {review.shared_filesystem.added.join(", ") || "none"}; removed: {review.shared_filesystem.removed.join(", ") || "none"}; changed: {review.shared_filesystem.changed.join(", ") || "none"}</p>
+            <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
+            {review.review.explicit_owner_approval_required && <p>Owner approval is required for this update review.</p>}
+            <p>Update activation is unavailable until safe migrations, rollback and active-work drain are supported.</p>
+          </div>}
+        </section>;
+      })()}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : "Resume extension"}</Button>

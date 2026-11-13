@@ -1620,13 +1620,33 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionUpdateReview {
+  installation_id: string; extension_id: string; space_id: string; scope: "SPACE_SHARED";
+  current: { version: string; publisher_id: string | null; publisher_key_id: string | null };
+  candidate: { version: string; publisher_id: string; publisher_key_id: string; artifact_sha256: string; signature_verified: true };
+  permissions: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
+  capabilities: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
+  dependencies: { package: { current: string[]; candidate: string[]; status: string };
+    provider_connections: { current: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+      candidate: Array<{ id: string; provider: string; purpose: string; required: boolean }>; added: string[]; removed: string[]; changed: string[] } };
+  schema_changes: { added: string[]; removed: string[]; changed: string[] };
+  shared_filesystem: { current: SharedFilesystemGrant[]; candidate: SharedFilesystemGrant[]; added: string[]; removed: string[]; changed: string[] };
+  price_terms: { current: null; candidate: null; status: string };
+  review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: false; apply_block_reason: string };
+}
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
 }
 export function listSpaceSharedExtensionCatalog(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ extensions: SpaceSharedExtensionCatalogEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-catalog`, { session, cache: "no-store" });
+}
+export function previewSpaceSharedExtensionUpdate(spaceId: string, installationId: string, session: SessionCredentials,
+  expectedCurrentVersion: string, candidateVersion: string) {
+  return apiFetch<SpaceSharedExtensionUpdateReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update-review`, {
+    method: "POST", session, body: JSON.stringify({ expected_current_version: expectedCurrentVersion, candidate_version: candidateVersion }),
+  });
 }
 export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = [], version?: string) {
   return apiFetch<{ extension_id: string; installation_id: string; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, ...(version ? { version } : {}) }) });

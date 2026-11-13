@@ -1733,6 +1733,185 @@ app.get("/spaces/:spaceId/shared-extension-catalog", async c => {
   return c.json({ extensions: [...firstParty, ...signed] }, 200, { "cache-control": "private, no-store" });
 });
 
+type SpacePackageReviewManifest = ReturnType<typeof validateExtensionManifest>;
+const spacePackageReviewArray = (value: readonly string[]) => [...new Set(value)].sort();
+async function spacePackageReviewDigest(value: string): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+function spacePackageReviewSchemaRows(manifest: SpacePackageReviewManifest) {
+  const rows: Array<{ id: string; kind: string; digest: string }> = [];
+  for (const primitive of manifest.bundle?.primitives ?? []) {
+    if (primitive.kind === "gadget") rows.push({ id: primitive.id, kind: "gadget", digest: JSON.stringify([primitive.schemaSql, primitive.migrations ?? []]) });
+  }
+  for (const gadget of manifest.gadgets ?? []) if (gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)
+    rows.push({ id: gadget.id, kind: "gadget", digest: JSON.stringify([gadget.defaultSchemaSql, gadget.migrations ?? []]) });
+  for (const field of manifest.settingsSchema?.fields ?? [])
+    rows.push({ id: field.id, kind: "setting", digest: JSON.stringify(field) });
+  return rows;
+}
+function spacePackageReviewDiff<T extends { id: string; digest: string }>(before: T[], after: T[]) {
+  const oldById = new Map(before.map(item => [item.id, item.digest]));
+  const nextById = new Map(after.map(item => [item.id, item.digest]));
+  return {
+    added: [...nextById.keys()].filter(id => !oldById.has(id)).sort(),
+    removed: [...oldById.keys()].filter(id => !nextById.has(id)).sort(),
+    changed: [...nextById.keys()].filter(id => oldById.has(id) && oldById.get(id) !== nextById.get(id)).sort(),
+  };
+}
+function spacePackageReviewConnectionRows(manifest: SpacePackageReviewManifest) {
+  return (manifest.bundle?.connections ?? []).map(item => ({ id: item.id, digest: JSON.stringify([item.provider, item.purpose, item.required]) }));
+}
+
+const sharedExtensionUpdateReviewPath = "/spaces/:spaceId/shared-extension-installations/:instanceId/update-review";
+app.use(sharedExtensionUpdateReviewPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionUpdateReviewPath, requireSpaceMembership({ POST: "admin" }));
+app.post(sharedExtensionUpdateReviewPath, async c => {
+  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_installation_id_invalid" }, 400);
+  let body: { expected_current_version?: unknown; candidate_version?: unknown };
+  try {
+    const bytes = await readBoundedRequestBytes(c.req.raw, 4 * 1024);
+    body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some(key => key !== "expected_current_version" && key !== "candidate_version")) throw new Error("invalid_review_body");
+  } catch { return c.json({ error_code: "extension_update_review_request_invalid" }, 400); }
+  const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+  if (typeof body.expected_current_version !== "string" || !semver.test(body.expected_current_version)
+    || typeof body.candidate_version !== "string" || !semver.test(body.candidate_version)
+    || body.expected_current_version === body.candidate_version) return c.json({ error_code: "extension_update_review_request_invalid" }, 400);
+
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const installationsResponse = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+    tenant_id: owned.tenantId, space_id: spaceId, extension_id: "__all__", include_manifest: "1",
+  })}`));
+  if (!installationsResponse.ok) return c.json({ error_code: "extension_update_review_installation_lookup_unavailable" }, 503);
+  const installations = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
+    scope: string; instance_key?: string; status: string; release_version?: string | null; publisher_id?: string | null; publisher_key_id?: string | null; manifest?: unknown }> }>(installationsResponse, 2 * 1024 * 1024);
+  const installed = installations.installations?.find(item => item.instance_id === instanceId);
+  if (!installed || installed.project_id !== null || installed.scope !== "SPACE_SHARED" || !["active", "disabled"].includes(installed.status))
+    return c.json({ error_code: "extension_update_review_installation_not_found" }, 404);
+  if (installed.release_version !== body.expected_current_version)
+    return c.json({ error_code: "extension_update_review_stale_pin", current_version: installed.release_version ?? null }, 409);
+
+  const catalogResponse = await stub.fetch(new Request("http://space-do/extension-package-catalog"));
+  if (!catalogResponse.ok) return c.json({ error_code: "extension_update_review_catalog_unavailable" }, 503);
+  const catalog = await readBoundedResponseJson<{ releases?: Array<{ extension_id: string; version: string }> }>(catalogResponse, 256 * 1024);
+  if (!catalog.releases?.some(item => item.extension_id === installed.extension_id && item.version === body.candidate_version))
+    return c.json({ error_code: "extension_update_review_candidate_not_current" }, 409);
+
+  let currentManifest: SpacePackageReviewManifest, candidateManifest: SpacePackageReviewManifest;
+  try {
+    currentManifest = validateExtensionManifest(installed.manifest);
+    if (!installed.manifest || currentManifest.id !== installed.extension_id || currentManifest.bundle?.version !== body.expected_current_version)
+      throw new Error("current_manifest_pin_mismatch");
+  } catch { return c.json({ error_code: "extension_update_review_current_manifest_invalid" }, 409); }
+
+  const candidateResponse = await stub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({
+    extension_id: installed.extension_id, version: body.candidate_version,
+  })}`));
+  if (!candidateResponse.ok) return c.json({ error_code: candidateResponse.status === 404 ? "extension_update_review_candidate_not_found" : "extension_update_review_candidate_untrusted" }, candidateResponse.status === 404 ? 404 : 409);
+  const release = await readBoundedResponseJson<{ release?: { extension_id: string; version: string; manifest: unknown; manifest_json: string;
+    artifact_sha256: string; publisher?: { id?: string; key_id?: string; signature?: string; payload_sha256?: string } } }>(candidateResponse, 2 * 1024 * 1024);
+  const candidate = release.release;
+  if (!candidate || candidate.extension_id !== installed.extension_id || candidate.version !== body.candidate_version
+    || typeof candidate.publisher?.id !== "string" || typeof candidate.publisher.key_id !== "string"
+    || typeof candidate.publisher.signature !== "string" || typeof candidate.publisher.payload_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(candidate.publisher.key_id) || !/^[a-f0-9]{64}$/.test(candidate.artifact_sha256))
+    return c.json({ error_code: "extension_update_review_candidate_invalid" }, 409);
+  try {
+    candidateManifest = validateExtensionManifest(JSON.parse(candidate.manifest_json), { gatekeeperCapabilities: [...SPACE_SHARED_PACKAGE_CAPABILITIES] });
+    if (JSON.stringify(candidateManifest) !== candidate.manifest_json || candidateManifest.id !== installed.extension_id
+      || candidateManifest.bundle?.version !== body.candidate_version || candidate.manifest_json !== JSON.stringify(candidate.manifest))
+      throw new Error("manifest_identity_or_canonicalization_mismatch");
+    if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
+    const bundle = candidateManifest.bundle;
+    const primitives = bundle?.primitives ?? [];
+    const canvases = primitives.filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
+    const gadgets = primitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget");
+    const channels = primitives.filter((part): part is Extract<typeof part, { kind: "channel" }> => part.kind === "channel");
+    const legacyGadgets = (candidateManifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
+    const connections = bundle?.connections ?? [];
+    if (!bundle || canvases.length === 0 || primitives.length > 32 || primitives.some(part => !["canvas", "gadget", "channel"].includes(part.kind))
+      || (candidateManifest.containers?.length ?? 0) > 0 || (candidateManifest.daemons?.length ?? 0) > 0 || (candidateManifest.commands?.length ?? 0) > 0
+      || (candidateManifest.widgetSubscriptions?.length ?? 0) > 0 || (bundle.workerRoles?.length ?? 0) > 0
+      || (candidateManifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
+      || candidateManifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
+      || candidateManifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+      || canvases.some(canvas => canvas.layout !== "CanvasMount" || canvas.dynamicPage || canvas.permissions.length > 0 || canvas.capabilityRequirements.length > 0)
+      || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0)
+      || channels.some(channel => channel.context !== "channel_only" || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript)
+        || channel.provider !== "phone" && (!channel.connectionId || !connections.some(connection => connection.id === channel.connectionId
+          && connection.provider === channel.provider && connection.required)))) throw new Error("space_shared_contract_unsupported");
+    const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
+    if (channels.some(channel => !providerAllowlist.has(channel.provider)) || connections.some(connection => !providerAllowlist.has(connection.provider)
+      || !channels.some(channel => channel.connectionId === connection.id && channel.provider === connection.provider))) throw new Error("space_shared_connection_contract_unsupported");
+
+    const paths = [...new Set([...canvases.map(item => item.component), ...channels.map(item => item.handlerScript)])].sort();
+    if (paths.length !== canvases.length + channels.length) throw new Error("artifact_path_conflict");
+    const artifacts: Record<string, string> = {};
+    let totalBytes = 0;
+    for (const path of paths) {
+      const object = await c.env.SCRIPTS_R2?.get(`spaces/${spaceId}/extensions/${installed.extension_id}/${body.candidate_version}/${path.slice(2)}`);
+      const maxBytes = /\.(?:ts|js)$/.test(path) ? 262_144 : 512_000;
+      if (!object || object.size < 1 || object.size > maxBytes) throw new Error("artifact_missing_or_invalid");
+      const bytes = await object.arrayBuffer();
+      if (bytes.byteLength !== object.size) throw new Error("artifact_size_mismatch");
+      totalBytes += bytes.byteLength;
+      if (totalBytes > 2_000_000) throw new Error("artifact_size_limit");
+      artifacts[path] = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+    }
+    const entries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    if (await spacePackageReviewDigest(JSON.stringify(entries)) !== candidate.artifact_sha256) throw new Error("artifact_digest_mismatch");
+    const publisher = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,public_key_b64url FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(owned.tenantId, spaceId, candidate.publisher.key_id)
+      .first<{ publisher_id: string; public_key_b64url: string }>();
+    if (!publisher || publisher.publisher_id !== candidate.publisher.id) return c.json({ error_code: "extension_publisher_key_untrusted_or_revoked" }, 403);
+    const publicKey = decodeExtensionPublisherPublicKey(publisher.public_key_b64url);
+    if (await extensionPublisherKeyId(publicKey) !== candidate.publisher.key_id) return c.json({ error_code: "extension_publisher_key_id_mismatch" }, 403);
+    const publisherPayload = extensionPublisherSigningPayload(candidate.manifest_json, artifacts);
+    if (await spacePackageReviewDigest(publisherPayload) !== candidate.publisher.payload_sha256
+      || !await verifyExtensionPublisherRelease({ publicKeyRaw: publicKey, signature: candidate.publisher.signature,
+        manifestJson: candidate.manifest_json, artifacts })) throw new Error("publisher_signature_invalid");
+  } catch (error) {
+    return c.json({ error_code: "extension_update_review_candidate_invalid", reason: (error instanceof Error ? error.message : "invalid").slice(0, 120) }, 409);
+  }
+
+  const addedPermissions = candidateManifest.declaredPermissions.filter(item => !currentManifest.declaredPermissions.includes(item)).sort();
+  const removedPermissions = currentManifest.declaredPermissions.filter(item => !candidateManifest.declaredPermissions.includes(item)).sort();
+  const addedCapabilities = candidateManifest.capabilityRequirements.filter(item => !currentManifest.capabilityRequirements.includes(item)).sort();
+  const removedCapabilities = currentManifest.capabilityRequirements.filter(item => !candidateManifest.capabilityRequirements.includes(item)).sort();
+  const beforeSchema = spacePackageReviewSchemaRows(currentManifest), afterSchema = spacePackageReviewSchemaRows(candidateManifest);
+  const schemaDigestRows = async (rows: typeof beforeSchema) => Promise.all(rows.map(async row => ({ id: `${row.kind}:${row.id}`, digest: await spacePackageReviewDigest(row.digest) })));
+  const schemaChanges = spacePackageReviewDiff(await schemaDigestRows(beforeSchema), await schemaDigestRows(afterSchema));
+  const currentConnections = (currentManifest.bundle?.connections ?? []).map(item => ({ id: item.id, provider: item.provider, purpose: item.purpose, required: item.required }));
+  const candidateConnections = (candidateManifest.bundle?.connections ?? []).map(item => ({ id: item.id, provider: item.provider, purpose: item.purpose, required: item.required }));
+  const connectionDiff = spacePackageReviewDiff(spacePackageReviewConnectionRows(currentManifest), spacePackageReviewConnectionRows(candidateManifest));
+  const permissionExpansion = addedPermissions.length > 0 || addedCapabilities.length > 0
+    || candidateManifest.shared_filesystem?.some(next => !currentManifest.shared_filesystem?.some(prior => prior.path === next.path && prior.access === next.access)) === true;
+  const publisherChanged = Boolean(installed.publisher_id && installed.publisher_id !== candidate.publisher.id);
+  const approvalRequired = permissionExpansion || publisherChanged || schemaChanges.added.length > 0 || schemaChanges.removed.length > 0
+    || schemaChanges.changed.length > 0 || connectionDiff.added.length > 0 || connectionDiff.removed.length > 0 || connectionDiff.changed.length > 0;
+  return c.json({ installation_id: instanceId, extension_id: installed.extension_id, space_id: spaceId, scope: "SPACE_SHARED",
+    current: { version: body.expected_current_version, publisher_id: installed.publisher_id ?? null, publisher_key_id: installed.publisher_key_id ?? null },
+    candidate: { version: candidate.version, publisher_id: candidate.publisher.id, publisher_key_id: candidate.publisher.key_id,
+      artifact_sha256: candidate.artifact_sha256, signature_verified: true },
+    permissions: { current: spacePackageReviewArray(currentManifest.declaredPermissions), candidate: spacePackageReviewArray(candidateManifest.declaredPermissions), added: addedPermissions, removed: removedPermissions },
+    capabilities: { current: spacePackageReviewArray(currentManifest.capabilityRequirements), candidate: spacePackageReviewArray(candidateManifest.capabilityRequirements), added: addedCapabilities, removed: removedCapabilities },
+    dependencies: { package: { current: [], candidate: [], status: "not_declared_by_current_extension_contract" },
+      provider_connections: { current: currentConnections, candidate: candidateConnections, ...connectionDiff } },
+    schema_changes: schemaChanges,
+    shared_filesystem: { current: currentManifest.shared_filesystem ?? [], candidate: candidateManifest.shared_filesystem ?? [],
+      ...spacePackageReviewDiff((currentManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access })),
+        (candidateManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access }))) },
+    price_terms: { current: null, candidate: null, status: "not_declared_by_current_extension_contract" },
+    review: { authority_expanded: permissionExpansion, publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
+      mutates_installation: false, apply_supported: false, apply_block_reason: "safe migration rollback and active-work drain are not implemented for shared package updates" },
+  }, 200, { "cache-control": "private, no-store" });
+});
+
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireSpaceMembership({ PATCH: "admin" }));
 app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", async c => {

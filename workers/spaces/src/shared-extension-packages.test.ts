@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
-import { validateExtensionManifest } from "@naelao/agent-sdk";
+import { exportExtensionPublisherPublicKey, extensionPublisherSigningPayload, generateExtensionPublisherKeyPair,
+  signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
 import spacesWorker from "./index.js";
 
 const secret = "shared-extension-package-route-secret";
@@ -94,6 +95,62 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
   });
 }
 
+async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean } = {}) {
+  const old = structuredClone(manifest);
+  old.bundle!.version = "1.0.0";
+  for (const primitive of old.bundle!.primitives) primitive.version = "1.0.0";
+  old.declaredPermissions = old.declaredPermissions.filter(permission => permission !== "assistant.phone.simulate");
+  old.capabilityRequirements = old.capabilityRequirements.filter(capability => capability !== "assistant.phone.simulate");
+  const oldManifest = validateExtensionManifest(old);
+  const candidateManifest = validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives,
+    { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      scope: "SPACE_SHARED", schemaSql: "CREATE TABLE usage_stats (id TEXT PRIMARY KEY);", migrations: [] }] } });
+  const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
+  const artifactEntries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  const artifactSha256 = await digest(JSON.stringify(artifactEntries));
+  const keyPair = await generateExtensionPublisherKeyPair();
+  const publicKey = await exportExtensionPublisherPublicKey(keyPair.publicKey);
+  const signature = await signExtensionPublisherRelease({ privateKey: keyPair.privateKey, publicKey: keyPair.publicKey,
+    manifestJson: JSON.stringify(candidateManifest), artifacts });
+  const publisherPayloadSha256 = await digest(extensionPublisherSigningPayload(JSON.stringify(candidateManifest), artifacts));
+  const candidateRelease = { extension_id: candidateManifest.id, version: candidateManifest.bundle!.version, manifest: candidateManifest, manifest_json: JSON.stringify(candidateManifest), artifact_sha256: artifactSha256,
+    publisher: { id: "pub_voice", key_id: signature.keyId, signature: options.signatureValid === false ? "invalid" : signature.signature,
+      payload_sha256: publisherPayloadSha256 } };
+  const spaceRequests: Request[] = [], microAppRequests: Request[] = [];
+  const spaceStub = { fetch: vi.fn(async (request: Request) => {
+    spaceRequests.push(request);
+    const url = new URL(request.url), path = url.pathname;
+    if (path === "/extension-installations") {
+      if (url.searchParams.get("space_id") !== "space-a") return Response.json({ installations: [] });
+      return Response.json({ installations: [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
+        instance_key: "default", status: "active", release_version: "1.0.0", publisher_id: "pub_voice", publisher_key_id: "c".repeat(64), publisher_attestation_valid: true,
+        manifest: oldManifest }] });
+    }
+    if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: candidateManifest.id, version: candidateManifest.bundle!.version }] });
+    if (path === "/extension-package-release") return Response.json({ release: candidateRelease });
+    return Response.json({ error_code: "unexpected_space_do_route" }, { status: 404 });
+  }) };
+  const env = {
+    PLATFORM_SECRET: secret,
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...params: unknown[]) => ({
+      first: async () => sql.includes("FROM spaces WHERE id") ? { name: "Workspace", spacetype_id: "space", config_json: "{}" }
+        : sql.includes("FROM extension_publisher_keys") && options.activePublisher !== false
+          ? { publisher_id: "pub_voice", public_key_b64url: publicKey } : null,
+      all: async () => ({ results: [] }),
+    }) }) },
+    SPACE_DO: { idFromName: () => "space-do-id", get: () => spaceStub },
+    MICRO_APP_DO: { idFromName: () => "micro-app-id", get: (_actor: unknown) => ({ fetch: async (request: Request) => { microAppRequests.push(request); return Response.json({ ok: true }); } }) },
+    SCRIPTS_R2: { get: async (key: string) => {
+      const path = key.endsWith("/dashboard.html") ? "./dashboard.html" : key.endsWith("/handler.ts") ? "./handler.ts" : "";
+      if (!path) return null;
+      const source = artifacts[path]!;
+      const bytes = new TextEncoder().encode(source);
+      return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
+    } },
+  } as never;
+  return { env, spaceRequests, microAppRequests, candidateRelease };
+}
+
 describe("signed Space-shared extension packages", () => {
   it("lists a trusted package, stages its exact artifact and activates its signed shared dashboard", async () => {
     const h = harness();
@@ -160,5 +217,58 @@ describe("signed Space-shared extension packages", () => {
     expect(await response.json()).toMatchObject({ error_code: "extension_package_canvas_initialization_failed" });
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/abort")).toBe(true);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);
+  });
+});
+
+describe("signed Space-shared package update review", () => {
+  const path = "/spaces/space-a/shared-extension-installations/install-voice/update-review";
+
+  it("previews the exact pinned install and verifies the candidate signature without mutating it", async () => {
+    const h = await updateReviewHarness();
+    const response = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+    expect(await response.json()).toMatchObject({ current: { version: "1.0.0" }, candidate: { version: "1.2.0", signature_verified: true },
+      permissions: { added: ["assistant.phone.simulate"] }, capabilities: { added: ["assistant.phone.simulate"] },
+      schema_changes: { added: ["gadget:usage_stats"] },
+      dependencies: { package: { status: "not_declared_by_current_extension_contract" } },
+      price_terms: { current: null, candidate: null }, review: { authority_expanded: true, explicit_owner_approval_required: true,
+        mutates_installation: false, apply_supported: false } });
+    expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
+    expect(h.microAppRequests).toHaveLength(0);
+  });
+
+  it("rejects stale pins, a different Space installation, revoked keys, and invalid publisher signatures", async () => {
+    const stale = await updateReviewHarness();
+    const staleResponse = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "0.9.0", candidate_version: "1.2.0" }), stale.env);
+    expect(staleResponse.status).toBe(409);
+    expect(await staleResponse.json()).toMatchObject({ error_code: "extension_update_review_stale_pin", current_version: "1.0.0" });
+
+    const wrongSpace = await updateReviewHarness();
+    const wrongSpaceResponse = await spacesWorker.fetch(await signedRequest(path.replace("space-a", "space-b"), "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), wrongSpace.env);
+    expect(wrongSpaceResponse.status).toBe(404);
+
+    const revoked = await updateReviewHarness({ activePublisher: false });
+    const revokedResponse = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), revoked.env);
+    expect(revokedResponse.status).toBe(403);
+    expect(await revokedResponse.json()).toMatchObject({ error_code: "extension_publisher_key_untrusted_or_revoked" });
+
+    const invalid = await updateReviewHarness({ signatureValid: false });
+    const invalidResponse = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), invalid.env);
+    expect(invalidResponse.status).toBe(409);
+    expect(await invalidResponse.json()).toMatchObject({ error_code: "extension_update_review_candidate_invalid", reason: "publisher_signature_invalid" });
+  });
+
+  it("requires Space admin authority and rejects candidates outside the current package catalog", async () => {
+    const unauthorized = await updateReviewHarness();
+    const denied = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "1.0.0", candidate_version: "1.2.0" }, "product_end_user"), unauthorized.env);
+    expect(denied.status).toBe(403);
+    expect(unauthorized.spaceRequests).toHaveLength(0);
+
+    const h = await updateReviewHarness();
+    const wrongCandidate = await spacesWorker.fetch(await signedRequest(path, "POST", { expected_current_version: "1.0.0", candidate_version: "2.0.0" }), h.env);
+    expect(wrongCandidate.status).toBe(409);
+    expect(await wrongCandidate.json()).toMatchObject({ error_code: "extension_update_review_candidate_not_current" });
+    expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
   });
 });
