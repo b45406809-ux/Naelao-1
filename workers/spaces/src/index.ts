@@ -1472,17 +1472,209 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
   return { ok: true, installationId: result.installationId };
 }
 
+const SPACE_SHARED_PACKAGE_CAPABILITIES = new Set([
+  "channel.invoke", "events.subscribe", "extension.gadget.read", "extension.project_canvas",
+  "extension.settings.read", "extension.settings.configure", "space.shared.read", "space.shared.write",
+]);
+const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set(["events.subscribe", "extension.settings.read", "extension.settings.configure"]);
+
+async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
+  extensionId: string, version: string, instanceKey: string,
+  approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
+  if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+    || !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return { ok: false, error: "extension_package_identity_invalid" };
+  if (!env.SCRIPTS_R2) return { ok: false, error: "extension_artifact_storage_unavailable" };
+  const spaceStub = await spaceDoStub(env, spaceId, tenantId);
+  const releaseResponse = await spaceStub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({ extension_id: extensionId, version })}`));
+  if (releaseResponse.status === 404) return { ok: false, error: "extension_package_release_unavailable" };
+  if (!releaseResponse.ok) return { ok: false, error: "extension_package_release_untrusted" };
+  const payload = await readBoundedResponseJson<{ release?: { extension_id: string; version: string; manifest: unknown;
+    manifest_json: string; artifact_sha256: string; publisher?: { id?: string; key_id?: string; signature?: string; payload_sha256?: string } } }>(releaseResponse, 2 * 1024 * 1024);
+  const release = payload.release;
+  if (!release || release.extension_id !== extensionId || release.version !== version || !/^[a-f0-9]{64}$/.test(release.artifact_sha256)
+    || typeof release.manifest_json !== "string" || typeof release.publisher?.id !== "string" || typeof release.publisher.key_id !== "string"
+    || typeof release.publisher.signature !== "string" || typeof release.publisher.payload_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(release.publisher.key_id)) return { ok: false, error: "extension_package_release_unavailable" };
+  const trustedPublisher = await env.PLATFORM_DB.prepare(`SELECT publisher_id FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, release.publisher.key_id)
+    .first<{ publisher_id: string }>();
+  if (!trustedPublisher || trustedPublisher.publisher_id !== release.publisher.id)
+    return { ok: false, error: "extension_publisher_key_untrusted_or_revoked" };
+
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try { manifest = validateExtensionManifest(JSON.parse(release.manifest_json), { gatekeeperCapabilities: [...SPACE_SHARED_PACKAGE_CAPABILITIES] }); }
+  catch { return { ok: false, error: "extension_package_manifest_invalid" }; }
+  if (JSON.stringify(manifest) !== release.manifest_json) return { ok: false, error: "extension_package_manifest_digest_mismatch" };
+  const bundle = manifest.bundle;
+  const primitives = bundle?.primitives ?? [];
+  const canvases = primitives.filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
+  const gadgets = primitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget");
+  const legacyGadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
+  const channels = primitives.filter((part): part is Extract<typeof part, { kind: "channel" }> => part.kind === "channel");
+  const connections = bundle?.connections ?? [];
+  if (!bundle || bundle.id !== extensionId || bundle.version !== version || canvases.length === 0
+    || primitives.length > 32 || primitives.some(part => !["canvas", "gadget", "channel"].includes(part.kind))
+    || (manifest.containers?.length ?? 0) > 0 || (manifest.daemons?.length ?? 0) > 0 || (manifest.commands?.length ?? 0) > 0
+    || (manifest.widgetSubscriptions?.length ?? 0) > 0 || (bundle.workerRoles?.length ?? 0) > 0
+    || (manifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
+    || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
+    || manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    || canvases.some(canvas => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(canvas.component) || canvas.layout !== "CanvasMount"
+      || canvas.dynamicPage || canvas.permissions.length > 0 || canvas.capabilityRequirements.length > 0)
+    || gadgets.some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.permissions.length > 0 || gadget.capabilityRequirements.length > 0)
+    || channels.some(channel => channel.context !== "channel_only"
+      || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript)
+      || channel.provider !== "phone" && (!channel.connectionId || !connections.some(connection => connection.id === channel.connectionId
+        && connection.provider === channel.provider && connection.required))))
+    return { ok: false, error: "extension_space_shared_package_contract_unsupported" };
+  const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
+  if (channels.some(channel => !providerAllowlist.has(channel.provider))
+    || connections.some(connection => !providerAllowlist.has(connection.provider)
+      || !channels.some(channel => channel.connectionId === connection.id && channel.provider === connection.provider)))
+    return { ok: false, error: "extension_package_connection_contract_unsupported" };
+
+  const paths = [...new Set([
+    ...canvases.map(canvas => canvas.component), ...channels.map(channel => channel.handlerScript),
+  ])].sort();
+  if (paths.length !== canvases.length + channels.length) return { ok: false, error: "extension_package_artifact_path_conflict" };
+  const artifacts: Array<[string, string]> = [];
+  let totalBytes = 0;
+  for (const path of paths) {
+    const object = await env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${extensionId}/${version}/${path.slice(2)}`);
+    const maxBytes = /\.(?:ts|js)$/.test(path) ? 262_144 : 512_000;
+    if (!object || object.size < 1 || object.size > maxBytes) return { ok: false, error: "extension_package_artifact_missing_or_invalid" };
+    const bytes = await object.arrayBuffer();
+    if (bytes.byteLength !== object.size) return { ok: false, error: "extension_package_artifact_size_mismatch" };
+    let source: string;
+    try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes); } catch { return { ok: false, error: "extension_package_artifact_encoding_invalid" }; }
+    totalBytes += bytes.byteLength;
+    if (totalBytes > 2_000_000) return { ok: false, error: "extension_package_artifact_size_limit" };
+    artifacts.push([path, source]);
+  }
+  const artifactDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(artifacts))))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+  if (artifactDigest !== release.artifact_sha256) return { ok: false, error: "extension_package_artifact_digest_mismatch" };
+
+  const collisions = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
+  if (!collisions.ok) return { ok: false, error: "extension_installation_lookup_unavailable" };
+  const installed = await readBoundedResponseJson<{ installations?: Array<{ instance_id?: string; extension_id?: string; instance_key?: string; scope?: string;
+    status?: string; release_version?: string | null; manifest?: ReturnType<typeof validateExtensionManifest> }> }>(collisions, 2 * 1024 * 1024);
+  const prior = installed.installations?.find(row => row.extension_id === extensionId && row.instance_key === instanceKey
+    && row.scope === "SPACE_SHARED" && ["active", "disabled", "staging"].includes(row.status ?? ""));
+  if (prior) {
+    if (prior.release_version === version && prior.status === "active" && prior.instance_id) return { ok: true, installationId: prior.instance_id };
+    return { ok: false, error: "extension_shared_installation_update_requires_review" };
+  }
+  const appIds = new Set<string>();
+  for (const row of installed.installations ?? []) {
+    if (row.scope !== "SPACE_SHARED" || !["active", "disabled", "staging"].includes(row.status ?? "")) continue;
+    const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
+    for (const primitive of row.manifest?.bundle?.primitives ?? []) if (primitive.kind === "canvas" || primitive.kind === "gadget") appIds.add(`${prefix}${primitive.id}`);
+    for (const gadget of row.manifest?.gadgets ?? []) if (gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3) appIds.add(`${prefix}${gadget.id}`);
+  }
+  const appIdsForPackage = [...canvases, ...gadgets, ...legacyGadgets].map(primitive => `${instanceKey === "default" ? "" : `${instanceKey}_`}${primitive.id}`);
+  if (new Set(appIdsForPackage).size !== appIdsForPackage.length || appIdsForPackage.some(id => appIds.has(id)))
+    return { ok: false, error: "extension_shared_canvas_id_conflict" };
+
+  const manifestJson = release.manifest_json;
+  const installedResponse = await spaceStub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifest, installedBy, tenantId, spaceId, scope: "SPACE_SHARED", instanceKey,
+      approvedSharedFilesystem, gatekeeperCapabilities: manifest.capabilityRequirements, artifactSha256: artifactDigest,
+      publisherId: release.publisher.id, publisherKeyId: release.publisher.key_id,
+      publisherSignature: release.publisher.signature, publisherPayloadSha256: release.publisher.payload_sha256, deferActivation: true,
+    }) }));
+  if (!installedResponse.ok) return { ok: false, error: "extension_installation_rejected" };
+  const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string } }>(installedResponse.clone(), 64 * 1024);
+  const abort = async () => {
+    if (!installedResult.installationId) return;
+    await spaceStub.fetch(new Request("http://space-do/extension-installation/abort", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ installationId: installedResult.installationId, tenantId, spaceId, scope: "SPACE_SHARED" }) })).catch(() => undefined);
+  };
+  if (!installedResult.installationId || installedResult.release?.version !== version
+    || installedResult.release.artifactSha256 !== artifactDigest || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? "")) {
+    await abort();
+    return { ok: false, error: "extension_runtime_release_attestation_unavailable" };
+  }
+  const fail = async (error: string) => { await abort(); return { ok: false as const, error }; };
+  const appId = (primitiveId: string) => `${instanceKey === "default" ? "" : `${instanceKey}_`}${primitiveId}`;
+  for (const canvas of canvases) {
+    const html = artifacts.find(([path]) => path === canvas.component)?.[1];
+    if (typeof html !== "string") return fail("extension_package_canvas_artifact_missing");
+    const canvasSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const hostSignature = installedResult.release.hostSignature;
+    const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactDigest, hostSignature, canvas.component, canvasSha256]);
+    const releaseProof = { extensionId, version, manifestJson, artifactSha256: artifactDigest, hostSignature,
+      canvasPath: canvas.component, canvasSha256, bindingSignature: await signHmac(bindingPayload, env.PLATFORM_SECRET) };
+    const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: appId(canvas.id) });
+    const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId(canvas.id), scope: "SPACE_SHARED", gadgetTier: 3, html, releaseProof }) }));
+    if (!initialized.ok) return fail("extension_package_canvas_initialization_failed");
+  }
+  for (const gadget of gadgets) {
+    const html = artifacts.find(([path]) => path === canvases[0]!.component)?.[1];
+    if (typeof html !== "string") return fail("extension_package_canvas_artifact_missing");
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const hostSignature = installedResult.release.hostSignature;
+    const canvasPath = canvases[0]!.component;
+    const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactDigest, hostSignature, canvasPath, sha256]);
+    const releaseProof = { extensionId, version, manifestJson, artifactSha256: artifactDigest, hostSignature, canvasPath,
+      canvasSha256: sha256, bindingSignature: await signHmac(bindingPayload, env.PLATFORM_SECRET) };
+    const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: appId(gadget.id) });
+    const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId(gadget.id), scope: "SPACE_SHARED", gadgetTier: 3,
+        defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [], html, releaseProof }) }));
+    if (!initialized.ok) return fail("extension_package_gadget_initialization_failed");
+  }
+  for (const gadget of legacyGadgets) {
+    const html = artifacts.find(([path]) => path === canvases[0]!.component)?.[1];
+    if (typeof html !== "string") return fail("extension_package_canvas_artifact_missing");
+    const canvasSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const hostSignature = installedResult.release.hostSignature;
+    const canvasPath = canvases[0]!.component;
+    const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactDigest, hostSignature, canvasPath, canvasSha256]);
+    const releaseProof = { extensionId, version, manifestJson, artifactSha256: artifactDigest, hostSignature,
+      canvasPath, canvasSha256, bindingSignature: await signHmac(bindingPayload, env.PLATFORM_SECRET) };
+    const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: appId(gadget.id) });
+    const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: appId(gadget.id), scope: "SPACE_SHARED", gadgetTier: 3,
+        defaultSchemaSql: gadget.defaultSchemaSql ?? "", migrations: gadget.migrations ?? [], html, releaseProof }) }));
+    if (!initialized.ok) return fail("extension_package_gadget_initialization_failed");
+  }
+  const activePublisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND publisher_id=? AND status='active'`)
+    .bind(tenantId, spaceId, release.publisher.key_id, release.publisher.id).first();
+  if (!activePublisher) return fail("extension_publisher_key_untrusted_or_revoked");
+  const activation = await spaceStub.fetch(new Request("http://space-do/extension-installation/activate", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ installationId: installedResult.installationId, extensionId, version, artifactSha256: artifactDigest,
+      tenantId, spaceId, scope: "SPACE_SHARED" }) }));
+  if (!activation.ok) return fail("extension_runtime_activation_failed");
+  return { ok: true, installationId: installedResult.installationId };
+}
+
 app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   const spaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const body = await c.req.json<{ approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>()
-    .catch((): { approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } => ({}));
-  const result = await installFirstPartySpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"), body.approved_shared_filesystem ?? []);
-  return result.ok ? c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId, scope: "SPACE_SHARED" }, 201)
-    : c.json({ error_code: result.error }, result.error === "first_party_extension_not_found" ? 404 : 503);
+  const body = await c.req.json<{ version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>()
+    .catch((): { version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } => ({}));
+  if (body.version !== undefined && typeof body.version !== "string") return c.json({ error_code: "extension_package_version_invalid" }, 400);
+  const grants = body.approved_shared_filesystem ?? [];
+  const result = typeof body.version === "string"
+    ? await installSignedSpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"),
+      body.version, typeof body.instance_key === "string" ? body.instance_key : "default", grants)
+    : await installFirstPartySpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"), grants);
+  if (result.ok) return c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId, scope: "SPACE_SHARED" }, 201);
+  const status = result.error === "first_party_extension_not_found" || result.error === "extension_package_release_unavailable" ? 404
+    : result.error === "extension_publisher_key_untrusted_or_revoked" ? 403
+    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted") ? 409
+    : result.error.includes("unsupported") ? 422
+    : result.error.includes("invalid") ? 400 : 503;
+  return c.json({ error_code: result.error }, status);
 });
 
 /** Load a Space owned by the caller's tenant (ownership gate only). */
@@ -1515,10 +1707,31 @@ app.get("/spaces/:spaceId/shared-extension-apps", async c => {
 });
 app.use("/spaces/:spaceId/shared-extension-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extension-catalog", requireSpaceMembership({ GET: "member" }));
-app.get("/spaces/:spaceId/shared-extension-catalog", c => c.json({ extensions: Object.values(DOGFOOD_EXTENSION_BY_ID)
-  .filter(manifest => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3))
-  .map(manifest => ({ id: manifest.id, name: manifest.gadgets.find(gadget => gadget.scope === "SPACE_SHARED")?.name ?? manifest.id,
-    requested_shared_filesystem: manifest.shared_filesystem ?? [] })) }));
+app.get("/spaces/:spaceId/shared-extension-catalog", async c => {
+  const spaceId = c.req.param("spaceId"), owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const firstParty = Object.values(DOGFOOD_EXTENSION_BY_ID)
+    .filter(manifest => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3))
+    .map(manifest => ({ id: manifest.id, name: manifest.gadgets.find(gadget => gadget.scope === "SPACE_SHARED")?.name ?? manifest.id,
+      requested_shared_filesystem: manifest.shared_filesystem ?? [] }));
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extension-package-catalog"));
+  if (!response.ok) return c.json({ error_code: "extension_package_catalog_unavailable" }, 503);
+  const packages = await readBoundedResponseJson<{ releases?: Array<{ extension_id: string; version: string; has_canvas: boolean;
+    name: string; requested_shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+    publisher?: { id?: string; key_id?: string } }> }>(response, 2 * 1024 * 1024);
+  const activeKeys = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,key_id FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND status='active'`).bind(owned.tenantId, spaceId).all<{ publisher_id: string; key_id: string }>();
+  const trusted = new Set(activeKeys.results.map(key => `${key.publisher_id}:${key.key_id}`));
+  const firstPartyIds = new Set<string>(firstParty.map(item => item.id));
+  const signed = (packages.releases ?? []).flatMap(release => {
+    const publisherPair = `${release.publisher?.id ?? ""}:${release.publisher?.key_id ?? ""}`;
+    if (!release.has_canvas || firstPartyIds.has(release.extension_id) || !trusted.has(publisherPair)) return [];
+    return [{ id: release.extension_id, version: release.version, name: release.name,
+      publisher_id: release.publisher?.id ?? "", requested_shared_filesystem: release.requested_shared_filesystem ?? [] }];
+  });
+  return c.json({ extensions: [...firstParty, ...signed] }, 200, { "cache-control": "private, no-store" });
+});
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireSpaceMembership({ PATCH: "admin" }));
@@ -3364,7 +3577,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     await stub.fetch(new Request("http://space-do/extension-installation/abort", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
-      body: JSON.stringify({ installationId: installedResult.installationId, tenantId: identity.tenantId, spaceId, projectId }),
+      body: JSON.stringify({ installationId: installedResult.installationId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND" }),
     })).catch(() => undefined);
   };
   const stagedFailure = async (errorCode: string, status: 400 | 409 | 500 | 503, message: string) => {
@@ -3410,7 +3623,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
       body: JSON.stringify({ installationId: (await readBoundedResponseJson<{ installationId?: string }>(installed.clone(), 64 * 1024)).installationId,
-        extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId }),
+        extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND" }),
     }));
     if (!activation.ok) return stagedFailure("extension_runtime_activation_failed", 503, await readBoundedResponseText(activation, 8 * 1024).catch(() => ""));
   }

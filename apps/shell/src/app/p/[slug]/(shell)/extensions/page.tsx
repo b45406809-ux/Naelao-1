@@ -51,10 +51,10 @@ export default function ExtensionsPage() {
       return { ...current, [key]: grants };
     });
   }
-  async function install(id: string) {
+  async function install(entry: SpaceSharedExtensionCatalogEntry) {
     if (!credentials) return;
-    setInstalling(id); setError(null);
-    try { await installSpaceSharedExtension(activeSpaceId, id, credentials, selectedGrants[id] ?? []); await refresh(); }
+    setInstalling(entry.id); setError(null);
+    try { await installSpaceSharedExtension(activeSpaceId, entry.id, credentials, selectedGrants[entry.id] ?? [], entry.version); await refresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not install extension."); }
     finally { setInstalling(null); }
   }
@@ -119,9 +119,9 @@ export default function ExtensionsPage() {
       <Button disabled={app.status !== "active"} onClick={() => setActive(app)}>Open extension</Button>
       </Card>)}</div> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => <Card key={entry.id}>
-      <CardTitle>{entry.name}</CardTitle><CardDesc>Install this first-party Space-shared extension. Its app and storage are isolated to the active Space.</CardDesc>
+      <CardTitle>{entry.name}</CardTitle><CardDesc>{entry.version ? `Signed release ${entry.version} from ${entry.publisher_id ?? "a trusted publisher"}. Its app and storage are isolated to the active Space.` : "Install this first-party Space-shared extension. Its app and storage are isolated to the active Space."}</CardDesc>
       {grantsEditor(entry.id, entry.requested_shared_filesystem, [])}
-      <Button disabled={installing !== null} onClick={() => void install(entry.id)}>{installing === entry.id ? "Installing…" : "Install extension"}</Button>
+      <Button disabled={installing !== null} onClick={() => void install(entry)}>{installing === entry.id ? "Installing…" : "Install extension"}</Button>
     </Card>)}</div></section> : null}
     {!active && !loading && !error && !apps.length && !catalog.length ? <Card><CardTitle>No Space extensions available</CardTitle><CardDesc>Extensions included by an installed Space Template appear here. Each extension runs in its own scoped storage and receives only the host APIs it declares.</CardDesc></Card> : null}
   </div>;

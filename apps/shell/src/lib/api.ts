@@ -1621,15 +1621,15 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
 export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
-export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; requested_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[] }
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
 }
 export function listSpaceSharedExtensionCatalog(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ extensions: SpaceSharedExtensionCatalogEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-catalog`, { session, cache: "no-store" });
 }
-export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = []) {
-  return apiFetch<{ extension_id: string; installation_id: string; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem }) });
+export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = [], version?: string) {
+  return apiFetch<{ extension_id: string; installation_id: string; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, ...(version ? { version } : {}) }) });
 }
 export function updateSpaceSharedExtensionFilesystemGrants(spaceId: string, installationId: string, session: SessionCredentials, grants: SharedFilesystemGrant[]) {
   return apiFetch<{ instance_id: string; approved_shared_filesystem: SharedFilesystemGrant[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/filesystem-grants`, { method: "PATCH", session, body: JSON.stringify({ grants }) });

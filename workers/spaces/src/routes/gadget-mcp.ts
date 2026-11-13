@@ -7,6 +7,25 @@ import { mintInternalToken, readBoundedRequestBytes, readBoundedRequestText, req
 const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 const MAX_CANVAS_GADGET_RESPONSE_BYTES = 512 * 1024;
 
+async function sharedExtensionRuntimeError(env: Env, tenantId: string, spaceId: string, appId: string): Promise<string | null> {
+  if (!env.SPACE_DO) return null;
+  try {
+    const actor = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
+    const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
+    const response = await env.SPACE_DO.get(actor).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
+    if (!response.ok) return "space_extension_runtime_unavailable";
+    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; publisherKeyId?: unknown };
+    if (runtime.managed !== true) return null;
+    if (runtime.active !== true || runtime.releaseValid !== true) return "space_extension_release_invalid";
+    if (typeof runtime.publisherKeyId === "string") {
+      const publisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+        WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtime.publisherKeyId).first();
+      if (!publisher) return "space_extension_publisher_revoked";
+    }
+    return null;
+  } catch { return "space_extension_runtime_unavailable"; }
+}
+
 export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   // These routes trust gateway-stamped tenant and role headers. Verify the internal
   // signature here as well as at the router so direct Worker access cannot forge them.
@@ -30,6 +49,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       ).bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden", message: "Space membership required" }, 403);
     }
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_WIDE", spaceId, appId });
     let requestBody: ArrayBuffer | Uint8Array | undefined;
     if (method === "POST") {
@@ -55,6 +76,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }
@@ -84,6 +107,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 8 * 1024)).buffer as ArrayBuffer; }
@@ -114,6 +139,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden" }, 403);
     }
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
     let body: ArrayBuffer | undefined;
     if (c.req.method === "PATCH") {
       try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }

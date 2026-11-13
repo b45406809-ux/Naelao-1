@@ -101,6 +101,24 @@ describe("gadget MCP host adapter", () => {
     expect(actorFetch).toHaveBeenCalledOnce();
   });
 
+  it("blocks a signed Space-shared microapp after its publisher key is revoked", async () => {
+    const actorFetch = vi.fn(async () => Response.json({ html: true }));
+    const spaceStub = { fetch: async (request: Request) => new URL(request.url).pathname === "/space-shared-extension-runtime"
+      ? Response.json({ managed: true, active: true, releaseValid: true, publisherKeyId: "a".repeat(64) })
+      : Response.json({ error_code: "unexpected_route" }, { status: 404 }) };
+    const prepare = vi.fn((query: string) => ({ bind: () => ({ first: async () => query.includes("extension_publisher_keys") ? null : { 1: 1 } }) }));
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub },
+      MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) },
+    } as never;
+    const response = await app.request("/spaces/s/apps/voice_dashboard/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "space_extension_publisher_revoked" });
+    expect(actorFetch).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining("extension_publisher_keys"));
+  });
+
   it("forwards extension settings to SpaceDO and requires an administrator for updates", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const spaceFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method,
@@ -118,17 +136,17 @@ describe("gadget MCP host adapter", () => {
     expect(await memberRead.json()).toMatchObject({ path: "/extension-settings", method: "GET", tenant_id: "t", space_id: "s", app_id: "voice_dashboard" });
     const memberWrite = await app.request("/spaces/s/apps/voice_dashboard/api/settings", { method: "PATCH", headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member", "content-type": "application/json" }), body: JSON.stringify({ settings: {}, revision: 0 }) }, env);
     expect(memberWrite.status).toBe(403);
-    expect(spaceFetch).toHaveBeenCalledOnce();
+    expect(spaceFetch).toHaveBeenCalledTimes(2); // signed runtime check plus settings request
     const adminWrite = await app.request("/spaces/s/apps/voice_dashboard/api/settings", { method: "PATCH", headers: await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" }), body: JSON.stringify({ settings: { language: "en" }, revision: 2 }) }, env);
     expect(await adminWrite.json()).toMatchObject({ path: "/extension-settings", method: "PATCH", body: { settings: { language: "en" }, revision: 2 } });
-    expect(idFromName).toHaveBeenCalledTimes(2);
+    expect(idFromName).toHaveBeenCalledTimes(4);
     expect(platformFetch).not.toHaveBeenCalled();
-    expect(spaceFetch).toHaveBeenCalledTimes(2);
+    expect(spaceFetch).toHaveBeenCalledTimes(4);
     const voiceRead = await app.request("/spaces/s/apps/voice_dashboard/api/assistant-voice", { headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
     expect(await voiceRead.json()).toMatchObject({ path: "/extension-assistant-voice", method: "GET" });
     const voiceMemberWrite = await app.request("/spaces/s/apps/voice_dashboard/api/assistant-voice", { method: "PATCH", headers: await auth("t", { "x-naelao-role": "member", "content-type": "application/json" }), body: JSON.stringify({ preferences: {}, revision: 0 }) }, env);
     expect(voiceMemberWrite.status).toBe(403);
-    expect(spaceFetch).toHaveBeenCalledTimes(3);
+    expect(spaceFetch).toHaveBeenCalledTimes(6);
   });
 
   it("forwards the exact Template setup project query and restricts writes to administrators", async () => {
@@ -151,7 +169,7 @@ describe("gadget MCP host adapter", () => {
     const adminWrite = await app.request(path, { method: "PATCH", headers: await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" }),
       body: JSON.stringify({ values: { greeting: "Hello" }, revision: 1 }) }, env);
     expect(await adminWrite.json()).toMatchObject({ method: "PATCH", body: { values: { greeting: "Hello" }, revision: 1 } });
-    expect(spaceFetch).toHaveBeenCalledTimes(2);
+    expect(spaceFetch).toHaveBeenCalledTimes(4);
     expect(microAppGet).not.toHaveBeenCalled();
   });
 

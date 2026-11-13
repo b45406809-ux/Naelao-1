@@ -456,13 +456,13 @@ describe("runtime extension installation", () => {
     const token = await mintInternalToken(secret, "tenant");
     const activate = (overrides: Record<string, unknown> = {}, authToken = token) => space.fetch(new Request("http://space/extension-installation/activate", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": authToken },
-      body: JSON.stringify({ installationId, extensionId: "ext_staged_canvas", version: "1.0.0", artifactSha256, tenantId: "tenant", spaceId: "space", projectId: "project-a", ...overrides }),
+      body: JSON.stringify({ installationId, extensionId: "ext_staged_canvas", version: "1.0.0", artifactSha256, tenantId: "tenant", spaceId: "space", scope: "PROJECT_BOUND", projectId: "project-a", ...overrides }),
     }));
     expect((await activate({}, "wrong-token")).status).toBe(403);
     expect((await activate({ projectId: "project-b" })).status).toBe(409);
     const abort = (projectId = "project-a") => space.fetch(new Request("http://space/extension-installation/abort", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-      body: JSON.stringify({ installationId, tenantId: "tenant", spaceId: "space", projectId }),
+      body: JSON.stringify({ installationId, tenantId: "tenant", spaceId: "space", scope: "PROJECT_BOUND", projectId }),
     }));
     await expect((await abort("project-b")).json()).resolves.toMatchObject({ aborted: false });
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("staging");
@@ -470,6 +470,52 @@ describe("runtime extension installation", () => {
     expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true });
     expect((await activate()).status).toBe(200); // idempotent host retry
     expect(await (await abort()).json()).toMatchObject({ aborted: false });
+  });
+
+  it("stages and activates a signed Space-shared package without accepting a project scope", async () => {
+    const storage = createDOStorage(), secret = "shared-package-activation-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    const artifactSha256 = "e".repeat(64);
+    const manifest = { id: "ext_shared_package", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
+      gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_shared_package", version: "1.0.0",
+        primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false }] } };
+    const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
+        gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256, publisherId: "pub_example", publisherKeyId: "a".repeat(64),
+        publisherSignature: "publisher-signature", publisherPayloadSha256: "b".repeat(64), deferActivation: true }) }));
+    expect(install.status, JSON.stringify(await install.clone().json())).toBe(201);
+    const { installationId, release } = await install.json() as { installationId: string; release: { hostSignature: string } };
+    const catalog = await space.fetch(new Request("http://space/extension-package-catalog"));
+    expect(await catalog.json()).toMatchObject({ releases: [{ extension_id: "ext_shared_package", version: "1.0.0", has_canvas: true,
+      name: "dashboard", publisher: { id: "pub_example", key_id: "a".repeat(64) } }] });
+    const packageRelease = await space.fetch(new Request("http://space/extension-package-release?extension_id=ext_shared_package&version=1.0.0"));
+    expect(await packageRelease.json()).toMatchObject({ release: { extension_id: "ext_shared_package", version: "1.0.0",
+      manifest, manifest_json: expect.stringContaining('"channels":[]'), artifact_sha256: artifactSha256,
+      publisher: { id: "pub_example", key_id: "a".repeat(64) } } });
+
+    const token = await mintInternalToken(secret, "tenant");
+    const activate = (body: Record<string, unknown>) => space.fetch(new Request("http://space/extension-installation/activate", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId, extensionId: "ext_shared_package", version: "1.0.0", artifactSha256,
+        tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", ...body }),
+    }));
+    expect((await activate({ artifactSha256: "f".repeat(64) })).status).toBe(409);
+    const staged = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_shared_package"));
+    expect(await staged.json()).toMatchObject({ installations: [{ status: "staging", scope: "SPACE_SHARED", project_id: null }] });
+    expect((await activate({})).status).toBe(200);
+    expect((await activate({})).status).toBe(200);
+    expect(await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))
+      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active" }] });
+    const runtime = () => space.fetch(new Request("http://space/space-shared-extension-runtime?tenant_id=tenant&space_id=space&app_id=dashboard"));
+    expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: true, releaseValid: true, publisherKeyId: "a".repeat(64) });
+    storage.sql.exec("UPDATE extension_releases SET publisher_revoked_at='revoked' WHERE extension_id='ext_shared_package' AND version='1.0.0'");
+    expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: false, releaseValid: false });
+    const abort = await space.fetch(new Request("http://space/extension-installation/abort", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId, tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED" }) }));
+    expect(await abort.json()).toMatchObject({ aborted: false });
+    expect(release.hostSignature).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
