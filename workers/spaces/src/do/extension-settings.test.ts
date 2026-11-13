@@ -129,4 +129,56 @@ describe("Space-shared extension settings", () => {
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
     expect((await request("GET")).status).toBe(404);
   });
+
+  it("serves only complete, validated settings to the exact active signed phone installation", async () => {
+    const storage = createDOStorage(), secret = "phone-extension-settings-runtime-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) }, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id="));
+    const manifest = {
+      id: "ext_customer_phone", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure"],
+      capabilityRequirements: ["extension.settings.read", "extension.settings.configure"],
+      gadgets: [{ id: "customer_phone", name: "Customer Phone", viewportComponent: "./phone.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
+      daemons: [], commands: [], settingsSchema: { schemaVersion: 1, fields: [
+        { id: "enabled", type: "boolean", label: "Enabled", defaultValue: true },
+        { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+      ] },
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_phone", version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "channel", id: "phone", version: "1.0.0", provider: "phone", handlerScript: "./phone.ts", context: "channel_only",
+          inboundEvents: ["message.received", "call.received"], outboundEvents: ["message.reply", "voice.reply"], permissions: [], capabilityRequirements: [], lifecycle: {} },
+      ] },
+    } as const;
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
+        gatekeeperCapabilities: [...manifest.capabilityRequirements], artifactSha256: "a".repeat(64) }) }));
+    expect(installed.status, await installed.clone().text()).toBe(201);
+    const { installationId, release } = await installed.json() as { installationId: string; release: { version: string; artifactSha256: string } };
+    const token = await mintInternalToken(secret, "tenant");
+    const readRuntimeSettings = (overrides: { tenant?: string; space?: string; instance?: string; token?: string; expectedVersion?: string } = {}) => {
+      const query = new URLSearchParams({ tenant_id: overrides.tenant ?? "tenant", space_id: overrides.space ?? "space", instance_id: overrides.instance ?? installationId,
+        expected_version: overrides.expectedVersion ?? release.version, expected_artifact_sha256: release.artifactSha256 });
+      return space.fetch(new Request(`http://space/phone-extension-settings?${query}`, {
+        headers: { "x-naelao-internal-token": overrides.token ?? token },
+      }));
+    };
+    expect((await readRuntimeSettings({ token: "invalid" })).status).toBe(403);
+    expect((await readRuntimeSettings({ tenant: "other-tenant" })).status).toBe(403);
+    expect((await readRuntimeSettings({ instance: "another-installation" })).status).toBe(404);
+    expect((await readRuntimeSettings({ expectedVersion: "2.0.0" })).status).toBe(409);
+    expect(await (await readRuntimeSettings()).json()).toMatchObject({ error_code: "phone_extension_settings_invalid" });
+
+    const ownerSettings = (body: unknown) => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
+      method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-role": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    expect((await ownerSettings({ settings: { enabled: true, greeting: "Welcome" }, revision: 0 })).status).toBe(200);
+    const runtimeSettings = await readRuntimeSettings();
+    expect(runtimeSettings.headers.get("cache-control")).toContain("no-store");
+    expect(await runtimeSettings.json()).toEqual({ schema_version: 1, revision: 1, settings: { enabled: true, greeting: "Welcome" } });
+
+    storage.sql.exec("UPDATE extension_installation_settings SET settings_json=? WHERE instance_id=?", JSON.stringify({ greeting: "Welcome", unrelated: "private" }), installationId);
+    expect((await readRuntimeSettings()).status).toBe(409);
+    storage.sql.exec("UPDATE extension_releases SET host_signature=? WHERE extension_id=? AND version=?", "0".repeat(64), manifest.id, manifest.bundle.version);
+    expect((await readRuntimeSettings()).status).toBe(409);
+    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);
+    expect((await readRuntimeSettings()).status).toBe(404);
+  });
 });

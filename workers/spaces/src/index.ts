@@ -2187,12 +2187,35 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId"), ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
   const result = await response.json<Record<string, unknown>>();
-  const release = result.release as { signatureValid?: unknown; publisher?: { keyId?: unknown } } | null | undefined;
+  const release = result.release as { version?: unknown; artifactSha256?: unknown; signatureValid?: unknown; publisher?: { keyId?: unknown } } | null | undefined;
   const keyId = release?.publisher?.keyId;
   if (release && typeof keyId === "string") {
     const trusted = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
       WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, c.req.param("spaceId"), keyId).first();
     if (!trusted) release.signatureValid = false;
+  }
+  if (c.req.query("include_phone_settings") === "1") {
+    const instance = result.instance as { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } | undefined;
+    const manifest = result.manifest as { declaredPermissions?: unknown[]; capabilityRequirements?: unknown[]; settingsSchema?: unknown } | undefined;
+    const readCapability = manifest?.capabilityRequirements?.includes("extension.settings.read") ?? false;
+    const readPermission = manifest?.declaredPermissions?.includes("extension.settings.read") ?? false;
+    if (readCapability !== readPermission || readCapability !== Boolean(manifest?.settingsSchema))
+      return c.json({ error_code: "phone_extension_settings_declaration_invalid" }, 409, { "cache-control": "private, no-store" });
+    if (instance?.status !== "active" || instance.instance_id !== c.req.param("instanceId")
+      || instance.tenant_id !== tenantId || instance.space_id !== c.req.param("spaceId") || release?.signatureValid !== true)
+      return c.json({ error_code: "phone_extension_installation_untrusted" }, 409, { "cache-control": "private, no-store" });
+    if (typeof release.version !== "string" || typeof release.artifactSha256 !== "string")
+      return c.json({ error_code: "phone_extension_release_unavailable" }, 409, { "cache-control": "private, no-store" });
+    if (!readCapability) return c.json(result, 200, { "cache-control": "private, no-store" });
+    const settingsQuery = new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), instance_id: c.req.param("instanceId"),
+      expected_version: release.version, expected_artifact_sha256: release.artifactSha256,
+      ...(instance.project_id ? { project_id: instance.project_id } : {}) });
+    const settingsResponse = await stub.fetch(new Request(`http://space-do/phone-extension-settings?${settingsQuery}`, {
+      headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    }));
+    if (!settingsResponse.ok) return new Response(await settingsResponse.text(), { status: settingsResponse.status,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
+    result.phone_settings = await settingsResponse.json();
   }
   return c.json(result);
 });

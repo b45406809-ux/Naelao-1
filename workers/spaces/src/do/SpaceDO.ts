@@ -3774,6 +3774,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
+      if (url.pathname === "/phone-extension-settings" && method === "GET") return this.phoneExtensionSettings(request, url);
       if (url.pathname === "/extension-template-setup" && (method === "GET" || method === "PATCH")) return this.extensionTemplateSetup(request, url);
       if (url.pathname === "/template-setup-draft" && (method === "GET" || method === "PUT")) return this.templateSetupDraft(request, url);
       if (url.pathname === "/extension-assistant-voice" && (method === "GET" || method === "PATCH")) return this.extensionAssistantVoiceSettings(request, url);
@@ -12390,6 +12391,63 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (outcome === "schema_changed") return Response.json({ error_code: "extension_settings_schema_changed" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json({ schema, settings, revision: body.revision! + 1, migration_required: false, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  /** Read the validated configuration for one active, signed phone extension installation. */
+  private async phoneExtensionSettings(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
+    const instanceId = url.searchParams.get("instance_id") ?? "", projectId = url.searchParams.get("project_id") ?? "";
+    const expectedVersion = url.searchParams.get("expected_version") ?? "", expectedArtifactSha256 = url.searchParams.get("expected_artifact_sha256") ?? "";
+    if (!tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || projectId && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion) || !/^[a-f0-9]{64}$/.test(expectedArtifactSha256)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+
+    const row = queryOne<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string;
+      release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.release_version,i.manifest_json
+         FROM extension_installation_manifests i
+        WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id IS ? AND i.status='active'
+          AND ((?='' AND i.scope='SPACE_SHARED') OR (?<>'' AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')))`,
+      instanceId, tenantId, spaceId, projectId || null, projectId, projectId);
+    if (!row) return Response.json({ error_code: "phone_extension_installation_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+
+    let manifest: ExtensionManifest;
+    try {
+      const raw = JSON.parse(row.manifest_json) as ExtensionManifest;
+      manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+    } catch {
+      return Response.json({ error_code: "phone_extension_manifest_invalid" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    }
+    const channel = manifest.channels?.find(item => item.kind === "channel" && item.provider === "phone" && item.context === "channel_only");
+    const capabilities = new Set(manifest.capabilityRequirements), permissions = new Set(manifest.declaredPermissions);
+    if (!row.release_version || row.release_version !== expectedVersion || !manifest.bundle || manifest.bundle.version !== row.release_version || !channel)
+      return Response.json({ error_code: "phone_extension_release_unavailable" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+      "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
+      row.extension_id, row.release_version);
+    const expectedSignature = release ? await this.signExtensionRelease(row.extension_id, row.release_version, release.manifest_json, release.artifact_sha256) : "";
+    if (!release || release.artifact_sha256 !== expectedArtifactSha256 || release.manifest_json !== row.manifest_json
+      || expectedSignature !== release.host_signature || !publisherReleaseFieldsValid(release))
+      return Response.json({ error_code: "phone_extension_release_untrusted" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    if (!manifest.settingsSchema || !capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read"))
+      return Response.json({ error_code: "phone_extension_settings_not_declared" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+
+    const current = queryOne<{ settings_json: string; revision: number; schema_version: number }>(this.ctx.storage.sql as never,
+      "SELECT settings_json,revision,schema_version FROM extension_installation_settings WHERE instance_id=?", instanceId);
+    if (current && current.schema_version !== manifest.settingsSchema.schemaVersion)
+      return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    let settings: Record<string, string | number | boolean>;
+    try {
+      settings = validateExtensionSettingsValues(manifest, current ? JSON.parse(current.settings_json) : {});
+    } catch {
+      return Response.json({ error_code: "phone_extension_settings_invalid" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    }
+    const response = { schema_version: manifest.settingsSchema.schemaVersion, revision: current?.revision ?? 0, settings };
+    if (new TextEncoder().encode(JSON.stringify(response)).byteLength > 8_192)
+      return Response.json({ error_code: "phone_extension_settings_too_large" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    return Response.json(response, { headers: { "cache-control": "private, no-store" } });
   }
 
   /** Return the non-secret installation receipt fields for owner/admin lifecycle review. */

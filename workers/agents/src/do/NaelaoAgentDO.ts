@@ -9907,6 +9907,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         provider: "phone",
         event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: { ...event.payload, voice_event: event.type } },
         conversation: { id: conversationId },
+        ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion, revision: handler.settings.revision, values: handler.settings.values } } : {}),
         ...(handler.session ? {
           session: { state: sessionState, maxBytes: handler.session.maxBytes },
           sessions: { states: namedStates, maxBytes: handler.session.maxBytes },
@@ -9953,7 +9954,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -9961,15 +9962,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         instanceId: input.instanceId, scriptSha256: input.scriptSha256, providerConnectionId: input.providerConnectionId ?? undefined }),
     }));
     if (!verifyBinding.ok || !(await readBoundedResponseJson<{ valid?: boolean }>(verifyBinding, 2 * 1024 * 1024).catch(() => ({} as { valid?: boolean }))).valid) return null;
-    const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
+    const installationUrl = new URL(
       `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.instanceId)}`,
+    );
+    if (input.channel === "phone") installationUrl.searchParams.set("include_phone_settings", "1");
+    const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
+      installationUrl,
       { headers: await this.internalHeaders(input.tenantId) },
     ));
     if (!installationResponse.ok) return null;
     const installation = await readBoundedResponseJson<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
-      manifest: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+      manifest: { id?: string; bundle?: { id?: string; version?: string }; declaredPermissions?: string[]; capabilityRequirements?: string[];
+        settingsSchema?: { schemaVersion?: number }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
       release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+      phone_settings?: { schema_version?: number; revision?: number; settings?: unknown };
     }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -9990,6 +9997,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (session && (session.enabled !== true
       || (session.maxBytes !== undefined && (!Number.isInteger(session.maxBytes) || session.maxBytes < 1 || session.maxBytes > 4_096))
       || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
+    let settings: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> } | undefined;
+    const settingsCapability = installation.manifest.capabilityRequirements?.includes("extension.settings.read") ?? false;
+    const settingsPermission = installation.manifest.declaredPermissions?.includes("extension.settings.read") ?? false;
+    if (settingsCapability !== settingsPermission || settingsCapability !== Boolean(installation.manifest.settingsSchema)) return null;
+    if (settingsCapability && input.channel === "phone") {
+      const snapshot = installation.phone_settings;
+      if (!snapshot || snapshot.schema_version !== installation.manifest.settingsSchema?.schemaVersion
+        || !Number.isSafeInteger(snapshot.revision) || Number(snapshot.revision) < 0
+        || !snapshot.settings || typeof snapshot.settings !== "object" || Array.isArray(snapshot.settings)) return null;
+      const values = snapshot.settings as Record<string, unknown>;
+      if (Object.keys(values).length > 128 || Object.entries(values).some(([, value]) =>
+        typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")) return null;
+      const normalized = values as Record<string, string | number | boolean>;
+      if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > 8_192) return null;
+      settings = { schemaVersion: snapshot.schema_version as 1 | 2, revision: snapshot.revision!, values: normalized };
+    } else if (installation.phone_settings !== undefined) return null;
     const packageId = installation.manifest.bundle?.id;
     const packageVersion = installation.manifest.bundle?.version;
     if (!packageId || packageId !== installation.manifest.id || !packageVersion || installation.release?.version !== packageVersion
@@ -10011,6 +10034,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (actual !== input.scriptSha256) return null;
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
+      ...(settings ? { settings } : {}),
       ...(session?.enabled ? { session: { maxBytes: session.maxBytes ?? 1_024, ttlDays: session.ttlDays ?? 30 } } : {}),
       limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
   }

@@ -41,6 +41,7 @@ function setup(project: string | null) {
     code: "export async function run() {}",
     maxConcurrency: 1,
     knowledgeCollections: [],
+    settings: { schemaVersion: 2 as const, revision: 7, values: { greeting: "Welcome" } },
     limits: {},
   }));
   internals.buildScriptEngineEnv = async () => ({ codeRunner: { runChannel } });
@@ -93,7 +94,7 @@ describe("phone extension scope dispatch", () => {
         tenantId: "tenant",
         spaceId: "space",
         installationId: "install",
-        channel: { provider: "phone" },
+        channel: { provider: "phone", settings: { schemaVersion: 2, revision: 7, values: { greeting: "Welcome" } } },
       });
     }
   );

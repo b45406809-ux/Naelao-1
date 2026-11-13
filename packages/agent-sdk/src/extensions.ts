@@ -358,6 +358,8 @@ export interface ChannelOnlyExtensionContext {
     provider: string;
     event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> };
     conversation: { id: string };
+    /** Validated settings from this exact installation, available only with extension.settings.read. */
+    settings?: { schemaVersion: 1 | 2; revision: number; values: Readonly<Record<string, string | number | boolean>> };
     /** Request one host-bounded, source-grounded response; the handler cannot choose models or tools. */
     answer(input: { question: string }): Promise<{ answerId: string }>;
     reply(message: { text: string }): Promise<{ messageId: string }>;

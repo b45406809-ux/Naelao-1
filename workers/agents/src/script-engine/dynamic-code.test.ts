@@ -36,6 +36,8 @@ describe("on-demand code compiler", () => {
     expect(harness).toContain("channel.sessions ?");
     expect(harness).toContain("namedSessionUpdates");
     expect(harness).toContain("channel_session_count_limit");
+    expect(harness).toContain("channel.settings ?");
+    expect(harness).toContain("values:freeze({...channel.settings.values})");
   });
   it("compiles the published mentor channel starter script", async () => {
     const source = readFileSync(new URL("../../../../packages/agent-sdk/examples/trading-mentor-channel/student-answer.ts", import.meta.url), "utf8");

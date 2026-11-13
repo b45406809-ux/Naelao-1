@@ -527,7 +527,7 @@ export interface TieredCodeRunner {
   runChannel?(params: {
     name: string; code: string; args: Record<string, unknown>; tenantId: string; spaceId: string; agentId: string;
     installationId: string; maxConcurrency: number;
-    channel: { provider: string; event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> }; conversation: { id: string }; session?: { state: unknown; maxBytes: number }; sessions?: { states: Readonly<Record<string, unknown>>; maxBytes: number } };
+    channel: { provider: string; event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> }; conversation: { id: string }; settings?: { schemaVersion: 1 | 2; revision: number; values: Readonly<Record<string, string | number | boolean>> }; session?: { state: unknown; maxBytes: number }; sessions?: { states: Readonly<Record<string, unknown>>; maxBytes: number } };
     signal?: AbortSignal; limits?: { cpuMs?: number; wallMs?: number; inputBytes?: number; outputBytes?: number };
   }): Promise<ScriptRunResult>;
 }

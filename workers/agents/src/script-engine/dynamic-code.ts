@@ -129,6 +129,7 @@ export default {
       provider:channel.provider,
       event:freeze(channel.event),
       conversation:freeze({id:channel.conversation.id}),
+      ...(channel.settings ? {settings:freeze({schemaVersion:channel.settings.schemaVersion,revision:channel.settings.revision,values:freeze({...channel.settings.values})})} : {}),
       ...(channelSession ? {session:channelSession} : {}),
       ...(channelSessions ? {sessions:channelSessions} : {}),
       answer:async(input)=>{
