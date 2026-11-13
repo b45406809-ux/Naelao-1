@@ -16,7 +16,7 @@ describe("Space coordination registry gateway", () => {
       SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
         calls.push(request);
         if (request.method === "GET") return Response.json({ schema_version: 1, entries: [], next_after: null });
-        return Response.json({ entry: { entry_id: "entry-1", version: 1 } }, { status: 201 });
+        return Response.json({ entry: { entry_id: "entry-1", version: 1 } }, { status: request.method === "DELETE" ? 200 : 201 });
       } }) },
     } as unknown as Env;
     return { bindings, calls };
@@ -68,5 +68,35 @@ describe("Space coordination registry gateway", () => {
       draft: { capability_key: "official.website", label: "Company website" } });
     expect(body).not.toHaveProperty("project_id");
     expect(typeof body.entry_id).toBe("string");
+  });
+
+  it("passes the authenticated role to v2 reads and requires an explicit selected audience on writes", async () => {
+    const member = env("member");
+    const read = await app.fetch(await request("/spaces/space/coordination-registry/v2?after=v2%7Emembers%7Etime%7Eentry", "product_end_user"), member.bindings);
+    expect(read.status).toBe(200);
+    expect(read.headers.get("cache-control")).toBe("no-store");
+    const readUrl = new URL(member.calls[0]!.url);
+    expect(readUrl.searchParams.get("schema_version")).toBe("2");
+    expect(readUrl.searchParams.get("viewer_role")).toBe("member");
+    expect(readUrl.searchParams.get("after")).toBe("v2~members~time~entry");
+
+    const preview = await app.fetch(await request("/spaces/space/coordination-registry/v2/preview", "product_end_user", "POST", {
+      schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins",
+    }), member.bindings);
+    expect(await preview.json()).toMatchObject({ schema_version: 2, disclosure: { audience: "Space owners and administrators" }, no_project_source: true });
+    expect(member.calls).toHaveLength(1); // previews do not write to the Durable Object
+
+    const owner = env("owner");
+    const draft = { schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins" };
+    const unconfirmed = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: false }), owner.bindings);
+    expect(await unconfirmed.json()).toMatchObject({ error_code: "coordination_disclosure_confirmation_required", disclosure: { audience: "Space owners and administrators" } });
+    const published = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: true }), owner.bindings);
+    expect(published.status).toBe(201);
+    const publishedBody = await owner.calls[0]!.json() as Record<string, unknown>;
+    expect(publishedBody).toMatchObject({ schema_version: 2, approved_role: "owner", confirmed: true, draft });
+
+    const revoked = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "DELETE", { schema_version: 2, expected_version: 1 }), owner.bindings);
+    expect(revoked.status).toBe(200);
+    expect(await owner.calls[1]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user" });
   });
 });

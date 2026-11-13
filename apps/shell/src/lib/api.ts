@@ -1,6 +1,6 @@
 import { ApiError, requestJson } from "./request";
 import type { ProjectKind } from "@naelao/agent-sdk";
-import type { SpaceCoordinationDraftV1, SpaceCoordinationEntryV1, SpaceCoordinationPageV1 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2 } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -107,20 +107,20 @@ export async function applySpaceArchiveRestore(spaceId: string, session: Session
 
 export function listSpaceCoordination(spaceId: string, session: SessionCredentials, after?: string) {
   const query = after ? `?after=${encodeURIComponent(after)}` : "";
-  return apiFetch<SpaceCoordinationPageV1>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry${query}`, { session, cache: "no-store" });
+  return apiFetch<SpaceCoordinationPageV2>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2${query}`, { session, cache: "no-store" });
 }
-export function previewSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV1) {
-  return apiFetch<{ schema_version: 1; draft: SpaceCoordinationDraftV1; disclosure: { audience: string; effect: string }; no_project_source: true }>(
-    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/preview`, { method: "POST", session, body: JSON.stringify(draft) });
+export function previewSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV2) {
+  return apiFetch<{ schema_version: 2; draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string }; no_project_source: true }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/preview`, { method: "POST", session, body: JSON.stringify(draft) });
 }
-export function publishSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV1, confirmDisclosure: boolean) {
-  return apiFetch<{ entry: SpaceCoordinationEntryV1; disclosure: { audience: string; effect: string } }>(
-    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry`, { method: "POST", session, body: JSON.stringify({ ...draft, confirm_disclosure: confirmDisclosure }) });
+export function publishSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV2, confirmDisclosure: boolean) {
+  return apiFetch<{ entry: SpaceCoordinationEntryV2; disclosure: { audience: string; effect: string } }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2`, { method: "POST", session, body: JSON.stringify({ ...draft, confirm_disclosure: confirmDisclosure }) });
 }
 export function revokeSpaceCoordination(spaceId: string, session: SessionCredentials, entryId: string, expectedVersion: number) {
-  return apiFetch<{ entry: SpaceCoordinationEntryV1 }>(
-    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/${encodeURIComponent(entryId)}`,
-    { method: "DELETE", session, body: JSON.stringify({ expected_version: expectedVersion }) });
+  return apiFetch<{ entry: SpaceCoordinationEntryV2 }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/${encodeURIComponent(entryId)}`,
+    { method: "DELETE", session, body: JSON.stringify({ schema_version: 2, expected_version: expectedVersion }) });
 }
 
 export interface CustomModelLifecycle {

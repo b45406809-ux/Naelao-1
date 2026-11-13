@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationDraftV1, SpaceCoordinationEntryV1 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2 } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
 import { listSpaceCoordination, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
 
@@ -10,12 +10,13 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   session: SessionCredentials;
   canManage: boolean;
 }) {
-  const [entries, setEntries] = React.useState<SpaceCoordinationEntryV1[]>([]);
+  const [entries, setEntries] = React.useState<SpaceCoordinationEntryV2[]>([]);
   const [nextAfter, setNextAfter] = React.useState<string | null>(null);
   const [capabilityKey, setCapabilityKey] = React.useState("");
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
-  const [preview, setPreview] = React.useState<{ draft: SpaceCoordinationDraftV1; disclosure: { audience: string; effect: string } } | null>(null);
+  const [audience, setAudience] = React.useState<SpaceCoordinationAudienceV2>("space_members");
+  const [preview, setPreview] = React.useState<{ draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string } } | null>(null);
   const [confirmed, setConfirmed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -52,7 +53,8 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     setNotice(null);
   }
 
-  const draft = (): SpaceCoordinationDraftV1 => ({ capability_key: capabilityKey, label, ...(description.trim() ? { description } : {}) });
+  const draft = (): SpaceCoordinationDraftV2 => ({ schema_version: 2, capability_key: capabilityKey, label,
+    ...(description.trim() ? { description } : {}), audience });
 
   async function makePreview() {
     setBusy(true); setError(null); setNotice(null);
@@ -70,16 +72,17 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     setBusy(true); setError(null); setNotice(null);
     try {
       await publishSpaceCoordination(spaceId, session, preview.draft, true);
-      setCapabilityKey(""); setLabel(""); setDescription(""); setPreview(null); setConfirmed(false);
-      setNotice("The approved advisory fact is visible to Space members.");
+      setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setPreview(null); setConfirmed(false);
+      setNotice(preview.draft.audience === "space_admins" ? "The approved advisory fact is visible to Space owners and administrators." : "The approved advisory fact is visible to Space members.");
       await refresh();
     } catch {
       setError("The fact was not published. Review your role and try again.");
     } finally { setBusy(false); }
   }
 
-  async function revoke(entry: SpaceCoordinationEntryV1) {
-    if (!window.confirm(`Unpublish “${entry.label}”? This removes it from the Space member registry.`)) return;
+  async function revoke(entry: SpaceCoordinationEntryV2) {
+    const audienceLabel = entry.audience === "space_admins" ? "Space owner and administrator registry" : "Space member registry";
+    if (!window.confirm(`Unpublish “${entry.label}”? This removes it from the ${audienceLabel}.`)) return;
     setBusy(true); setError(null); setNotice(null);
     try {
       await revokeSpaceCoordination(spaceId, session, entry.entry_id, entry.version);
@@ -94,7 +97,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     <div style={{ padding: "16px 16px 10px" }}>
       <div id="space-coordination-heading" className="settings-row-label">Space coordination facts</div>
       <p className="settings-row-sub" style={{ margin: "6px 0 0" }}>
-        These are explicit notices for every active Space member. They can describe an official capability, but do not grant access to a project or service. Private project details are never read to create them.
+        These are explicitly approved advisory notices. Each fact shows whether it is visible to all active Space members or only Space owners and administrators. A notice does not grant access to a project or service; private project details are never read to create one.
       </p>
     </div>
     {entries.length ? <div style={{ display: "grid", gap: 0 }}>
@@ -102,7 +105,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         <div style={{ minWidth: 0 }}>
           <div className="settings-row-label">{entry.label}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>{entry.capability_key}{entry.description ? ` · ${entry.description}` : ""}</div>
-          <div className="settings-row-sub" style={{ marginTop: 4 }}>Visible to all active Space members · advisory only · version {entry.version}</div>
+          <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version}</div>
         </div>
         {canManage && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void revoke(entry)}>Unpublish</button>}
       </article>)}
@@ -113,7 +116,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
 
     {canManage && <div style={{ borderTop: "1px solid var(--border)", padding: 16, display: "grid", gap: 10 }}>
       <div className="settings-row-label">Publish an approved fact</div>
-      <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to every active member. Duplicate capability keys are allowed; this registry does not reserve or enforce a singleton resource.</p>
+      <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to the selected audience. Duplicate capability keys are allowed; this registry does not reserve or enforce a singleton resource.</p>
       <label className="settings-row-sub">Capability key
         <input className="form-input" maxLength={96} value={capabilityKey} disabled={busy} placeholder="official.website" onChange={event => { setCapabilityKey(event.target.value); changed(); }} />
       </label>
@@ -122,6 +125,12 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
       </label>
       <label className="settings-row-sub">Description (optional)
         <textarea className="form-input" maxLength={500} rows={3} value={description} disabled={busy} onChange={event => { setDescription(event.target.value); changed(); }} />
+      </label>
+      <label className="settings-row-sub">Who can see this fact
+        <select className="form-input" value={audience} disabled={busy} onChange={event => { setAudience(event.target.value as SpaceCoordinationAudienceV2); changed(); }}>
+          <option value="space_members">All active Space members</option>
+          <option value="space_admins">Space owners and administrators</option>
+        </select>
       </label>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !capabilityKey.trim() || !label.trim()} onClick={() => void makePreview()}>Preview disclosure</button>

@@ -12,7 +12,12 @@ describe("Space-owned advisory coordination registry", () => {
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, actor_id: "owner", approved_role: "owner", confirmed: true,
         draft: { capability_key: "official.website", label, description: "Approved for all members" } }),
     }));
-    return { space, root, publish };
+    const publishV2 = (entryId: string, audience: "space_members" | "space_admins", label = entryId) => space.fetch(new Request(root, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, schema_version: 2, actor_id: "owner", approved_role: "owner", confirmed: true,
+        draft: { schema_version: 2, capability_key: "official.website", label, description: "Approved for selected audience", audience } }),
+    }));
+    return { space, storage, root, publish, publishV2 };
   }
 
   it("persists only bounded Space facts and keyset pages active entries", async () => {
@@ -59,6 +64,52 @@ describe("Space-owned advisory coordination registry", () => {
     expect(await (await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space`))).json()).toMatchObject({ entries: [] });
     const row = storageRow(space);
     expect(row).toMatchObject({ status: "revoked", version: 2, revoked_by: "owner", approved_by: "owner", approved_role: "owner" });
+  });
+
+  it("preserves legacy member facts and filters administrator facts before role-bound pagination", async () => {
+    const { space, storage, root, publish, publishV2 } = setup();
+    expect((await publishV2("admin-before", "space_admins")).status).toBe(201);
+    expect((await publish("legacy-member")).status).toBe(201);
+    expect((await publishV2("member-v2-a", "space_members")).status).toBe(201);
+    expect((await publishV2("admin-middle", "space_admins")).status).toBe(201);
+    expect((await publishV2("member-v2-b", "space_members")).status).toBe(201);
+    storage.sql.exec("UPDATE space_coordination_entries SET created_at=CASE entry_id WHEN 'admin-before' THEN '2026-11-13T00:00:01.000Z' WHEN 'legacy-member' THEN '2026-11-13T00:00:02.000Z' WHEN 'member-v2-a' THEN '2026-11-13T00:00:03.000Z' WHEN 'admin-middle' THEN '2026-11-13T00:00:04.000Z' ELSE '2026-11-13T00:00:05.000Z' END");
+
+    const memberRead = (after?: string) => {
+      const params = new URLSearchParams({ tenant_id: "tenant", space_id: "space", schema_version: "2", viewer_role: "member", limit: "1", ...(after ? { after } : {}) });
+      return space.fetch(new Request(`${root}?${params}`));
+    };
+    const first = await memberRead();
+    const page1 = await first.json() as { entries: Array<Record<string, unknown>>; next_after: string | null };
+    expect(page1.entries.map(entry => entry.entry_id)).toEqual(["legacy-member"]);
+    expect(page1.entries[0]).toMatchObject({ schema_version: 1, audience: "space_members" });
+    expect(page1.next_after).toMatch(/^v2~members~/);
+
+    const second = await memberRead(page1.next_after ?? undefined);
+    const page2 = await second.json() as { entries: Array<Record<string, unknown>>; next_after: string | null };
+    expect(page2.entries.map(entry => entry.entry_id)).toEqual(["member-v2-a"]);
+    expect(page2.next_after).toMatch(/^v2~members~/);
+    const third = await memberRead(page2.next_after ?? undefined);
+    expect(await third.json()).toMatchObject({ entries: [{ entry_id: "member-v2-b", schema_version: 2 }], next_after: null });
+
+    const reusedOwnerCursor = await memberRead("v2~administrators~2026-11-13T00%3A00%3A01.000Z~admin-before");
+    expect(reusedOwnerCursor.status).toBe(400);
+    const ownerParams = new URLSearchParams({ tenant_id: "tenant", space_id: "space", schema_version: "2", viewer_role: "owner", limit: "10" });
+    const ownerPage = await space.fetch(new Request(`${root}?${ownerParams}`)).then(response => response.json()) as { entries: Array<Record<string, unknown>> };
+    expect(ownerPage.entries.map(entry => entry.entry_id)).toEqual(["admin-before", "legacy-member", "member-v2-a", "admin-middle", "member-v2-b"]);
+
+    const legacyPage = await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=1&viewer_role=member&limit=10`)).then(response => response.json()) as { entries: Array<Record<string, unknown>> };
+    expect(legacyPage.entries.map(entry => entry.entry_id)).toEqual(["legacy-member"]);
+  });
+
+  it("keeps v2 entries out of the legacy revoke contract", async () => {
+    const { space, root, publishV2 } = setup();
+    expect((await publishV2("admin-only", "space_admins")).status).toBe(201);
+    const legacyRevoke = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: 1 }) }));
+    expect(legacyRevoke.status).toBe(404);
+    expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries)
+      .toMatchObject([{ entry_id: "admin-only", status: "active" }]);
   });
 });
 

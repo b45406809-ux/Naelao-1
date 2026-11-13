@@ -65,12 +65,16 @@ describe("Space coordination registry routing", () => {
     "/spaces/s/coordination-registry",
     "/spaces/s/coordination-registry/preview",
     "/spaces/s/coordination-registry/entry-a",
+    "/spaces/s/coordination-registry/v2",
+    "/spaces/s/coordination-registry/v2/preview",
+    "/spaces/s/coordination-registry/v2/entry-a",
   ])("resolves product session identity for %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
   });
 
   it("does not allow nested registry operations", () => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/coordination-registry/entry-a/private"))).toBe(false);
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/coordination-registry/v2/entry-a/private"))).toBe(false);
   });
 });
 
