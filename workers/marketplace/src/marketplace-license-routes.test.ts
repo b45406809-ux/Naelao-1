@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { app } from "./index.js";
 
 const secret = "marketplace-license-test-secret";
-async function database(input: { purchased?: boolean; forked?: boolean } = {}) {
+async function database(input: { purchased?: boolean; forked?: boolean; refundCases?: Array<Record<string, unknown>> } = {}) {
   const artifact = { id: "type-a", version: 1 };
   const certificate = await certifyStateDeltaArtifact(artifact, {}, {
     runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0,
@@ -30,7 +30,13 @@ async function database(input: { purchased?: boolean; forked?: boolean } = {}) {
             return null;
           },
           async run() { return { success: true, meta: { changes: 1 } }; },
-          async all() { return { results: [] }; },
+          async all() {
+            if (!sql.includes("FROM marketplace_license_refund_cases")) return { results: [] };
+            return { results: (input.refundCases ?? []).map(row => ({
+              id: row.id, listing_id: row.listing_id, audience: row.tenant_id === values[0] ? "buyer" : "author",
+              refund_amount_cents: row.refund_amount_cents, currency: row.currency, state: row.state, created_at: row.created_at,
+            })) };
+          },
         };
       }};
     },
@@ -59,6 +65,35 @@ describe("marketplace listing license lifecycle", () => {
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toEqual({ listing_id: "listing-a", licensed: true, forked: false, status: "available" });
     expect(state.queries.map(query => query.values[0])).toEqual(["listing-a", "buyer-tenant", "buyer-tenant"]);
+  });
+
+  it("shows buyers and authors scoped refund status without provider or buyer identifiers", async () => {
+    const state = await database({ refundCases: [{ id: "refund-case-a", listing_id: "listing-a", tenant_id: "buyer-tenant", provider_order_id: "private-provider-order",
+      refund_amount_cents: 1250, currency: "USD", state: "review_required", created_at: "2026-11-12T00:00:00.000Z" }] });
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: state.db } as never;
+    const buyer = await app.request("/v1/marketplace/listing-a/refund-cases", { headers: await headers("buyer-tenant") }, env);
+    expect(buyer.status).toBe(200);
+    expect(buyer.headers.get("cache-control")).toContain("no-store");
+    const buyerBody = await buyer.json() as { policy: string; cases: Array<Record<string, unknown>> };
+    expect(buyerBody).toMatchObject({
+      policy: "review_only_no_automatic_license_or_earning_reversal",
+      cases: [{ id: "refund-case-a", audience: "buyer", state: "review_required", refund_amount_cents: 1250 }],
+    });
+    expect(JSON.stringify(buyerBody)).not.toContain("private-provider-order");
+    expect(state.queries[0]?.values).toEqual(["buyer-tenant", "listing-a", "buyer-tenant", "buyer-tenant"]);
+
+    const author = await app.request("/v1/marketplace/listing-a/refund-cases", { headers: await headers("author-tenant") }, env);
+    expect(author.status).toBe(200);
+    expect(await author.json()).toMatchObject({ cases: [{ audience: "author" }] });
+  });
+
+  it("requires an authenticated tenant and user before reading refund cases", async () => {
+    const state = await database();
+    const response = await app.request("/v1/marketplace/listing-a/refund-cases", {}, {
+      ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: state.db,
+    } as never);
+    expect(response.status).toBe(401);
+    expect(state.queries).toHaveLength(0);
   });
 
   it("fails closed before billing when the trusted Marketplace return origin is not configured", async () => {

@@ -167,6 +167,31 @@ app.get("/v1/marketplace/:id/license-status", async c => {
   return c.json({ listing_id: listingId, licensed, forked: !!fork,
     status: fork ? "forked" : licensed ? "available" : "license_required" }, { headers: { "cache-control": "private, no-store" } });
 });
+app.get("/v1/marketplace/:id/refund-cases", async c => {
+  const { tenantId, userId } = identity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const listingId = c.req.param("id");
+  if (!listingId || listingId.length > 160) return c.json({ error_code: "invalid_listing_id" }, 400);
+  const result = await c.env.PLATFORM_DB.prepare(`SELECT id,listing_id,
+      CASE WHEN tenant_id=? THEN 'buyer' ELSE 'author' END AS audience,
+      refund_amount_cents,currency,state,created_at
+    FROM marketplace_license_refund_cases
+    WHERE listing_id=? AND (tenant_id=? OR EXISTS (
+      SELECT 1 FROM marketplace_listings l WHERE l.id=marketplace_license_refund_cases.listing_id AND l.tenant_id=?
+    ))
+    ORDER BY created_at DESC,id DESC LIMIT 20`).bind(tenantId, listingId, tenantId, tenantId).all<{
+      id: string; listing_id: string; audience: "buyer" | "author"; refund_amount_cents: number | null;
+      currency: string; state: "review_required" | "unmatched_purchase" | "policy_conflict"; created_at: string;
+    }>();
+  const cases = result.results ?? [];
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO audit_log
+    (id,tenant_id,actor_id,actor_type,event_type,resource_type,resource_id,event_data)
+    VALUES (?,? ,?,'marketplace_user','marketplace_license_refund_status_viewed','marketplace_listing',?,?)`)
+    .bind(crypto.randomUUID(), tenantId, userId, listingId, JSON.stringify({ result_count: cases.length })).run();
+  return c.json({ cases, policy: "review_only_no_automatic_license_or_earning_reversal" }, {
+    headers: { "cache-control": "private, no-store" },
+  });
+});
 app.post("/v1/marketplace", async (c) => {
   const { tenantId } = identity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);

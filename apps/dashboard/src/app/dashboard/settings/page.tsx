@@ -1,6 +1,6 @@
 "use client";
 
-import { getMyPreferences, updateMyPreferences } from "@/lib/api";
+import { createBillingPortal, getBillingSubscription, getMyPreferences, updateMyPreferences } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -34,6 +34,10 @@ export default function SettingsPage() {
   const [languageLoading, setLanguageLoading] = useState(true);
   const [languageSaving, setLanguageSaving] = useState(false);
   const [languageMessage, setLanguageMessage] = useState<string | null>(null);
+  const [billing, setBilling] = useState<{ plan_tier: string; status: string; current_period_end: string | null; cancel_at_period_end?: boolean } | null>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingPortalOpening, setBillingPortalOpening] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -44,6 +48,29 @@ export default function SettingsPage() {
     }).finally(() => { if (active) setLanguageLoading(false); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getBillingSubscription().then((result) => {
+      if (active) setBilling(result);
+    }).catch((err: unknown) => {
+      if (active) setBillingError(err instanceof Error ? err.message : "Could not load subscription status.");
+    }).finally(() => { if (active) setBillingLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  async function openBillingPortal() {
+    setBillingPortalOpening(true);
+    setBillingError(null);
+    try {
+      const portal = await createBillingPortal();
+      window.location.assign(portal.portal_url);
+    } catch (err) {
+      setBillingError(err instanceof Error ? err.message : "Could not open the billing portal.");
+    } finally {
+      setBillingPortalOpening(false);
+    }
+  }
 
   async function saveLanguagePreference() {
     setLanguageSaving(true);
@@ -87,6 +114,37 @@ export default function SettingsPage() {
             </p>
           </div>
         </div>
+      </SectionCard>
+
+      <SectionCard title="Subscription">
+        {billingLoading ? <p className="text-sm text-gray-500">Loading subscription status…</p> : billing ? <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-gray-500">Current plan</p>
+              <p className="font-medium text-gray-900 mt-0.5 capitalize">{billing.plan_tier}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500">Provider status</p>
+              <p className={`font-medium mt-0.5 capitalize ${billing.status === "past_due" ? "text-amber-700" : "text-gray-900"}`}>
+                {billing.status === "past_due" ? "Payment needs attention" : billing.status.replace(/_/g, " ")}
+              </p>
+            </div>
+            {billing.current_period_end && Number.isFinite(Date.parse(billing.current_period_end)) && <div>
+              <p className="text-sm text-gray-500">Current period ends</p>
+              <p className="font-medium text-gray-900 mt-0.5">{new Date(billing.current_period_end).toLocaleDateString()}</p>
+            </div>}
+          </div>
+          {billing.status === "past_due" && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Your billing provider reported a payment issue. Review your payment options with the provider. Access follows the current subscription status reported by the provider.
+          </p>}
+          {billing.cancel_at_period_end && <p className="text-sm text-gray-600">Your subscription is set to cancel at the end of the current period.</p>}
+          {billing.plan_tier !== "free" && (claims?.role === "owner" || claims?.role === "admin") && <button
+            type="button" onClick={() => void openBillingPortal()} disabled={billingPortalOpening}
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg">
+            {billingPortalOpening ? "Opening…" : billing.status === "past_due" ? "Review billing" : "Manage billing"}
+          </button>}
+        </div> : <p className="text-sm text-gray-500">Subscription status is unavailable.</p>}
+        {billingError && <p role="alert" className="text-sm text-red-600 mt-3">{billingError}</p>}
       </SectionCard>
 
       <SectionCard title="Language preference">

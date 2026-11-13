@@ -32,6 +32,16 @@ export interface MarketplaceLicenseStatus {
   status: "available" | "license_required" | "forked";
 }
 
+export interface MarketplaceRefundCaseStatus {
+  id: string;
+  listing_id: string;
+  audience: "buyer" | "author";
+  refund_amount_cents: number | null;
+  currency: string;
+  state: "review_required" | "unmatched_purchase" | "policy_conflict";
+  created_at: string;
+}
+
 export interface Review {
   id: string;
   rating: number;
@@ -120,6 +130,15 @@ export async function getLicenseStatus(id: string, authToken: string): Promise<M
   });
   if (!res.ok) throw new Error(`License status unavailable (${res.status})`);
   return res.json() as Promise<MarketplaceLicenseStatus>;
+}
+
+export async function getRefundCaseStatus(id: string, authToken: string): Promise<MarketplaceRefundCaseStatus[]> {
+  const res = await fetch(`${API_URL}/v1/marketplace/${encodeURIComponent(id)}/refund-cases`, {
+    headers: { "Authorization": `Bearer ${authToken}` }, cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Refund status unavailable (${res.status})`);
+  const body = await res.json() as { cases?: MarketplaceRefundCaseStatus[] };
+  return Array.isArray(body.cases) ? body.cases : [];
 }
 
 export async function startLicenseCheckout(id: string, authToken: string): Promise<{ checkout_url: string; price_cents: number; currency: "USD" }> {

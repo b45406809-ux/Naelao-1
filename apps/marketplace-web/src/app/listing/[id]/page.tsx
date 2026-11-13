@@ -7,7 +7,7 @@ export const runtime = "edge";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getListing, getReviews, getLicenseStatus, startLicenseCheckout, forkListing, CATEGORY_LABELS, type ListingDetail, type Review, type Category } from "@/lib/api";
+import { getListing, getReviews, getLicenseStatus, getRefundCaseStatus, startLicenseCheckout, forkListing, CATEGORY_LABELS, type ListingDetail, type MarketplaceRefundCaseStatus, type Review, type Category } from "@/lib/api";
 
 const AUTH_TOKEN_KEY = "naelao_token";
 
@@ -37,6 +37,8 @@ export default function ListingPage() {
   const [forkError, setForkError] = useState("");
   const [licenseChecked, setLicenseChecked] = useState(false);
   const [licensed, setLicensed] = useState(false);
+  const [refundCases, setRefundCases] = useState<MarketplaceRefundCaseStatus[]>([]);
+  const [refundStatusUnavailable, setRefundStatusUnavailable] = useState(false);
   const [checkoutStarting, setCheckoutStarting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
 
@@ -50,13 +52,16 @@ export default function ListingPage() {
 
   useEffect(() => {
     const token = getStoredToken();
-    if (!token) { setLicenseChecked(true); return; }
+    if (!token) { setLicenseChecked(true); setRefundCases([]); setRefundStatusUnavailable(false); return; }
     let active = true;
     setLicenseChecked(false);
+    setRefundStatusUnavailable(false);
     getLicenseStatus(id, token)
       .then(status => { if (active) { setLicensed(status.licensed); setForked(status.forked); } })
       .catch(() => { if (active) { setLicensed(false); setForked(false); } })
       .finally(() => { if (active) setLicenseChecked(true); });
+    getRefundCaseStatus(id, token).then(cases => { if (active) { setRefundCases(cases); setRefundStatusUnavailable(false); } })
+      .catch(() => { if (active) { setRefundCases([]); setRefundStatusUnavailable(true); } });
     return () => { active = false; };
   }, [id]);
 
@@ -225,6 +230,23 @@ export default function ListingPage() {
                 ? <><p className="text-2xl font-bold text-gray-900">${(listing.price_cents / 100).toFixed(2)} USD</p><p className="text-xs text-gray-500">One-time template license</p></>
                 : <><p className="text-sm font-semibold text-gray-700">Free to install</p><p className="text-xs text-gray-500">Feature access may depend on your plan.</p></>}
             </div>
+
+            {refundCases.length > 0 && <section className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3" aria-label="Marketplace refund status">
+              <h2 className="text-sm font-semibold text-amber-900">Refund status</h2>
+              <ul className="mt-2 space-y-3">
+                {refundCases.map(refundCase => <li key={refundCase.id} className="text-xs text-amber-900">
+                  <p className="font-medium">{refundCase.audience === "buyer" ? "Buyer update" : "Creator update"} · {refundCase.state.replace(/_/g, " ")}</p>
+                  {refundCase.state === "review_required" ? <p className="mt-1">The provider reported a refund and policy review is pending.</p>
+                    : refundCase.state === "unmatched_purchase" ? <p className="mt-1">The refund event could not be matched to a recorded purchase and needs review.</p>
+                      : <p className="mt-1">The refund details do not match purchase records and need review.</p>}
+                  {refundCase.refund_amount_cents !== null && <p className="mt-1">Provider-reported refund amount: {refundCase.currency} {(refundCase.refund_amount_cents / 100).toFixed(2)}.</p>}
+                  <p className="mt-1">License access and creator earnings are not automatically reversed while policy review is open.</p>
+                </li>)}
+              </ul>
+            </section>}
+            {refundStatusUnavailable && <p role="status" className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+              Refund status is temporarily unavailable. Reload this page to check again.
+            </p>}
 
             {forked ? (
               <div className="text-center">

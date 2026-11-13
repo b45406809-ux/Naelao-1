@@ -371,11 +371,22 @@ export async function createBillingCheckout(planTier: string): Promise<{ url: st
 export async function getBillingSubscription(): Promise<{
   plan_tier: string;
   status: string;
-  current_period_end: string;
+  current_period_end: string | null;
+  cancel_at_period_end?: boolean;
 }> {
-  return apiFetch<{ plan_tier: string; status: string; current_period_end: string }>(
+  return apiFetch<{ plan_tier: string; status: string; current_period_end: string | null; cancel_at_period_end?: boolean }>(
     "/billing/subscription"
   );
+}
+
+export async function createBillingPortal(): Promise<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }> {
+  const result = await apiFetch<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }>("/billing/portal", { method: "POST" });
+  let target: URL;
+  try { target = new URL(result.portal_url); } catch { throw new Error("Billing portal returned an invalid URL."); }
+  const host = target.hostname.toLowerCase();
+  const supportedHost = host === "whop.com" || host.endsWith(".whop.com") || host === "lemonsqueezy.com" || host.endsWith(".lemonsqueezy.com");
+  if (target.protocol !== "https:" || target.username || target.password || !supportedHost) throw new Error("Billing portal returned an unsupported URL.");
+  return result;
 }
 
 // ── Connectors (external-platform MCP connector layer) ──

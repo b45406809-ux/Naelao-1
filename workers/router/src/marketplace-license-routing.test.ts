@@ -5,6 +5,7 @@ import { app, type Env } from "./index.js";
 describe("marketplace license route forwarding", () => {
   it.each([
     ["GET", "/v1/marketplace/listing-a/license-status"],
+    ["GET", "/v1/marketplace/listing-a/refund-cases"],
     ["POST", "/v1/marketplace/listing-a/license-checkout"],
     ["POST", "/v1/marketplace/listing-a/fork"],
   ] as const)("forwards %s %s to the authenticated Marketplace Worker", async (method, path) => {
