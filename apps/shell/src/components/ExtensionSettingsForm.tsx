@@ -4,6 +4,7 @@ import * as React from "react";
 import { Button } from "@naelao/ui";
 import type { BlueprintSetupField, ExtensionSettingsSchema } from "@naelao/agent-sdk";
 import { callProjectExtensionSettings, callSpaceSharedExtensionApi, type SessionCredentials } from "@/lib/api";
+import { localizedExtensionFieldHelp, localizedExtensionFieldLabel, localizedExtensionOptionLabel } from "@/lib/extension-settings-locale";
 
 type Value = string | number | boolean;
 type Snapshot = { schema: ExtensionSettingsSchema; settings: Record<string, Value>; revision: number; can_configure?: boolean; migration_required?: boolean };
@@ -20,6 +21,7 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
   const [notice, setNotice] = React.useState<string | null>(null);
   const [serverCanConfigure, setServerCanConfigure] = React.useState<boolean | null>(null);
   const [migrationRequired, setMigrationRequired] = React.useState(false);
+  const [locale, setLocale] = React.useState("en");
   const mayConfigure = canConfigure && serverCanConfigure !== false;
   const request = React.useCallback((method: "GET" | "PATCH", body?: unknown) => projectScope
     ? callProjectExtensionSettings(spaceId, projectScope.projectId, projectScope.installationId, session, { method, ...(body === undefined ? {} : { body }) })
@@ -36,6 +38,7 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
     finally { setLoading(false); }
   }, [request]);
   React.useEffect(() => { void load(); }, [load]);
+  React.useEffect(() => { if (typeof navigator !== "undefined") setLocale(navigator.language || "en"); }, []);
   const change = (field: BlueprintSetupField, value: Value | undefined) => setValues(current => {
     const next = { ...current };
     if (value === undefined) delete next[field.id]; else next[field.id] = value;
@@ -53,24 +56,26 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
   }
   function renderField(field: BlueprintSetupField) {
     const value = values[field.id];
-    const help = field.helpText ? <small style={{ display: "block", color: "var(--text3)" }}>{field.helpText}</small> : null;
+    const label = localizedExtensionFieldLabel(field, locale);
+    const helpText = localizedExtensionFieldHelp(field, locale);
+    const help = helpText ? <small style={{ display: "block", color: "var(--text3)" }}>{helpText}</small> : null;
     if (field.type === "boolean") return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>
       <input type="checkbox" checked={typeof value === "boolean" ? value : field.defaultValue ?? false} disabled={!mayConfigure || loading || saving}
-        onChange={event => change(field, event.target.checked)} /> {field.label}{help}
+        onChange={event => change(field, event.target.checked)} /> {label}{help}
     </label>;
-    if (field.type === "select") return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{field.label}
+    if (field.type === "select") return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{label}
       <select className="input" required={field.required} value={typeof value === "string" ? value : field.defaultValue ?? ""} disabled={!mayConfigure || loading || saving}
         onChange={event => change(field, event.target.value || undefined)}>
         {!field.required && <option value="">Choose later</option>}
-        {field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        {field.options.map(option => <option key={option.value} value={option.value}>{localizedExtensionOptionLabel(field, option.value, locale, option.label)}</option>)}
       </select>{help}
     </label>;
-    if (field.type === "number") return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{field.label}
+    if (field.type === "number") return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{label}
       <input className="input" type="number" required={field.required} min={field.minimum} max={field.maximum} step={field.integer ? 1 : "any"}
         value={typeof value === "number" ? value : field.defaultValue ?? ""} disabled={!mayConfigure || loading || saving}
         onChange={event => change(field, event.target.value === "" ? undefined : Number(event.target.value))} />{help}
     </label>;
-    return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{field.label}
+    return <label key={field.id} style={{ display: "block", margin: "12px 0" }}>{label}
       <input className="input" type="text" required={field.required} minLength={field.minLength} maxLength={field.maxLength}
         value={typeof value === "string" ? value : field.defaultValue ?? ""} disabled={!mayConfigure || loading || saving}
         onChange={event => change(field, event.target.value === "" && !field.required ? undefined : event.target.value)} />{help}
