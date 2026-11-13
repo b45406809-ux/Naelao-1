@@ -2,6 +2,27 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after P15 code commit `1f0a428e` was pushed to
+`origin/Mcbt5s-Backup-2`. SpaceDO migration 110 adds an indexed `(space_id,id)` keyset page capped
+at 90; the authoritative DO filters current project/Space ACLs on every page, and the Spaces Worker
+reads summaries only for that page. Archived and subspace-bound projects retain the previous
+listing semantics. Local evidence: focused Spaces migration/page tests **9/9**, AgentPort search
+caller tests **10/10**, Spaces typecheck, and the selected local Wrangler/D1/SpaceDO/
+ScriptToolSurface test **1/1**. First/middle/last exact-reference queries at 100, 1,000 and 10,000
+synthetic cards found all targets; at 10,000 the three traversals took **512–565 ms**, page p95
+**6–8 ms**, and the assistant found the last target in **536 ms** over 12 bounded searches/29 loop
+steps. Zero provider calls. Detailed evidence:
+`new plan/validation-results/2026-11-13/blackboard-indexed-pagination-local-wrangler.json`.
+These are single-run local emulation results. P15 remains PARTIAL for realistic private-member
+density, independent relevance/task-quality evidence, repeat-run latency distribution and deployed
+acceptance. The full 18-test runtime attempt passed 13 and failed five unrelated Project Bot
+planner fixtures at the direct-write delegation boundary.
+
+Exact next action: P16, publish Discord attachment capability limits through channel capability
+discovery and setup UI from a shared source of truth. Keep ordinary non-ephemeral attachments
+unsupported unless a permitted isolated retrieval design is established; then continue P17/P24,
+guided installation, voice-extension dashboards and Shared-Space coordination.
+
 Updated 2026-11-12 after code checkpoint `7b6942e8` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 0232 and Knowledge/Workflow/Spaces changes now provide durable
 semantic-cache entry deletion for document and whole-Space erasure, preserve in-flight erasures
@@ -161,6 +182,30 @@ recovery **17/17**, release runner **9/9**, 231-file manifest, affected typechec
 validators. These are local mocks/SQLite. Generic provider receipts, terminal exhaustion visibility,
 and scoped/audited operator replay remain code gaps; no inbox or live-provider delivery is claimed.
 
+### P15 — large-Space Blackboard discovery: PARTIAL, indexed bounded path implemented locally
+
+Commit `1f0a428e` adds migration 110 with the `(space_id,id)` index and a SpaceDO keyset endpoint
+that returns at most 90 currently visible top-level project IDs. The SpaceDO applies public,
+project-member, Space owner/admin and inherited parent-owner rules in SQL on every page; it excludes
+archived and subspace-bound rows to preserve the old `/projects` semantics. The Spaces Worker
+validates ascending unique cursor pages before querying D1 for only those card summaries. It does
+not materialize/sort every project ID for each page. Local unit evidence covers ACL revocation
+between pages, private and archived exclusion, subspace exclusion, inherited parent owner access,
+limits, response validation and index selection. Focused suites pass Spaces **9/9**, AgentPort
+**10/10**, and Spaces typecheck.
+
+The selected real local Wrangler/D1/SpaceDO/ScriptToolSurface acceptance passes **1/1**. With
+synthetic public cards it found exact-reference targets at first/middle/last positions at 100, 1,000
+and 10,000 cards. At 10,000, cursor traversal took **512–565 ms** over 112 pages, page p95
+**6–8 ms**, and the assistant fixture found the final card in **536 ms** over 12 search calls and
+29 loop steps. Zero provider calls. This is one local run, not a production distribution or
+relevance-quality result; prior 8.79 s measurements came from a different run and are not a
+controlled A/B. The single-snapshot comparator remains test-only because it materializes all cards.
+Private-membership density and independently labeled task quality still need measurements, so P15
+is not fully accepted. The full runtime attempt passed 13/18; five unrelated Project Bot planner
+tests failed after deterministic direct-write attempts were rejected at the delegation boundary.
+No deploy or live acceptance occurred.
+
 ### P18/P20/P21 — current-source reconciliation
 
 P18 reset consumes a one-time token and atomically applies the password, advances account
@@ -195,12 +240,14 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 3. P04 remains partial on backup completeness and isolated recovery drills. P22's independent local
    cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`; retain the exact
    provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
-4. Continue at P15: measure the current bounded Space Blackboard query against indexes, pagination,
-   and ACL-change behavior; implement a locally verifiable query improvement if the current source
-   shows a real caller gap. Then finish the remaining P16/P17/P24 dependency audit before guided
-   templates; proceed next to voice-extension dashboards and Shared-Space coordination. Reuse the
-   S/U ledgers for overlapping requirements and do not repeat completed P01/P02, P03, P18/P20/P21,
-   P23 or P22 audits without a new source change or specific evidence need.
+4. Continue at P16: expose Discord's current ephemeral-only attachment contract and count/byte
+   limits through a shared capability source used by channel discovery and setup. Keep ordinary
+   attachments unsupported until retrieval can honor provider authorization, signed URL expiry,
+   byte/content checks, abuse controls, retention and cost. Then audit P17/P24 before guided
+   templates, voice dashboards and Shared-Space coordination. P15's indexed path is implemented;
+   realistic private-member density and task-quality evidence remain open. Reuse the S/U ledgers for
+   overlapping requirements and do not repeat completed P01/P02, P03, P18/P20/P21, P23 or P22 audits
+   without a new source change or specific evidence need.
 
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and

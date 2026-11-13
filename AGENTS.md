@@ -2,17 +2,21 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-12): P22 implementation checkpoint `7b6942e8` is pushed to
+Current continuation checkpoint (2026-11-13): P15 code commit `1f0a428e` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. Migration 0232 extends the existing Knowledge deletion
-journal with resumable, tenant/Space-scoped semantic-cache entry purge, retains pending cleanup rows
-through Space erasure, and exposes aggregate status in the owner erasure route. In-flight erasures
-are backfilled before Worker rollout; the scheduled reconciler reopens cache-pending rows completed
-by an older Worker. Local evidence: Knowledge **79/79**, Workflows **38/38**, Spaces erasure routes
-**3/3**, Python release/migration tests **47/47**, affected Knowledge/Workflow/Spaces typechecks,
-both release validators, and `git diff --check`. No deployed D1, Vectorize, KV, provider or live
-acceptance was exercised. AutoRAG provider-index deletion remains unverified. Preserve the unrelated
-untracked `infra/scripts/__pycache__/`.
+`/workspace/Naelao-1-managed-services`. Space Blackboard discovery now uses an indexed, 90-ID
+keyset page inside SpaceDO; project ACLs are reevaluated for every page, subspace-bound projects
+remain excluded as before, and card summaries are read only after the bounded page returns. Local
+evidence: focused Spaces pagination/migration **9/9**, AgentPort caller **10/10**, Spaces typecheck,
+and a targeted real local Wrangler/D1/SpaceDO/ScriptToolSurface search **1/1**. The 100/1,000/10,000
+card fixture found exact targets at first/middle/last positions; the 10,000-card traversal took
+512–565 ms across those cases, with 4–8 ms page p95 and zero provider calls. Raw summary is in
+`new plan/validation-results/2026-11-13/blackboard-indexed-pagination-local-wrangler.json`. These
+are synthetic local measurements, not production performance or live relevance evidence. A full
+18-test runtime attempt passed 13 and failed 5 unrelated Project Bot planner fixtures, all around
+direct-write attempts being rejected at the delegation boundary. P15 remains PARTIAL for realistic
+membership-distribution performance, independently labeled relevance/task quality and deployed
+acceptance. Preserve the unrelated untracked `infra/scripts/__pycache__/`.
 
 P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
 object references; workspace object bytes are references, restore merges missing rows, and no
@@ -33,11 +37,12 @@ probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legac
 attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
 policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
 and receipt coverage outside the Product auth outbox; see
-`docs/operations/notification-delivery-contract.md`. Exact next task: continue the platform plan at
-P15 by measuring current bounded Space Blackboard discovery against its query indexes, page limits,
-and ACL-change behavior; implement a verified local scaling improvement if the current caller has a
-concrete gap. Then reconcile remaining P16/P17/P24 dependencies and proceed to guided template
-authoring, voice dashboards, and Shared-Space coordination. P01/P02 remain fail-closed on actual
+`docs/operations/notification-delivery-contract.md`. Exact next task: continue at P16 by adding
+authoritative Discord attachment capability metadata to channel discovery and setup from the
+existing ephemeral-only, five-file, 5 MiB/file and 15 MiB total contract; keep ordinary attachments
+unsupported until a permitted isolated retrieval design is established. Then continue P17/P24 and
+guided package installation, voice-extension dashboards, and Shared-Space coordination. P01/P02
+remain fail-closed on actual
 resource separation, ownership/receipts, and operator-attested D1 baselines; these are evidence and
 configuration gates. Keep all rollouts disabled. Fetch before every push and safely integrate remote
 advances; never reset, clean, switch away, overwrite history, deploy or purchase.

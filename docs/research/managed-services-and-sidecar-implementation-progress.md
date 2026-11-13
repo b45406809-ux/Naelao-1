@@ -2,7 +2,34 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-12; P22 physical cache purge `7b6942e8` pushed)
+### Active continuation (2026-11-13; P15 indexed discovery `1f0a428e` pushed)
+
+- P15 code `1f0a428e` is pushed to `origin/Mcbt5s-Backup-2`. The SpaceDO exposes a bounded,
+  indexed, keyset page for Blackboard-visible top-level projects; it rechecks project membership,
+  Space owner/admin and inherited parent-owner ACL on every page. The existing Spaces route reads
+  card summaries only after that page, validates strict cursor order, and preserves exclusion of
+  archived and subspace-bound projects. Local evidence: focused Spaces page/migration tests **9/9**,
+  AgentPort search caller tests **10/10**, Spaces typecheck, and targeted local Wrangler/D1/DO/
+  ScriptToolSurface acceptance **1/1**. The current synthetic 10,000-card run found first/middle/
+  last exact-reference targets in **512/515/565 ms** (112 pages, page p95 **6/6/8 ms**); no provider
+  calls. Saved results are under `new plan/validation-results/2026-11-13/`. A full runtime run had
+  **13/18** pass; five unrelated Project Bot planner fixtures failed after direct writes were
+  rejected by the delegation boundary. This is local emulation, not production evidence.
+- P15 remains PARTIAL: measurements use synthetic public cards, do not model realistic
+  private-membership density or independently labeled user/task relevance, and are one local run.
+  The single-snapshot comparator remains test-only and materializes all cards. No deployment or
+  live acceptance occurred.
+- P22 code `7b6942e8` remains pushed. Migration 0232 and Knowledge/Workflow/Spaces changes durably
+  purge semantic-cache Vectorize IDs and KV payloads for document and whole-Space erasure and expose
+  cleanup state. Provider-index deletion and deployed acceptance remain unverified. Keep retrieval
+  disabled and preserve `infra/scripts/__pycache__/`.
+- Exact next task: P16 Discord attachment capability discovery and setup. Publish the current
+  ephemeral-only, maximum five files, 5 MiB per file and 15 MiB aggregate implementation limits
+  from a shared contract so setup and runtime do not drift. Do not add non-ephemeral retrieval until
+  provider authorization, signed URL expiry, bounds, retention and cost are designed. Then proceed
+  to P17/P24, guided templates, voice dashboards and Shared-Space coordination.
+
+### Prior continuation (2026-11-12; P22 physical cache purge `7b6942e8` pushed)
 
 - Code `7b6942e8` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0232 extends the existing
   Knowledge deletion ledger with operation kind, erasure request, generation target, durable exact
@@ -133,9 +160,9 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §3 / P22 knowledge deletion | PARTIAL | Code `3aa1bf43`/migration 0228 provides tenant/Space/project-scoped document deletion and mutation leases. Code `7b6942e8`/migration 0232 now persists exact semantic-cache Vectorize ID pages before deleting those IDs and matching `sc:<id>` KV payloads, rotates generations first, retains pending cleanup through Space D1 erasure, and exposes owner-visible aggregate status. Migration backfills already-processing erasures and safely reopens rows an older Worker completes during rollout. The existing scheduled reconciler resumes bounded pages; reads and writes remain blocked while a Space deletion is pending. Local evidence: Knowledge **79/79**, Workflows **38/38**, Spaces erasure routes **3/3**, Python release/migration suite **47/47**, affected typechecks, release/deployment validators and diff check. These are local mocks/SQLite/static checks. AutoRAG provider-index deletion remains explicitly unverified and retrieval remains disabled; no deployed D1/R2/Vectorize, provider deletion, isolated recovery or live acceptance was exercised. The per-entry cleanup and whole-Space status code gaps are closed; remaining partial status is for provider/deployed evidence and the separate P04 recovery limits above. |
 | §4 / P13 queue health | PARTIAL | Code `2625ea34` removes the fabricated current depth/age/DLQ interpretation from interval analytics, persists `unknown`/`incomplete`/`degraded` observations under migration 0230, and atomically alerts through `platform_failures` when credentials/query/history fail. Release probes require the new schema. Focused tests **31/31** with P03/P12, queue migration **3/3**, and Workflows/Billing typechecks pass locally. Current GraphQL provides interval totals only; live queue depth, oldest age and DLQ inspection still need a supported inspector. No live Cloudflare query was run. |
 | §4 / P14 browser sessions | PARTIAL | Product Shell logout now calls the authenticated server logout path, which advances the Product account generation; Dashboard and Portal builder logout call `/v1/auth/revoke` before clearing local state. Builder reset already updates password and `token_version` atomically. Product generation is checked at protected Product session/ticket callers, with retryable DO cleanup. Local tests cover copied/stale tokens and reset/logout generation. Shell/Portal/Dashboard still store bearer tokens in localStorage, so XSS exposure and a cookie/CSRF migration remain; no deployed cross-product session acceptance has run.
-| §4 / P15 large-Space discovery | PARTIAL | `space-blackboard` still scans at most ten 90-card pages and exposes a cursor. Benchmark current indexed callers and ACL changes before implementing bounded search; do not ship the prior materialize-all comparator. |
+| §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
 | §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. |
-| §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge, and Discord limits extension attachments to ephemeral references. Add versioned scoped media handles and expose provider limits before broadening support. |
+| §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge, and Discord processing accepts only ephemeral CDN references within current count/byte bounds. P16's next task is shared capability metadata in channel discovery/setup; versioned scoped media handles for the restricted extension contract remain uncoded. |
 | §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants and cost observations are reusable. Public extension streaming remains explicitly rejected; voice SDK lifecycle, package-owned microapp, test/publish/monitor dashboards and versioned rate calculator remain uncoded. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |
