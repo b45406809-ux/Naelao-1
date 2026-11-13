@@ -149,6 +149,77 @@ describe("gadget MCP host adapter", () => {
     expect(spaceFetch).toHaveBeenCalledTimes(6);
   });
 
+  it("returns only owner-authorized phone state and Telnyx calls for the signed app installation", async () => {
+    const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", phoneChannel: true, phoneDashboardAllowed: true };
+    const spaceFetch = vi.fn(async () => Response.json(runtime));
+    const agentsFetch = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).pathname).toBe("/spaces/s/assistant-communications");
+      expect(new URL(request.url).searchParams.get("action")).toBe("phone-status");
+      expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+      return Response.json({ extension_lines: [
+        { id: "binding-a", provider: "telnyx", phone_number: "+14155550123", installation_id: "install-a", status: "active", handler_status: "active" },
+        { id: "binding-b", provider: "twilio", phone_number: "+14155550999", installation_id: "install-b", status: "active", handler_status: "active" },
+      ], recent_telnyx_extension_calls: [
+        { binding_id: "binding-a", state: "ended", turn_count: 2, started_at: 1_800_000_000, duration_seconds: 23, caller_hint: "•••• 0199",
+          cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } },
+        { binding_id: "binding-b", state: "ended", turn_count: 7, started_at: 1_800_000_001, duration_seconds: 42, caller_hint: "•••• 0999",
+          cost_report: { status: "reported", provider_cost_micros: 999999, currency: "USD", leg_count: 2 } },
+      ] });
+    });
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: spaceFetch }) },
+      AGENTS_WORKER: { fetch: agentsFetch },
+    } as never;
+    const response = await app.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      headers: await auth("t", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner" }),
+    }, env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const result = await response.json();
+    expect(result).toEqual({ installation_status: "assigned", lines: [
+      { provider: "telnyx", status: "active", handler_status: "active", number_hint: "•••• 0123" },
+    ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
+      cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
+      cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." });
+    expect(JSON.stringify(result)).not.toContain("+14155550123");
+    expect(JSON.stringify(result)).not.toContain("binding-b");
+    expect(JSON.stringify(result)).not.toContain("install-b");
+    expect(agentsFetch).toHaveBeenCalledOnce();
+
+    const member = await app.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      headers: await auth("t", { "x-naelao-user-id": "member", "x-naelao-role": "member" }),
+    }, env);
+    expect(member.status).toBe(403);
+    expect(agentsFetch).toHaveBeenCalledOnce();
+
+    runtime.phoneDashboardAllowed = false;
+    const undeclared = await app.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      headers: await auth("t", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner" }),
+    }, env);
+    expect(undeclared.status).toBe(404);
+    expect(agentsFetch).toHaveBeenCalledOnce();
+
+    runtime.phoneDashboardAllowed = true;
+    runtime.active = false;
+    const revokedRelease = await app.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      headers: await auth("t", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner" }),
+    }, env);
+    expect(revokedRelease.status).toBe(503);
+    expect(agentsFetch).toHaveBeenCalledOnce();
+
+    const isolatedApp = testApp(); registerGadgetMcpRoutes(isolatedApp as never);
+    const isolatedEnv = { ...env, PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } } as never;
+    const foreignTenant = await isolatedApp.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      headers: await auth("foreign", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner" }),
+    }, isolatedEnv);
+    expect(foreignTenant.status).toBe(404);
+    expect(spaceFetch).toHaveBeenCalledTimes(5); // The foreign tenant is stopped before any runtime lookup.
+    expect(agentsFetch).toHaveBeenCalledOnce();
+  });
+
   it("forwards the exact Template setup project query and restricts writes to administrators", async () => {
     const spaceFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname,
       blueprint_id: new URL(request.url).searchParams.get("blueprint_id"), project_id: new URL(request.url).searchParams.get("project_id"),

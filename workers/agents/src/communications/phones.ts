@@ -643,11 +643,12 @@ export async function handlePhoneAction(
       : [];
     const extensionCallCosts = await extensionCallCostSummaries(env, recentExtensionCallRows);
     const recentExtensionCalls = recentExtensionCallRows.map(row => ({
-            state: row.state, turn_count: row.turn_count, started_at: row.started_at,
-            duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller),
-            cost_report: extensionCallCosts.get(`${row.binding_id}\0${row.call_control_id}`)
-              ?? { status: "not_linked" as const, provider_cost_micros: null, currency: null, leg_count: null },
-          }));
+      binding_id: row.binding_id,
+      state: row.state, turn_count: row.turn_count, started_at: row.started_at,
+      duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller),
+      cost_report: extensionCallCosts.get(`${row.binding_id}\0${row.call_control_id}`)
+        ?? { status: "not_linked" as const, provider_cost_micros: null, currency: null, leg_count: null },
+    }));
     const agentPortShare = currentPhone?.provider === "telnyx" ? await env.PLATFORM_DB.prepare(`SELECT m.agentport_link_status,
         (SELECT o.operation_name FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
           ORDER BY o.updated_at DESC LIMIT 1) AS operation_name,

@@ -6,14 +6,18 @@ import spacesWorker from "./index.js";
 
 const secret = "shared-extension-package-route-secret";
 const html = "<main>Customer dashboard</main>";
+const handler = "export default async function handle() { return { ok: true }; }";
 const manifest = validateExtensionManifest({
-  id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
+  id: "ext_customer_voice", type: "extension", declaredPermissions: ["assistant.phone.read"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read"],
   gadgets: [], daemons: [], commands: [],
   bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version: "1.2.0", primitives: [
     { schemaVersion: "1.0", kind: "canvas", id: "voice_dashboard", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
       component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+    { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"],
+      outboundEvents: ["message.reply", "voice.reply"] },
   ] },
-}, { gatekeeperCapabilities: ["extension.project_canvas"] });
+}, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read"] });
 
 async function digest(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -72,7 +76,11 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     SCRIPTS_R2: { get: async (key: string) => key.endsWith("/dashboard.html") ? {
       size: new TextEncoder().encode(artifactSource).byteLength,
       arrayBuffer: async () => new TextEncoder().encode(artifactSource).buffer,
+    } : key.endsWith("/handler.ts") ? {
+      size: new TextEncoder().encode(handler).byteLength,
+      arrayBuffer: async () => new TextEncoder().encode(handler).buffer,
     } : null },
+    AGENTS_WORKER: { fetch: async () => Response.json({ valid: true }) },
   } as never;
   return { env, spaceRequests, microAppRequests, spaceStub, microAppStub, release };
 }
@@ -89,7 +97,7 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
 describe("signed Space-shared extension packages", () => {
   it("lists a trusted package, stages its exact artifact and activates its signed shared dashboard", async () => {
     const h = harness();
-    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html]]));
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
     const path = "/spaces/space-a/shared-extension-catalog";
     const catalog = await spacesWorker.fetch(await signedRequest(path), h.env);
     const catalogBody = await catalog.json() as { extensions: unknown[] };
@@ -101,7 +109,8 @@ describe("signed Space-shared extension packages", () => {
     expect(await installed.json()).toMatchObject({ extension_id: "ext_customer_voice", installation_id: "install-voice", scope: "SPACE_SHARED" });
     const stage = h.spaceRequests.find(request => new URL(request.url).pathname === "/extensions");
     expect(await stage?.clone().json()).toMatchObject({ scope: "SPACE_SHARED", deferActivation: true,
-      publisherId: "pub_voice", publisherKeyId: "a".repeat(64), publisherSignature: "signed-payload", artifactSha256: h.release.artifact_sha256 });
+      publisherId: "pub_voice", publisherKeyId: "a".repeat(64), publisherSignature: "signed-payload", artifactSha256: h.release.artifact_sha256,
+      gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read"] });
     expect(h.microAppRequests).toHaveLength(1);
     expect(await h.microAppRequests[0]!.clone().json()).toMatchObject({ appId: "voice_dashboard", scope: "SPACE_SHARED", gadgetTier: 3,
       html, releaseProof: { extensionId: "ext_customer_voice", version: "1.2.0", canvasPath: "./dashboard.html" } });
@@ -115,7 +124,7 @@ describe("signed Space-shared extension packages", () => {
 
   it("hides and refuses a package after its configured publisher key is revoked", async () => {
     const h = harness(false);
-    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html]]));
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
     const path = "/spaces/space-a/shared-extension-catalog";
     const catalog = await spacesWorker.fetch(await signedRequest(path), h.env);
     const catalogBody = await catalog.json() as { extensions: Array<{ id: string }> };
@@ -128,14 +137,14 @@ describe("signed Space-shared extension packages", () => {
 
   it("requires Space admin authority and rejects changed artifact bytes before staging", async () => {
     const h = harness();
-    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html]]));
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
     const path = "/spaces/space-a/shared-extensions/ext_customer_voice/install";
     const unauthorized = await spacesWorker.fetch(await signedRequest(path, "POST", { version: "1.2.0" }, "product_end_user"), h.env);
     expect(unauthorized.status).toBe(403);
     expect(h.spaceRequests).toHaveLength(0);
 
     const tampered = harness(true, "<main>changed</main>");
-    tampered.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html]]));
+    tampered.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
     const response = await spacesWorker.fetch(await signedRequest(path, "POST", { version: "1.2.0" }), tampered.env);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error_code: "extension_package_artifact_digest_mismatch" });
@@ -145,7 +154,7 @@ describe("signed Space-shared extension packages", () => {
 
   it("aborts a staged installation when signed microapp initialization fails", async () => {
     const h = harness(true, html, 500);
-    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html]]));
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
     const response = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST", { version: "1.2.0" }), h.env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error_code: "extension_package_canvas_initialization_failed" });

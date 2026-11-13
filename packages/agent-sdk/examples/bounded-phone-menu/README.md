@@ -12,7 +12,11 @@ the signed installation and handler digest, validates the response, enforces num
 renders carrier-specific actions. The dashboard previews call-start and keypad responses from the
 current draft in the browser; this is explicitly simulated and does not invoke a carrier, publish
 the draft, or save a call session. A Space owner separately assigns and confirms the handler in
-Assistant Phone settings. The phone number and provider connection remain under their existing
+Assistant Phone settings. Its read-only Phone connection view requires the declared
+`assistant.phone.read` capability, resolves only this exact active signed installation, masks number
+and caller IDs, and shows at most 50 matching Telnyx calls from the last 7 days. Provider cost reports
+are labeled as API observations, not invoices or customer charges. The dashboard cannot buy, release,
+configure or call a number. Phone number and provider connection changes remain under their existing
 owner and provider controls.
 
 Build the release artifact set from this manifest, `handler.ts` and `dashboard.html`, sign it with

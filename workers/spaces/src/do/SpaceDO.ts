@@ -12326,7 +12326,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!release) return Response.json({ managed: true, active: false, releaseValid: false });
       const expected = await this.signExtensionRelease(row.extension_id, row.release_version, release.manifest_json, release.artifact_sha256);
       const releaseValid = release.manifest_json === row.manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release);
-      return Response.json({ managed: true, active: releaseValid, releaseValid, ...(release.publisher_key_id ? { publisherKeyId: release.publisher_key_id } : {}) });
+      const primitives = manifest.bundle?.primitives ?? [];
+      const phoneChannel = primitives.some(primitive => primitive.kind === "channel"
+        && primitive.provider === "phone" && primitive.context === "channel_only");
+      const phoneDashboardAllowed = phoneChannel
+        && manifest.capabilityRequirements.includes("assistant.phone.read")
+        && manifest.declaredPermissions.includes("assistant.phone.read");
+      return Response.json({ managed: true, active: releaseValid, releaseValid,
+        ...(release.publisher_key_id ? { publisherKeyId: release.publisher_key_id } : {}),
+        ...(releaseValid ? { installationId: row.instance_id, extensionId: row.extension_id, phoneChannel,
+          phoneDashboardAllowed } : {}) });
     }
     return Response.json({ managed: false, active: false, releaseValid: false });
   }

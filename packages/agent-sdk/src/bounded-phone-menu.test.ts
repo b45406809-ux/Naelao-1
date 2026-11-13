@@ -31,7 +31,11 @@ describe("bounded phone menu package", () => {
       provider: "phone", handlerScript: "./handler.ts", context: "channel_only",
       inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"],
     })]);
-    expect(parsed.capabilityRequirements).toEqual(["extension.settings.read", "extension.settings.configure"]);
+    expect(parsed.capabilityRequirements).toEqual(["extension.settings.read", "extension.settings.configure", "assistant.phone.read"]);
+    expect(parsed.declaredPermissions).toContain("assistant.phone.read");
+    expect(dashboard).toContain("/api/phone-dashboard");
+    expect(dashboard).toContain("Recent Telnyx calls");
+    expect(dashboard).toContain("not invoices or customer charges");
     expect(dashboard).toContain("Preview current settings");
     expect(dashboard).toContain("aria-label=\"Simulated keypad menu response\"");
     expect(dashboard).toContain("does not run a carrier call, contact a provider, publish this draft, or save a call session");

@@ -65,11 +65,12 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       if (rpc?.type === "naelao.extension.rpc") {
         const projectSettingsRequest = projectScoped && Boolean(extensionInstallationId) && rpc.path === "/api/settings";
         if (typeof rpc.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(rpc.id) || !session || projectScoped && !projectSettingsRequest
-          || !["GET", "POST", "DELETE", "PATCH"].includes(String(rpc.method)) || !["/api/data", "/api/storage", "/api/settings", "/api/assistant-voice", "/api/template-setup", "/mcp"].includes(String(rpc.path))
+          || !["GET", "POST", "DELETE", "PATCH"].includes(String(rpc.method)) || !["/api/data", "/api/storage", "/api/settings", "/api/assistant-voice", "/api/template-setup", "/api/phone-dashboard", "/mcp"].includes(String(rpc.path))
           || (rpc.path === "/mcp" && rpc.method !== "POST")
           || (rpc.path === "/api/settings" && ((rpc.method === "GET" && !capabilities.includes("extension.settings.read")) || (rpc.method === "PATCH" && (!capabilities.includes("extension.settings.read") || !capabilities.includes("extension.settings.configure"))) || !["GET", "PATCH"].includes(String(rpc.method))))
           || (rpc.path === "/api/assistant-voice" && ((rpc.method === "GET" && !capabilities.includes("assistant.voice.read")) || (rpc.method === "PATCH" && !capabilities.includes("assistant.voice.configure")) || !["GET", "PATCH"].includes(String(rpc.method))))
           || (rpc.path === "/api/template-setup" && ((rpc.method === "GET" && !capabilities.includes("template.setup.read")) || (rpc.method === "PATCH" && (!capabilities.includes("template.setup.read") || !capabilities.includes("template.setup.configure"))) || !["GET", "PATCH"].includes(String(rpc.method))))
+          || (rpc.path === "/api/phone-dashboard" && (rpc.method !== "GET" || !capabilities.includes("assistant.phone.read")))
           || (rpc.query !== undefined && (!rpc.query || typeof rpc.query !== "object" || Array.isArray(rpc.query)))) return;
         const query = rpc.query as Record<string, unknown> | undefined;
         if (query && (Object.keys(query).length > 8 || Object.entries(query).some(([key, value]) => key.length > 64 || typeof value !== "string" || value.length > 256))) return;
@@ -82,7 +83,7 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
         }
         const result = projectSettingsRequest
           ? callProjectExtensionSettings(spaceId, projectId, extensionInstallationId!, session, { method: rpc.method as "GET" | "PATCH", ...(rpc.body !== undefined ? { body: rpc.body } : {}) })
-          : callSpaceSharedExtensionApi(spaceId, appId, session, { method: rpc.method as "GET" | "POST" | "DELETE" | "PATCH", path: rpc.path as "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/mcp", ...(query ? { query: query as Record<string, string> } : {}), ...(rpc.body !== undefined ? { body: rpc.body } : {}) });
+          : callSpaceSharedExtensionApi(spaceId, appId, session, { method: rpc.method as "GET" | "POST" | "DELETE" | "PATCH", path: rpc.path as "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/api/phone-dashboard" | "/mcp", ...(query ? { query: query as Record<string, string> } : {}), ...(rpc.body !== undefined ? { body: rpc.body } : {}) });
         void result
           .then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: true, result }, "*"))
           .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Extension API request failed" }, "*"));

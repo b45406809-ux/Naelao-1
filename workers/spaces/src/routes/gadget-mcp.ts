@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
 import { getDOName } from "@naelao/crypto";
-import { mintInternalToken, readBoundedRequestBytes, readBoundedRequestText, requireInternalHmac } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, requireInternalHmac } from "@naelao/http";
 
 const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 const MAX_CANVAS_GADGET_RESPONSE_BYTES = 512 * 1024;
@@ -120,6 +120,73 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       method: c.req.method, headers: c.req.raw.headers, ...(body ? { body } : {}),
     }));
   };
+  const forwardPhoneDashboard = async (c: Context<{ Bindings: Env }>) => {
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "", userId = c.req.header("x-naelao-user-id") ?? "";
+    const { spaceId = "", appId = "" } = c.req.param();
+    const role = c.req.header("x-naelao-role") ?? "viewer";
+    if (c.req.method !== "GET") return c.json({ error_code: "method_not_allowed" }, 405);
+    if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.json({ error_code: "not_found" }, 404);
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    if (!c.env.SPACE_DO || !c.env.AGENTS_WORKER) return c.json({ error_code: "phone_dashboard_unavailable" }, 503);
+
+    try {
+      const spaceIdForDo = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+      const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
+      const runtimeResponse = await c.env.SPACE_DO.get(spaceIdForDo).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
+      if (!runtimeResponse.ok) return c.json({ error_code: "phone_dashboard_unavailable" }, 503);
+      const runtime = await readBoundedResponseJson<{ managed?: unknown; active?: unknown; releaseValid?: unknown; installationId?: unknown;
+        phoneChannel?: unknown; phoneDashboardAllowed?: unknown }>(runtimeResponse, 16 * 1024);
+      if (runtime.managed !== true || runtime.active !== true || runtime.releaseValid !== true
+        || runtime.phoneChannel !== true || runtime.phoneDashboardAllowed !== true
+        || typeof runtime.installationId !== "string") return c.json({ error_code: "phone_dashboard_not_declared" }, 404);
+
+      const phoneStatus = await c.env.AGENTS_WORKER.fetch(new Request(
+        `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-status`,
+        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": role,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+      ));
+      if (!phoneStatus.ok) return c.json({ error_code: phoneStatus.status === 403 ? "phone_dashboard_forbidden" : "phone_dashboard_data_unavailable" }, phoneStatus.status === 403 ? 403 : 503);
+      const status = await readBoundedResponseJson<{
+        extension_lines?: Array<{ id?: unknown; provider?: unknown; phone_number?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown }>;
+        recent_telnyx_extension_calls?: Array<{ binding_id?: unknown; state?: unknown; turn_count?: unknown; started_at?: unknown;
+          duration_seconds?: unknown; caller_hint?: unknown; cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; leg_count?: unknown } }>;
+      }>(phoneStatus, 512 * 1024);
+      const lines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
+        .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
+          && (line.provider === "telnyx" || line.provider === "twilio") && typeof line.status === "string")
+        .slice(0, 25);
+      const bindingIds = new Set(lines.map(line => line.id as string));
+      const recentCalls = (Array.isArray(status.recent_telnyx_extension_calls) ? status.recent_telnyx_extension_calls : [])
+        .filter(call => typeof call.binding_id === "string" && bindingIds.has(call.binding_id))
+        .slice(0, 50).map(call => {
+          const report = call.cost_report;
+          const cost = report?.status === "reported" && Number.isSafeInteger(report.provider_cost_micros)
+            && typeof report.currency === "string" && /^[A-Z]{3}$/.test(report.currency)
+            ? { status: "reported" as const, provider_cost_micros: report.provider_cost_micros, currency: report.currency,
+                leg_count: Number.isSafeInteger(report.leg_count) ? report.leg_count : null }
+            : { status: report?.status === "unavailable" ? "unavailable" as const : "not_linked" as const,
+                provider_cost_micros: null, currency: null, leg_count: null };
+          return { state: typeof call.state === "string" ? call.state.slice(0, 32) : "unknown",
+            turn_count: Number.isSafeInteger(call.turn_count) ? call.turn_count : 0,
+            started_at: Number.isSafeInteger(call.started_at) ? call.started_at : null,
+            duration_seconds: Number.isSafeInteger(call.duration_seconds) ? call.duration_seconds : null,
+            caller_hint: typeof call.caller_hint === "string" && /^•••• \d{4}$/.test(call.caller_hint) ? call.caller_hint : null,
+            cost_report: cost };
+        });
+      const safeLines = lines.map(line => ({ provider: line.provider, status: line.status,
+        handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
+        number_hint: typeof line.phone_number === "string" && line.phone_number.length >= 4 ? `•••• ${line.phone_number.slice(-4)}` : null }));
+      return new Response(JSON.stringify({ installation_status: safeLines.some(line => line.handler_status === "active") ? "assigned" : "not_assigned",
+        lines: safeLines, recent_telnyx_calls: recentCalls,
+        cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." }),
+        { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
+    } catch { return c.json({ error_code: "phone_dashboard_data_unavailable" }, 503); }
+  };
   const forwardTemplateSetup = async (c: Context<{ Bindings: Env }>) => {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const { spaceId = "", appId = "" } = c.req.param();
@@ -160,6 +227,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.patch("/spaces/:spaceId/apps/:appId/api/settings", forwardSettings);
   app.get("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.patch("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
+  app.get("/spaces/:spaceId/apps/:appId/api/phone-dashboard", forwardPhoneDashboard);
   app.get("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);
   app.patch("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);
   app.post("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, "/api/data"));
