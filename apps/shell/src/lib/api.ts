@@ -2518,6 +2518,38 @@ export async function forkSpaceTemplate(rootSpaceId: string, listingId: string, 
 export type SpaceTemplateFilesystemGrant = { path: string; access: "READ" | "READ_WRITE" };
 export type SpaceTemplateSetupValue = string | number | boolean;
 export type SpaceTemplateSetupValues = Record<string, Record<string, SpaceTemplateSetupValue>>;
+export interface SpaceTemplateSetupMigrationPreview {
+  blueprint_id: string;
+  installed_artifact_sha256: string;
+  installed_listing_id: string;
+  setup_revision: number;
+  source_artifact_sha256: string;
+  source_listing_id: string;
+  setup_schema_version: 1 | 2 | null;
+  setup_schema_groups: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
+  setup_migration_operations: Array<
+    | { kind: "rename"; fromProjectId: string; fromFieldId: string; toProjectId: string; toFieldId: string }
+    | { kind: "drop"; projectId: string; fieldId: string }
+    | { kind: "default"; projectId: string; fieldId: string; value: string | number | boolean }
+  >;
+  values: SpaceTemplateSetupValues;
+  missing_required: Array<{ project_id: string; field_id: string; label: string }>;
+}
+export function previewSpaceTemplateSetupUpdate(spaceId: string, blueprintId: string, session: SessionCredentials,
+  input: { source_listing_id: string; source_artifact_sha256: string; expected_artifact_sha256: string; expected_setup_revision: number; owner_values?: SpaceTemplateSetupValues }): Promise<SpaceTemplateSetupMigrationPreview> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/setup-update-preview`, {
+    method: "POST", session, body: JSON.stringify(input), cache: "no-store",
+  });
+}
+export function applySpaceTemplateSetupUpdate(spaceId: string, blueprintId: string, session: SessionCredentials,
+  input: { source_listing_id: string; source_artifact_sha256: string; expected_artifact_sha256: string; expected_setup_revision: number;
+    setup_values: SpaceTemplateSetupValues; clear_fields?: Array<{ project_id: string; field_id: string }>; confirm_data_loss?: boolean }): Promise<{
+    applied: true; event_id: string; blueprint_id: string; artifact_sha256: string; listing_id: string; setup_revision: number; updated_at: string;
+  }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/setup-update-apply`, {
+    method: "POST", session, body: JSON.stringify({ ...input, confirmed: true, confirm_data_loss: input.confirm_data_loss === true }),
+  });
+}
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
   approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}): Promise<unknown> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
@@ -2560,6 +2592,7 @@ export interface SpaceTemplateInstallationRecord {
     source_artifact_sha256: string | null;
     terms_changed: boolean | null;
     setup_schema_changed: boolean | null;
+    setup_migration_available: boolean;
     added_required_extensions: string[];
     removed_required_extensions: string[];
     changed_required_extension_versions: Array<{ extension_id: string; installed_version: string | null; source_version: string | null }>;

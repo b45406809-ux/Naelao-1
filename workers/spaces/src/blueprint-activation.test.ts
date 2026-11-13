@@ -1,4 +1,4 @@
-import type { SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintSetupSchema, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { describe, expect, it } from "vitest";
 import worker, { blueprintRuntimeInstallability } from "./index.js";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
@@ -148,6 +148,7 @@ describe("Space Template activation preview", () => {
     const body = await response.json() as { installations: Array<Record<string, unknown>> };
     expect(body.installations[0]).toMatchObject({ source_update: { status: "update_available", source_listing_id: "listing-new",
       source_artifact_sha256: candidateDigest, terms_changed: true, setup_schema_changed: true,
+      setup_migration_available: false,
       added_required_extensions: ["ext_new"], changed_required_extension_versions: [
         { extension_id: "ext_old", installed_version: "1.0.0", source_version: "2.0.0" },
       ] } });
@@ -168,6 +169,92 @@ describe("Space Template activation preview", () => {
     candidateArtifactJson = JSON.stringify({ ...candidate, metadata: { name: "Tampered source" } });
     const invalid = await worker.fetch(new Request("https://spaces/spaces/space-update/blueprints/installations", { headers }), env, {} as ExecutionContext);
     expect(await invalid.json()).toMatchObject({ installations: [{ source_update: { status: "source_unavailable", source_listing_id: null } }] });
+  });
+
+  it("offers only a matching signed migration for a setup-only same-publisher update", async () => {
+    const secret = "setup-migration-availability-secret";
+    const project = { id: "support", name: "Support", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+      viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [],
+      setupFields: [{ id: "greeting", type: "text" as const, label: "Greeting", required: true, minLength: 2, maxLength: 80 }] };
+    const installed = blueprint({ id: "tpl_setup_update", metadata: { name: "Support" }, setupSchemaVersion: 1,
+      projects: [project], requiredExtensions: [], requiredCredentials: [] });
+    const artifactSha256 = async (value: unknown) => [...new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(value))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const installedDigest = await artifactSha256(installed);
+    const installedSchemaDigest = await artifactSha256(validateBlueprintSetupSchema(installed));
+    const candidate = { ...installed, metadata: { name: "Customer support" }, setupSchemaVersion: 2 as const,
+      projects: [{ ...project, setupFields: [{ id: "welcome", type: "text" as const, label: "Welcome", required: true, minLength: 2, maxLength: 80 }] }],
+      setupMigrations: [{ fromArtifactSha256: installedDigest, fromSchemaSha256: installedSchemaDigest, operations: [
+        { kind: "rename" as const, fromProjectId: "support", fromFieldId: "greeting", toProjectId: "support", toFieldId: "welcome" },
+      ] }] } satisfies SpaceBlueprint;
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `migration-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(candidate, suite, { runner: "naelao-state-delta-v1", passed: 50,
+      total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "publisher-tenant");
+    const installedCertificate = await certifyStateDeltaArtifact(installed, suite, { runner: "naelao-state-delta-v1", passed: 50,
+      total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "publisher-tenant");
+    if (!certificate || !installedCertificate) throw new Error("template_source_certificate_not_issued");
+    const candidateDigest = await artifactSha256(candidate);
+    const forwarded: Array<{ path: string; body?: Record<string, unknown>; role: string | null }> = [];
+    const stub = { fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/blueprint-installations") return Response.json({ installations: [{ blueprint_id: installed.id, artifact_sha256: installedDigest,
+        listing_id: "listing-installed", setup_schema_version: 1, setup_revision: 3, required_extension_ids: [],
+        project_ids: ["support"], status: "installed", error_code: null, created_at: "2026-11-13T00:00:00.000Z",
+        updated_at: "2026-11-13T00:01:00.000Z" }] });
+      const item: { path: string; body?: Record<string, unknown>; role: string | null } = {
+        path: url.pathname, role: request.headers.get("x-naelao-role"),
+      };
+      item.body = await request.json() as Record<string, unknown>;
+      forwarded.push(item);
+      if (url.pathname.endsWith("/preview")) return Response.json({ source_listing_id: "listing-candidate", values: { support: { welcome: "Hello" } }, missing_required: [] });
+      return Response.json({ applied: true, setup_revision: 4 });
+    } };
+    const candidateRow = {
+        source_listing_id: "listing-installed", publisher_tenant_id: "publisher-tenant", blueprint_id: installed.id,
+        installed_price_model: "fixed_license", installed_price_cents: 0, installed_artifact_json: JSON.stringify(installed),
+        installed_certificate_json: JSON.stringify(installedCertificate), candidate_listing_id: "listing-candidate",
+        candidate_artifact_json: JSON.stringify(candidate), candidate_certificate_json: JSON.stringify(certificate),
+        candidate_price_model: "fixed_license", candidate_price_cents: 0,
+      };
+    const db = { prepare: (sql: string) => ({ bind: (..._args: unknown[]) => ({
+      first: async () => sql.includes("FROM marketplace_listings source") ? candidateRow : { id: "space-setup-update" },
+      all: async () => ({ results: sql.includes("FROM marketplace_listings source") ? [candidateRow] : [] }),
+    }) }) };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db, SPACE_DO: { idFromName: () => "space-setup-update-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "buyer", "x-naelao-user-id": "owner", "x-naelao-role": "owner",
+      "x-naelao-internal-token": await mintInternalToken(secret, "buyer") };
+    const response = await worker.fetch(new Request("https://spaces/spaces/space-setup-update/blueprints/installations", { headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ installations: [{ source_update: {
+      status: "update_available", source_listing_id: "listing-candidate", source_artifact_sha256: candidateDigest,
+      terms_changed: false, setup_schema_changed: true, setup_migration_available: true,
+      added_required_extensions: [], removed_required_extensions: [], changed_required_extension_versions: [],
+    } }] });
+    const updateHeaders = { ...headers, "content-type": "application/json" };
+    const input = { source_listing_id: "listing-candidate", source_artifact_sha256: candidateDigest,
+      expected_artifact_sha256: installedDigest, expected_setup_revision: 3 };
+    const preview = await worker.fetch(new Request(`https://spaces/spaces/space-setup-update/blueprints/${installed.id}/setup-update-preview`, {
+      method: "POST", headers: updateHeaders, body: JSON.stringify(input),
+    }), env, {} as ExecutionContext);
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({ values: { support: { welcome: "Hello" } }, missing_required: [] });
+    expect(forwarded[0]).toMatchObject({ path: "/blueprint-installation-setup-update/preview", role: "owner",
+      body: { expected_artifact_sha256: installedDigest, expected_listing_id: "listing-installed", expected_setup_revision: 3,
+        source_listing_id: "listing-candidate", source_artifact_sha256: candidateDigest } });
+    const apply = await worker.fetch(new Request(`https://spaces/spaces/space-setup-update/blueprints/${installed.id}/setup-update-apply`, {
+      method: "POST", headers: updateHeaders, body: JSON.stringify({ ...input, confirmed: true, setup_values: { support: { welcome: "Hello" } } }),
+    }), env, {} as ExecutionContext);
+    expect(apply.status).toBe(200);
+    expect(forwarded[1]).toMatchObject({ path: "/blueprint-installation-setup-update/apply",
+      body: { confirmed: true, setup_values: { support: { welcome: "Hello" } } } });
+    const stale = await worker.fetch(new Request(`https://spaces/spaces/space-setup-update/blueprints/${installed.id}/setup-update-preview`, {
+      method: "POST", headers: updateHeaders, body: JSON.stringify({ ...input, source_listing_id: "listing-stale" }),
+    }), env, {} as ExecutionContext);
+    expect(stale.status).toBe(409);
+    const member = await worker.fetch(new Request(`https://spaces/spaces/space-setup-update/blueprints/${installed.id}/setup-update-preview`, {
+      method: "POST", headers: { ...updateHeaders, "x-naelao-role": "member" }, body: JSON.stringify(input),
+    }), env, {} as ExecutionContext);
+    expect(member.status).toBe(403);
   });
 
   it("binds setup draft reads and writes to the pending signed listing and schema", async () => {

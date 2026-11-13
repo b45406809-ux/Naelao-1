@@ -384,6 +384,42 @@ export interface BlueprintSetupMigrationSource {
   schemaSha256: string;
 }
 
+/** Check that the signed migration explicitly accounts for every removed or retyped stored field. */
+export function validateBlueprintSetupMigrationCompatibility(
+  oldGroups: readonly BlueprintSetupFieldGroup[],
+  newGroups: readonly BlueprintSetupFieldGroup[],
+  migration: unknown,
+): BlueprintSetupMigration {
+  const oldSchema = validateBlueprintSetupGroups(oldGroups), newSchema = validateBlueprintSetupGroups(newGroups);
+  const [checked] = validateBlueprintSetupMigrations([migration], newSchema);
+  if (!checked) throw new Error("Setup schema migration is unavailable");
+  const consumedSources = new Set<string>(), explicitTargets = new Set<string>();
+  for (const operation of checked.operations) {
+    if (operation.kind === "rename") {
+      const source = setupPath(operation.fromProjectId, operation.fromFieldId);
+      const target = setupPath(operation.toProjectId, operation.toFieldId);
+      const sourceField = setupField(oldSchema, operation.fromProjectId, operation.fromFieldId);
+      const targetField = setupField(newSchema, operation.toProjectId, operation.toFieldId);
+      if (!sourceField || !targetField || sourceField.type !== targetField.type) throw new Error("Setup migration rename is incompatible");
+      consumedSources.add(source); explicitTargets.add(target);
+    } else if (operation.kind === "drop") {
+      const source = setupPath(operation.projectId, operation.fieldId);
+      if (!setupField(oldSchema, operation.projectId, operation.fieldId)) throw new Error("Unknown setup migration source");
+      consumedSources.add(source);
+    } else {
+      explicitTargets.add(setupPath(operation.projectId, operation.fieldId));
+    }
+  }
+  for (const group of oldSchema) for (const field of group.fields) {
+    const source = setupPath(group.project_id, field.id);
+    if (consumedSources.has(source)) continue;
+    const target = setupField(newSchema, group.project_id, field.id);
+    if (!target || target.type !== field.type || explicitTargets.has(source))
+      throw new Error("Removed or changed setup fields need an explicit migration");
+  }
+  return checked;
+}
+
 /** Apply one signed migration to stored values without coercion; missing required target fields
  * are returned for owner input before the migration can be committed. */
 export function migrateBlueprintSetupValues(
@@ -393,10 +429,10 @@ export function migrateBlueprintSetupValues(
   migration: unknown,
   source: BlueprintSetupMigrationSource,
   ownerValues: unknown = {},
+  clearFields: unknown = [],
 ): BlueprintSetupMigrationPreview {
   const oldSchema = validateBlueprintSetupGroups(oldGroups), newSchema = validateBlueprintSetupGroups(newGroups);
-  const [checked] = validateBlueprintSetupMigrations([migration], newSchema);
-  if (!checked) throw new Error("Setup schema migration is unavailable");
+  const checked = validateBlueprintSetupMigrationCompatibility(oldSchema, newSchema, migration);
   if (!SETUP_MIGRATION_HASH.test(source.artifactSha256) || !SETUP_MIGRATION_HASH.test(source.schemaSha256)
     || checked.fromArtifactSha256 !== source.artifactSha256 || checked.fromSchemaSha256 !== source.schemaSha256)
     throw new Error("Setup schema migration source does not match the installed artifact");
@@ -407,17 +443,12 @@ export function migrateBlueprintSetupValues(
   for (const operation of checked.operations) {
     if (operation.kind === "rename") {
       const from = setupPath(operation.fromProjectId, operation.fromFieldId), to = setupPath(operation.toProjectId, operation.toFieldId);
-      const sourceField = setupField(oldSchema, operation.fromProjectId, operation.fromFieldId);
-      const targetField = setupField(newSchema, operation.toProjectId, operation.toFieldId);
-      if (!sourceField || !targetField || sourceField.type !== targetField.type) throw new Error("Setup migration rename is incompatible");
       sourcePaths.add(from); moved.set(from, to);
     } else if (operation.kind === "drop") {
       const from = setupPath(operation.projectId, operation.fieldId);
-      if (!setupField(oldSchema, operation.projectId, operation.fieldId)) throw new Error("Unknown setup migration source");
       sourcePaths.add(from);
     } else {
       const to = setupPath(operation.projectId, operation.fieldId);
-      if (!setupField(newSchema, operation.projectId, operation.fieldId)) throw new Error("Unknown setup migration target");
       defaults.set(to, operation.value);
     }
   }
@@ -437,8 +468,6 @@ export function migrateBlueprintSetupValues(
       if (target && value !== undefined) put(target, value);
       continue;
     }
-    const targetField = setupField(newSchema, oldGroup.project_id, field.id);
-    if (!targetField || targetField.type !== field.type) throw new Error("Removed or changed setup fields need an explicit migration");
     if (value !== undefined) put(setupPath(oldGroup.project_id, field.id), value);
   }
   for (const [path, value] of defaults) {
@@ -451,6 +480,13 @@ export function migrateBlueprintSetupValues(
     if (!isRecord(values)) throw new Error(`Owner setup values for ${projectId} must be an object`);
     const target = result[projectId] ?? (result[projectId] = Object.create(null) as Record<string, BlueprintSetupValue>);
     for (const [fieldId, value] of Object.entries(values)) target[fieldId] = value as BlueprintSetupValue;
+  }
+  if (!Array.isArray(clearFields) || clearFields.length > MAX_FIELDS_TOTAL) throw new Error("Invalid setup fields to clear");
+  for (const entry of clearFields) {
+    if (!isRecord(entry) || Object.keys(entry).some(key => key !== "project_id" && key !== "field_id")
+      || typeof entry.project_id !== "string" || typeof entry.field_id !== "string"
+      || !setupField(newSchema, entry.project_id, entry.field_id)) throw new Error("Invalid setup field to clear");
+    delete result[entry.project_id]?.[entry.field_id];
   }
   const normalized = validateBlueprintSetupValuesForSchema(newSchema, result, { allowIncomplete: true });
   const missingRequired = newSchema.flatMap(group => group.fields.flatMap(field => {

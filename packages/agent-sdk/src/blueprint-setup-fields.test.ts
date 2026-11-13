@@ -132,6 +132,13 @@ describe("versioned Space Template setup fields", () => {
     expect(migrateBlueprintSetupValues(oldGroups, newGroups,
       { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration,
       source, { support: { region: "southern-africa" } }).missingRequired).toEqual([]);
+    const withOptionalField = validateBlueprintSetupSchema({ ...target, projects: [{ ...target.projects[0]!, setupFields: [
+      ...target.projects[0]!.setupFields!, { id: "note", type: "text", label: "Optional note" },
+    ] }] });
+    expect(migrateBlueprintSetupValues(oldGroups, withOptionalField,
+      { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration,
+      source, { support: { region: "southern-africa", note: "remove me" } }, [{ project_id: "support", field_id: "note" }])
+      .values.support).not.toHaveProperty("note");
     expect(() => migrateBlueprintSetupValues(oldGroups, newGroups,
       { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration,
       { ...source, artifactSha256: "c".repeat(64) })).toThrow("does not match the installed artifact");

@@ -1,10 +1,77 @@
-import { PERSONAL_ASSISTANT_SPACE_TEMPLATE } from "@naelao/agent-sdk";
+import { PERSONAL_ASSISTANT_SPACE_TEMPLATE, validateBlueprintSetupSchema } from "@naelao/agent-sdk";
 import { mintInternalToken } from "@naelao/http";
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("Space Template setup runtime API", () => {
+  it("previews and atomically applies an owner-confirmed setup-only migration with revision fences", async () => {
+    const storage = createDOStorage(), secret = "template-setup-update-test-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const targetSpaceId = "template-update-space";
+    const blueprint = structuredClone(PERSONAL_ASSISTANT_SPACE_TEMPLATE);
+    blueprint.setupSchemaVersion = 1;
+    const project = blueprint.projects[0]!;
+    project.id = "support";
+    project.setupFields = [
+      { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+      { id: "weekly_hours", type: "number", label: "Weekly hours", defaultValue: 8, minimum: 1, maximum: 168 },
+    ];
+    const setupValues = { support: { greeting: "Welcome" } };
+    const activated = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ blueprint, target_space_id: targetSpaceId, activation_key: blueprint.id,
+        listing_id: "listing-old", setup_values: setupValues }) }));
+    expect(activated.status).toBe(201);
+    const oldArtifactSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(blueprint))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const oldSchemaSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(validateBlueprintSetupSchema(blueprint))))) ]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const candidate = structuredClone(blueprint);
+    candidate.setupSchemaVersion = 2;
+    candidate.projects[0]!.setupFields = [{ id: "welcome", type: "text", label: "Welcome message", required: true, minLength: 2, maxLength: 80 }];
+    candidate.setupMigrations = [{ fromArtifactSha256: oldArtifactSha256, fromSchemaSha256: oldSchemaSha256, operations: [
+      { kind: "rename", fromProjectId: "support", fromFieldId: "greeting", toProjectId: "support", toFieldId: "welcome" },
+      { kind: "drop", projectId: "support", fieldId: "weekly_hours" },
+    ] }];
+    const newArtifactSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(candidate))))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const groups = validateBlueprintSetupSchema(candidate);
+    const migrationUrl = `http://space/blueprint-installation-setup-update/preview?${new URLSearchParams({
+      tenant_id: "tenant", space_id: targetSpaceId, blueprint_id: blueprint.id,
+    })}`;
+    const token = await mintInternalToken(secret, "tenant");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-user-id": "owner-a",
+      "x-naelao-role": "owner", "x-naelao-internal-token": token };
+    const updateBody = { expected_artifact_sha256: oldArtifactSha256, expected_listing_id: "listing-old", expected_setup_revision: 1,
+      source_listing_id: "listing-new", source_artifact_sha256: newArtifactSha256, setup_schema_version: 2 as const,
+      setup_schema_groups: groups, setup_migrations: candidate.setupMigrations };
+    const preview = await space.fetch(new Request(migrationUrl, { method: "POST", headers, body: JSON.stringify(updateBody) }));
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({ values: { support: { welcome: "Welcome" } }, missing_required: [], setup_revision: 1,
+      setup_migration_operations: [{ kind: "rename" }, { kind: "drop", projectId: "support", fieldId: "weekly_hours" }] });
+    expect(storage.sql.exec("SELECT COUNT(*) AS total FROM space_template_setup_update_events").toArray()[0]?.total).toBe(0);
+    const projectsBefore = storage.sql.exec("SELECT id,name FROM projects WHERE space_id=? ORDER BY id", targetSpaceId).toArray();
+
+    const unconfirmedDrop = await space.fetch(new Request(migrationUrl.replace("/preview?", "/apply?"), { method: "POST", headers,
+      body: JSON.stringify({ ...updateBody, confirmed: true, setup_values: { support: { welcome: "Welcome to the new schema" } } }) }));
+    expect(unconfirmedDrop.status).toBe(400);
+    const apply = await space.fetch(new Request(migrationUrl.replace("/preview?", "/apply?"), { method: "POST", headers,
+      body: JSON.stringify({ ...updateBody, confirmed: true, confirm_data_loss: true,
+        setup_values: { support: { welcome: "Welcome to the new schema" } } }) }));
+    expect(apply.status).toBe(200);
+    expect(await apply.json()).toMatchObject({ applied: true, artifact_sha256: newArtifactSha256, listing_id: "listing-new", setup_revision: 2 });
+    expect(storage.sql.exec("SELECT artifact_sha256,listing_id,setup_schema_version,setup_revision,setup_values_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id).toArray()[0])
+      .toMatchObject({ artifact_sha256: newArtifactSha256, listing_id: "listing-new", setup_schema_version: 2, setup_revision: 2,
+        setup_values_json: JSON.stringify({ support: { welcome: "Welcome to the new schema" } }) });
+    expect(storage.sql.exec("SELECT actor_id,from_setup_revision,to_setup_revision FROM space_template_setup_update_events").toArray())
+      .toEqual([{ actor_id: "owner-a", from_setup_revision: 1, to_setup_revision: 2 }]);
+    expect(storage.sql.exec("SELECT id,name FROM projects WHERE space_id=? ORDER BY id", targetSpaceId).toArray()).toEqual(projectsBefore);
+    const stale = await space.fetch(new Request(migrationUrl.replace("/preview?", "/apply?"), { method: "POST", headers,
+      body: JSON.stringify({ ...updateBody, confirmed: true, confirm_data_loss: true, setup_values: { support: { welcome: "Stale" } } }) }));
+    expect(stale.status).toBe(409);
+  });
+
   it("limits setup values to the exact active required extension and enforces revisions", async () => {
     const storage = createDOStorage(), secret = "template-setup-test-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);

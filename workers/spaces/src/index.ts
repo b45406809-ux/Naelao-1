@@ -44,7 +44,9 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
-  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
+  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupMigrationCompatibility,
+  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest,
+  type BlueprintSetupMigration, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
@@ -772,6 +774,7 @@ app.get("/spaces/:spaceId/blueprints/installations", async c => {
       source_artifact_sha256: null,
       terms_changed: null,
       setup_schema_changed: null,
+      setup_migration_available: false,
       added_required_extensions: [],
       removed_required_extensions: [],
       changed_required_extension_versions: [],
@@ -787,6 +790,7 @@ interface TemplateSourceUpdateCheck {
   source_artifact_sha256: string | null;
   terms_changed: boolean | null;
   setup_schema_changed: boolean | null;
+  setup_migration_available: boolean;
   added_required_extensions: string[];
   removed_required_extensions: string[];
   changed_required_extension_versions: Array<{ extension_id: string; installed_version: string | null; source_version: string | null }>;
@@ -837,6 +841,27 @@ function templateSetupSchemaProjection(artifact: Record<string, unknown>): strin
   return JSON.stringify({ setupSchemaVersion: artifact.setupSchemaVersion ?? null, projects });
 }
 
+/** A setup-only update cannot alter executable project content, dependencies, or package grants. */
+function templateSetupUpdateRuntimeProjection(artifact: Record<string, unknown>): string | null {
+  try {
+    const copy = JSON.parse(JSON.stringify(artifact)) as Record<string, unknown>;
+    delete copy.setupSchemaVersion;
+    delete copy.setupMigrations;
+    if (copy.metadata && typeof copy.metadata === "object" && !Array.isArray(copy.metadata)) {
+      const metadata = copy.metadata as Record<string, unknown>;
+      delete metadata.exportedAt; delete metadata.sourceSpaceId; delete metadata.name; delete metadata.description;
+    }
+    if (!Array.isArray(copy.projects)) return null;
+    copy.projects = copy.projects.map(project => {
+      if (!project || typeof project !== "object" || Array.isArray(project)) return project;
+      const row = { ...(project as Record<string, unknown>) };
+      delete row.setupFields;
+      return row;
+    });
+    return JSON.stringify(copy);
+  } catch { return null; }
+}
+
 /**
  * Compare installed records with the newest published, host-certified listing from the same
  * publisher for the same blueprint. This is a read-only availability check; it never installs,
@@ -855,9 +880,11 @@ async function checkTemplateSourceUpdates(
   for (const item of installations) {
     if (!item.listing_id) checks.set("", { status: "unknown_legacy", checked_at: checkedAt,
       source_listing_id: null, source_artifact_sha256: null, terms_changed: null, setup_schema_changed: null,
+      setup_migration_available: false,
       added_required_extensions: [], removed_required_extensions: [], changed_required_extension_versions: [] });
     else checks.set(item.listing_id, { status: "source_unavailable", checked_at: checkedAt,
       source_listing_id: null, source_artifact_sha256: null, terms_changed: null, setup_schema_changed: null,
+      setup_migration_available: false,
       added_required_extensions: [], removed_required_extensions: [], changed_required_extension_versions: [] });
   }
   if (!listingIds.length) return checks;
@@ -926,13 +953,32 @@ async function checkTemplateSourceUpdates(
       }).slice(0, 128);
       const installedSchema = templateSetupSchemaProjection(installedArtifact);
       const sourceSchema = templateSetupSchemaProjection(artifact);
+      const setupSchemaChanged = installedSchema === null || sourceSchema === null ? null : installedSchema !== sourceSchema;
+      let setupMigrationAvailable = false;
+      if (setupSchemaChanged === true && !termsChanged && addedRequiredExtensions.length === 0
+        && removedRequiredExtensions.length === 0 && changedRequiredExtensionVersions.length === 0
+        && templateSetupUpdateRuntimeProjection(installedArtifact) === templateSetupUpdateRuntimeProjection(artifact)) {
+        try {
+          const oldGroups = validateBlueprintSetupSchema(installedArtifact as unknown as SpaceBlueprint);
+          const newGroups = validateBlueprintSetupSchema(artifact as unknown as SpaceBlueprint);
+          const oldSchemaSha256 = await templateArtifactDigest(oldGroups);
+          const migrations = validateBlueprintSetupMigrations(artifact.setupMigrations, newGroups);
+          const migration = migrations.find(value => value.fromArtifactSha256 === installation.artifact_sha256
+            && value.fromSchemaSha256 === oldSchemaSha256);
+          if (migration) {
+            validateBlueprintSetupMigrationCompatibility(oldGroups, newGroups, migration);
+            setupMigrationAvailable = true;
+          }
+        } catch { /* An invalid or incompatible migration is shown as unavailable. */ }
+      }
       checks.set(listingId, {
         status: sourceDigest === installation.artifact_sha256 ? "current" : "update_available",
         checked_at: checkedAt,
         source_listing_id: row.candidate_listing_id,
         source_artifact_sha256: sourceDigest,
         terms_changed: termsChanged,
-        setup_schema_changed: installedSchema === null || sourceSchema === null ? null : installedSchema !== sourceSchema,
+        setup_schema_changed: setupSchemaChanged,
+        setup_migration_available: setupMigrationAvailable,
         added_required_extensions: addedRequiredExtensions,
         removed_required_extensions: removedRequiredExtensions,
         changed_required_extension_versions: changedRequiredExtensionVersions,
@@ -941,6 +987,157 @@ async function checkTemplateSourceUpdates(
   }
   return checks;
 }
+
+interface ResolvedTemplateSetupUpdate {
+  sourceListingId: string;
+  sourceArtifactSha256: string;
+  setupSchemaVersion: 1 | 2 | null;
+  setupSchemaGroups: ReturnType<typeof validateBlueprintSetupSchema>;
+  setupMigrations: BlueprintSetupMigration[];
+}
+
+/** Resolve a fresh, same-publisher signed candidate and permit only setup-only changes. */
+async function resolveTemplateSetupUpdate(
+  env: Env,
+  tenantId: string,
+  blueprintId: string,
+  installedListingId: string,
+  installedArtifactSha256: string,
+  installedSetupSchemaVersion: 1 | 2 | null,
+  expectedSourceListingId: string,
+  expectedSourceArtifactSha256: string,
+): Promise<ResolvedTemplateSetupUpdate | null> {
+  const row = await env.PLATFORM_DB.prepare(`
+    SELECT source.id AS source_listing_id, source.tenant_id AS publisher_tenant_id,
+      source.space_type_id AS blueprint_id, source.pricing_model AS installed_price_model,
+      source.price_cents AS installed_price_cents,
+      fork.artifact_json AS installed_artifact_json, fork.certificate_json AS installed_certificate_json,
+      latest.id AS candidate_listing_id, latest.conformance_artifact_json AS candidate_artifact_json,
+      latest.conformance_certificate_json AS candidate_certificate_json,
+      latest.pricing_model AS candidate_price_model, latest.price_cents AS candidate_price_cents
+    FROM marketplace_listings source
+    JOIN marketplace_forks fork ON fork.listing_id=source.id AND fork.tenant_id=?
+      AND fork.blueprint_id=source.space_type_id
+    LEFT JOIN marketplace_listings latest ON latest.id=(
+      SELECT candidate.id FROM marketplace_listings candidate
+      WHERE candidate.tenant_id=source.tenant_id AND candidate.space_type_id=source.space_type_id
+        AND candidate.status='published'
+      ORDER BY COALESCE(candidate.published_at,candidate.created_at) DESC,candidate.id DESC LIMIT 1
+    )
+    WHERE source.id=? AND source.space_type_id=?
+  `).bind(tenantId, installedListingId, blueprintId).first<TemplateSourceCandidateRow>();
+  if (!row || row.source_listing_id !== installedListingId || row.blueprint_id !== blueprintId
+    || row.candidate_listing_id !== expectedSourceListingId || !row.candidate_artifact_json || !row.candidate_certificate_json
+    || !row.installed_artifact_json || !row.installed_certificate_json
+    || row.installed_price_model !== row.candidate_price_model || row.installed_price_cents !== row.candidate_price_cents)
+    return null;
+  try {
+    const installed = JSON.parse(row.installed_artifact_json) as Record<string, unknown>;
+    const installedCertificate = JSON.parse(row.installed_certificate_json) as ConformanceCertificate;
+    const candidate = JSON.parse(row.candidate_artifact_json) as Record<string, unknown>;
+    const candidateCertificate = JSON.parse(row.candidate_certificate_json) as ConformanceCertificate;
+    if (!installed || typeof installed !== "object" || Array.isArray(installed) || installed.id !== blueprintId
+      || (installed.setupSchemaVersion === 1 || installed.setupSchemaVersion === 2 ? installed.setupSchemaVersion : null) !== installedSetupSchemaVersion
+      || installedCertificate?.issuerTenantId !== row.publisher_tenant_id
+      || !await verifyArtifactCertificate(installed, installedCertificate, env.PLATFORM_SECRET, "state-delta")
+      || await templateArtifactDigest(installed) !== installedArtifactSha256
+      || !candidate || typeof candidate !== "object" || Array.isArray(candidate) || candidate.id !== blueprintId
+      || candidateCertificate?.issuerTenantId !== row.publisher_tenant_id
+      || !await verifyArtifactCertificate(candidate, candidateCertificate, env.PLATFORM_SECRET, "state-delta")) return null;
+    const candidateDigest = await templateArtifactDigest(candidate);
+    if (!candidateDigest || candidateDigest !== expectedSourceArtifactSha256
+      || templateSetupUpdateRuntimeProjection(installed) !== templateSetupUpdateRuntimeProjection(candidate)) return null;
+    const oldSchemaJson = templateSetupSchemaProjection(installed), newSchemaJson = templateSetupSchemaProjection(candidate);
+    if (!oldSchemaJson || !newSchemaJson || oldSchemaJson === newSchemaJson) return null;
+    const oldGroups = validateBlueprintSetupSchema(installed as unknown as SpaceBlueprint);
+    const newGroups = validateBlueprintSetupSchema(candidate as unknown as SpaceBlueprint);
+    const oldSchemaSha256 = await templateArtifactDigest(oldGroups);
+    const migrations = validateBlueprintSetupMigrations(candidate.setupMigrations, newGroups);
+    const migration = migrations.find(value => value.fromArtifactSha256 === installedArtifactSha256
+      && value.fromSchemaSha256 === oldSchemaSha256);
+    if (!migration) return null;
+    validateBlueprintSetupMigrationCompatibility(oldGroups, newGroups, migration);
+    const version = candidate.setupSchemaVersion;
+    if (version !== 1 && version !== 2 && newGroups.length > 0) return null;
+    return { sourceListingId: row.candidate_listing_id, sourceArtifactSha256: candidateDigest,
+      setupSchemaVersion: version === 1 || version === 2 ? version : null,
+      setupSchemaGroups: newGroups, setupMigrations: [migration] };
+  } catch { return null; }
+}
+
+async function handleTemplateSetupUpdate(c: Context<{ Bindings: Env }>, apply: boolean): Promise<Response> {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId ?? "", userId = identity.userId ?? "";
+  const spaceId = c.req.param("spaceId") ?? "", blueprintId = c.req.param("blueprintId") ?? "";
+  if (!tenantId || !userId || !spaceId || !blueprintId
+    || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId) : identity.role;
+  if ((role !== "owner" && role !== "admin") || !await canExportBlueprint(c, spaceId))
+    return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(spaceId, tenantId).first<{ id: string }>();
+  if (!owned) throw notFound("Space");
+  let body: { source_listing_id?: unknown; source_artifact_sha256?: unknown; expected_artifact_sha256?: unknown;
+    expected_setup_revision?: unknown; owner_values?: unknown; setup_values?: unknown; clear_fields?: unknown;
+    confirmed?: unknown; confirm_data_loss?: unknown };
+  try {
+    body = JSON.parse(await readBoundedRequestText(c.req.raw, 32 * 1024)) as typeof body;
+    if (!body || Object.keys(body).some(key => !["source_listing_id", "source_artifact_sha256", "expected_artifact_sha256",
+      "expected_setup_revision", "owner_values", "setup_values", "clear_fields", "confirmed", "confirm_data_loss"].includes(key))) throw new Error("invalid_request");
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+    return c.json({ error_code: "template_setup_update_invalid" }, 400);
+  }
+  if (typeof body.source_listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.source_listing_id)
+    || typeof body.source_artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.source_artifact_sha256)
+    || typeof body.expected_artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expected_artifact_sha256)
+    || !Number.isSafeInteger(body.expected_setup_revision) || Number(body.expected_setup_revision) < 0)
+    return c.json({ error_code: "template_setup_update_invalid" }, 400);
+  if (apply && body.confirmed !== true) return c.json({ error_code: "template_setup_update_confirmation_required" }, 400);
+  if (apply && (!body.setup_values || typeof body.setup_values !== "object" || Array.isArray(body.setup_values)))
+    return c.json({ error_code: "template_setup_update_values_required" }, 400);
+  if (!apply && (body.setup_values !== undefined || body.clear_fields !== undefined || body.confirmed !== undefined))
+    return c.json({ error_code: "template_setup_update_invalid" }, 400);
+  if (!apply && body.confirmed !== undefined) return c.json({ error_code: "template_setup_update_invalid" }, 400);
+
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const installationResponse = await stub.fetch(new Request(`http://space-do/blueprint-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId })}`, {
+    headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+  }));
+  if (!installationResponse.ok) return new Response(installationResponse.body, { status: installationResponse.status, headers: { "content-type": "application/json" } });
+  const installationData = await installationResponse.json() as { installations?: Array<{
+    blueprint_id: string; artifact_sha256: string; listing_id: string | null; setup_schema_version: 1 | 2 | null; setup_revision: number; status: string;
+  }> };
+  const installation = installationData.installations?.find(item => item.blueprint_id === blueprintId);
+  if (!installation || installation.status !== "installed" || !installation.listing_id)
+    return c.json({ error_code: "template_setup_update_installation_unavailable" }, 404);
+  if (installation.artifact_sha256 !== body.expected_artifact_sha256 || installation.setup_revision !== body.expected_setup_revision)
+    return c.json({ error_code: "template_setup_update_revision_conflict" }, 409);
+  const candidate = await resolveTemplateSetupUpdate(c.env, tenantId, blueprintId, installation.listing_id,
+    installation.artifact_sha256, installation.setup_schema_version, body.source_listing_id, body.source_artifact_sha256);
+  if (!candidate) return c.json({ error_code: "template_setup_update_source_changed_or_unsupported" }, 409);
+  if (apply && candidate.setupMigrations.some(migration => migration.operations.some(operation => operation.kind === "drop"))
+    && body.confirm_data_loss !== true)
+    return c.json({ error_code: "template_setup_update_data_loss_confirmation_required" }, 400);
+  const path = apply ? "/blueprint-installation-setup-update/apply" : "/blueprint-installation-setup-update/preview";
+  const response = await stub.fetch(new Request(`http://space-do${path}?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, blueprint_id: blueprintId })}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+      "x-naelao-role": role, "x-naelao-internal-token": token },
+    body: JSON.stringify({ expected_artifact_sha256: installation.artifact_sha256, expected_listing_id: installation.listing_id,
+      expected_setup_revision: installation.setup_revision, source_listing_id: candidate.sourceListingId,
+      source_artifact_sha256: candidate.sourceArtifactSha256, setup_schema_version: candidate.setupSchemaVersion,
+      setup_schema_groups: candidate.setupSchemaGroups, setup_migrations: candidate.setupMigrations,
+      ...(body.owner_values !== undefined ? { owner_values: body.owner_values } : {}),
+      ...(apply ? { confirmed: true, confirm_data_loss: body.confirm_data_loss === true, setup_values: body.setup_values,
+        clear_fields: body.clear_fields ?? [] } : {}) }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+}
+
+app.post("/spaces/:spaceId/blueprints/:blueprintId/setup-update-preview", c => handleTemplateSetupUpdate(c, false));
+app.post("/spaces/:spaceId/blueprints/:blueprintId/setup-update-apply", c => handleTemplateSetupUpdate(c, true));
 
 app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c => {
   const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");

@@ -692,6 +692,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activate$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activation-preview$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/setup-draft$/,
+  /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/setup-update-(?:preview|apply)$/,
   /^\/spaces\/([^/]+)\/blueprints\/installations$/,
   /^\/spaces\/([^/]+)\/shared-extension-installations\/([^/]+)(?:\/(?:filesystem-grants|lifecycle))?$/,
   // Step 18: the public-within-the-product business directory (all active businesses under this

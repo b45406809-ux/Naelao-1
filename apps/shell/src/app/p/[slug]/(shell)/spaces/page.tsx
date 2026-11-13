@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
@@ -110,6 +110,11 @@ export default function SpacesPage() {
   const [templateStatusSpace, setTemplateStatusSpace] = React.useState<SpaceSummary | null>(null);
   const [templateStatusRecords, setTemplateStatusRecords] = React.useState<SpaceTemplateInstallationRecord[]>([]);
   const [templateStatusLoading, setTemplateStatusLoading] = React.useState(false);
+  const [templateSetupUpdatePreviews, setTemplateSetupUpdatePreviews] = React.useState<Record<string, SpaceTemplateSetupMigrationPreview>>({});
+  const [templateSetupUpdateValues, setTemplateSetupUpdateValues] = React.useState<Record<string, SpaceTemplateSetupValues>>({});
+  const [templateSetupUpdateClearedFields, setTemplateSetupUpdateClearedFields] = React.useState<Record<string, Array<{ project_id: string; field_id: string }>>>({});
+  const [templateSetupUpdateDataLossConfirmed, setTemplateSetupUpdateDataLossConfirmed] = React.useState<Record<string, boolean>>({});
+  const [templateSetupUpdateBusy, setTemplateSetupUpdateBusy] = React.useState<string | null>(null);
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
@@ -118,6 +123,10 @@ export default function SpacesPage() {
     if (!creds) return;
     setTemplateStatusSpace(space);
     setTemplateStatusRecords([]);
+    setTemplateSetupUpdatePreviews({});
+    setTemplateSetupUpdateValues({});
+    setTemplateSetupUpdateClearedFields({});
+    setTemplateSetupUpdateDataLossConfirmed({});
     setTemplateStatusLoading(true);
     try {
       const result = await listSpaceTemplateInstallations(space.id, creds);
@@ -126,6 +135,65 @@ export default function SpacesPage() {
       show(`Template status unavailable: ${error instanceof Error ? error.message : "request failed"}`);
       setTemplateStatusSpace(null);
     } finally { setTemplateStatusLoading(false); }
+  }
+
+  function templateUpdateKey(spaceId: string, blueprintId: string): string { return `${spaceId}:${blueprintId}`; }
+
+  async function previewTemplateSetupUpdate(record: SpaceTemplateInstallationRecord) {
+    if (!creds || !templateStatusSpace || !record.source_update?.setup_migration_available
+      || !record.source_update.source_listing_id || !record.source_update.source_artifact_sha256) return;
+    const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id);
+    setTemplateSetupUpdateBusy(key);
+    try {
+      const preview = await previewSpaceTemplateSetupUpdate(templateStatusSpace.id, record.blueprint_id, creds, {
+        source_listing_id: record.source_update.source_listing_id,
+        source_artifact_sha256: record.source_update.source_artifact_sha256,
+        expected_artifact_sha256: record.artifact_sha256,
+        expected_setup_revision: record.setup_revision,
+      });
+      setTemplateSetupUpdatePreviews(current => ({ ...current, [key]: preview }));
+      setTemplateSetupUpdateValues(current => ({ ...current, [key]: preview.values }));
+      setTemplateSetupUpdateClearedFields(current => ({ ...current, [key]: [] }));
+      setTemplateSetupUpdateDataLossConfirmed(current => ({ ...current, [key]: false }));
+    } catch (error) { show(`Setup migration preview unavailable: ${error instanceof Error ? error.message : "request failed"}`); }
+    finally { setTemplateSetupUpdateBusy(null); }
+  }
+
+  async function confirmTemplateSetupUpdate(record: SpaceTemplateInstallationRecord) {
+    if (!creds || !templateStatusSpace || !record.source_update?.setup_migration_available
+      || !record.source_update.source_listing_id || !record.source_update.source_artifact_sha256) return;
+    const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id);
+    const preview = templateSetupUpdatePreviews[key];
+    if (!preview) return;
+    const values = templateSetupUpdateValues[key] ?? preview.values;
+    const missing = preview.setup_schema_groups.flatMap(group => group.fields.flatMap(field =>
+      field.required && isBlueprintSetupFieldVisible(group.fields, field, values[group.project_id] ?? {})
+        && values[group.project_id]?.[field.id] === undefined ? [field.id] : []));
+    if (missing.length) { show(`Complete the required setup fields: ${missing.join(", ")}`); return; }
+    const dropsSavedValues = preview.setup_migration_operations.some(operation => operation.kind === "drop");
+    if (dropsSavedValues && !templateSetupUpdateDataLossConfirmed[key]) {
+      show("Confirm the listed saved-value removal before applying this migration."); return;
+    }
+    setTemplateSetupUpdateBusy(key);
+    try {
+      await applySpaceTemplateSetupUpdate(templateStatusSpace.id, record.blueprint_id, creds, {
+        source_listing_id: record.source_update.source_listing_id,
+        source_artifact_sha256: record.source_update.source_artifact_sha256,
+        expected_artifact_sha256: record.artifact_sha256,
+        expected_setup_revision: record.setup_revision,
+        setup_values: values,
+        clear_fields: templateSetupUpdateClearedFields[key] ?? [],
+        confirm_data_loss: dropsSavedValues && templateSetupUpdateDataLossConfirmed[key] === true,
+      });
+      const refreshed = await listSpaceTemplateInstallations(templateStatusSpace.id, creds);
+      setTemplateStatusRecords(refreshed.installations);
+      setTemplateSetupUpdatePreviews(current => { const next = { ...current }; delete next[key]; return next; });
+      setTemplateSetupUpdateValues(current => { const next = { ...current }; delete next[key]; return next; });
+      setTemplateSetupUpdateClearedFields(current => { const next = { ...current }; delete next[key]; return next; });
+      setTemplateSetupUpdateDataLossConfirmed(current => { const next = { ...current }; delete next[key]; return next; });
+      show("Template setup settings were updated. No project or provider resources were changed.");
+    } catch (error) { show(`Setup update was not applied: ${error instanceof Error ? error.message : "request failed"}`); }
+    finally { setTemplateSetupUpdateBusy(null); }
   }
 
   async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
@@ -644,7 +712,66 @@ export default function SpacesPage() {
                   {record.source_update.added_required_extensions.length > 0 && <><dt>New dependencies</dt><dd style={{ margin: 0 }}>{record.source_update.added_required_extensions.join(", ")}</dd></>}
                   {record.source_update.removed_required_extensions.length > 0 && <><dt>Removed dependencies</dt><dd style={{ margin: 0 }}>{record.source_update.removed_required_extensions.join(", ")}</dd></>}
                   {record.source_update.changed_required_extension_versions.length > 0 && <><dt>Dependency versions</dt><dd style={{ margin: 0 }}>{record.source_update.changed_required_extension_versions.map(change => `${change.extension_id}: ${change.installed_version ?? "unpinned"} → ${change.source_version ?? "unpinned"}`).join("; ")}</dd></>}
+                  {record.source_update.setup_migration_available && <><dt>Setup migration</dt><dd style={{ margin: 0 }}>A signed migration matches this exact installed artifact and setup schema. It changes setup values only; price, permissions, dependencies, project code and provider resources are unchanged.</dd></>}
                 </>}
+                {record.source_update?.setup_migration_available && templateStatusSpace && (() => {
+                  const key = templateUpdateKey(templateStatusSpace.id, record.blueprint_id);
+                  const preview = templateSetupUpdatePreviews[key];
+                  const values = templateSetupUpdateValues[key] ?? preview?.values ?? {};
+                  const missing = preview?.setup_schema_groups.flatMap(group => group.fields.flatMap(field =>
+                    field.required && isBlueprintSetupFieldVisible(group.fields, field, values[group.project_id] ?? {})
+                      && values[group.project_id]?.[field.id] === undefined ? [field.id] : [])) ?? [];
+                  return <div style={{ marginTop: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }}>
+                    {!preview ? <Button variant="secondary" onClick={() => void previewTemplateSetupUpdate(record)} disabled={templateSetupUpdateBusy === key}>
+                      {templateSetupUpdateBusy === key ? "Checking migration…" : "Review setup migration"}
+                    </Button> : <>
+                      <strong>Review setup fields · {preview.installed_listing_id} → {preview.source_listing_id}</strong>
+                      <p style={{ margin: "4px 0 8px", color: "var(--text3)" }}>The preview is read-only. Existing values are retained or moved by the signed migration. Fill any new required fields, then choose Apply to update this installation's setup schema and provenance. No project code or provider resources change, and automatic rollback is not available.</p>
+                      <strong>Signed migration actions</strong>
+                      {preview.setup_migration_operations.length ? <ul>{preview.setup_migration_operations.map((operation, index) => <li key={`${operation.kind}:${index}`}>
+                        {operation.kind === "rename" ? `Move ${operation.fromProjectId}.${operation.fromFieldId} to ${operation.toProjectId}.${operation.toFieldId}` :
+                          operation.kind === "drop" ? `Discard saved value ${operation.projectId}.${operation.fieldId}` : `Set a default for ${operation.projectId}.${operation.fieldId}`}
+                      </li>)}</ul> : <p>Fields with matching project and field IDs retain their saved values. No explicit field migration actions.</p>}
+                      {preview.setup_schema_groups.map(group => <fieldset key={group.project_id} style={{ border: 0, padding: 0, margin: "10px 0" }}>
+                        <legend style={{ fontWeight: 600 }}>{group.project_name}</legend>
+                        {group.fields.filter(field => isBlueprintSetupFieldVisible(group.fields, field, values[group.project_id] ?? {})).map(field => <TemplateSetupInput
+                          key={`${group.project_id}:${field.id}`} projectId={group.project_id} field={field} value={values[group.project_id]?.[field.id]}
+                          onChange={value => {
+                            setTemplateSetupUpdateValues(current => {
+                              const next = { ...current }, projectValues = { ...(next[key]?.[group.project_id] ?? preview.values[group.project_id] ?? {}) };
+                              if (value === undefined) delete projectValues[field.id]; else projectValues[field.id] = value;
+                              for (const candidate of group.fields) if (!isBlueprintSetupFieldVisible(group.fields, candidate, projectValues)) delete projectValues[candidate.id];
+                              next[key] = { ...(next[key] ?? preview.values), [group.project_id]: projectValues };
+                              return next;
+                            });
+                            setTemplateSetupUpdateClearedFields(current => {
+                              const existing = current[key] ?? [];
+                              const has = existing.some(item => item.project_id === group.project_id && item.field_id === field.id);
+                              const nextFields = value === undefined
+                                ? has ? existing : [...existing, { project_id: group.project_id, field_id: field.id }]
+                                : existing.filter(item => item.project_id !== group.project_id || item.field_id !== field.id);
+                              return { ...current, [key]: nextFields };
+                            });
+                          }} />)}
+                      </fieldset>)}
+                      {missing.length > 0 && <p role="alert">Required setup fields need values: {missing.join(", ")}</p>}
+                      {preview.setup_migration_operations.some(operation => operation.kind === "drop") && <label style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "8px 0" }}>
+                        <input type="checkbox" checked={templateSetupUpdateDataLossConfirmed[key] === true} onChange={event => setTemplateSetupUpdateDataLossConfirmed(current => ({ ...current, [key]: event.target.checked }))} />
+                        <span>I reviewed the signed migration and approve removing the listed saved values. This setup-only update has no automatic rollback.</span>
+                      </label>}
+                      <Button onClick={() => void confirmTemplateSetupUpdate(record)} disabled={templateSetupUpdateBusy === key || missing.length > 0
+                        || (preview.setup_migration_operations.some(operation => operation.kind === "drop") && templateSetupUpdateDataLossConfirmed[key] !== true)}>
+                        {templateSetupUpdateBusy === key ? "Applying…" : "Apply setup update"}
+                      </Button>
+                      <Button variant="secondary" onClick={() => {
+                        setTemplateSetupUpdatePreviews(current => { const next = { ...current }; delete next[key]; return next; });
+                        setTemplateSetupUpdateValues(current => { const next = { ...current }; delete next[key]; return next; });
+                        setTemplateSetupUpdateClearedFields(current => { const next = { ...current }; delete next[key]; return next; });
+                        setTemplateSetupUpdateDataLossConfirmed(current => { const next = { ...current }; delete next[key]; return next; });
+                      }}>Close review</Button>
+                    </>}
+                  </div>;
+                })()}
                 <dt>Required extensions</dt><dd style={{ margin: 0 }}>{record.required_extension_ids.length ? record.required_extension_ids.join(", ") : "None recorded"}</dd>
                 <dt>Generated projects</dt><dd style={{ margin: 0 }}>{record.project_ids.length ? record.project_ids.join(", ") : "None recorded"}</dd>
                 <dt>Created</dt><dd style={{ margin: 0 }}>{new Date(record.created_at).toLocaleString()}</dd>

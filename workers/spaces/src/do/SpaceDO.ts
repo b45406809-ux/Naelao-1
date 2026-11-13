@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2544,6 +2544,25 @@ const MIGRATIONS: Migration[] = [
     description: "track extension settings schema revisions for owner-reviewed migration",
     up: `ALTER TABLE extension_installation_settings ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1 CHECK (schema_version IN (1,2));`,
   },
+  {
+    version: 122,
+    description: "audit owner-reviewed setup-only Space Template schema updates",
+    up: `CREATE TABLE space_template_setup_update_events (
+      event_id TEXT PRIMARY KEY,
+      space_id TEXT NOT NULL,
+      blueprint_id TEXT NOT NULL,
+      from_artifact_sha256 TEXT NOT NULL CHECK(length(from_artifact_sha256)=64),
+      to_artifact_sha256 TEXT NOT NULL CHECK(length(to_artifact_sha256)=64),
+      from_listing_id TEXT NOT NULL,
+      to_listing_id TEXT NOT NULL,
+      from_setup_revision INTEGER NOT NULL CHECK(from_setup_revision >= 0),
+      to_setup_revision INTEGER NOT NULL CHECK(to_setup_revision = from_setup_revision + 1),
+      actor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_space_template_setup_updates_recent
+      ON space_template_setup_update_events(space_id,blueprint_id,created_at DESC);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3822,6 +3841,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           return Response.json({ error_code: "forbidden" }, { status: 403 });
         return this.listBlueprintInstallations(url, tenantId);
       }
+      if (method === "POST" && url.pathname === "/blueprint-installation-setup-update/preview")
+        return this.handleTemplateSetupUpdate(request, url, false);
+      if (method === "POST" && url.pathname === "/blueprint-installation-setup-update/apply")
+        return this.handleTemplateSetupUpdate(request, url, true);
       if (method === "POST" && url.pathname === "/artifact-validation/check") return this.checkArtifactValidation(request);
       if (method === "POST" && url.pathname === "/artifact-validation/approval") return this.attachArtifactApproval(request);
       if (method === "POST" && url.pathname === "/artifact-validation/resume") return this.resumeArtifactValidation(request);
@@ -12397,6 +12420,109 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         error_code: row.error_code, created_at: row.created_at, updated_at: row.updated_at };
     });
     return Response.json({ installations }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  /** Preview or apply an owner-approved setup-only update from a host-verified signed artifact. */
+  private async handleTemplateSetupUpdate(request: Request, url: URL, apply: boolean): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    const role = request.headers.get("x-naelao-role") ?? "";
+    if (!tenantId || !userId || !["owner", "admin"].includes(role)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    const spaceId = url.searchParams.get("space_id") ?? "", blueprintId = url.searchParams.get("blueprint_id") ?? "";
+    if (url.searchParams.get("tenant_id") !== tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(blueprintId))
+      return Response.json({ error_code: "template_setup_update_invalid_scope" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    let body: {
+      expected_artifact_sha256?: string; expected_listing_id?: string; expected_setup_revision?: number;
+      source_listing_id?: string; source_artifact_sha256?: string; setup_schema_version?: 1 | 2 | null;
+      setup_schema_groups?: unknown; setup_migrations?: unknown; owner_values?: unknown;
+      setup_values?: unknown; clear_fields?: unknown; confirmed?: unknown; confirm_data_loss?: unknown;
+    };
+    try {
+      const bytes = await readBoundedRequestBytes(request, 256 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+      const allowed = ["expected_artifact_sha256", "expected_listing_id", "expected_setup_revision", "source_listing_id",
+        "source_artifact_sha256", "setup_schema_version", "setup_schema_groups", "setup_migrations", "owner_values", "setup_values", "clear_fields", "confirmed", "confirm_data_loss"];
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))) throw new Error("invalid_body");
+    } catch (error) {
+      const status = error instanceof RequestBodyTooLargeError ? 413 : 400;
+      return Response.json({ error_code: status === 413 ? "request_body_too_large" : "template_setup_update_invalid" }, { status, headers: { "cache-control": "private, no-store" } });
+    }
+    if (typeof body.expected_artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expected_artifact_sha256)
+      || typeof body.expected_listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.expected_listing_id)
+      || !Number.isSafeInteger(body.expected_setup_revision) || Number(body.expected_setup_revision) < 0
+      || typeof body.source_listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.source_listing_id)
+      || typeof body.source_artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.source_artifact_sha256)
+      || (body.setup_schema_version !== null && body.setup_schema_version !== 1 && body.setup_schema_version !== 2)
+      || (apply ? body.confirmed !== true : body.confirmed !== undefined))
+      return Response.json({ error_code: "template_setup_update_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    const installation = queryOne<{
+      artifact_sha256: string; listing_id: string | null; setup_schema_version: number | null; setup_revision: number;
+      setup_schema_json: string | null; setup_values_json: string | null; status: string;
+    }>(this.ctx.storage.sql as never,
+    `SELECT artifact_sha256,listing_id,setup_schema_version,setup_revision,setup_schema_json,setup_values_json,status
+       FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?`, spaceId, blueprintId);
+    if (!installation || installation.status !== "installed") return Response.json({ error_code: "template_setup_update_installation_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    if (installation.artifact_sha256 !== body.expected_artifact_sha256 || installation.listing_id !== body.expected_listing_id
+      || installation.setup_revision !== body.expected_setup_revision)
+      return Response.json({ error_code: "template_setup_update_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    if (!installation.setup_schema_json) return Response.json({ error_code: "template_setup_update_legacy_schema_unavailable" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    try {
+      const oldGroups = validateBlueprintSetupGroups(JSON.parse(installation.setup_schema_json));
+      const newGroups = validateBlueprintSetupGroups(body.setup_schema_groups);
+      if ((newGroups.length === 0 && body.setup_schema_version !== null)
+        || (newGroups.length > 0 && body.setup_schema_version !== 1 && body.setup_schema_version !== 2))
+        return Response.json({ error_code: "template_setup_update_schema_version_invalid" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      if (JSON.stringify(oldGroups) === JSON.stringify(newGroups))
+        return Response.json({ error_code: "template_setup_update_schema_unchanged" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      const oldSchemaSha256 = await sha256Hex(JSON.stringify(oldGroups));
+      const migrations = validateBlueprintSetupMigrations(body.setup_migrations, newGroups);
+      const migration = migrations.find(value => value.fromArtifactSha256 === installation.artifact_sha256
+        && value.fromSchemaSha256 === oldSchemaSha256);
+      if (!migration) return Response.json({ error_code: "template_setup_update_migration_unavailable" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      const dropsValues = migration.operations.some(operation => operation.kind === "drop");
+      if (apply && dropsValues && body.confirm_data_loss !== true)
+        return Response.json({ error_code: "template_setup_update_data_loss_confirmation_required" }, { status: 400, headers: { "cache-control": "private, no-store" } });
+      const rawCurrentValues = JSON.parse(installation.setup_values_json ?? "{}");
+      const submittedValues = apply ? body.setup_values : body.owner_values;
+      const preview = migrateBlueprintSetupValues(oldGroups, newGroups, rawCurrentValues, migration, {
+        artifactSha256: installation.artifact_sha256, schemaSha256: oldSchemaSha256,
+      }, submittedValues ?? {}, apply ? body.clear_fields ?? [] : []);
+      if (!apply) return Response.json({ blueprint_id: blueprintId, installed_artifact_sha256: installation.artifact_sha256,
+        installed_listing_id: installation.listing_id, setup_revision: installation.setup_revision,
+        source_artifact_sha256: body.source_artifact_sha256, source_listing_id: body.source_listing_id,
+        setup_schema_version: body.setup_schema_version, setup_schema_groups: newGroups,
+        setup_migration_operations: migration.operations, values: preview.values, missing_required: preview.missingRequired,
+      }, { headers: { "cache-control": "private, no-store" } });
+      if (preview.missingRequired.length) return Response.json({ error_code: "template_setup_update_values_required",
+        missing_required: preview.missingRequired }, { status: 422, headers: { "cache-control": "private, no-store" } });
+      const finalValues = validateBlueprintSetupValuesForSchema(newGroups, preview.values);
+      const updatedAt = new Date().toISOString(), nextRevision = installation.setup_revision + 1, eventId = crypto.randomUUID();
+      let applied = false;
+      this.ctx.storage.transactionSync(() => {
+        const changed = this.ctx.storage.sql.exec(`UPDATE space_blueprint_installations
+          SET artifact_sha256=?,listing_id=?,setup_schema_version=?,setup_schema_json=?,setup_values_json=?,setup_revision=?,updated_at=?
+          WHERE space_id=? AND blueprint_id=? AND status='installed' AND artifact_sha256=? AND listing_id=? AND setup_revision=?`,
+        body.source_artifact_sha256, body.source_listing_id, body.setup_schema_version ?? null, JSON.stringify(newGroups),
+        JSON.stringify(finalValues), nextRevision, updatedAt, spaceId, blueprintId, installation.artifact_sha256,
+        installation.listing_id, installation.setup_revision).rowsWritten;
+        if (changed !== 1) return;
+        this.ctx.storage.sql.exec(`INSERT INTO space_template_setup_update_events(event_id,space_id,blueprint_id,
+          from_artifact_sha256,to_artifact_sha256,from_listing_id,to_listing_id,from_setup_revision,to_setup_revision,actor_id,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`, eventId, spaceId, blueprintId, installation.artifact_sha256,
+        body.source_artifact_sha256, installation.listing_id, body.source_listing_id, installation.setup_revision,
+        nextRevision, userId, updatedAt);
+        applied = true;
+      });
+      if (!applied) return Response.json({ error_code: "template_setup_update_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      return Response.json({ applied: true, event_id: eventId, blueprint_id: blueprintId,
+        artifact_sha256: body.source_artifact_sha256, listing_id: body.source_listing_id,
+        setup_revision: nextRevision, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+    } catch {
+      return Response.json({ error_code: "template_setup_update_invalid_or_incompatible" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    }
   }
 
   /** Persist incomplete owner-reviewed setup values against the exact signed Template context. */
