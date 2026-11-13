@@ -2539,6 +2539,11 @@ const MIGRATIONS: Migration[] = [
       UPDATE space_coordination_entries SET last_confirmed_at=created_at,last_confirmed_by=approved_by
         WHERE last_confirmed_at IS NULL;`,
   },
+  {
+    version: 121,
+    description: "track extension settings schema revisions for owner-reviewed migration",
+    up: `ALTER TABLE extension_installation_settings ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1 CHECK (schema_version IN (1,2));`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -12291,13 +12296,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (request.method === "PATCH" && (!capabilities.has("extension.settings.configure") || !permissions.has("extension.settings.configure")))
       return Response.json({ error_code: "extension_settings_write_not_declared" }, { status: 403, headers: { "cache-control": "private, no-store" } });
 
-    const current = queryOne<{ settings_json: string; revision: number; updated_at: string }>(this.ctx.storage.sql as never,
-      "SELECT settings_json,revision,updated_at FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+    const current = queryOne<{ settings_json: string; revision: number; schema_version: number; updated_at: string }>(this.ctx.storage.sql as never,
+      "SELECT settings_json,revision,schema_version,updated_at FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
     if (request.method === "GET") {
       let settings: Record<string, unknown>;
+      let migrationRequired = Boolean(current && current.schema_version !== schema.schemaVersion);
       try { settings = validateExtensionSettingsValues(manifest, current ? JSON.parse(current.settings_json) : {}, { allowIncomplete: !current }); }
-      catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
-      return Response.json({ schema, settings, revision: current?.revision ?? 0,
+      catch {
+        migrationRequired = true;
+        let prior: unknown;
+        try { prior = current ? JSON.parse(current.settings_json) : {}; }
+        catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
+        if (!prior || typeof prior !== "object" || Array.isArray(prior)) prior = {};
+        const previous = prior as Record<string, unknown>;
+        settings = {};
+        for (const field of schema.fields) {
+          if (!Object.prototype.hasOwnProperty.call(previous, field.id)) continue;
+          try {
+            settings = validateExtensionSettingsValues(manifest, { ...settings, [field.id]: previous[field.id] }, { allowIncomplete: true });
+          } catch { /* Keep only values accepted by the new host schema. */ }
+        }
+        try { settings = validateExtensionSettingsValues(manifest, settings, { allowIncomplete: true }); }
+        catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
+      }
+      return Response.json({ schema, settings, revision: current?.revision ?? 0, migration_required: migrationRequired,
         ...(projectScoped ? { can_configure: request.headers.get("x-naelao-project-manage") === "1" || projectUserOwner } : {}),
         ...(current ? { updated_at: current.updated_at } : {}) }, { headers: { "cache-control": "private, no-store" } });
     }
@@ -12316,16 +12338,35 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "extension_settings_storage_unavailable" }, { status: 503 });
     const updatedAt = new Date().toISOString();
     const outcome = this.ctx.storage.transactionSync(() => {
+      const active = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT manifest_json FROM extension_installation_manifests
+         WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS ? AND user_id IS ? AND scope=? AND status='active'`,
+        row.instance_id, tenantId, spaceId, projectScoped ? projectId : null, row.scope === "PROJECT_USER" ? row.user_id : null, row.scope);
+      if (!active) return "installation_unavailable";
+      let activeSchema: ExtensionManifest["settingsSchema"];
+      try {
+        const raw = JSON.parse(active.manifest_json) as ExtensionManifest;
+        const activeManifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+        const activeCapabilities = new Set(activeManifest.capabilityRequirements), activePermissions = new Set(activeManifest.declaredPermissions);
+        if (!activeCapabilities.has("extension.settings.read") || !activePermissions.has("extension.settings.read")) return "settings_unavailable";
+        if (!activeCapabilities.has("extension.settings.configure") || !activePermissions.has("extension.settings.configure")) return "write_not_declared";
+        activeSchema = activeManifest.settingsSchema;
+      } catch { return "schema_changed"; }
+      if (!activeSchema || JSON.stringify(activeSchema) !== JSON.stringify(schema)) return "schema_changed";
       const latest = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
         "SELECT revision FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
       if ((latest?.revision ?? 0) !== body.revision) return "revision_conflict";
-      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at) VALUES(?,?,?,?)
-        ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at`,
-      row.instance_id, JSON.stringify(settings), body.revision! + 1, updatedAt);
+      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at,schema_version) VALUES(?,?,?,?,?)
+        ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at,schema_version=excluded.schema_version`,
+      row.instance_id, JSON.stringify(settings), body.revision! + 1, updatedAt, schema.schemaVersion);
       return "ok";
     });
+    if (outcome === "installation_unavailable") return Response.json({ error_code: "extension_settings_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    if (outcome === "settings_unavailable") return Response.json({ error_code: "extension_settings_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    if (outcome === "write_not_declared") return Response.json({ error_code: "extension_settings_write_not_declared" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    if (outcome === "schema_changed") return Response.json({ error_code: "extension_settings_schema_changed" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
-    return Response.json({ schema, settings, revision: body.revision! + 1, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+    return Response.json({ schema, settings, revision: body.revision! + 1, migration_required: false, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
   }
 
   /** Return the non-secret installation receipt fields for owner/admin lifecycle review. */

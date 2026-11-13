@@ -6,7 +6,7 @@ import type { BlueprintSetupField, ExtensionSettingsSchema } from "@naelao/agent
 import { callProjectExtensionSettings, callSpaceSharedExtensionApi, type SessionCredentials } from "@/lib/api";
 
 type Value = string | number | boolean;
-type Snapshot = { schema: ExtensionSettingsSchema; settings: Record<string, Value>; revision: number; can_configure?: boolean };
+type Snapshot = { schema: ExtensionSettingsSchema; settings: Record<string, Value>; revision: number; can_configure?: boolean; migration_required?: boolean };
 
 export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConfigure, projectScope }: {
   spaceId: string; appId: string; schema: ExtensionSettingsSchema; session: SessionCredentials; canConfigure: boolean;
@@ -19,6 +19,7 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [serverCanConfigure, setServerCanConfigure] = React.useState<boolean | null>(null);
+  const [migrationRequired, setMigrationRequired] = React.useState(false);
   const mayConfigure = canConfigure && serverCanConfigure !== false;
   const request = React.useCallback((method: "GET" | "PATCH", body?: unknown) => projectScope
     ? callProjectExtensionSettings(spaceId, projectScope.projectId, projectScope.installationId, session, { method, ...(body === undefined ? {} : { body }) })
@@ -30,6 +31,7 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
       const snapshot = await request("GET") as Snapshot;
       setValues(snapshot.settings ?? {}); setRevision(snapshot.revision);
       setServerCanConfigure(typeof snapshot.can_configure === "boolean" ? snapshot.can_configure : null);
+      setMigrationRequired(snapshot.migration_required === true);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load extension settings."); }
     finally { setLoading(false); }
   }, [request]);
@@ -43,7 +45,8 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
     setSaving(true); setError(null); setNotice(null);
     try {
       const snapshot = await request("PATCH", { settings: values, revision }) as Snapshot;
-      setValues(snapshot.settings); setRevision(snapshot.revision); setNotice("Settings saved for this installation.");
+      setValues(snapshot.settings); setRevision(snapshot.revision); setMigrationRequired(snapshot.migration_required === true);
+      setNotice(snapshot.migration_required ? "Settings still need review for the current schema." : "Settings saved for this installation.");
       setServerCanConfigure(typeof snapshot.can_configure === "boolean" ? snapshot.can_configure : null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save extension settings."); }
     finally { setSaving(false); }
@@ -73,11 +76,16 @@ export function ExtensionSettingsForm({ spaceId, appId, schema, session, canConf
         onChange={event => change(field, event.target.value === "" && !field.required ? undefined : event.target.value)} />{help}
     </label>;
   }
+  function isVisible(field: BlueprintSetupField) {
+    const condition = "visibleWhen" in field ? field.visibleWhen : undefined;
+    return !condition || values[condition.fieldId] === condition.equals;
+  }
   return <section aria-label="Extension settings" style={{ border: "1px solid var(--border, #ddd)", borderRadius: 10, padding: 16, marginBottom: 16 }}>
     <h2 style={{ marginTop: 0 }}>Installation settings</h2>
     <p style={{ color: "var(--text3)", fontSize: 13 }}>These values are validated by the host and saved for this installation. Manage provider credentials in Connections.</p>
+    {migrationRequired && <p role="status" style={{ color: "var(--warning, #8a5a00)", fontSize: 13 }}>This extension changed its settings schema. Review the compatible values and save to confirm the current configuration. Incompatible or retired fields are omitted from this form.</p>}
     {projectScope && !loading && serverCanConfigure === false && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>You can review this installation's settings. Project management permission is required to change them.</p>}
-    {loading ? <p role="status">Loading settings…</p> : schema.fields.map(renderField)}
+    {loading ? <p role="status">Loading settings…</p> : schema.fields.filter(isVisible).map(renderField)}
     {error && <p role="alert" style={{ color: "var(--danger, #c33)" }}>{error}</p>}
     {notice && <p role="status">{notice}</p>}
     <div style={{ display: "flex", gap: 8 }}>

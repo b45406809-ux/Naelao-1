@@ -76,6 +76,21 @@ describe("Space-shared extension settings", () => {
     expect(await saved.json()).toMatchObject({ revision: 1, settings: { greeting: "Hello" } });
     expect(await (await request("GET", false)).json()).toMatchObject({ revision: 1, can_configure: false, settings: { greeting: "Hello" } });
 
+    storage.sql.exec("UPDATE extension_installation_settings SET settings_json=? WHERE instance_id=?",
+      JSON.stringify({ greeting: "Hello", retired_field: "legacy" }), installationId);
+    const nextManifest = { ...manifest, settingsSchema: { schemaVersion: 2, fields: [
+      { id: "greeting", type: "text" as const, label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+      { id: "language", type: "select" as const, label: "Language", defaultValue: "en", options: [{ value: "en", label: "English" }, { value: "fr", label: "French" }] },
+    ] } };
+    storage.sql.exec("UPDATE installed_extensions SET manifest_json=? WHERE extension_id=?", JSON.stringify(nextManifest), manifest.id);
+    const migrationPreview = await request("GET", true);
+    const previewBody = await migrationPreview.json() as { settings: Record<string, unknown> };
+    expect(previewBody).toMatchObject({ migration_required: true, revision: 1, schema: { schemaVersion: 2 }, settings: { greeting: "Hello", language: "en" } });
+    expect(previewBody.settings).not.toHaveProperty("retired_field");
+    const migrated = await request("PATCH", true, "project-a", { settings: { greeting: "Hello", language: "fr" }, revision: 1 });
+    expect(await migrated.json()).toMatchObject({ migration_required: false, revision: 2, settings: { greeting: "Hello", language: "fr" } });
+    expect(await (await request("GET", true)).json()).toMatchObject({ migration_required: false, revision: 2, schema: { schemaVersion: 2 } });
+
     const userInstall = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: { ...manifest, id: "ext_project_user_voice" }, installedBy: "user-a", tenantId: "tenant", spaceId: "space",
         scope: "PROJECT_USER", projectId: "project-a", userId: "user-a", gatekeeperCapabilities: manifest.capabilityRequirements }) }));
@@ -89,10 +104,28 @@ describe("Space-shared extension settings", () => {
     expect((await userRequest("PATCH", "user-a", { settings: { greeting: "Mine" }, revision: 0 })).status).toBe(200);
     expect((await userRequest("GET", "user-b")).status).toBe(404);
 
+    let releaseBody!: () => void;
+    let markBodyRead!: () => void;
+    const bodyRead = new Promise<void>(resolve => { markBodyRead = resolve; });
+    const bodyStream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        markBodyRead();
+        return new Promise<void>(resolve => {
+          releaseBody = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify({ settings: { greeting: "Late write", language: "fr" }, revision: 2 }))); controller.close(); resolve(); };
+        });
+      },
+    });
+    const pendingWrite = space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId,
+    })}`, { method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "content-type": "application/json" },
+      body: bodyStream, duplex: "half" } as RequestInit));
+    await bodyRead;
     const removed = await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({
       instance_id: installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a",
     })}`, { method: "DELETE" }));
     expect(removed.status).toBe(200);
+    releaseBody();
+    expect((await pendingWrite).status).toBe(404);
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
     expect((await request("GET")).status).toBe(404);
   });
