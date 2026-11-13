@@ -3038,11 +3038,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(commitContext ? { activeTask: true } : {}),
     });
 
-    env.transferContainerArtifact = async input => {
+    const invokeSidecarArtifactRoute = async (installationId: string, requestId: string, route: string, method: "GET" | "POST", body?: unknown) => {
       const runId = env.runId;
       if (airGappedOnly || !userId || !runId || !await nativeGrantActive({ tenantId, spaceId, projectId, agentId, userId, runId }))
         throw new Error("environment_sidecar_transfer_denied");
-      const installation = (await installedContainers()).find(item => item.installationId === input.installationId
+      const installation = (await installedContainers()).find(item => item.installationId === installationId
         && item.tenantId === tenantId && item.spaceId === spaceId && item.projectId === projectId
         && (!item.userId || item.userId === userId));
       if (!installation) throw new Error("container_active_installation_required");
@@ -3052,22 +3052,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         : this.env[approved.binding];
       if (!namespace) throw new Error("container_binding_unavailable");
       const scope: ContainerInvocationScope = { tenantId, spaceId, ...(projectId ? { projectId } : {}), actorId: userId,
-        agentId, runId, executionId: `artifact-${input.requestId}`, ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
+        agentId, runId, executionId: `artifact-${requestId}`, ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
         installationId: installation.installationId, ...(installation.scope ? { installationScope: installation.scope } : {}),
         image: installation.contract.image, ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
         ...(approved.schedulingPolicy === "durable_object" ? { dynamicImage: true } : {}), timeoutMs: 5000, deadline: Date.now() + 10000 };
       validateContainerScope(scope);
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + workspaceBranchScope(scope.workspaceBranch)));
-      const response = await stub.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
+      return stub.fetch(new Request(`http://sandbox${route}`, { method,
+        headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), "x-naelao-container-scope": JSON.stringify(scope),
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
-        body: JSON.stringify(input) }));
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }));
+    };
+
+    env.transferContainerArtifact = async input => {
+      const response = await invokeSidecarArtifactRoute(input.installationId, input.requestId, "/_internal/artifact-transfer", "POST", input);
       const result = await response.json<{ status?: string; request_id?: string; direction?: string; path?: string; digest?: string; bytes?: number; error_code?: string }>()
         .catch(() => ({} as { status?: string; request_id?: string; direction?: string; path?: string; digest?: string; bytes?: number; error_code?: string }));
       if (!response.ok || !result.request_id || !result.digest || !Number.isSafeInteger(result.bytes))
         throw new Error(result.error_code ?? `environment_sidecar_transfer_failed:${response.status}`);
       return { request_id: result.request_id, direction: input.direction, path: input.path, digest: result.digest,
         bytes: result.bytes!, status: result.status === "complete" ? "complete" as const : "indeterminate" as const };
+    };
+    env.reportContainerArtifactTransferOutcome = async input => {
+      const response = await invokeSidecarArtifactRoute(input.installationId, input.requestId, "/_internal/artifact-transfer/outcome", "POST", input);
+      if (!response.ok) throw new Error(`environment_sidecar_transfer_outcome_failed:${response.status}`);
     };
 
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same

@@ -111,6 +111,39 @@ describe("environment tool host integration", () => {
     expect(storage.objects.has(sourcePath)).toBe(true);
     expect(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes).toEqual(new TextEncoder().encode("sidecar output"));
   });
+  it("records an export publication conflict while preserving the immutable artifact", async () => {
+    const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.scriptsBucket = storage.bucket;
+    ctx.env.withProjectWorkspaceMutation = async operation => operation();
+    const bytes = new TextEncoder().encode("sidecar output");
+    const artifact = await publishEnvironmentArtifactBytes(ctx.env, bytes, "sidecar:runtime:out/result.txt");
+    await storage.bucket.put(workspacePrefix(ctx.env) + "out/result.txt", new TextEncoder().encode("newer workspace content"), { customMetadata: {} });
+    ctx.env.transferContainerArtifact = vi.fn(async input => ({ request_id: input.requestId, direction: input.direction, path: input.path,
+      digest: artifact.digest, bytes: artifact.bytes, status: "complete" as const }));
+    ctx.env.reportContainerArtifactTransferOutcome = vi.fn(async () => undefined);
+
+    await expect(environments.operations["environment.sidecar_artifact_export"]!({ installation_id: "runtime", source_path: "out/result.txt",
+      destination_path: "out/result.txt", expected_hash: null, request_id: "conflicted-sidecar-export" }, ctx)).rejects.toThrow("changed concurrently");
+    expect(ctx.env.transferContainerArtifact).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: "out/result.txt", expectedHash: null }));
+    expect(ctx.env.reportContainerArtifactTransferOutcome).toHaveBeenCalledWith(expect.objectContaining({ requestId: "conflicted-sidecar-export",
+      outcome: "workspace_publication_conflict", workspacePath: "out/result.txt", expectedHash: null }));
+    expect(new TextDecoder().decode(storage.objects.get(workspacePrefix(ctx.env) + "out/result.txt")?.bytes)).toBe("newer workspace content");
+    expect(storage.objects.has(`workspace-artifacts/${ctx.env.tenantId}/${ctx.env.spaceId}/${ctx.env.projectId}/environment/${artifact.digest}`)).toBe(true);
+  });
+  it("records conflicts reported by the checked coordinator publisher", async () => {
+    const { ctx } = fixture(), storage = memoryBucket();
+    ctx.env.scriptsBucket = storage.bucket;
+    const artifact = await publishEnvironmentArtifactBytes(ctx.env, new TextEncoder().encode("checked sidecar output"), "sidecar:runtime:out/result.txt");
+    ctx.env.publishWorkspaceChecked = async () => { throw new Error("workspace_checked_publication_failed:409"); };
+    ctx.env.transferContainerArtifact = vi.fn(async input => ({ request_id: input.requestId, direction: input.direction, path: input.path,
+      digest: artifact.digest, bytes: artifact.bytes, status: "complete" as const }));
+    ctx.env.reportContainerArtifactTransferOutcome = vi.fn(async () => undefined);
+
+    await expect(environments.operations["environment.sidecar_artifact_export"]!({ installation_id: "runtime", source_path: "out/result.txt",
+      destination_path: "out/result.txt", expected_hash: null, request_id: "checked-conflict-export" }, ctx)).rejects.toThrow("workspace_checked_publication_failed:409");
+    expect(ctx.env.reportContainerArtifactTransferOutcome).toHaveBeenCalledWith(expect.objectContaining({ outcome: "workspace_publication_conflict",
+      requestId: "checked-conflict-export" }));
+  });
   it("exports larger artifacts as bounded chunks and finalizes only the last chunk", async () => {
     const { ctx } = fixture(), bytes = new Uint8Array(Array.from({ length: 20_000 }, (_, index) => index % 251));
     const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();

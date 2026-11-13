@@ -6,6 +6,7 @@ import {
   getProjectMainRuntimeProfile,
   getWorkspaceRetentionPolicy,
   getSidecarRuntimeExecutionProfile,
+  getSidecarArtifactTransfers,
   listContainerInstallations,
   resetManagedRuntimeProfile,
   saveProjectMainRuntimeProfile,
@@ -14,12 +15,14 @@ import {
   type ManagedRuntimeProfile,
   type ProjectMainRuntimeProfile,
   type SidecarRuntimeExecutionProfile,
+  type SidecarArtifactTransferReceipt,
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
 } from "@/lib/api";
 
 type ProfileRow = { installationId: string; extensionName: string; containerId: string; branch?: string; profile?: ManagedRuntimeProfile; error?: string;
-  executionProfile?: SidecarRuntimeExecutionProfile; executionProfileDraft?: number; executionProfileError?: string };
+  executionProfile?: SidecarRuntimeExecutionProfile; executionProfileDraft?: number; executionProfileError?: string;
+  transfers?: SidecarArtifactTransferReceipt[]; transferError?: string };
 
 function asLocalDateTime(value?: string) {
   if (!value) return "";
@@ -46,6 +49,8 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
   const [legalHoldExpiryDraft, setLegalHoldExpiryDraft] = React.useState("");
   const [retentionReasonDraft, setRetentionReasonDraft] = React.useState("");
   const [retentionError, setRetentionError] = React.useState("");
+  const [branchDraft, setBranchDraft] = React.useState("");
+  const [branchScope, setBranchScope] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -92,15 +97,19 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
           return [...ids].map(containerId => ({ installationId: instance.instance_id ?? "", extensionName: manifest.name ?? manifest.id ?? "Installed extension", containerId }));
         }).filter(target => target.installationId);
       const profiles = await Promise.all(targets.map(async target => {
-        const [runtime, execution] = await Promise.allSettled([
-          getManagedRuntimeProfile(spaceId, projectId, target.installationId, target.containerId, stableSession),
+        const branch = branchScope || undefined;
+        const [runtime, execution, transfers] = await Promise.allSettled([
+          getManagedRuntimeProfile(spaceId, projectId, target.installationId, target.containerId, stableSession, branch),
           getSidecarRuntimeExecutionProfile(spaceId, projectId, target.installationId, target.containerId, stableSession),
+          getSidecarArtifactTransfers(spaceId, projectId, target.installationId, target.containerId, stableSession, branch),
         ]);
         return {
-          ...target,
+          ...target, ...(branch ? { branch } : {}),
           ...(runtime.status === "fulfilled" ? { profile: runtime.value } : { error: runtime.reason instanceof Error ? runtime.reason.message : "Runtime status unavailable" }),
           ...(execution.status === "fulfilled" ? { executionProfile: execution.value, executionProfileDraft: execution.value.maxExecutionSeconds }
             : { executionProfileError: execution.reason instanceof Error ? execution.reason.message : "Execution limit unavailable" }),
+          ...(transfers.status === "fulfilled" ? { transfers: transfers.value.transfers }
+            : { transferError: transfers.reason instanceof Error ? transfers.reason.message : "Artifact transfer status unavailable" }),
         };
       }));
       setRows(profiles);
@@ -108,7 +117,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
       setLoadError(true);
       setRows([]);
     } finally { setLoading(false); }
-  }, [spaceId, projectId, stableSession]);
+  }, [spaceId, projectId, stableSession, branchScope]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
@@ -268,6 +277,14 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
       Set a per-container execution ceiling within the image limit and inspect or reset saved container state. Changes affect new executions; they do not interrupt a run already admitted.
     </p>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 12 }}>
+      Workspace branch for runtime and transfer receipts
+      <input value={branchDraft} maxLength={160} placeholder="Default branch" disabled={busy !== null}
+        onChange={event => setBranchDraft(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter") setBranchScope(branchDraft.trim()); }} />
+    </label>
+    <button type="button" className="btn btn-ghost btn-sm" style={{ margin: "0 0 10px 8px" }} disabled={busy !== null || loading}
+      onClick={() => setBranchScope(branchDraft.trim())}>Load branch status</button>
     {loading ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading runtime state…</p>
       : loadError ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Runtime inventory is unavailable. Check the deployed container configuration.</p>
       : rows.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 13 }}>No active project containers are installed.</p>
@@ -291,6 +308,30 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
                 onClick={() => void saveSidecarExecutionProfile(row)}>{busy === `${row.installationId}:${row.containerId}:execution` ? "Saving…" : "Save limit"}</button>
               <span style={{ color: "var(--text3)", fontSize: 11 }}>Maximum {row.executionProfile.maximumSeconds}s from the approved image</span>
             </div> : row.executionProfileError && <div style={{ color: "var(--text3)", fontSize: 12, marginTop: 8 }}>{row.executionProfileError}</div>}
+            {row.transferError ? <div role="status" style={{ color: "var(--text3)", fontSize: 12, marginTop: 8 }}>Transfer receipts unavailable: {row.transferError}</div>
+              : <details style={{ marginTop: 8, fontSize: 12 }}>
+                <summary>{row.transfers?.length ?? 0} recent artifact transfers (owner/admin)</summary>
+                {row.transfers?.length ? <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                  {row.transfers.map(receipt => {
+                    const conflict = receipt.status === "conflicted" || receipt.publicationStatus === "conflicted";
+                    const pending = receipt.status === "dispatching" || receipt.status === "indeterminate" || receipt.publicationStatus === "pending";
+                    const digest = receipt.result?.digest;
+                    return <div key={receipt.requestId} style={{ borderTop: "1px solid var(--border)", paddingTop: 7 }}>
+                      <strong>{receipt.direction} · {conflict ? "needs review" : pending ? "outcome pending" : receipt.status}</strong>
+                      <div>Request ID: {receipt.requestId}</div>
+                      <div>{receipt.path}{receipt.workspacePath ? ` → ${receipt.workspacePath}` : ""} · {new Date(receipt.updatedAt).toLocaleString()}</div>
+                      {digest && <div>Artifact SHA-256: {digest} · {receipt.result?.bytes ?? 0} bytes</div>}
+                      {receipt.expectedHash !== undefined && <div>Expected workspace revision: {receipt.expectedHash ?? "absent"}</div>}
+                      {receipt.currentHash !== undefined && <div>Observed sidecar revision: {receipt.currentHash ?? "absent"}</div>}
+                      {receipt.errorCode && <div>Recorded outcome: {receipt.errorCode}</div>}
+                      {conflict && <div role="status">{receipt.direction === "export"
+                        ? "The immutable artifact remains staged. The workspace file was not overwritten; review the current file before retrying with a new request ID."
+                        : "The sidecar destination file was preserved. Review its current revision before retrying with a new request ID."}</div>}
+                      {pending && <div role="status">The durable receipt does not confirm the final outcome. Inspect the destination before retrying.</div>}
+                    </div>;
+                  })}
+                </div> : <p style={{ color: "var(--text3)" }}>No recent sidecar artifact transfers for this branch.</p>}
+              </details>}
           </div>
           <button className="btn btn-secondary btn-sm" disabled={!row.profile || busy !== null} onClick={() => void reset(row)}>
             {busy === key ? "Resetting…" : "Reset runtime state"}

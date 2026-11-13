@@ -1,6 +1,7 @@
 import { eligibleEnvironments, selectEnvironment, tunnelHash, type EnvironmentCard, type EnvironmentOwner } from "@naelao/agent-sdk";
 import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
 import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnvironmentArtifact, restoreEnvironmentArtifact } from "../environment-artifacts.js";
+import { R2CasConflictError } from "../r2-cas.js";
 import { authorizeEnvironmentCommand, runEnvironmentBash } from "./code-exec.js";
 import { ExecutionPreDispatchError } from "../../tunnels/execution-sessions.js";
 
@@ -17,6 +18,12 @@ function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
   const binary = atob(value), bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
   if (bytes.length > MACHINE_ARTIFACT_CHUNK_BYTES || expectedBytes !== undefined && bytes.length !== expectedBytes || btoa(binary) !== value) throw new Error("environment_machine_artifact_encoding_invalid");
   return bytes;
+}
+function isWorkspacePublicationConflict(error: unknown): boolean {
+  if (error instanceof R2CasConflictError) return true;
+  if (!(error instanceof Error)) return false;
+  return error.message === "workspace_head_changed" || error.message === "workspace_checked_publication_failed:409"
+    || error.message.includes("changed concurrently");
 }
 async function transferRequestId(ctx: PrebuiltOpContext, operation: string, machine: string, path: string, digest?: string) {
   return tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId ?? "_assistant", ctx.env.humanInvokerId, ctx.env.runId, operation, machine, path, digest ?? null]));
@@ -88,7 +95,7 @@ export const environments: PrebuiltScript = {
       const requestId = typeof args.request_id === "string" ? args.request_id
         : await transferRequestId(ctx, "sidecar-import", installationId, destinationPath, artifact.digest);
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
-      return transfer({ installationId, direction: "import", path: destinationPath, requestId, digest: artifact.digest, expectedHash });
+      return transfer({ installationId, direction: "import", path: destinationPath, workspacePath: sourcePath, requestId, digest: artifact.digest, expectedHash });
     },
     "environment.sidecar_artifact_export": async (args, ctx) => {
       const installationId = String(args.installation_id ?? ""), sourcePath = String(args.source_path ?? ""), destinationPath = String(args.destination_path ?? "");
@@ -101,9 +108,18 @@ export const environments: PrebuiltScript = {
       const requestId = typeof args.request_id === "string" ? args.request_id
         : await transferRequestId(ctx, "sidecar-export", installationId, sourcePath);
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_sidecar_artifact_request_id_invalid");
-      const artifact = await transfer({ installationId, direction: "export", path: sourcePath, requestId });
+      const artifact = await transfer({ installationId, direction: "export", path: sourcePath, workspacePath: destinationPath, requestId, expectedHash });
       if (artifact.status !== "complete") return artifact;
-      const publication = await restoreEnvironmentArtifact(ctx.env, artifact.digest, destinationPath, expectedHash);
+      let publication;
+      try { publication = await restoreEnvironmentArtifact(ctx.env, artifact.digest, destinationPath, expectedHash); }
+      catch (error) {
+        if (isWorkspacePublicationConflict(error)) {
+          try { await ctx.env.reportContainerArtifactTransferOutcome?.({ installationId, requestId: artifact.request_id, outcome: "workspace_publication_conflict", workspacePath: destinationPath, expectedHash }); } catch { /* the artifact receipt remains available as pending review */ }
+        }
+        throw error;
+      }
+      try { await ctx.env.reportContainerArtifactTransferOutcome?.({ installationId, requestId: artifact.request_id, outcome: "workspace_published", workspacePath: destinationPath, expectedHash }); }
+      catch { /* publication succeeded; the durable receipt stays pending if this acknowledgement is lost */ }
       return { ...publication, installation_id: installationId, source_path: sourcePath, request_id: artifact.request_id };
     },
     "environment.artifact_import": async (args, ctx) => {

@@ -5057,9 +5057,9 @@ async function managedRuntimeProfileTarget(env: AgentsEnv, input: { tenantId: st
     installationScope: instance.scope as ContainerInvocationScope["installationScope"], image: matches[0]!.image, dynamicImage: true,
     ...(input.branch ? { workspaceBranch: input.branch } : {}), timeoutMs: 5000, deadline: now + 5000 };
   validateContainerScope(scope, now);
-  const stub = env.DYNAMIC_SANDBOX && env.DYNAMIC_CONTAINERS_ENABLED === "true"
+  const stub = env.DYNAMIC_SANDBOX
     ? env.DYNAMIC_SANDBOX.get(env.DYNAMIC_SANDBOX.idFromName(sidecarKey(scope) + branchSuffix)) : undefined;
-  return { stub, tenantId: input.tenantId, maximumSeconds: Math.max(1, Math.min(60, matches[0]!.resources.timeoutSeconds)) };
+  return { stub, scope, tenantId: input.tenantId, maximumSeconds: Math.max(1, Math.min(60, matches[0]!.resources.timeoutSeconds)) };
 }
 
 async function requireProjectAccessForManagedProfile(c: Context<{ Bindings: AgentsEnv }>, spaceId: string, projectId: string, write: boolean): Promise<{ tenantId: string; userId: string }> {
@@ -5112,6 +5112,23 @@ app.get("/spaces/:spaceId/projects/:projectId/runtime-installations/:installatio
   try {
     const target = await managedRuntimeProfileTarget(c.env, { tenantId, spaceId, projectId, installationId, containerId, actorId: userId }, false);
     return c.json(await readSidecarRuntimeExecutionProfile(c.env.PLATFORM_DB, { tenantId, spaceId, projectId, installationId, containerId }, target.maximumSeconds));
+  } catch (error) { return managedRuntimeProfileFailure(error, c); }
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/artifact-transfers", async c => {
+  const { spaceId, projectId, installationId, containerId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const branch = c.req.query("branch") ?? "";
+  try {
+    // Owner/admin only: paths and artifact hashes can reveal private project work. The read-only
+    // DO endpoint does not start a container, so receipt review remains available while rollout
+    // is disabled as long as the deployment binding exists.
+    const target = await managedRuntimeProfileTarget(c.env, { tenantId, spaceId, projectId, installationId, containerId, actorId: userId, ...(branch ? { branch } : {}) }, false);
+    if (!target.stub) throw new Error("managed_runtime_profiles_unavailable");
+    return target.stub.fetch(new Request("http://sandbox/_internal/artifact-transfers", { headers: {
+      "x-naelao-container-scope": JSON.stringify(target.scope),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+    } }));
   } catch (error) { return managedRuntimeProfileFailure(error, c); }
 });
 

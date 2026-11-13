@@ -67,6 +67,23 @@ export interface ContainerRuntime {
   stop?(signal?: string): Promise<void> | void;
 }
 
+type SidecarArtifactTransferStatus = "dispatching" | "complete" | "conflicted" | "failed" | "indeterminate";
+type SidecarArtifactTransferReceipt = {
+  requestHash: string;
+  requestId: string;
+  direction: "import" | "export";
+  path: string;
+  workspacePath?: string;
+  expectedHash?: string | null;
+  status: SidecarArtifactTransferStatus;
+  updatedAt: string;
+  result?: { request_id: string; direction: string; path: string; digest: string; bytes: number };
+  errorCode?: string;
+  currentHash?: string | null;
+  publicationStatus?: "pending" | "published" | "conflicted";
+};
+const SIDECAR_ARTIFACT_TRANSFER_RECENT_LIMIT = 50;
+
 export interface SandboxWorkspaceScope {
   spaceId: string;
   projectId?: string;
@@ -1457,8 +1474,13 @@ export class ToolSandboxDO extends DurableObject {
 
   private async handleRequest(request: Request): Promise<Response> {
     if (request.signal.aborted) throw new Error("container_cancelled");
-    if (new URL(request.url).pathname === "/_internal/artifact-transfer" && request.method === "POST")
+    const internalPath = new URL(request.url).pathname;
+    if (internalPath === "/_internal/artifact-transfer" && request.method === "POST")
       return this.transferInstallationArtifact(request);
+    if (internalPath === "/_internal/artifact-transfers" && request.method === "GET")
+      return this.listInstallationArtifactTransfers(request);
+    if (internalPath === "/_internal/artifact-transfer/outcome" && request.method === "POST")
+      return this.recordInstallationArtifactTransferOutcome(request);
     const scopeHeader = request.headers.get("x-naelao-container-scope");
     if (scopeHeader) {
       const scope = JSON.parse(scopeHeader) as ContainerInvocationScope;
@@ -1900,20 +1922,24 @@ export class ToolSandboxDO extends DurableObject {
     const erasure = await this.projectErasureState(scope);
     if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
     if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
-    let body: { direction?: string; path?: string; requestId?: string; digest?: string; expectedHash?: string | null };
+    let body: { direction?: string; path?: string; workspacePath?: string; requestId?: string; digest?: string; expectedHash?: string | null };
     try { body = await request.json<typeof body>(); }
     catch { return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 }); }
     const direction = body.direction;
     const path = body.path;
+    const workspacePath = body.workspacePath;
     const requestId = body.requestId;
     const digest = body.digest;
     const expectedHash = body.expectedHash;
     if ((direction !== "import" && direction !== "export") || typeof path !== "string" || !isSyncableWorkspacePath(path)
       || path.startsWith("shared/") || typeof requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)
       || direction === "import" && (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)
-        || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))) {
+        || !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash)))
+      || workspacePath !== undefined && (typeof workspacePath !== "string" || !isSyncableWorkspacePath(workspacePath) || workspacePath.startsWith("shared/"))
+      || direction === "export" && expectedHash !== undefined && !(expectedHash === null || typeof expectedHash === "string" && /^[a-f0-9]{64}$/.test(expectedHash))) {
       return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 });
     }
+    if (direction === "export" && typeof workspacePath !== "string") return Response.json({ error_code: "artifact_transfer_request_invalid" }, { status: 400 });
     const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2) return Response.json({ error_code: "artifact_transfer_store_unavailable" }, { status: 503 });
     let privatePrefix: string;
@@ -1921,12 +1947,26 @@ export class ToolSandboxDO extends DurableObject {
       installationId: scope.installationId, ...(scope.installationScope ? { installationScope: scope.installationScope } : {}),
       ...(scope.workspaceBranch ? { branch: scope.workspaceBranch } : {}) }); }
     catch { return Response.json({ error_code: "artifact_transfer_scope_invalid" }, { status: 400 }); }
-    const requestHash = await hashWorkspaceContent(JSON.stringify({ direction, path, digest: digest ?? null, expectedHash: expectedHash ?? null }));
+    const requestHash = await hashWorkspaceContent(JSON.stringify({ direction, path, workspacePath: workspacePath ?? null, digest: digest ?? null, expectedHash: expectedHash ?? null }));
+    const legacyRequestHash = await hashWorkspaceContent(JSON.stringify({ direction, path, digest: digest ?? null, expectedHash: expectedHash ?? null }));
     const storageKey = `sidecar_artifact_transfer:${requestId}`;
-    const prior = await this.ctx.storage.get<{ requestHash: string; status: string; result?: { request_id: string; direction: string; path: string; digest: string; bytes: number } }>(storageKey);
-    if (prior && prior.requestHash !== requestHash) return Response.json({ error_code: "artifact_transfer_idempotency_conflict" }, { status: 409 });
+    const prior = await this.ctx.storage.get<SidecarArtifactTransferReceipt>(storageKey);
+    if (prior && prior.requestHash !== requestHash
+      && !(direction === "import" && prior.direction === "import" && prior.requestHash === legacyRequestHash))
+      return Response.json({ error_code: "artifact_transfer_idempotency_conflict" }, { status: 409 });
     if (prior?.status === "complete" && prior.result) return Response.json({ status: "complete", ...prior.result });
-    await this.ctx.storage.put(storageKey, { requestHash, status: "dispatching" });
+    if (prior?.status === "conflicted") return Response.json({ status: "conflicted", error_code: prior.errorCode ?? "artifact_transfer_destination_conflict",
+      request_id: requestId, ...(prior.currentHash !== undefined ? { current_hash: prior.currentHash } : {}) }, { status: 409 });
+    if (prior?.status === "failed") return Response.json({ status: "failed", error_code: prior.errorCode ?? "artifact_transfer_failed", request_id: requestId },
+      prior.errorCode === "artifact_transfer_source_missing" || prior.errorCode === "environment_artifact_integrity_failed" ? { status: 404 } : { status: 409 });
+    const receipt: SidecarArtifactTransferReceipt = { requestHash, requestId, direction, path, ...(workspacePath ? { workspacePath } : {}),
+      ...(expectedHash !== undefined ? { expectedHash } : {}), ...(direction === "export" ? { publicationStatus: "pending" as const } : {}),
+      status: "dispatching", updatedAt: new Date().toISOString() };
+    await this.storeSidecarArtifactTransferReceipt(storageKey, receipt);
+    const terminal = async (status: "conflicted" | "failed", errorCode: string, httpStatus: number, extra: { currentHash?: string | null } = {}) => {
+      await this.storeSidecarArtifactTransferReceipt(storageKey, { ...receipt, ...extra, status, errorCode, updatedAt: new Date().toISOString() });
+      return Response.json({ status, error_code: errorCode, request_id: requestId, ...(extra.currentHash !== undefined ? { current_hash: extra.currentHash } : {}) }, { status: httpStatus });
+    };
     try {
       let transferDigest: string;
       let bytes: Uint8Array;
@@ -1935,37 +1975,105 @@ export class ToolSandboxDO extends DurableObject {
       if (direction === "import") {
         const artifactKey = environmentArtifactObjectKey({ tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}) }, digest!);
         const artifact = await readBytesWithHash(bindings.SCRIPTS_R2, artifactKey, 16 * 1024 * 1024);
-        if (!artifact || artifact.hash !== digest) return Response.json({ error_code: "environment_artifact_integrity_failed" }, { status: 404 });
+        if (!artifact || artifact.hash !== digest) return terminal("failed", "environment_artifact_integrity_failed", 404);
         bytes = artifact.bytes; transferDigest = artifact.hash; contentType = artifact.contentType;
         const current = await readBytesWithHash(bindings.SCRIPTS_R2, privateKey, 16 * 1024 * 1024);
         // Idempotent recovery after a lost acknowledgement: the exact intended bytes already
         // occupy the installation-owned key, so the original operation is complete.
         if (current?.hash !== transferDigest) {
-          if ((current?.hash ?? null) !== expectedHash) return Response.json({ error_code: "artifact_transfer_destination_conflict", current_hash: current?.hash ?? null }, { status: 409 });
+          if ((current?.hash ?? null) !== expectedHash) return terminal("conflicted", "artifact_transfer_destination_conflict", 409, { currentHash: current?.hash ?? null });
           const head = await bindings.SCRIPTS_R2.head(privateKey);
           const stored = await bindings.SCRIPTS_R2.put(privateKey, bytes, { onlyIf: head?.etag ? { etagMatches: head.etag } : { etagDoesNotMatch: "*" },
             customMetadata: { sha256: transferDigest, transferRequestId: requestId }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
-          if (!stored) return Response.json({ error_code: "artifact_transfer_destination_conflict" }, { status: 409 });
+          if (!stored) {
+            const actual = await readBytesWithHash(bindings.SCRIPTS_R2, privateKey, 16 * 1024 * 1024);
+            return terminal("conflicted", "artifact_transfer_destination_conflict", 409, { currentHash: actual?.hash ?? null });
+          }
         }
       } else {
         const source = await readBytesWithHash(bindings.SCRIPTS_R2, privateKey, 16 * 1024 * 1024);
-        if (!source) return Response.json({ error_code: "artifact_transfer_source_missing" }, { status: 404 });
+        if (!source) return terminal("failed", "artifact_transfer_source_missing", 404);
         bytes = source.bytes; transferDigest = source.hash; contentType = source.contentType;
         const artifactKey = environmentArtifactObjectKey({ tenantId: scope.tenantId, spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}) }, transferDigest);
         const saved = await bindings.SCRIPTS_R2.put(artifactKey, bytes, { onlyIf: { etagDoesNotMatch: "*" },
           customMetadata: { sha256: transferDigest, sourcePath: `sidecar:${scope.installationId}:${path}` }, ...(contentType ? { httpMetadata: { contentType } } : {}) });
         if (!saved) {
           const existing = await readBytesWithHash(bindings.SCRIPTS_R2, artifactKey, 16 * 1024 * 1024);
-          if (existing?.hash !== transferDigest) return Response.json({ error_code: "environment_artifact_integrity_failed" }, { status: 409 });
+          if (existing?.hash !== transferDigest) return terminal("failed", "environment_artifact_integrity_failed", 409);
         }
       }
       const result = { request_id: requestId, direction, path, digest: transferDigest, bytes: bytes.byteLength };
-      await this.ctx.storage.put(storageKey, { requestHash, status: "complete", result });
+      await this.storeSidecarArtifactTransferReceipt(storageKey, { ...receipt, status: "complete", result, updatedAt: new Date().toISOString() });
       return Response.json({ status: "complete", ...result });
     } catch {
-      await this.ctx.storage.put(storageKey, { requestHash, status: "indeterminate" });
+      await this.storeSidecarArtifactTransferReceipt(storageKey, { ...receipt, status: "indeterminate", errorCode: "artifact_transfer_outcome_unknown", updatedAt: new Date().toISOString() });
       return Response.json({ error_code: "artifact_transfer_outcome_unknown", request_id: requestId }, { status: 503 });
     }
+  }
+
+  private async storeSidecarArtifactTransferReceipt(key: string, receipt: SidecarArtifactTransferReceipt): Promise<void> {
+    await this.ctx.storage.put(key, receipt);
+    const recentKey = "sidecar_artifact_transfer_recent";
+    const requestId = key.slice("sidecar_artifact_transfer:".length);
+    const prior = await this.ctx.storage.get<string[]>(recentKey);
+    const recent = Array.isArray(prior) ? prior.filter(value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) && value !== requestId) : [];
+    recent.push(requestId);
+    await this.ctx.storage.put(recentKey, recent.slice(-SIDECAR_ARTIFACT_TRANSFER_RECENT_LIMIT));
+  }
+
+  private async listInstallationArtifactTransfers(request: Request): Promise<Response> {
+    let scope: ContainerInvocationScope;
+    try { scope = await this.authenticatedScope(request); }
+    catch { return Response.json({ error_code: "container_scope_denied" }, { status: 403 }); }
+    if (!scope.installationId || !scope.image) return Response.json({ error_code: "container_installation_required" }, { status: 403 });
+    const expectedOwner = JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
+      scope.installationScope, scope.workspaceBranch, scope.image]);
+    const owner = await this.ctx.storage.get<string>("sidecar_owner");
+    if (owner && owner !== expectedOwner) return Response.json({ error_code: "container_sidecar_scope_mismatch" }, { status: 409 });
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    const erasure = await this.projectErasureState(scope);
+    if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
+    if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    const recent = await this.ctx.storage.get<string[]>("sidecar_artifact_transfer_recent");
+    const ids = Array.isArray(recent) ? recent.slice(-SIDECAR_ARTIFACT_TRANSFER_RECENT_LIMIT) : [];
+    const receipts = (await Promise.all(ids.map(id => this.ctx.storage.get<SidecarArtifactTransferReceipt>(`sidecar_artifact_transfer:${id}`))))
+      .filter((value): value is SidecarArtifactTransferReceipt => Boolean(value && value.requestId && value.direction && value.status))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return Response.json({ transfers: receipts.map(({ requestHash: _hash, ...receipt }) => receipt) }, { headers: { "cache-control": "no-store" } });
+  }
+
+  private async recordInstallationArtifactTransferOutcome(request: Request): Promise<Response> {
+    let scope: ContainerInvocationScope;
+    try { scope = await this.authenticatedScope(request); }
+    catch { return Response.json({ error_code: "container_scope_denied" }, { status: 403 }); }
+    if (!scope.installationId || !scope.image) return Response.json({ error_code: "container_installation_required" }, { status: 403 });
+    const expectedOwner = JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
+      scope.installationScope, scope.workspaceBranch, scope.image]);
+    const owner = await this.ctx.storage.get<string>("sidecar_owner");
+    if (owner !== expectedOwner) return Response.json({ error_code: "container_sidecar_scope_mismatch" }, { status: 409 });
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    const erasure = await this.projectErasureState(scope);
+    if (erasure === "unavailable") return Response.json({ error_code: "workspace_erasure_check_unavailable" }, { status: 503 });
+    if (erasure === "erased") return Response.json({ error_code: "workspace_project_erased" }, { status: 410 });
+    const body = await request.json<{ requestId?: string; outcome?: string; workspacePath?: string; expectedHash?: string | null }>()
+      .catch(() => ({} as { requestId?: string; outcome?: string; workspacePath?: string; expectedHash?: string | null }));
+    if (typeof body.requestId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(body.requestId)
+      || !["workspace_publication_conflict", "workspace_published"].includes(body.outcome ?? "")
+      || typeof body.workspacePath !== "string" || !isSyncableWorkspacePath(body.workspacePath) || body.workspacePath.startsWith("shared/")
+      || !(body.expectedHash === null || typeof body.expectedHash === "string" && /^[a-f0-9]{64}$/.test(body.expectedHash)))
+      return Response.json({ error_code: "artifact_transfer_outcome_invalid" }, { status: 400 });
+    const key = `sidecar_artifact_transfer:${body.requestId}`;
+    const prior = await this.ctx.storage.get<SidecarArtifactTransferReceipt>(key);
+    if (!prior || prior.direction !== "export" || prior.workspacePath && prior.workspacePath !== body.workspacePath
+      || prior.expectedHash !== undefined && prior.expectedHash !== body.expectedHash || !prior.result)
+      return Response.json({ error_code: "artifact_transfer_receipt_not_found" }, { status: 404 });
+    const conflicted = body.outcome === "workspace_publication_conflict";
+    const receipt: SidecarArtifactTransferReceipt = { ...prior, workspacePath: body.workspacePath, expectedHash: body.expectedHash,
+      status: conflicted ? "conflicted" : "complete", publicationStatus: conflicted ? "conflicted" : "published",
+      ...(conflicted ? { errorCode: "workspace_publication_conflict" } : {}), updatedAt: new Date().toISOString() };
+    if (!conflicted) delete receipt.errorCode;
+    await this.storeSidecarArtifactTransferReceipt(key, receipt);
+    return Response.json({ status: receipt.status, request_id: receipt.requestId }, { headers: { "cache-control": "no-store" } });
   }
 }
 

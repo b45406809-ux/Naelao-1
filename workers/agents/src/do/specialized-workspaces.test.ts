@@ -120,10 +120,25 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image, uni
     return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
   };
+  const artifactTransfers = async (signed = true) => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
+      executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
+      installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
+    return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfers", { headers: {
+      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) } }));
+  };
+  const artifactTransferOutcome = async (body: Record<string, unknown>, signed = true) => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
+      executionId: crypto.randomUUID(), timeoutMs: 5000, deadline: Date.now() + 5000,
+      installationId: "media-one", installationScope: "PROJECT_SHARED", image, dynamicImage: false };
+    return sandbox.fetch(new Request("http://sandbox/_internal/artifact-transfer/outcome", { method: "POST", headers: { "content-type": "application/json",
+      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) }, body: JSON.stringify(body) }));
+  };
   const eraseProject = async () => sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
     body: JSON.stringify({ scope: { tenantId: "tenant", spaceId: "space", projectId: "project", jurisdiction: "global" }, confirm: true }) }));
-  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, artifactTransfer, eraseProject, setProjectErased: (value: boolean) => { projectErased = value; }, store, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
+  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, artifactTransfer, artifactTransfers, artifactTransferOutcome, eraseProject,
+    setProjectErased: (value: boolean) => { projectErased = value; }, store, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
 }
 
 describe("specialized project workspaces", () => {
@@ -161,7 +176,7 @@ describe("specialized project workspaces", () => {
     const replay = await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-1", digest: inputDigest, expectedHash: null });
     expect(await replay.json()).toMatchObject({ status: "complete", request_id: "sidecar-import-1", digest: inputDigest });
 
-    const exported = await r.artifactTransfer({ direction: "export", path: "inputs/source.txt", requestId: "sidecar-export-1" });
+    const exported = await r.artifactTransfer({ direction: "export", path: "inputs/source.txt", workspacePath: "inputs/source.txt", expectedHash: null, requestId: "sidecar-export-1" });
     expect(await exported.json()).toMatchObject({ status: "complete", digest: inputDigest, bytes: inputBytes.byteLength });
     expect(await readBytesWithHash(store.bucket as unknown as R2Bucket, inputKey)).toMatchObject({ hash: inputDigest, bytes: inputBytes });
 
@@ -171,6 +186,32 @@ describe("specialized project workspaces", () => {
     const conflict = await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-2", digest: otherDigest, expectedHash: null });
     expect(conflict.status).toBe(409);
     expect(r.transport.start).not.toHaveBeenCalled();
+    const receipt = r.records.get("sidecar_artifact_transfer:sidecar-import-2") as { status: string; currentHash?: string | null };
+    expect(receipt).toMatchObject({ status: "conflicted", errorCode: "artifact_transfer_destination_conflict", currentHash: inputDigest });
+    const listed = await r.artifactTransfers();
+    expect((await listed.json() as { transfers: Array<Record<string, unknown>> }).transfers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestId: "sidecar-import-2", status: "conflicted", currentHash: inputDigest }),
+    ]));
+    expect((await r.artifactTransfer({ direction: "import", path: "inputs/source.txt", requestId: "sidecar-import-2", digest: otherDigest, expectedHash: null })).status).toBe(409);
+    expect((await r.artifactTransfers(false)).status).toBe(403);
+  });
+
+  it("records export publication review without overwriting or dropping the staged artifact", async () => {
+    const store = workspace(), r = runtime(store);
+    await store.seed(projectExtensionPrefix + "output/report.txt", new TextEncoder().encode("sidecar report"));
+    const transfer = await r.artifactTransfer({ direction: "export", path: "output/report.txt", workspacePath: "output/report.txt",
+      requestId: "review-export", expectedHash: null });
+    expect(transfer.status).toBe(200);
+    const transferResult = await transfer.json() as { digest: string };
+    expect(r.records.get("sidecar_artifact_transfer:review-export")).toMatchObject({ status: "complete", publicationStatus: "pending", workspacePath: "output/report.txt" });
+    expect(await store.bucket.head(environmentArtifactObjectKey({ tenantId: "tenant", spaceId: "space", projectId: "project" }, transferResult.digest))).not.toBeNull();
+    expect((await r.artifactTransferOutcome({ requestId: "review-export", outcome: "workspace_publication_conflict",
+      workspacePath: "output/report.txt", expectedHash: null })).status).toBe(200);
+    const listed = await r.artifactTransfers();
+    expect((await listed.json() as { transfers: Array<Record<string, unknown>> }).transfers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestId: "review-export", status: "conflicted", publicationStatus: "conflicted",
+        errorCode: "workspace_publication_conflict", result: expect.objectContaining({ digest: transferResult.digest }) }),
+    ]));
   });
 
   it("rejects a sidecar transfer without an internal host token", async () => {
@@ -196,7 +237,7 @@ describe("specialized project workspaces", () => {
     await store.seed(projectExtensionPrefix + "output.txt", bytes);
     holdArtifactWrite = true;
 
-    const transfer = r.artifactTransfer({ direction: "export", path: "output.txt", requestId: "erase-race-export" });
+    const transfer = r.artifactTransfer({ direction: "export", path: "output.txt", workspacePath: "output.txt", expectedHash: null, requestId: "erase-race-export" });
     await artifactWriteStarted;
     r.setProjectErased(true);
     const erasure = r.eraseProject();
@@ -214,7 +255,7 @@ describe("specialized project workspaces", () => {
     const store = workspace(), r = runtime(store);
     const source = projectExtensionPrefix + "private/report.txt";
     await store.seed(source, new TextEncoder().encode("private report"));
-    expect((await r.artifactTransfer({ direction: "export", path: "private/report.txt", requestId: "erase-receipt" })).status).toBe(200);
+    expect((await r.artifactTransfer({ direction: "export", path: "private/report.txt", workspacePath: "private/report.txt", expectedHash: null, requestId: "erase-receipt" })).status).toBe(200);
     expect(r.records.has("sidecar_artifact_transfer:erase-receipt")).toBe(true);
 
     r.setProjectErased(true);

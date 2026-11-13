@@ -1457,6 +1457,24 @@ export interface ManagedRuntimeProfile {
   enabled: boolean; state: "checkpointed" | "active" | "empty"; image?: string;
   checkpoint_created_at?: number; can_restore: boolean;
 }
+export interface SidecarArtifactTransferReceipt {
+  requestId: string;
+  direction: "import" | "export";
+  path: string;
+  workspacePath?: string;
+  expectedHash?: string | null;
+  status: "dispatching" | "complete" | "conflicted" | "failed" | "indeterminate";
+  updatedAt: string;
+  result?: { request_id: string; direction: string; path: string; digest: string; bytes: number };
+  errorCode?: string;
+  currentHash?: string | null;
+  publicationStatus?: "pending" | "published" | "conflicted";
+}
+export function getSidecarArtifactTransfers(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials, branch?: string) {
+  const base = `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime-installations/${encodeURIComponent(installationId)}/containers/${encodeURIComponent(containerId)}/artifact-transfers`;
+  const suffix = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+  return apiFetch<{ transfers: SidecarArtifactTransferReceipt[] }>(base + suffix, { session, cache: "no-store" });
+}
 function managedRuntimeProfilePath(spaceId: string, projectId: string, installationId: string, containerId: string) {
   return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime-installations/${encodeURIComponent(installationId)}/containers/${encodeURIComponent(containerId)}/profile`;
 }

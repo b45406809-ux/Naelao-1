@@ -1134,7 +1134,10 @@ export interface ScriptEngineEnv {
   localTunnel?: LocalTunnelGateway;
   /** Explicit, scoped transfer to an installed Cloudflare sidecar's private filesystem. */
   transferContainerArtifact?: (input: { installationId: string; direction: "import" | "export"; path: string; requestId: string;
-    digest?: string; expectedHash?: string | null }) => Promise<{ request_id: string; direction: "import" | "export"; path: string; digest: string; bytes: number; status: "complete" | "indeterminate" }>;
+    digest?: string; expectedHash?: string | null; workspacePath?: string }) => Promise<{ request_id: string; direction: "import" | "export"; path: string; digest: string; bytes: number; status: "complete" | "indeterminate" }>;
+  /** Records a checked workspace publication conflict against the durable sidecar transfer receipt. */
+  reportContainerArtifactTransferOutcome?: (input: { installationId: string; requestId: string; outcome: "workspace_publication_conflict" | "workspace_published";
+    workspacePath: string; expectedHash: string | null }) => Promise<void>;
   executionSessions?: import("../tunnels/execution-sessions.js").ExecutionSessions;
   /** Host evidence only: no managed compute binding is deployed. Not a budget/permission override. */
   managedEnvironmentsUnavailable?: boolean;
