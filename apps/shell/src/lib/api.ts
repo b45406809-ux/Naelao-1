@@ -1647,7 +1647,8 @@ export interface SpaceSharedExtensionUpdateReview {
   price_terms: { current: null; candidate: null; status: string };
   dependency_resolution: { current: { resolved: true } | { resolved: false; error: string };
     candidate: { resolved: true } | { resolved: false; error: string } };
-  review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: boolean; apply_block_reason: string | null };
+  review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false;
+    apply_supported: boolean; apply_block_reason: string | null; active_work_count: number; runtime_work_drained: boolean };
   update_review_token?: string; update_review_expires_at?: number;
 }
 export interface SpaceSharedExtensionUpdateReceipt {

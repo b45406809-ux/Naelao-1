@@ -99,11 +99,16 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
   });
 }
 
-async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled" } = {}) {
+async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled";
+  activeWorkCount?: number } = {}) {
   const passiveManifest = (version: string) => validateExtensionManifest({ id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
     gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version,
-      primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "voice_dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
-        component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false }] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+      primitives: [
+        { schemaVersion: "1.0", kind: "canvas", id: "voice_dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+        { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"] },
+      ] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
   const old = options.passive ? passiveManifest("1.0.0") : structuredClone(manifest);
   if (!options.passive) {
     old.bundle!.version = "1.0.0";
@@ -115,7 +120,7 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   const candidateManifest = options.passive ? passiveManifest("1.2.0") : validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives,
     { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
       scope: "SPACE_SHARED", schemaSql: "CREATE TABLE usage_stats (id TEXT PRIMARY KEY);", migrations: [] }] } });
-  const artifacts = options.passive ? { "./dashboard.html": html } : { "./dashboard.html": html, "./handler.ts": handler };
+  const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
   const artifactEntries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
   const artifactSha256 = await digest(JSON.stringify(artifactEntries));
   const keyPair = await generateExtensionPublisherKeyPair();
@@ -130,6 +135,7 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   const spaceStub = { fetch: vi.fn(async (request: Request) => {
     spaceRequests.push(request);
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/extension-runtime-work") return Response.json({ active_work_count: options.activeWorkCount ?? 0, drained: (options.activeWorkCount ?? 0) === 0 });
     if (path === "/extension-installations") {
       if (url.searchParams.get("space_id") !== "space-a") return Response.json({ installations: [] });
       return Response.json({ installations: [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
@@ -499,17 +505,18 @@ describe("signed Space-shared package update review", () => {
     expect(h.microAppRequests).toHaveLength(0);
   });
 
-  it("issues a short-lived owner token only for a paused version-only static Canvas update and applies it through the SpaceDO", async () => {
+  it("issues a short-lived owner token only for a paused static Canvas and channel-code update and applies it through the SpaceDO", async () => {
     const h = await updateReviewHarness({ passive: true, installationStatus: "disabled" });
     const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
       { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
     expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
-    const review = await reviewResponse.json() as { review: { apply_supported: boolean; apply_block_reason: string | null };
+    const review = await reviewResponse.json() as { review: { apply_supported: boolean; apply_block_reason: string | null;
+      active_work_count: number; runtime_work_drained: boolean };
       update_review_token?: string; update_review_expires_at?: number; candidate: { artifact_sha256: string } };
-    expect(review.review).toMatchObject({ apply_supported: true, apply_block_reason: null });
+    expect(review.review).toMatchObject({ apply_supported: true, apply_block_reason: null, active_work_count: 0, runtime_work_drained: true });
     expect(review.update_review_token).toBeTruthy();
     expect(review.update_review_expires_at).toBeGreaterThan(Date.now());
-    expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-runtime-work" && request.method === "POST")).toBe(true);
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token }), h.env);
@@ -521,11 +528,18 @@ describe("signed Space-shared package update review", () => {
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(true);
   });
 
-  it("does not issue an apply token while the installation is active or for a package with runtime authority", async () => {
-    const active = await updateReviewHarness({ passive: true, installationStatus: "active" });
+  it("requires pause and drain before issuing an apply token, and rejects packages with runtime authority", async () => {
+    const active = await updateReviewHarness({ passive: true, installationStatus: "active", activeWorkCount: 1 });
     const activeReview = await spacesWorker.fetch(await signedRequest(path, "POST",
       { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), active.env);
-    expect(await activeReview.json()).toMatchObject({ review: { apply_supported: false, apply_block_reason: "pause the installation before applying an update" } });
+    expect(await activeReview.json()).toMatchObject({ review: { apply_supported: false, active_work_count: 1,
+      runtime_work_drained: false, apply_block_reason: "pause the installation before applying an update" } });
+
+    const busy = await updateReviewHarness({ passive: true, installationStatus: "disabled", activeWorkCount: 2 });
+    const busyReview = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), busy.env);
+    expect(await busyReview.json()).toMatchObject({ review: { apply_supported: false, active_work_count: 2,
+      runtime_work_drained: false, apply_block_reason: "wait for admitted runtime work to drain" } });
 
     const runtime = await updateReviewHarness({ installationStatus: "disabled" });
     const runtimeReview = await spacesWorker.fetch(await signedRequest(path, "POST",

@@ -45,6 +45,7 @@ import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
+import { supportsVersionOnlySpaceSharedCodeUpdate } from "../extension-update-contract.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -13189,26 +13190,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       currentManifest = validateExtensionManifest(JSON.parse(current.manifest_json));
       candidateManifest = validateExtensionManifest(JSON.parse(candidate.manifest_json));
     } catch { return Response.json({ error_code: "extension_update_manifest_invalid" }, { status: 409 }); }
-    const passiveCanvasOnly = (manifest: ExtensionManifest) => Boolean(manifest.bundle && manifest.bundle.primitives.length > 0
-      && manifest.bundle.primitives.every(part => part.kind === "canvas" && part.version === manifest.bundle!.version
-        && part.layout === "CanvasMount" && part.dynamicPage === false && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
-      && manifest.declaredPermissions.length === 0 && manifest.capabilityRequirements.length === 1
-      && manifest.capabilityRequirements[0] === "extension.project_canvas"
-      && (manifest.gadgets?.length ?? 0) === 0 && (manifest.daemons?.length ?? 0) === 0 && (manifest.commands?.length ?? 0) === 0
-      && (manifest.containers?.length ?? 0) === 0 && (manifest.widgetSubscriptions?.length ?? 0) === 0
-      && (manifest.dependencies?.length ?? 0) === 0 && (manifest.shared_filesystem?.length ?? 0) === 0 && !manifest.settingsSchema
-      && (manifest.bundle.connections?.length ?? 0) === 0 && (manifest.bundle.workerRoles?.length ?? 0) === 0);
-    const normalizedVersionOnly = (manifest: ExtensionManifest) => {
-      const normalized = JSON.parse(JSON.stringify(manifest)) as ExtensionManifest;
-      if (!normalized.bundle) return "";
-      normalized.bundle.version = "__release_version__";
-      for (const primitive of normalized.bundle.primitives) primitive.version = "__release_version__";
-      return JSON.stringify(normalized);
-    };
     if (current.publisher_key_id !== claims.publisherKeyId || candidateManifest.id !== claims.extensionId
       || currentManifest.bundle?.version !== claims.fromVersion || candidateManifest.bundle?.version !== claims.toVersion
-      || !passiveCanvasOnly(currentManifest) || !passiveCanvasOnly(candidateManifest)
-      || normalizedVersionOnly(currentManifest) !== normalizedVersionOnly(candidateManifest))
+      || !supportsVersionOnlySpaceSharedCodeUpdate(currentManifest, candidateManifest))
       return Response.json({ error_code: "extension_update_contract_not_supported" }, { status: 409 });
 
     const createdAt = new Date().toISOString();

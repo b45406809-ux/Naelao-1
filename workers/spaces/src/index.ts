@@ -63,6 +63,7 @@ import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js"
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
+import { supportsVersionOnlySpaceSharedCodeUpdate } from "./extension-update-contract.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -2572,31 +2573,22 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
   const permissionExpansion = addedPermissions.length > 0 || addedCapabilities.length > 0
     || candidateManifest.shared_filesystem?.some(next => !currentManifest.shared_filesystem?.some(prior => prior.path === next.path && prior.access === next.access)) === true;
   const publisherChanged = installed.publisher_id !== candidate.publisher.id || installed.publisher_key_id !== candidate.publisher.key_id;
-  const passiveCanvasOnly = (manifest: SpacePackageReviewManifest) => {
-    const bundle = manifest.bundle;
-    return Boolean(bundle && bundle.primitives.length > 0
-      && bundle.primitives.every(part => part.kind === "canvas" && part.version === bundle.version
-        && part.layout === "CanvasMount" && part.dynamicPage === false && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
-      && manifest.declaredPermissions.length === 0 && manifest.capabilityRequirements.length === 1
-      && manifest.capabilityRequirements[0] === "extension.project_canvas"
-      && (manifest.gadgets?.length ?? 0) === 0 && (manifest.daemons?.length ?? 0) === 0
-      && (manifest.commands?.length ?? 0) === 0 && (manifest.containers?.length ?? 0) === 0
-      && (manifest.widgetSubscriptions?.length ?? 0) === 0 && (manifest.dependencies?.length ?? 0) === 0
-      && (manifest.shared_filesystem?.length ?? 0) === 0 && !manifest.settingsSchema
-      && (bundle.connections?.length ?? 0) === 0 && (bundle.workerRoles?.length ?? 0) === 0);
-  };
-  const normalizedVersionOnly = (manifest: SpacePackageReviewManifest) => {
-    const normalized = JSON.parse(JSON.stringify(manifest)) as SpacePackageReviewManifest;
-    if (!normalized.bundle) return "";
-    normalized.bundle.version = "__release_version__";
-    for (const primitive of normalized.bundle.primitives) primitive.version = "__release_version__";
-    return JSON.stringify(normalized);
-  };
-  const manifestVersionOnly = normalizedVersionOnly(currentManifest) === normalizedVersionOnly(candidateManifest);
-  const updateContractSupported = passiveCanvasOnly(currentManifest) && passiveCanvasOnly(candidateManifest)
-    && manifestVersionOnly && !publisherChanged && currentManifest.bundle?.version === body.expected_current_version
+  const updateContractSupported = supportsVersionOnlySpaceSharedCodeUpdate(currentManifest, candidateManifest)
+    && !publisherChanged && currentManifest.bundle?.version === body.expected_current_version
     && candidateManifest.bundle?.version === body.candidate_version && candidateDependencyClosure.resolved;
-  const canApply = installed.status === "disabled" && updateContractSupported && Boolean(identity.userId);
+  let activeWorkCount = 0;
+  if (updateContractSupported) {
+    const runtimeStatusResponse = await stub.fetch(new Request("http://space-do/extension-runtime-work", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+      body: JSON.stringify({ action: "status", tenantId: owned.tenantId, spaceId, projectId: null, instanceId,
+        workId: "update-review-status", workKind: "channel" }) }));
+    if (!runtimeStatusResponse.ok) return c.json({ error_code: "extension_update_review_runtime_status_unavailable" }, 503);
+    const runtimeStatus = await readBoundedResponseJson<{ active_work_count?: number }>(runtimeStatusResponse, 16 * 1024);
+    if (!Number.isSafeInteger(runtimeStatus.active_work_count) || (runtimeStatus.active_work_count ?? -1) < 0)
+      return c.json({ error_code: "extension_update_review_runtime_status_invalid" }, 503);
+    activeWorkCount = runtimeStatus.active_work_count!;
+  }
+  const canApply = installed.status === "disabled" && updateContractSupported && activeWorkCount === 0 && Boolean(identity.userId);
   let updateReviewToken: string | undefined;
   let updateReviewExpiresAt: number | undefined;
   if (canApply && identity.userId) {
@@ -2631,8 +2623,10 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
     review: { authority_expanded: permissionExpansion, publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
       mutates_installation: false, apply_supported: canApply, apply_block_reason: canApply ? null
         : installed.status !== "disabled" ? "pause the installation before applying an update"
+        : activeWorkCount > 0 ? "wait for admitted runtime work to drain"
           : !identity.userId ? "a verified owner identity is required to apply an update"
-            : "only a same-publisher, version-only static Canvas package can update here; other packages require active-work drain and migration rollback" },
+            : "only same-publisher version-only static Canvas/channel code packages with unchanged configuration can update here" ,
+      active_work_count: activeWorkCount, runtime_work_drained: activeWorkCount === 0 },
     ...(updateReviewToken ? { update_review_token: updateReviewToken, update_review_expires_at: updateReviewExpiresAt } : {}),
   }, 200, { "cache-control": "private, no-store" });
 });

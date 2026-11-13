@@ -171,7 +171,7 @@ export default function ExtensionsPage() {
     const review = updateReviews[app.installation_id];
     if (!review?.review.apply_supported || !review.update_review_token || !review.update_review_expires_at
       || review.update_review_expires_at <= Date.now() || app.status !== "disabled") {
-      setError("Refresh the update review after pausing the installation. Only eligible static Canvas updates can be applied here."); return;
+      setError("Refresh the update review after pausing the installation and draining admitted work. Only eligible code-only updates can be applied here."); return;
     }
     if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}? The extension will remain paused until an owner enables it again.`)) return;
     setApplyingUpdate(app.installation_id); setError(null);
@@ -237,10 +237,11 @@ export default function ExtensionsPage() {
             <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
             {review.review.explicit_owner_approval_required && <p>Owner approval is required for this update review.</p>}
             {review.review.apply_supported
-              ? <><p>This candidate changes only version pins and static Canvas code. It declares no permissions and only the Canvas mounting capability; it has no settings, connections, dependencies, channels, or state migrations. The installation must be paused, and stays paused after the update.</p>
+              ? <><p>This candidate changes only release versions and artifact code for static Canvas and channel handlers. The signed manifest keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration. Gadget schemas, data migrations and authority changes are not supported by this update path. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
                   onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed update…" : "Apply update and keep paused"}</Button></>
-              : <p>Update is unavailable: {review.review.apply_block_reason ?? "refresh the review"}.</p>}
+              : <p>Update is unavailable: {review.review.apply_block_reason ?? "refresh the review"}. {review.review.active_work_count > 0
+                ? `${review.review.active_work_count} admitted runtime operation(s) still need to finish before review can issue an apply token.` : ""}</p>}
           </div>}
         </section>;
       })()}

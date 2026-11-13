@@ -651,7 +651,7 @@ describe("runtime extension installation", () => {
     expect(release.hostSignature).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("applies only paused version-compatible static Canvas updates atomically and replays the durable receipt", async () => {
+  it("applies only paused version-compatible Canvas and channel-code updates atomically and replays the durable receipt", async () => {
     const storage = createDOStorage(), secret = "space-shared-update-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     const token = await mintInternalToken(secret, "tenant"), publisherKeyId = "d".repeat(64);
@@ -660,6 +660,8 @@ describe("runtime extension installation", () => {
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_static_canvas", version, primitives: [
         { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
           component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+        { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"] },
       ] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
     const currentManifest = canvasManifest("1.0.0"), candidateManifest = canvasManifest("1.2.0");
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
