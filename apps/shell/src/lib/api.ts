@@ -1641,7 +1641,12 @@ export interface SpaceSharedExtensionUpdateReview {
   price_terms: { current: null; candidate: null; status: string };
   dependency_resolution: { current: { resolved: true } | { resolved: false; error: string };
     candidate: { resolved: true } | { resolved: false; error: string } };
-  review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: false; apply_block_reason: string };
+  review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: boolean; apply_block_reason: string | null };
+  update_review_token?: string; update_review_expires_at?: number;
+}
+export interface SpaceSharedExtensionUpdateReceipt {
+  request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
+  artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
 }
 export interface SpaceSharedExtensionInstallReviewPackage {
   extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
@@ -1677,6 +1682,16 @@ export function previewSpaceSharedExtensionUpdate(spaceId: string, installationI
   return apiFetch<SpaceSharedExtensionUpdateReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update-review`, {
     method: "POST", session, body: JSON.stringify({ expected_current_version: expectedCurrentVersion, candidate_version: candidateVersion }),
   });
+}
+export function applySpaceSharedExtensionUpdate(spaceId: string, installationId: string, session: SessionCredentials, reviewToken: string) {
+  return apiFetch<{ updated: true; replayed: boolean; receipt: SpaceSharedExtensionUpdateReceipt }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update`, {
+      method: "POST", session, body: JSON.stringify({ review_token: reviewToken }),
+    });
+}
+export function listSpaceSharedExtensionUpdateReceipts(spaceId: string, session: SessionCredentials) {
+  return apiFetch<{ receipts: SpaceSharedExtensionUpdateReceipt[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-update-receipts`, { session, cache: "no-store" });
 }
 export function previewSpaceSharedExtensionInstall(spaceId: string, extensionId: string, session: SessionCredentials, version: string,
   approvedSharedFilesystem: SharedFilesystemGrant[] = [], instanceKey = "default") {

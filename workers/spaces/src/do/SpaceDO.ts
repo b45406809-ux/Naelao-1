@@ -26,6 +26,7 @@ import type {
   TriggerRule,
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { verifyHmac } from "@naelao/crypto";
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
@@ -2591,6 +2592,25 @@ const MIGRATIONS: Migration[] = [
     description: "persist archive restore rows skipped by merge constraints",
     up: `ALTER TABLE space_archive_restores ADD COLUMN skipped_counts_json TEXT NOT NULL DEFAULT '{}';`,
   },
+  {
+    version: 125,
+    description: "record owner-approved, paused Space-shared extension updates",
+    up: `CREATE TABLE space_shared_extension_update_receipts (
+      request_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      installation_id TEXT NOT NULL,
+      extension_id TEXT NOT NULL,
+      from_version TEXT NOT NULL,
+      to_version TEXT NOT NULL,
+      artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64),
+      publisher_key_id TEXT NOT NULL CHECK(length(publisher_key_id)=64),
+      actor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_space_shared_extension_updates_recent
+      ON space_shared_extension_update_receipts(tenant_id,space_id,installation_id,created_at DESC,request_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3610,6 +3630,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-shared-extension-runtime" && method === "GET") return this.spaceSharedExtensionRuntime(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
+      if (url.pathname === "/space-shared-extension-update" && method === "POST") return this.applySpaceSharedExtensionUpdate(request);
+      if (url.pathname === "/space-shared-extension-update-receipt" && method === "GET") return await this.getSpaceSharedExtensionUpdateReceipt(request, url.searchParams);
+      if (url.pathname === "/space-shared-extension-updates" && method === "GET") return await this.listSpaceSharedExtensionUpdates(request, url.searchParams);
       if (url.pathname === "/project-extension-lifecycle" && method === "PATCH") return this.updateProjectExtensionLifecycle(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
@@ -13064,6 +13087,171 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       method: request.method, ...(body ? { headers: { "content-type": "application/json" }, body } : {}),
     }));
     return new Response(result.body, { status: result.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+  }
+
+  private async applySpaceSharedExtensionUpdate(request: Request): Promise<Response> {
+    type Claims = { version?: unknown; purpose?: unknown; tenantId?: unknown; spaceId?: unknown; actorId?: unknown;
+      installationId?: unknown; extensionId?: unknown; fromVersion?: unknown; toVersion?: unknown; artifactSha256?: unknown;
+      publisherId?: unknown; publisherKeyId?: unknown; expiresAt?: unknown; requestId?: unknown };
+    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown }>()
+      .catch((): { tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown } => ({}));
+    const claims = body.claims;
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || body.tenantId !== tenantId || typeof body.spaceId !== "string" || typeof body.actorId !== "string"
+      || request.headers.get("x-naelao-tenant-id") !== body.tenantId
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (!claims || claims.version !== 1 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
+      || claims.spaceId !== body.spaceId || claims.actorId !== body.actorId || typeof claims.installationId !== "string"
+      || typeof claims.extensionId !== "string" || typeof claims.fromVersion !== "string" || typeof claims.toVersion !== "string"
+      || typeof claims.artifactSha256 !== "string" || typeof claims.publisherId !== "string"
+      || typeof claims.publisherKeyId !== "string" || typeof claims.expiresAt !== "number"
+      || typeof claims.requestId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(claims.installationId)
+      || !/^ext_[a-z0-9_-]{2,62}$/.test(claims.extensionId)
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.fromVersion)
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.toVersion) || claims.fromVersion === claims.toVersion
+      || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.publisherId)
+      || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
+      || !Number.isSafeInteger(claims.expiresAt) || claims.expiresAt <= Date.now()
+      || !/^[0-9a-f-]{36}$/i.test(claims.requestId)) return Response.json({ error_code: "extension_update_review_token_stale" }, { status: 409 });
+    if (typeof body.reviewToken !== "string" || body.reviewToken.length > 16_384) return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 });
+    const tokenSeparator = body.reviewToken.lastIndexOf("."), encodedPayload = body.reviewToken.slice(0, tokenSeparator), tokenSignature = body.reviewToken.slice(tokenSeparator + 1);
+    if (tokenSeparator <= 0 || !/^[A-Za-z0-9_-]+$/.test(encodedPayload) || !/^[a-f0-9]{64}$/.test(tokenSignature))
+      return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 });
+    let tokenPayload: string;
+    try {
+      const base64 = encodedPayload.replace(/-/g, "+").replace(/_/g, "/");
+      tokenPayload = atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
+    } catch { return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 }); }
+    if (tokenPayload !== JSON.stringify(claims) || !await verifyHmac(tokenPayload, tokenSignature, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "extension_update_review_token_invalid" }, { status: 409 });
+
+    const requestId = claims.requestId;
+    const readReceipt = () => queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
+      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=?", requestId);
+    const expectedReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => row.tenant_id === tenantId && row.space_id === body.spaceId
+      && row.installation_id === claims.installationId && row.extension_id === claims.extensionId && row.from_version === claims.fromVersion
+      && row.to_version === claims.toVersion && row.artifact_sha256 === claims.artifactSha256 && row.publisher_key_id === claims.publisherKeyId
+      && row.actor_id === body.actorId;
+    const prior = readReceipt();
+    if (prior) return expectedReceipt(prior)
+      ? Response.json({ updated: true, replayed: true, receipt: prior }, { headers: { "cache-control": "private, no-store" } })
+      : Response.json({ error_code: "extension_update_request_id_conflict" }, { status: 409 });
+
+    const current = queryOne<{ status: string; release_version: string | null; manifest_json: string; publisher_id: string | null;
+      publisher_key_id: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      `SELECT i.status,i.release_version,r.manifest_json,r.publisher_id,r.publisher_key_id,r.publisher_revoked_at
+       FROM extension_instances i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+       WHERE i.instance_id=? AND i.extension_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED'`,
+      claims.installationId, claims.extensionId, tenantId, body.spaceId);
+    const candidate = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null;
+      publisher_key_id: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      `SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_revoked_at
+       FROM extension_releases WHERE extension_id=? AND version=?`, claims.extensionId, claims.toVersion);
+    if (!current || current.status !== "disabled" || current.release_version !== claims.fromVersion)
+      return Response.json({ error_code: "extension_update_installation_must_be_paused_at_reviewed_version" }, { status: 409 });
+    if (!candidate || candidate.artifact_sha256 !== claims.artifactSha256 || candidate.publisher_key_id !== claims.publisherKeyId
+      || candidate.publisher_id !== current.publisher_id || candidate.publisher_id !== claims.publisherId
+      || candidate.publisher_key_id !== current.publisher_key_id
+      || candidate.publisher_revoked_at !== null || current.publisher_revoked_at !== null)
+      return Response.json({ error_code: "extension_update_candidate_changed_or_revoked" }, { status: 409 });
+    if (await this.signExtensionRelease(claims.extensionId, claims.toVersion, candidate.manifest_json, candidate.artifact_sha256) !== candidate.host_signature)
+      return Response.json({ error_code: "extension_release_signature_invalid" }, { status: 409 });
+    let currentManifest: ExtensionManifest, candidateManifest: ExtensionManifest;
+    try {
+      currentManifest = validateExtensionManifest(JSON.parse(current.manifest_json));
+      candidateManifest = validateExtensionManifest(JSON.parse(candidate.manifest_json));
+    } catch { return Response.json({ error_code: "extension_update_manifest_invalid" }, { status: 409 }); }
+    const passiveCanvasOnly = (manifest: ExtensionManifest) => Boolean(manifest.bundle && manifest.bundle.primitives.length > 0
+      && manifest.bundle.primitives.every(part => part.kind === "canvas" && part.version === manifest.bundle!.version
+        && part.layout === "CanvasMount" && part.dynamicPage === false && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
+      && manifest.declaredPermissions.length === 0 && manifest.capabilityRequirements.length === 1
+      && manifest.capabilityRequirements[0] === "extension.project_canvas"
+      && (manifest.gadgets?.length ?? 0) === 0 && (manifest.daemons?.length ?? 0) === 0 && (manifest.commands?.length ?? 0) === 0
+      && (manifest.containers?.length ?? 0) === 0 && (manifest.widgetSubscriptions?.length ?? 0) === 0
+      && (manifest.dependencies?.length ?? 0) === 0 && (manifest.shared_filesystem?.length ?? 0) === 0 && !manifest.settingsSchema
+      && (manifest.bundle.connections?.length ?? 0) === 0 && (manifest.bundle.workerRoles?.length ?? 0) === 0);
+    const normalizedVersionOnly = (manifest: ExtensionManifest) => {
+      const normalized = JSON.parse(JSON.stringify(manifest)) as ExtensionManifest;
+      if (!normalized.bundle) return "";
+      normalized.bundle.version = "__release_version__";
+      for (const primitive of normalized.bundle.primitives) primitive.version = "__release_version__";
+      return JSON.stringify(normalized);
+    };
+    if (current.publisher_key_id !== claims.publisherKeyId || candidateManifest.id !== claims.extensionId
+      || currentManifest.bundle?.version !== claims.fromVersion || candidateManifest.bundle?.version !== claims.toVersion
+      || !passiveCanvasOnly(currentManifest) || !passiveCanvasOnly(candidateManifest)
+      || normalizedVersionOnly(currentManifest) !== normalizedVersionOnly(candidateManifest))
+      return Response.json({ error_code: "extension_update_contract_not_supported" }, { status: 409 });
+
+    const createdAt = new Date().toISOString();
+    let receipt: { request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
+      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } | null = null;
+    let replayed = false;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const raced = readReceipt();
+        if (raced) {
+          if (!expectedReceipt(raced)) throw new Error("extension_update_request_id_conflict");
+          receipt = raced; replayed = true; return;
+        }
+        const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET release_version=?
+          WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND project_id IS NULL AND scope='SPACE_SHARED'
+            AND status='disabled' AND release_version=?
+            AND EXISTS (SELECT 1 FROM extension_releases WHERE extension_id=? AND version=? AND artifact_sha256=?
+              AND publisher_key_id=? AND publisher_revoked_at IS NULL)`,
+        claims.toVersion, claims.installationId, claims.extensionId, tenantId, body.spaceId, claims.fromVersion,
+        claims.extensionId, claims.toVersion, claims.artifactSha256, claims.publisherKeyId);
+        if (changed.rowsWritten !== 1) throw new Error("extension_update_installation_must_be_paused_at_reviewed_version");
+        execute(this.ctx.storage.sql as never, `INSERT INTO space_shared_extension_update_receipts
+          (request_id,tenant_id,space_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
+        claims.fromVersion, claims.toVersion, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt);
+        receipt = { request_id: requestId, tenant_id: tenantId, space_id: body.spaceId as string, installation_id: claims.installationId as string,
+          extension_id: claims.extensionId as string, from_version: claims.fromVersion as string, to_version: claims.toVersion as string,
+          artifact_sha256: claims.artifactSha256 as string, publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt };
+      });
+    } catch (error) {
+      const errorCode = error instanceof Error && error.message === "extension_update_request_id_conflict"
+        ? error.message : "extension_update_installation_must_be_paused_at_reviewed_version";
+      return Response.json({ error_code: errorCode }, { status: 409 });
+    }
+    return receipt ? Response.json({ updated: true, replayed, receipt }, { status: 200, headers: { "cache-control": "private, no-store" } })
+      : Response.json({ error_code: "extension_update_receipt_unavailable" }, { status: 500 });
+  }
+
+  private async listSpaceSharedExtensionUpdates(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "", instanceId = params.get("instance_id");
+    if (!tenantId || !spaceId || instanceId !== null && !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) {
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    }
+    const receipts = instanceId
+      ? queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
+        artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT request_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at
+         FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=? AND installation_id=?
+         ORDER BY created_at DESC,request_id DESC LIMIT 20`, tenantId, spaceId, instanceId)
+      : queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
+        artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT request_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at
+         FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=?
+         ORDER BY created_at DESC,request_id DESC LIMIT 50`, tenantId, spaceId);
+    return Response.json({ receipts }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async getSpaceSharedExtensionUpdateReceipt(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "", requestId = params.get("request_id") ?? "";
+    if (!tenantId || !spaceId || !/^[0-9a-f-]{36}$/i.test(requestId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const receipt = queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
+      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=? AND tenant_id=? AND space_id=?", requestId, tenantId, spaceId);
+    return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })
+      : Response.json({ error_code: "extension_update_receipt_not_found" }, { status: 404 });
   }
 
   private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {

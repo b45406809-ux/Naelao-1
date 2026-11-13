@@ -99,17 +99,23 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
   });
 }
 
-async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean } = {}) {
-  const old = structuredClone(manifest);
-  old.bundle!.version = "1.0.0";
-  for (const primitive of old.bundle!.primitives) primitive.version = "1.0.0";
-  old.declaredPermissions = old.declaredPermissions.filter(permission => permission !== "assistant.phone.simulate");
-  old.capabilityRequirements = old.capabilityRequirements.filter(capability => capability !== "assistant.phone.simulate");
+async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled" } = {}) {
+  const passiveManifest = (version: string) => validateExtensionManifest({ id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
+    gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version,
+      primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "voice_dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false }] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+  const old = options.passive ? passiveManifest("1.0.0") : structuredClone(manifest);
+  if (!options.passive) {
+    old.bundle!.version = "1.0.0";
+    for (const primitive of old.bundle!.primitives) primitive.version = "1.0.0";
+    old.declaredPermissions = old.declaredPermissions.filter(permission => permission !== "assistant.phone.simulate");
+    old.capabilityRequirements = old.capabilityRequirements.filter(capability => capability !== "assistant.phone.simulate");
+  }
   const oldManifest = validateExtensionManifest(old);
-  const candidateManifest = validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives,
+  const candidateManifest = options.passive ? passiveManifest("1.2.0") : validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, primitives: [...manifest.bundle!.primitives,
     { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
       scope: "SPACE_SHARED", schemaSql: "CREATE TABLE usage_stats (id TEXT PRIMARY KEY);", migrations: [] }] } });
-  const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
+  const artifacts = options.passive ? { "./dashboard.html": html } : { "./dashboard.html": html, "./handler.ts": handler };
   const artifactEntries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
   const artifactSha256 = await digest(JSON.stringify(artifactEntries));
   const keyPair = await generateExtensionPublisherKeyPair();
@@ -127,11 +133,21 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     if (path === "/extension-installations") {
       if (url.searchParams.get("space_id") !== "space-a") return Response.json({ installations: [] });
       return Response.json({ installations: [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
-        instance_key: "default", status: "active", release_version: "1.0.0", publisher_id: "pub_voice", publisher_key_id: "c".repeat(64), publisher_attestation_valid: true,
+        instance_key: "default", status: options.installationStatus ?? "active", release_version: "1.0.0", publisher_id: "pub_voice",
+        publisher_key_id: options.passive ? signature.keyId : "c".repeat(64), publisher_attestation_valid: true,
         manifest: oldManifest }] });
     }
     if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: candidateManifest.id, version: candidateManifest.bundle!.version }] });
     if (path === "/extension-package-release") return Response.json({ release: candidateRelease });
+    if (path === "/space-shared-extension-updates") return Response.json({ receipts: [] });
+    if (path === "/space-shared-extension-update") {
+      const body = await request.clone().json() as { actorId: string; claims: { requestId: string; installationId: string; extensionId: string;
+        fromVersion: string; toVersion: string; artifactSha256: string; publisherKeyId: string } };
+      return Response.json({ updated: true, replayed: false, receipt: { request_id: body.claims.requestId, tenant_id: "tenant-a", space_id: "space-a",
+        installation_id: body.claims.installationId, extension_id: body.claims.extensionId, from_version: body.claims.fromVersion,
+        to_version: body.claims.toVersion, artifact_sha256: body.claims.artifactSha256, publisher_key_id: body.claims.publisherKeyId,
+        actor_id: body.actorId, created_at: new Date().toISOString() } });
+    }
     return Response.json({ error_code: "unexpected_space_do_route" }, { status: 404 });
   }) };
   const env = {
@@ -481,6 +497,52 @@ describe("signed Space-shared package update review", () => {
         mutates_installation: false, apply_supported: false } });
     expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
     expect(h.microAppRequests).toHaveLength(0);
+  });
+
+  it("issues a short-lived owner token only for a paused version-only static Canvas update and applies it through the SpaceDO", async () => {
+    const h = await updateReviewHarness({ passive: true, installationStatus: "disabled" });
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
+    expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
+    const review = await reviewResponse.json() as { review: { apply_supported: boolean; apply_block_reason: string | null };
+      update_review_token?: string; update_review_expires_at?: number; candidate: { artifact_sha256: string } };
+    expect(review.review).toMatchObject({ apply_supported: true, apply_block_reason: null });
+    expect(review.update_review_token).toBeTruthy();
+    expect(review.update_review_expires_at).toBeGreaterThan(Date.now());
+    expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
+
+    const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
+    const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token }), h.env);
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ updated: true, replayed: false, receipt: {
+      installation_id: "install-voice", extension_id: "ext_customer_voice", from_version: "1.0.0", to_version: "1.2.0",
+      artifact_sha256: review.candidate.artifact_sha256, actor_id: "owner-a",
+    } });
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(true);
+  });
+
+  it("does not issue an apply token while the installation is active or for a package with runtime authority", async () => {
+    const active = await updateReviewHarness({ passive: true, installationStatus: "active" });
+    const activeReview = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), active.env);
+    expect(await activeReview.json()).toMatchObject({ review: { apply_supported: false, apply_block_reason: "pause the installation before applying an update" } });
+
+    const runtime = await updateReviewHarness({ installationStatus: "disabled" });
+    const runtimeReview = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), runtime.env);
+    expect(await runtimeReview.json()).toMatchObject({ review: { apply_supported: false } });
+  });
+
+  it("exposes update receipts only through the Space admin caller", async () => {
+    const h = await updateReviewHarness();
+    const historyPath = "/spaces/space-a/shared-extension-update-receipts";
+    const denied = await spacesWorker.fetch(await signedRequest(historyPath, "GET", undefined, "product_end_user"), h.env);
+    expect(denied.status).toBe(403);
+    const response = await spacesWorker.fetch(await signedRequest(historyPath), h.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ receipts: [] });
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-updates"
+      && Boolean(request.headers.get("x-naelao-internal-token")))).toBe(true);
   });
 
   it("rejects stale pins, a different Space installation, revoked keys, and invalid publisher signatures", async () => {

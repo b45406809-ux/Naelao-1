@@ -1662,6 +1662,15 @@ function decodeSpacePackageReviewToken(token: string): { payload: string; signat
   } catch { return null; }
 }
 
+function spaceSharedExtensionUpdateClaims(input: { tenantId: string; spaceId: string; actorId: string; installationId: string;
+  extensionId: string; fromVersion: string; toVersion: string; artifactSha256: string; publisherId: string; publisherKeyId: string;
+  expiresAt: number; requestId: string }) {
+  return { version: 1, purpose: "space_shared_extension_update", tenantId: input.tenantId, spaceId: input.spaceId,
+    actorId: input.actorId, installationId: input.installationId, extensionId: input.extensionId,
+    fromVersion: input.fromVersion, toVersion: input.toVersion, artifactSha256: input.artifactSha256, publisherId: input.publisherId,
+    publisherKeyId: input.publisherKeyId, expiresAt: input.expiresAt, requestId: input.requestId };
+}
+
 async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
   extensionId: string, version: string, instanceKey: string,
   approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>, reviewToken?: string): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
@@ -2397,7 +2406,7 @@ const sharedExtensionUpdateReviewPath = "/spaces/:spaceId/shared-extension-insta
 app.use(sharedExtensionUpdateReviewPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use(sharedExtensionUpdateReviewPath, requireSpaceMembership({ POST: "admin" }));
 app.post(sharedExtensionUpdateReviewPath, async c => {
-  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
+  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId"), identity = getCallerIdentity(c);
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   if (!/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_installation_id_invalid" }, 400);
@@ -2535,10 +2544,46 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
   const dependencyNames = (manifest: SpacePackageReviewManifest) => (manifest.dependencies ?? []).map(item => `${item.extensionId}@${item.version}`).sort();
   const permissionExpansion = addedPermissions.length > 0 || addedCapabilities.length > 0
     || candidateManifest.shared_filesystem?.some(next => !currentManifest.shared_filesystem?.some(prior => prior.path === next.path && prior.access === next.access)) === true;
-  const publisherChanged = Boolean(installed.publisher_id && installed.publisher_id !== candidate.publisher.id);
-  const approvalRequired = permissionExpansion || publisherChanged || schemaChanges.added.length > 0 || schemaChanges.removed.length > 0
-    || schemaChanges.changed.length > 0 || connectionDiff.added.length > 0 || connectionDiff.removed.length > 0 || connectionDiff.changed.length > 0
-    || dependencyDiff.added.length > 0 || dependencyDiff.removed.length > 0 || dependencyDiff.changed.length > 0;
+  const publisherChanged = installed.publisher_id !== candidate.publisher.id || installed.publisher_key_id !== candidate.publisher.key_id;
+  const passiveCanvasOnly = (manifest: SpacePackageReviewManifest) => {
+    const bundle = manifest.bundle;
+    return Boolean(bundle && bundle.primitives.length > 0
+      && bundle.primitives.every(part => part.kind === "canvas" && part.version === bundle.version
+        && part.layout === "CanvasMount" && part.dynamicPage === false && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
+      && manifest.declaredPermissions.length === 0 && manifest.capabilityRequirements.length === 1
+      && manifest.capabilityRequirements[0] === "extension.project_canvas"
+      && (manifest.gadgets?.length ?? 0) === 0 && (manifest.daemons?.length ?? 0) === 0
+      && (manifest.commands?.length ?? 0) === 0 && (manifest.containers?.length ?? 0) === 0
+      && (manifest.widgetSubscriptions?.length ?? 0) === 0 && (manifest.dependencies?.length ?? 0) === 0
+      && (manifest.shared_filesystem?.length ?? 0) === 0 && !manifest.settingsSchema
+      && (bundle.connections?.length ?? 0) === 0 && (bundle.workerRoles?.length ?? 0) === 0);
+  };
+  const normalizedVersionOnly = (manifest: SpacePackageReviewManifest) => {
+    const normalized = JSON.parse(JSON.stringify(manifest)) as SpacePackageReviewManifest;
+    if (!normalized.bundle) return "";
+    normalized.bundle.version = "__release_version__";
+    for (const primitive of normalized.bundle.primitives) primitive.version = "__release_version__";
+    return JSON.stringify(normalized);
+  };
+  const manifestVersionOnly = normalizedVersionOnly(currentManifest) === normalizedVersionOnly(candidateManifest);
+  const updateContractSupported = passiveCanvasOnly(currentManifest) && passiveCanvasOnly(candidateManifest)
+    && manifestVersionOnly && !publisherChanged && currentManifest.bundle?.version === body.expected_current_version
+    && candidateManifest.bundle?.version === body.candidate_version && candidateDependencyClosure.resolved;
+  const canApply = installed.status === "disabled" && updateContractSupported && Boolean(identity.userId);
+  let updateReviewToken: string | undefined;
+  let updateReviewExpiresAt: number | undefined;
+  if (canApply && identity.userId) {
+    const expiresAt = Date.now() + 5 * 60_000;
+    const claims = spaceSharedExtensionUpdateClaims({ tenantId: owned.tenantId, spaceId, actorId: identity.userId,
+      installationId: instanceId, extensionId: installed.extension_id, fromVersion: body.expected_current_version,
+      toVersion: body.candidate_version, artifactSha256: candidate.artifact_sha256, publisherId: candidate.publisher.id,
+      publisherKeyId: candidate.publisher.key_id,
+      expiresAt, requestId: crypto.randomUUID() });
+    const payload = JSON.stringify(claims);
+    updateReviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
+    updateReviewExpiresAt = expiresAt;
+  }
+  const approvalRequired = true;
   return c.json({ installation_id: instanceId, extension_id: installed.extension_id, space_id: spaceId, scope: "SPACE_SHARED",
     current: { version: body.expected_current_version, publisher_id: installed.publisher_id ?? null, publisher_key_id: installed.publisher_key_id ?? null },
     candidate: { version: candidate.version, publisher_id: candidate.publisher.id, publisher_key_id: candidate.publisher.key_id,
@@ -2557,8 +2602,83 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
     dependency_resolution: { current: currentDependencyClosure.resolved ? { resolved: true as const } : currentDependencyClosure,
       candidate: candidateDependencyClosure.resolved ? { resolved: true as const } : candidateDependencyClosure },
     review: { authority_expanded: permissionExpansion, publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
-      mutates_installation: false, apply_supported: false, apply_block_reason: "safe migration rollback and active-work drain are not implemented for shared package updates" },
+      mutates_installation: false, apply_supported: canApply, apply_block_reason: canApply ? null
+        : installed.status !== "disabled" ? "pause the installation before applying an update"
+          : !identity.userId ? "a verified owner identity is required to apply an update"
+            : "only a same-publisher, version-only static Canvas package can update here; other packages require active-work drain and migration rollback" },
+    ...(updateReviewToken ? { update_review_token: updateReviewToken, update_review_expires_at: updateReviewExpiresAt } : {}),
   }, 200, { "cache-control": "private, no-store" });
+});
+
+const sharedExtensionUpdatePath = "/spaces/:spaceId/shared-extension-installations/:instanceId/update";
+app.use(sharedExtensionUpdatePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionUpdatePath, requireSpaceMembership({ POST: "admin" }));
+app.post(sharedExtensionUpdatePath, async c => {
+  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId"), identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!identity.userId || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_update_request_invalid" }, 400);
+  let body: { review_token?: unknown };
+  try {
+    const bytes = await readBoundedRequestBytes(c.req.raw, 16 * 1024);
+    body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "review_token")
+      || typeof body.review_token !== "string") throw new Error("invalid_update_body");
+  } catch { return c.json({ error_code: "extension_update_request_invalid" }, 400); }
+  const decoded = body.review_token.length <= 16_384 ? decodeSpacePackageReviewToken(body.review_token) : null;
+  if (!decoded || !await verifyHmac(decoded.payload, decoded.signature, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "extension_update_review_token_invalid" }, 409);
+  let claims: ReturnType<typeof spaceSharedExtensionUpdateClaims> | null = null;
+  try { claims = JSON.parse(decoded.payload) as ReturnType<typeof spaceSharedExtensionUpdateClaims>; } catch { /* invalid review token */ }
+  if (!claims || JSON.stringify(claims) !== decoded.payload || claims.version !== 1 || claims.purpose !== "space_shared_extension_update"
+    || claims.tenantId !== owned.tenantId || claims.spaceId !== spaceId || claims.actorId !== identity.userId || claims.installationId !== instanceId
+    || !/^ext_[a-z0-9_-]{2,62}$/.test(claims.extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.fromVersion)
+    || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.toVersion) || claims.fromVersion === claims.toVersion
+    || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || typeof claims.publisherId !== "string"
+    || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.publisherId) || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
+    || !Number.isSafeInteger(claims.expiresAt) || claims.expiresAt <= Date.now() || claims.expiresAt > Date.now() + 5 * 60_000
+    || !/^[0-9a-f-]{36}$/i.test(claims.requestId)) return c.json({ error_code: "extension_update_review_token_stale" }, 409);
+
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const receiptQuery = new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId, request_id: claims.requestId });
+  const receiptResponse = await stub.fetch(new Request(`http://space-do/space-shared-extension-update-receipt?${receiptQuery}`, { headers: {
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId),
+  } }));
+  if (receiptResponse.ok) {
+    const saved = await readBoundedResponseJson<{ receipt?: { request_id: string; installation_id: string; extension_id: string; from_version: string;
+      to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } }>(receiptResponse, 32 * 1024);
+    const receipt = saved.receipt;
+    if (!receipt || receipt.request_id !== claims.requestId || receipt.installation_id !== claims.installationId
+      || receipt.extension_id !== claims.extensionId || receipt.from_version !== claims.fromVersion || receipt.to_version !== claims.toVersion
+      || receipt.artifact_sha256 !== claims.artifactSha256 || receipt.publisher_key_id !== claims.publisherKeyId || receipt.actor_id !== identity.userId)
+      return c.json({ error_code: "extension_update_request_id_conflict" }, 409);
+    return c.json({ updated: true, replayed: true, receipt }, 200, { "cache-control": "private, no-store" });
+  }
+  if (receiptResponse.status !== 404) return c.json({ error_code: "extension_update_receipt_lookup_unavailable" }, 503);
+
+  const candidateNow = await inspectSignedSpacePackageRelease(c.env, owned.tenantId, spaceId, claims.extensionId, claims.toVersion);
+  if (!candidateNow.ok || !candidateNow.package.installable || candidateNow.package.artifactSha256 !== claims.artifactSha256
+    || candidateNow.package.publisherId !== claims.publisherId || candidateNow.package.publisherKeyId !== claims.publisherKeyId)
+    return c.json({ error_code: candidateNow.ok ? "extension_update_candidate_changed" : `extension_${candidateNow.error}` }, 409);
+  const response = await stub.fetch(new Request("http://space-do/space-shared-extension-update", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId),
+      "x-naelao-tenant-id": owned.tenantId },
+    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, actorId: identity.userId, claims, reviewToken: body.review_token }) }));
+  return new Response(response.body, { status: response.status,
+    headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
+});
+
+const sharedExtensionUpdateReceiptsPath = "/spaces/:spaceId/shared-extension-update-receipts";
+app.use(sharedExtensionUpdateReceiptsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionUpdateReceiptsPath, requireSpaceMembership({ GET: "admin" }));
+app.get(sharedExtensionUpdateReceiptsPath, async c => {
+  const spaceId = c.req.param("spaceId"), owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const query = new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId });
+  return stub.fetch(new Request(`http://space-do/space-shared-extension-updates?${query}`, { headers: {
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId),
+  } }));
 });
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
