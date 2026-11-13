@@ -2531,6 +2531,14 @@ const MIGRATIONS: Migration[] = [
       DROP TABLE space_coordination_entries_v118;
       CREATE INDEX idx_space_coordination_active ON space_coordination_entries(tenant_id,space_id,status,created_at,entry_id);`,
   },
+  {
+    version: 120,
+    description: "record explicit confirmation receipts for advisory Space coordination facts",
+    up: `ALTER TABLE space_coordination_entries ADD COLUMN last_confirmed_at TEXT;
+      ALTER TABLE space_coordination_entries ADD COLUMN last_confirmed_by TEXT;
+      UPDATE space_coordination_entries SET last_confirmed_at=created_at,last_confirmed_by=approved_by
+        WHERE last_confirmed_at IS NULL;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2777,13 +2785,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!Number.isFinite(Date.parse(cursorTime)) || !/^[A-Za-z0-9_-]{1,128}$/.test(cursorId)) throw new Error("cursor_invalid");
       } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
       rows = queryAll(sql,
-        `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at
+        `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at
          FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active'
            AND ${visibility} AND (created_at>? OR (created_at=? AND entry_id>?)) ORDER BY created_at,entry_id LIMIT ?`,
         tenantId, spaceId, ...visibilityArgs, cursorTime, cursorTime, cursorId, limit + 1);
     } else {
       rows = queryAll(sql,
-        `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at
+        `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at
          FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active'
          AND ${visibility} ORDER BY created_at,entry_id LIMIT ?`, tenantId, spaceId, ...visibilityArgs, limit + 1);
     }
@@ -2816,7 +2824,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         (existing.description ?? "") === (parsed.value.description ?? "") && existing.audience === audience && existing.created_by === body.actor_id &&
         existing.schema_version === schemaVersion && existing.approved_role === body.approved_role && existing.status === "active";
       const publicEntry = same ? queryOne<Record<string, unknown>>(sql,
-        "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+        "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
         body.tenant_id, body.space_id, body.entry_id) : null;
       return same
         ? Response.json({ entry: { ...publicEntry, advisory_only: true } })
@@ -2825,12 +2833,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     execute(sql,
       `INSERT INTO space_coordination_entries
-       (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?, 'active',1,1,'explicit_owner_or_admin_approval',?,?,?,?,?)`,
+       (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by)
+       VALUES (?,?,?,?,?,?,?,?, 'active',1,1,'explicit_owner_or_admin_approval',?,?,?,?,?,?,?)`,
       body.tenant_id, body.space_id, body.entry_id, schemaVersion, parsed.value.capability_key, parsed.value.label,
-      parsed.value.description ?? null, audience, body.actor_id, body.actor_id, body.approved_role, now, now);
+      parsed.value.description ?? null, audience, body.actor_id, body.actor_id, body.approved_role, now, now, now, body.actor_id);
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
       body.tenant_id, body.space_id, body.entry_id);
     return Response.json({ entry: { ...entry, advisory_only: true } }, { status: 201 });
   }
@@ -2849,7 +2857,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=? AND (?=2 OR schema_version=1)`,
       now, now, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version, schemaVersion);
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
       body.tenant_id, body.space_id, entryId);
     if (!entry) return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
     if (changed.rowsWritten !== 1) {
@@ -2880,13 +2888,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const previousUpdatedAt = typeof current.updated_at === "string" ? Date.parse(current.updated_at) : 0;
     const now = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
     const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_entries
-      SET schema_version=2,capability_key=?,label=?,description=?,audience=?,approved_by=?,approved_role=?,version=version+1,updated_at=?
+      SET schema_version=2,capability_key=?,label=?,description=?,audience=?,approved_by=?,approved_role=?,version=version+1,updated_at=?,last_confirmed_at=?,last_confirmed_by=?
       WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=?`,
       parsed.value.capability_key, parsed.value.label, parsed.value.description ?? null, parsed.value.audience,
-      body.actor_id, body.approved_role, now, body.tenant_id, body.space_id, entryId, body.expected_version);
+      body.actor_id, body.approved_role, now, now, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version);
     if (changed.rowsWritten !== 1) return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
       body.tenant_id, body.space_id, entryId);
     return Response.json({ entry: { ...entry, advisory_only: true } });
   }

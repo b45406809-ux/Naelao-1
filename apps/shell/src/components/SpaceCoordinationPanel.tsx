@@ -72,6 +72,11 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     changed();
   }
 
+  function formatConfirmationTime(value: string) {
+    const timestamp = new Date(value);
+    return Number.isFinite(timestamp.getTime()) ? timestamp.toLocaleString() : value;
+  }
+
   async function makePreview() {
     setBusy(true); setError(null); setNotice(null);
     try {
@@ -130,6 +135,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           <div className="settings-row-label">{entry.label}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>{entry.capability_key}{entry.description ? ` · ${entry.description}` : ""}</div>
           <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version}</div>
+          <div className="settings-row-sub" style={{ marginTop: 3 }}>Last confirmed {formatConfirmationTime(entry.last_confirmed_at)}</div>
         </div>
         {canManage && <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>Edit</button>

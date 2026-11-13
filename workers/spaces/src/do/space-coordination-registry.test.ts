@@ -31,9 +31,11 @@ describe("Space-owned advisory coordination registry", () => {
       { entry_id: "entry-a", audience: "space_members", advisory_only: true, version: 1 },
       { entry_id: "entry-b", audience: "space_members", advisory_only: true, version: 1 },
     ] });
+    expect(typeof pageBody.entries[0].last_confirmed_at).toBe("string");
     expect(pageBody.next_after).toMatch(/~entry-b$/);
     expect(pageBody.entries[0]).not.toHaveProperty("created_by");
     expect(pageBody.entries[0]).not.toHaveProperty("approved_by");
+    expect(pageBody.entries[0]).not.toHaveProperty("last_confirmed_by");
     await space.fetch(new Request(`${root}/entry-b`, { method: "DELETE", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: 1 }) }));
     const next = await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&limit=2&after=${encodeURIComponent(pageBody.next_after ?? "")}`));
@@ -55,7 +57,11 @@ describe("Space-owned advisory coordination registry", () => {
     expect(unconfirmed.status).toBe(400);
     const created = await publish("entry", "Company website");
     expect(created.status).toBe(201);
-    expect(await created.json()).not.toMatchObject({ entry: { created_by: "owner", approved_by: "owner" } });
+    const createdBody = await created.json() as { entry: Record<string, unknown> };
+    expect(typeof createdBody.entry.last_confirmed_at).toBe("string");
+    expect(createdBody.entry).not.toHaveProperty("last_confirmed_by");
+    expect(createdBody.entry).not.toHaveProperty("created_by");
+    expect(createdBody.entry).not.toHaveProperty("approved_by");
     expect((await publish("entry", "Company website")).status).toBe(200);
     const revoke = (version: number) => space.fetch(new Request(`${root}/entry`, { method: "DELETE", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: version }) }));
@@ -126,13 +132,18 @@ describe("Space-owned advisory coordination registry", () => {
     expect(unconfirmed.status).toBe(400);
     const updated = await amend(1, true);
     expect(updated.status).toBe(200);
-    await expect(updated.json()).resolves.toMatchObject({ entry: {
+    const updatedBody = await updated.json() as { entry: Record<string, unknown> };
+    expect(updatedBody).toMatchObject({ entry: {
       entry_id: "entry", schema_version: 2, label: "Current company site", audience: "space_admins", version: 2, advisory_only: true,
     } });
-    expect(storage.sql.exec<{ created_by: string; approved_by: string; approved_role: string; provenance: string }>(
-      "SELECT created_by,approved_by,approved_role,provenance FROM space_coordination_entries WHERE entry_id='entry'").toArray()).toEqual([{
-      created_by: "owner", approved_by: "admin", approved_role: "admin", provenance: "explicit_owner_or_admin_approval",
-    }]);
+    const amendmentReceipt = storage.sql.exec<{ created_by: string; approved_by: string; approved_role: string; provenance: string; last_confirmed_at: string; last_confirmed_by: string }>(
+      "SELECT created_by,approved_by,approved_role,provenance,last_confirmed_at,last_confirmed_by FROM space_coordination_entries WHERE entry_id='entry'").toArray()[0];
+    expect(amendmentReceipt).toMatchObject({
+      created_by: "owner", approved_by: "admin", approved_role: "admin", provenance: "explicit_owner_or_admin_approval", last_confirmed_by: "admin",
+    });
+    expect(Number.isFinite(Date.parse(amendmentReceipt.last_confirmed_at))).toBe(true);
+    expect(typeof updatedBody.entry.last_confirmed_at).toBe("string");
+    expect(updatedBody.entry).not.toHaveProperty("last_confirmed_by");
     expect((await amend(1, true)).status).toBe(409);
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`)).then(response => response.json()))
       .entries).toEqual([]);

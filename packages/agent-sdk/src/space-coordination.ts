@@ -21,6 +21,7 @@ export interface SpaceCoordinationEntryV1 extends Omit<SpaceCoordinationDraftV1,
   version: number;
   created_at: string;
   updated_at: string;
+  last_confirmed_at: string;
   revoked_at: string | null;
 }
 
@@ -34,6 +35,7 @@ export interface SpaceCoordinationEntryV2 extends Omit<SpaceCoordinationDraftV2,
   version: number;
   created_at: string;
   updated_at: string;
+  last_confirmed_at: string;
   revoked_at: string | null;
 }
 

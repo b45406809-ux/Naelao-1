@@ -181,7 +181,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(119);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(120);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
@@ -190,6 +190,7 @@ describe("SpaceDO migration replay", () => {
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_blueprint_installations')").toArray().map(column => column.name)).toContain("listing_id");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_blueprint_installations')").toArray().map(column => column.name)).toContain("setup_schema_version");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_coordination_entries')").toArray().map(column => column.name)).toContain("schema_version");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_coordination_entries')").toArray().map(column => column.name)).toContain("last_confirmed_at");
   });
 
   it("migrates existing coordination facts as schema v1 with their member audience intact", async () => {
@@ -201,8 +202,8 @@ describe("SpaceDO migration replay", () => {
       (tenant_id,space_id,entry_id,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at)
       VALUES ('tenant','space','legacy','official.website','Company site','Approved fact','space_members','active',1,1,'explicit_owner_or_admin_approval','owner','owner','owner','2026-11-12T00:00:00.000Z','2026-11-12T00:00:00.000Z')`);
     applyMigrations(migrationStorage, space.SPACE_DO_MIGRATIONS);
-    expect(storage.sql.exec<{ schema_version: number; audience: string; label: string }>(
-      "SELECT schema_version,audience,label FROM space_coordination_entries WHERE entry_id='legacy'").toArray())
-      .toEqual([{ schema_version: 1, audience: "space_members", label: "Company site" }]);
+    expect(storage.sql.exec<{ schema_version: number; audience: string; label: string; last_confirmed_at: string; last_confirmed_by: string }>(
+      "SELECT schema_version,audience,label,last_confirmed_at,last_confirmed_by FROM space_coordination_entries WHERE entry_id='legacy'").toArray())
+      .toEqual([{ schema_version: 1, audience: "space_members", label: "Company site", last_confirmed_at: "2026-11-12T00:00:00.000Z", last_confirmed_by: "owner" }]);
   });
 });
