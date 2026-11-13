@@ -2,9 +2,17 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P15 code commit `1f0a428e` is pushed to
+Current continuation checkpoint (2026-11-13): P16 code commit `1056a322` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. Space Blackboard discovery now uses an indexed, 90-ID
+`/workspace/Naelao-1-managed-services`. One shared versioned capability definition supplies the
+Discord attachment bounds and 30-day retention; the verified no-store Agents route, Router
+product-session allowlist and Shell setup UI consume it. Ordinary non-ephemeral attachments remain
+unsupported, and extensions still receive no media handles. Local evidence: focused Agents tests
+**10/10**, Router path tests **35/35**, Agents/Shell/Router typechecks and `git diff --check`. No
+provider acceptance or deployment was exercised; P16 remains PARTIAL. Preserve the unrelated
+`infra/scripts/__pycache__/`.
+
+P15 code commit `1f0a428e` is also pushed to `origin/Mcbt5s-Backup-2`. Space Blackboard discovery now uses an indexed, 90-ID
 keyset page inside SpaceDO; project ACLs are reevaluated for every page, subspace-bound projects
 remain excluded as before, and card summaries are read only after the bounded page returns. Local
 evidence: focused Spaces pagination/migration **9/9**, AgentPort caller **10/10**, Spaces typecheck,
@@ -37,11 +45,11 @@ probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legac
 attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
 policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
 and receipt coverage outside the Product auth outbox; see
-`docs/operations/notification-delivery-contract.md`. Exact next task: continue at P16 by adding
-authoritative Discord attachment capability metadata to channel discovery and setup from the
-existing ephemeral-only, five-file, 5 MiB/file and 15 MiB total contract; keep ordinary attachments
-unsupported until a permitted isolated retrieval design is established. Then continue P17/P24 and
-guided package installation, voice-extension dashboards, and Shared-Space coordination. P01/P02
+`docs/operations/notification-delivery-contract.md`. Exact next task: continue at P17 by tracing
+current catalog, template, license, purchase, refund and onboarding callers against the older
+finding, implementing independent identity/freshness/selection gaps while reusing settlement and
+refund ledgers. Then audit P24 installed-package provenance and revocation before guided
+installation, voice-extension dashboards, and Shared-Space coordination. P01/P02
 remain fail-closed on actual
 resource separation, ownership/receipts, and operator-attested D1 baselines; these are evidence and
 configuration gates. Keep all rollouts disabled. Fetch before every push and safely integrate remote

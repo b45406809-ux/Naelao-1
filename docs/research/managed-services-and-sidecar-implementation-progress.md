@@ -2,7 +2,16 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P15 indexed discovery `1f0a428e` pushed)
+### Active continuation (2026-11-13; P16 capability discovery `1056a322` pushed)
+
+- P16 code `1056a322` is pushed to `origin/Mcbt5s-Backup-2`. One versioned capability source drives
+  Discord's five-file, 5 MiB/file, 15 MiB aggregate and 30-day storage limits, its verified no-store
+  discovery API and the Shell setup card. The Router product-session path reaches the API. The
+  downloader prevalidates all references and declared aggregate size before fetching. Local
+  evidence: Agents focused media/capability/storage tests **10/10**, Router product path tests
+  **35/35**, Agents/Shell/Router typechecks and `git diff --check`. No deployment, provider
+  acceptance or live upload was exercised. P16 remains PARTIAL for scoped extension media handles
+  and live acceptance; ordinary non-ephemeral retrieval remains unsupported.
 
 - P15 code `1f0a428e` is pushed to `origin/Mcbt5s-Backup-2`. The SpaceDO exposes a bounded,
   indexed, keyset page for Blackboard-visible top-level projects; it rechecks project membership,
@@ -23,11 +32,11 @@
   purge semantic-cache Vectorize IDs and KV payloads for document and whole-Space erasure and expose
   cleanup state. Provider-index deletion and deployed acceptance remain unverified. Keep retrieval
   disabled and preserve `infra/scripts/__pycache__/`.
-- Exact next task: P16 Discord attachment capability discovery and setup. Publish the current
-  ephemeral-only, maximum five files, 5 MiB per file and 15 MiB aggregate implementation limits
-  from a shared contract so setup and runtime do not drift. Do not add non-ephemeral retrieval until
-  provider authorization, signed URL expiry, bounds, retention and cost are designed. Then proceed
-  to P17/P24, guided templates, voice dashboards and Shared-Space coordination.
+- Exact next task: P17 catalog and marketplace reconciliation against current source. Trace catalog
+  selection, listing identity/freshness, purchase/license, refund/revocation, author settlement and
+  onboarding callers; reuse existing settlement/refund ledgers and implement independent identity
+  or availability gaps. Then audit P24 installed-package provenance and revocation, followed by
+  guided templates, voice-extension dashboards and Shared-Space coordination.
 
 ### Prior continuation (2026-11-12; P22 physical cache purge `7b6942e8` pushed)
 
@@ -161,8 +170,8 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P13 queue health | PARTIAL | Code `2625ea34` removes the fabricated current depth/age/DLQ interpretation from interval analytics, persists `unknown`/`incomplete`/`degraded` observations under migration 0230, and atomically alerts through `platform_failures` when credentials/query/history fail. Release probes require the new schema. Focused tests **31/31** with P03/P12, queue migration **3/3**, and Workflows/Billing typechecks pass locally. Current GraphQL provides interval totals only; live queue depth, oldest age and DLQ inspection still need a supported inspector. No live Cloudflare query was run. |
 | §4 / P14 browser sessions | PARTIAL | Product Shell logout now calls the authenticated server logout path, which advances the Product account generation; Dashboard and Portal builder logout call `/v1/auth/revoke` before clearing local state. Builder reset already updates password and `token_version` atomically. Product generation is checked at protected Product session/ticket callers, with retryable DO cleanup. Local tests cover copied/stale tokens and reset/logout generation. Shell/Portal/Dashboard still store bearer tokens in localStorage, so XSS exposure and a cookie/CSRF migration remain; no deployed cross-product session acceptance has run.
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
-| §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. |
-| §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge, and Discord processing accepts only ephemeral CDN references within current count/byte bounds. P16's next task is shared capability metadata in channel discovery/setup; versioned scoped media handles for the restricted extension contract remain uncoded. |
+| §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. P17 current-caller reconciliation is next. |
+| §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge. P16 code `1056a322` exposes the shared versioned Discord capability contract through the verified Agents route and Shell setup; downloader and storage bounds use the same values. Focused Agents tests **10/10**, Router path tests **35/35**, and Agents/Shell/Router typechecks pass locally. Ordinary attachments remain unsupported; scoped extension media handles and live provider acceptance remain open. |
 | §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants and cost observations are reusable. Public extension streaming remains explicitly rejected; voice SDK lifecycle, package-owned microapp, test/publish/monitor dashboards and versioned rate calculator remain uncoded. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |

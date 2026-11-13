@@ -2,8 +2,26 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P15 code commit `1f0a428e` was pushed to
-`origin/Mcbt5s-Backup-2`. SpaceDO migration 110 adds an indexed `(space_id,id)` keyset page capped
+Updated 2026-11-13 after P16 code commit `1056a322` was pushed to
+`origin/Mcbt5s-Backup-2`. `channel-media-capabilities.ts` is the shared versioned source for
+Discord's ephemeral-reference-only ingress, five-file, 5 MiB/file and 15 MiB aggregate Naelao
+limits, private retention up to 30 days, MIME behavior and lack of extension file handles. The
+downloader validates all references and declared aggregate size before fetching; storage and the
+verified no-store capability route use the same limits. Router allows the product session through,
+and Shell setup reports the current support and restrictions. Focused Agents tests **10/10**, Router
+path tests **35/35**, Agents/Shell/Router typechecks and `git diff --check` pass locally. No provider
+live acceptance or deployment was exercised. P16 remains PARTIAL: scoped media handles are uncoded,
+ordinary non-ephemeral retrieval remains unsupported pending a permitted isolated design, and
+provider acceptance has not run.
+
+Exact next action: P17, trace catalog selection, listing identity/freshness, license and purchase/
+refund settlement, and onboarding against current callers; implement remaining independent
+identity/availability gaps using the existing durable license and refund ledgers. Then audit P24
+installed-package provenance/revocation before guided installation, voice-extension dashboards and
+Shared-Space coordination.
+
+Prior P15 checkpoint (2026-11-13, code commit `1f0a428e`, still pushed to
+`origin/Mcbt5s-Backup-2`). SpaceDO migration 110 adds an indexed `(space_id,id)` keyset page capped
 at 90; the authoritative DO filters current project/Space ACLs on every page, and the Spaces Worker
 reads summaries only for that page. Archived and subspace-bound projects retain the previous
 listing semantics. Local evidence: focused Spaces migration/page tests **9/9**, AgentPort search
@@ -17,11 +35,6 @@ These are single-run local emulation results. P15 remains PARTIAL for realistic 
 density, independent relevance/task-quality evidence, repeat-run latency distribution and deployed
 acceptance. The full 18-test runtime attempt passed 13 and failed five unrelated Project Bot
 planner fixtures at the direct-write delegation boundary.
-
-Exact next action: P16, publish Discord attachment capability limits through channel capability
-discovery and setup UI from a shared source of truth. Keep ordinary non-ephemeral attachments
-unsupported unless a permitted isolated retrieval design is established; then continue P17/P24,
-guided installation, voice-extension dashboards and Shared-Space coordination.
 
 Updated 2026-11-12 after code checkpoint `7b6942e8` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 0232 and Knowledge/Workflow/Spaces changes now provide durable
