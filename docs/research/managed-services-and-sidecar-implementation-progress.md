@@ -2,6 +2,26 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §5 setup conditions and usage assumptions `b9ad2c83` pushed)
+
+- Code `b9ad2c83` is pushed to `origin/Mcbt5s-Backup-2`. Signed setup schema v2 adds one equality
+  condition that refers only to an earlier field, locale maps for field labels/help and select
+  options, host validation, no executable logic, a 64 KiB total schema cap and existing secret-wording
+  rejection. The Shell renders conditions and locale fallback. Cost review validates 1–1,000,000
+  conversations and 1–500 interactions per conversation, then reports projected monthly interactions;
+  the monetary total stays `null` because no verified per-use rates are configured.
+- Local/mock evidence: SDK setup-field suite **8/8**, Spaces cost/activation suites **22/22**, SDK,
+  Spaces and Shell typechecks, and `git diff --check`. No deployed DB, payment or live provider was
+  exercised. This closes only those uncoded portions of §5.
+- S2–S9/U01–U12 classifications remain unchanged. U05/U06 unsupported runtime contracts, policy
+  choices, external resource receipts, provider acceptance and deployed/live verification remain
+  distinct open requirements. Rollouts remain disabled.
+- Exact next task: inspect current template and extension lifecycle callers for update, permission or
+  price change, rollback and uninstall behavior; implement the next source-proven local gap and
+  owner-visible state, without claiming provider reconnection or inventing policy. Then continue
+  §9.5 voice package dashboards and §10 coordination while preserving the current S2–S9/U01–U12
+  ledger.
+
 ### Active continuation (2026-11-13; §5 guided-template draft/resume `f5050258` pushed)
 
 - Code `f5050258` is pushed to `origin/Mcbt5s-Backup-2` from

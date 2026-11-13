@@ -2,6 +2,20 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after §5 setup conditions and usage assumptions code `b9ad2c83` was pushed to
+`origin/Mcbt5s-Backup-2`. Setup schema v2 now supports one equality condition bound to an earlier
+field and bounded localized labels, help and select labels. The host validator enforces schema
+version, locale/text bounds, source field/value compatibility, no backward/cyclic references, no
+credential-like wording and a 64 KiB schema cap; the owner form hides and localizes fields. The
+server accepts bounded monthly conversation/interaction assumptions and projects interaction volume,
+but leaves estimated dollars unknown because verified usage rates are absent. Local/mock evidence:
+SDK tests **8/8**, Spaces cost/activation **22/22**, SDK/Spaces/Shell typechecks and `git diff --check`.
+No deployed DB, payment, provider or live test was run. §5 remains PARTIAL for complete provider and
+runtime rates, update/version migration, permission/pricing changes, rollback, revocation/uninstall,
+visual authoring and end-to-end acceptance. Exact next task: trace current package lifecycle callers
+and implement an independently verifiable owner-facing update/uninstall gap, leaving external effect
+reconciliation and price policy explicit.
+
 Updated 2026-11-13 after guided-template draft/resume code `f5050258` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 117 stores owner setup drafts as AES-GCM ciphertext, bound to the
 Space tenant, listing, signed artifact digest, setup-schema version and digest. The host requires the

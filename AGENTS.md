@@ -2,21 +2,27 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): guided-template draft/resume code `f5050258` is
-pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Migration 117 stores
-owner setup drafts encrypted with tenant/Space-derived AES-GCM keys and binds them to the selected
-Marketplace listing, signed artifact digest and setup-schema version/digest. The Spaces host verifies
-the pending template and exact fork, restricts reads/writes to owners/admins, validates incomplete
-values, and enforces optimistic revisions and explicit replacement after context changes. Shell
-resumes drafts in the owner review flow; successful activation deletes the draft. Local/mock evidence:
-Spaces draft/activation/migration tests **25/25**, Agent SDK schema tests **6/6**, Router product-path
-tests **41/41**, Shell template test **1/1**, Spaces and Shell typechecks and `git diff --check`. The
-pnpm workspace command attempted a dependency reinstall and aborted without a TTY; these checks used
-already-installed binaries directly. No deployed database, marketplace payment or live provider was
-exercised. §5 remains PARTIAL for conditional/localized fields, usage estimates/rate completeness and
-package lifecycle/update/uninstall acceptance. Exact next task: extend the declarative setup-field
-contract only with bounded, signed conditional/localization metadata and host-side validation, then
-use the existing cost-estimate ledger to add explicit expected-usage inputs without inventing rates.
+Current continuation checkpoint (2026-11-13): §5 setup conditions and usage assumptions code
+`b9ad2c83` is pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. SDK
+setup schema v2 adds one equality condition referencing an earlier field and bounded localized
+labels/help/options; schema and locale inputs are host-validated, credential-like copy remains
+rejected, and total schema size is capped at 64 KiB. The owner UI hides conditional fields, resolves
+locale fallbacks, and accepts monthly conversation/interaction assumptions. The server reports
+projected volume while dollar totals remain unknown because no verified usage-rate table exists.
+Local/mock evidence: Agent SDK tests **8/8**, Spaces activation/cost tests **22/22**, SDK/Spaces/Shell
+typechecks and `git diff --check`. No deployed database, marketplace payment or live provider was
+exercised. §5 remains PARTIAL for complete provider/runtime rates, installation update/migration,
+permission/pricing review, revocation/uninstall lifecycle and end-to-end acceptance.
+
+`f5050258` adds encrypted, listing/artifact/schema-bound per-Space setup drafts, owner/admin host
+authorization, revision checks and Shell resume; activation clears drafts. Its local/mock tests and
+limits remain in the progress ledgers. S2–S9/U01–U12 classifications are unchanged: unsupported
+U05/U06 runtime contracts, product/policy decisions, absent external receipts and deployed/live
+acceptance remain distinct open gaps. Rollouts stay disabled. Exact next task: trace current template
+and extension install/update/uninstall callers, identify a concrete independently implementable
+lifecycle gap, then implement owner-visible safe update/uninstall state without inventing provider
+reconnection or pricing rules. Continue with §9.5 voice package dashboards and §10 coordination only
+after the template lifecycle review; keep S2–S9/U01–U12 ledger authoritative.
 
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable
