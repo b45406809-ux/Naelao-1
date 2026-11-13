@@ -64,6 +64,7 @@ import { summarizeExtensionForActivation, type ExtensionActivationSummary } from
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
 import { supportsVersionOnlySpaceSharedCodeUpdate } from "./extension-update-contract.js";
+import { attachBlueprintSetupFields } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -666,7 +667,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.projectId !== undefined && (typeof exportOptions.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(exportOptions.projectId))) return c.json({ error_code: "invalid_project_id" }, 400);
   if (exportOptions.requiredExtensions !== undefined && (!Array.isArray(exportOptions.requiredExtensions) || exportOptions.requiredExtensions.length > 128 || exportOptions.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) return c.json({ error_code: "invalid_required_extensions" }, 400);
   if (exportOptions.requiredExtensionVersions !== undefined && (!exportOptions.requiredExtensionVersions || typeof exportOptions.requiredExtensionVersions !== "object" || Array.isArray(exportOptions.requiredExtensionVersions) || Object.keys(exportOptions.requiredExtensionVersions).length > 128 || Object.entries(exportOptions.requiredExtensionVersions).some(([id, version]) => !/^ext_[a-z0-9_-]{2,62}$/.test(id) || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)))) return c.json({ error_code: "invalid_required_extension_versions" }, 400);
@@ -679,16 +680,29 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
       ...(exportOptions.templateCategory ? { template_category: exportOptions.templateCategory } : {}) }),
   }));
   if (!rawResponse.ok) return new Response(rawResponse.body, { status: rawResponse.status });
-  const rawBlueprint = await rawResponse.json<SpaceBlueprint>();
+  let rawBlueprint = await rawResponse.json<SpaceBlueprint>();
   const publisherTrust = await blueprintPublisherTrust(c.env, c.env.SPACE_DO.get(sourceId), tenantId, spaceId, rawBlueprint);
   if (publisherTrust === "unavailable") return c.json({ error_code: "extension_release_trust_unavailable" }, 503);
   if (publisherTrust !== "trusted") return c.json({ error_code: "extension_release_publisher_untrusted" }, 409);
+  if (exportOptions.setupSchemaVersion !== undefined || exportOptions.setupFields !== undefined) {
+    try {
+      rawBlueprint = attachBlueprintSetupFields(rawBlueprint, {
+        projectId: exportOptions.projectId,
+        schemaVersion: exportOptions.setupSchemaVersion,
+        fields: exportOptions.setupFields,
+      });
+    } catch {
+      return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422);
+    }
+  }
   if (exportOptions.stateDeltaSuite) rawBlueprint.metadata.stateDeltaSuite = exportOptions.stateDeltaSuite;
   for (const project of rawBlueprint.projects) {
     const entry = project.id ? exportOptions.entries?.[project.id] : undefined;
     if (entry) project.configuration = { ...project.configuration, conformance_entry: entry };
   }
   const blueprint = sanitizeAndScrubBlueprint(rawBlueprint) as unknown as SpaceBlueprint;
+  try { validateBlueprintSetupSchema(blueprint); }
+  catch { return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422); }
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
 

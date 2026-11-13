@@ -18,6 +18,16 @@ describe("dogfooded enterprise extensions", () => {
     const script = voiceDashboard.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();
+    const foundry = DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog ?? "";
+    expect(foundry).toContain("Customer setup form");
+    expect(foundry).toContain("Add setup field");
+    expect(foundry).toContain("Setup contract preview");
+    expect(foundry).toContain("setupSchemaVersion,setupFields");
+    expect(foundry).toContain("blueprint.export");
+    expect(foundry.toLowerCase()).toContain("provider credentials");
+    const foundryScript = foundry.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(foundryScript).toBeTruthy();
+    expect(() => new Function(foundryScript!)).not.toThrow();
   });
 
   it("limits commercial first-party claims to CRM and e-sign", () => {
