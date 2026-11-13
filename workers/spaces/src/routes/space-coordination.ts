@@ -114,7 +114,7 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     if (!Number.isInteger(expectedVersion) || (expectedVersion as number) < 1) return c.json({ error_code: "invalid_expected_version" }, 400);
     const response = await auth.stub.fetch(new Request(`http://space/space-coordination-registry/${encodeURIComponent(entryId)}`, {
       method: "DELETE", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, expected_version: expectedVersion }),
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, approved_role: auth.role, expected_version: expectedVersion }),
     }));
     return noStore(response);
   });
@@ -133,7 +133,7 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     if (!Number.isInteger(expectedVersion) || (expectedVersion as number) < 1) return c.json({ error_code: "invalid_expected_version" }, 400);
     const response = await auth.stub.fetch(new Request(`http://space/space-coordination-registry/${encodeURIComponent(entryId)}`, {
       method: "DELETE", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, schema_version: 2, expected_version: expectedVersion }),
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, approved_role: auth.role, schema_version: 2, expected_version: expectedVersion }),
     }));
     return noStore(response);
   });
@@ -165,6 +165,18 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     }));
     if (!response.ok) return noStore(response);
     return c.json({ ...(await response.json<Record<string, unknown>>()), disclosure });
+  });
+
+  app.get(`${v2Path}/:entryId/history`, async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    if (auth.role !== "owner" && auth.role !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    const entryId = c.req.param("entryId");
+    if (!entryId || entryId.length > 128) return c.json({ error_code: "coordination_entry_unavailable" }, 404);
+    const after = c.req.query("after");
+    if (after !== undefined && (!after || after.length > 256)) return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-registry/${encodeURIComponent(entryId)}/history?${params}`)));
   });
 }
 

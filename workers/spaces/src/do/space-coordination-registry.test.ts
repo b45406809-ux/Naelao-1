@@ -64,7 +64,7 @@ describe("Space-owned advisory coordination registry", () => {
     expect(createdBody.entry).not.toHaveProperty("approved_by");
     expect((await publish("entry", "Company website")).status).toBe(200);
     const revoke = (version: number) => space.fetch(new Request(`${root}/entry`, { method: "DELETE", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: version }) }));
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", expected_version: version }) }));
     expect((await revoke(1)).status).toBe(200);
     expect(await (await revoke(1)).json()).toMatchObject({ error_code: "coordination_entry_version_conflict" });
     expect(await (await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space`))).json()).toMatchObject({ entries: [] });
@@ -117,10 +117,10 @@ describe("Space-owned advisory coordination registry", () => {
     const { space, root, publishV2 } = setup();
     expect((await publishV2("admin-only", "space_admins")).status).toBe(201);
     const legacyRevoke = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: 1 }) }));
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", expected_version: 1 }) }));
     expect(legacyRevoke.status).toBe(404);
     const revokeV2 = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", schema_version: 2, expected_version: 1 }) }));
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1 }) }));
     expect(await revokeV2.json()).toMatchObject({ entry: { status: "revoked", revoked_by: "owner", created_by: "owner", provenance: "explicit_owner_or_admin_approval" } });
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries)
       .toMatchObject([{ entry_id: "admin-only", status: "revoked", revoked_by: "owner", created_by: "owner", approved_by: "owner", approved_role: "owner", provenance: "explicit_owner_or_admin_approval" }]);
@@ -147,6 +147,65 @@ describe("Space-owned advisory coordination registry", () => {
     expect(renewed.status).toBe(200);
     expect(await renewed.json()).toMatchObject({ entry: { status: "active", version: 2, expires_at: renewedExpiry } });
     expect(await (await memberRead()).json()).toMatchObject({ entries: [{ entry_id: "expiring", status: "active" }] });
+  });
+
+  it("records metadata-only publish, amend and revoke history atomically with stable paging", async () => {
+    const { space, storage, root, publishV2 } = setup();
+    const firstExpiry = new Date(Date.now() + 86_400_000).toISOString();
+    expect((await publishV2("audit-entry", "space_members", "Private label is not copied", firstExpiry)).status).toBe(201);
+    expect((await publishV2("audit-entry", "space_members", "Private label is not copied", firstExpiry)).status).toBe(200);
+
+    const amendedExpiry = new Date(Date.now() + 172_800_000).toISOString();
+    const amended = await space.fetch(new Request(`${root}/audit-entry`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "admin", approved_role: "admin", schema_version: 2, expected_version: 1, confirmed: true,
+      draft: { schema_version: 2, capability_key: "official.website", label: "Updated private label", audience: "space_admins", expires_at: amendedExpiry },
+    }) }));
+    expect(amended.status).toBe(200);
+    const revoked = await space.fetch(new Request(`${root}/audit-entry`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 2,
+    }) }));
+    expect(revoked.status).toBe(200);
+
+    const history = (after?: string) => space.fetch(new Request(`${root}/audit-entry/history?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", limit: "1", ...(after ? { after } : {}) })}`));
+    const first = await (await history()).json() as { events: Array<Record<string, unknown>>; next_after: string | null };
+    expect(first.events).toMatchObject([{ action: "published", prior_version: null, version: 1, actor_id: "owner", actor_role: "owner",
+      audience_before: null, audience_after: "space_members", expires_at_before: null, expires_at_after: firstExpiry, status_after: "active" }]);
+    expect(first.events[0]).not.toHaveProperty("label");
+    expect(first.events[0]).not.toHaveProperty("description");
+    expect(first.next_after).toBeTruthy();
+
+    const second = await (await history(first.next_after ?? undefined)).json() as { events: Array<Record<string, unknown>>; next_after: string | null };
+    expect(second.events).toMatchObject([{ action: "amended", prior_version: 1, version: 2, actor_id: "admin", actor_role: "admin",
+      audience_before: "space_members", audience_after: "space_admins", expires_at_before: firstExpiry, expires_at_after: amendedExpiry }]);
+    expect(second.next_after).toBeTruthy();
+    const third = await (await history(second.next_after ?? undefined)).json() as { events: Array<Record<string, unknown>>; next_after: string | null };
+    expect(third.events).toMatchObject([{ action: "revoked", prior_version: 2, version: 3, actor_id: "owner", actor_role: "owner",
+      audience_before: "space_admins", audience_after: "space_admins", expires_at_before: amendedExpiry, expires_at_after: amendedExpiry, status_after: "revoked" }]);
+    expect(third.next_after).toBeNull();
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_audit_events WHERE entry_id='audit-entry'").toArray()).toEqual([{ count: 3 }]);
+  });
+
+  it("rolls back a coordination fact mutation when its audit event cannot be recorded", async () => {
+    const { space, storage, root, publishV2 } = setup();
+    await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space`)); // apply migrations before installing the failure trigger
+    storage.sql.exec(`CREATE TRIGGER reject_coordination_audit BEFORE INSERT ON space_coordination_audit_events
+      WHEN NEW.entry_id='atomic-entry' BEGIN SELECT RAISE(ABORT,'audit storage unavailable'); END`);
+    expect((await publishV2("atomic-entry", "space_members", "Do not publish without its audit record")).status).toBe(503);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_entries WHERE entry_id='atomic-entry'").toArray()).toEqual([{ count: 0 }]);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_audit_events WHERE entry_id='atomic-entry'").toArray()).toEqual([{ count: 0 }]);
+
+    storage.sql.exec("DROP TRIGGER reject_coordination_audit");
+    expect((await publishV2("atomic-entry", "space_members", "Published fact")).status).toBe(201);
+    storage.sql.exec(`CREATE TRIGGER reject_coordination_amend BEFORE INSERT ON space_coordination_audit_events
+      WHEN NEW.entry_id='atomic-entry' AND NEW.action='amended' BEGIN SELECT RAISE(ABORT,'audit storage unavailable'); END`);
+    const failedAmendment = await space.fetch(new Request(`${root}/atomic-entry`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "admin", approved_role: "admin", schema_version: 2, expected_version: 1, confirmed: true,
+      draft: { schema_version: 2, capability_key: "official.website", label: "Changed label", audience: "space_admins", expires_at: null },
+    }) }));
+    expect(failedAmendment.status).toBe(503);
+    expect(storage.sql.exec("SELECT version,label,audience FROM space_coordination_entries WHERE entry_id='atomic-entry'").toArray())
+      .toEqual([{ version: 1, label: "Published fact", audience: "space_members" }]);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_audit_events WHERE entry_id='atomic-entry'").toArray()).toEqual([{ count: 1 }]);
   });
 
   it("amends a fact with explicit audience confirmation and expected-version fencing", async () => {

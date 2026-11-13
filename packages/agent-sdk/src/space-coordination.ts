@@ -125,6 +125,29 @@ export interface SpaceCoordinationPageV2 {
   next_after: string | null;
 }
 
+export interface SpaceCoordinationAuditEventV2 {
+  event_id: string;
+  entry_id: string;
+  action: "published" | "amended" | "revoked";
+  prior_version: number | null;
+  version: number;
+  actor_id: string;
+  actor_role: "owner" | "admin";
+  audience_before: SpaceCoordinationAudienceV2 | null;
+  audience_after: SpaceCoordinationAudienceV2;
+  expires_at_before: string | null;
+  expires_at_after: string | null;
+  status_after: "active" | "revoked";
+  provenance: "explicit_owner_or_admin_approval";
+  created_at: string;
+}
+
+export interface SpaceCoordinationAuditHistoryPageV2 {
+  entry_id: string;
+  events: SpaceCoordinationAuditEventV2[];
+  next_after: string | null;
+}
+
 export interface SpaceCoordinationClientOptions {
   spaceId: string;
   request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown }): Promise<T>;
@@ -157,6 +180,10 @@ export function createSpaceCoordinationClientV2(options: SpaceCoordinationClient
     list(after?: string): Promise<SpaceCoordinationPageV2> {
       const query = after ? `?after=${encodeURIComponent(after)}` : "";
       return options.request(`${base}${query}`);
+    },
+    history(entryId: string, after?: string): Promise<SpaceCoordinationAuditHistoryPageV2> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${base}/${encodeURIComponent(entryId)}/history${query}`);
     },
     preview(draft: SpaceCoordinationDraftV2): Promise<{ schema_version: 2; draft: SpaceCoordinationDraftV2; disclosure: SpaceCoordinationDisclosureV2; no_project_source: true }> {
       return options.request(`${base}/preview`, { method: "POST", body: draft });

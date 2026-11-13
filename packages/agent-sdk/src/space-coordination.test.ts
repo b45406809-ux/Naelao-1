@@ -59,12 +59,14 @@ describe("Space coordination registry v2 audience contract", () => {
     await client.publish(draft, true);
     await client.revoke("entry/1", 3);
     await client.amend("entry/1", 3, { ...draft, label: "Company website" }, true);
+    await client.history("entry/1", "event cursor");
     expect(calls).toEqual([
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2?after=cursor%2F1", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/preview", method: "POST", body: draft },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2", method: "POST", body: { ...draft, confirm_disclosure: true } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1", method: "DELETE", body: { schema_version: 2, expected_version: 3 } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1", method: "PATCH", body: { ...draft, label: "Company website", expected_version: 3, confirm_disclosure: true } },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1/history?after=event%20cursor", method: "GET", body: undefined },
     ]);
   });
 });

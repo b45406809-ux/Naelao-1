@@ -21,7 +21,8 @@ export { SPACE_COORDINATION_DISCLOSURE_V1, validateSpaceCoordinationDraft, creat
   type SpaceCoordinationPageV1, type SpaceCoordinationClientOptions } from "./space-coordination.js";
 export { spaceCoordinationDisclosureV2, validateSpaceCoordinationDraftV2, createSpaceCoordinationClientV2,
   type SpaceCoordinationAudienceV2, type SpaceCoordinationDraftV2, type SpaceCoordinationEntryV2,
-  type SpaceCoordinationDisclosureV2, type SpaceCoordinationPageV2 } from "./space-coordination.js";
+  type SpaceCoordinationDisclosureV2, type SpaceCoordinationPageV2, type SpaceCoordinationAuditEventV2,
+  type SpaceCoordinationAuditHistoryPageV2 } from "./space-coordination.js";
 
 // ── Agent tool definition ────────────────────────────────────────────────────
 

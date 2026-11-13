@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2 } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
-import { amendSpaceCoordination, listSpaceCoordination, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
+import { amendSpaceCoordination, listSpaceCoordination, listSpaceCoordinationAuditHistory, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -24,6 +24,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const [auditHistory, setAuditHistory] = React.useState<Record<string, { events: SpaceCoordinationAuditEventV2[]; nextAfter: string | null; open: boolean }>>({});
 
   React.useEffect(() => {
     const updateClock = () => setNowMs(Date.now());
@@ -144,6 +145,24 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     } finally { setBusy(false); }
   }
 
+  async function loadAuditHistory(entryId: string, after?: string) {
+    const current = auditHistory[entryId];
+    if (!after && current?.open) {
+      setAuditHistory(values => ({ ...values, [entryId]: { ...current, open: false } }));
+      return;
+    }
+    setBusy(true); setError(null);
+    try {
+      const page = await listSpaceCoordinationAuditHistory(spaceId, session, entryId, after);
+      setAuditHistory(values => ({ ...values, [entryId]: {
+        events: after ? [...(values[entryId]?.events ?? []), ...page.events] : page.events,
+        nextAfter: page.next_after, open: true,
+      } }));
+    } catch {
+      setError("Coordination audit history could not be loaded. Check your Space role and try again.");
+    } finally { setBusy(false); }
+  }
+
   return <section className="settings-block" aria-labelledby="space-coordination-heading" style={{ marginBottom: 24 }}>
     <div style={{ padding: "16px 16px 10px" }}>
       <div id="space-coordination-heading" className="settings-row-label">Space coordination facts</div>
@@ -163,6 +182,21 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           {entry.approved_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Last approved by actor {entry.approved_by} ({entry.approved_role ?? "owner/admin"})</div>}
           {entry.provenance && <div className="settings-row-sub" style={{ marginTop: 3 }}>Provenance: {entry.provenance}</div>}
           {entry.status === "revoked" && entry.revoked_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Revoked by actor {entry.revoked_by}{entry.revoked_at ? ` · ${formatConfirmationTime(entry.revoked_at)}` : ""}</div>}
+          {canManage && <div style={{ marginTop: 8 }}>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadAuditHistory(entry.entry_id)}>
+              {auditHistory[entry.entry_id]?.open ? "Hide audit history" : "View audit history"}
+            </button>
+            {auditHistory[entry.entry_id]?.open && <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+              {auditHistory[entry.entry_id]!.events.map(event => <div key={event.event_id} className="settings-row-sub" style={{ borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+                <div>{event.action} · version {event.prior_version ?? "new"} → {event.version} · {formatConfirmationTime(event.created_at)}</div>
+                <div>{event.actor_role} actor {event.actor_id} · {event.audience_before ?? "not previously published"} → {event.audience_after} · {event.status_after}</div>
+                <div>Expiry {formatExpiry(event.expires_at_before)} → {formatExpiry(event.expires_at_after)}</div>
+              </div>)}
+              {!auditHistory[entry.entry_id]!.events.length && <div className="settings-row-sub">No audit events are available for this fact.</div>}
+              {auditHistory[entry.entry_id]!.nextAfter && <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+                onClick={() => void loadAuditHistory(entry.entry_id, auditHistory[entry.entry_id]!.nextAfter ?? undefined)}>Load older audit events</button>}
+            </div>}
+          </div>}
         </div>
         {canManage && entry.status !== "revoked" && <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>{entry.status === "expired" ? "Renew or edit" : "Edit"}</button>

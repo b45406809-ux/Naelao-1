@@ -70,6 +70,21 @@ describe("Space coordination registry gateway", () => {
     expect(typeof body.entry_id).toBe("string");
   });
 
+  it("restricts metadata-only lifecycle history to owners and administrators", async () => {
+    const member = env("member");
+    const denied = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a/history", "product_end_user"), member.bindings);
+    expect(denied.status).toBe(403);
+    expect(member.calls).toHaveLength(0);
+
+    const owner = env("owner");
+    const allowed = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a/history?after=cursor", "product_end_user"), owner.bindings);
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("cache-control")).toBe("no-store");
+    expect(owner.calls).toHaveLength(1);
+    expect(owner.calls[0]!.url).toContain("/space-coordination-registry/entry-a/history?");
+    expect(new URL(owner.calls[0]!.url).searchParams.get("after")).toBe("cursor");
+  });
+
   it("passes the authenticated role to v2 reads and requires an explicit selected audience on writes", async () => {
     const member = env("member");
     const read = await app.fetch(await request("/spaces/space/coordination-registry/v2?after=v2%7Emembers%7Etime%7Eentry", "product_end_user"), member.bindings);
@@ -106,7 +121,7 @@ describe("Space coordination registry gateway", () => {
 
     const revoked = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "DELETE", { schema_version: 2, expected_version: 1 }), owner.bindings);
     expect(revoked.status).toBe(200);
-    expect(await owner.calls[2]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user" });
+    expect(await owner.calls[2]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user", approved_role: "owner" });
 
     const needsConfirmation = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "PATCH", {
       ...draft, expected_version: 1, confirm_disclosure: false,
