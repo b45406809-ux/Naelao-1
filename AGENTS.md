@@ -13,31 +13,28 @@ a new session, read both plans, both progress records, and this runbook; inspect
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
 Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` matches fetched
-`origin/Mcbt5s-Backup-2` at code `b2d4ac0f71992a8d66fc5ad9c6a9cc7b28235dc2`; preceding P04 code is
-`849bf78a54af5921dbf33c7d807f16eff61153a5`. P06 migration 0239 binds each new Telnyx extension
-call to the exact active installation and handler hash with an insert-time assignment recheck. The
-owner status API returns those pins without raw provider call IDs; Shell groups bounded call and
-provider-reported cost observations by installation. Historical calls remain unpinned. The release
-manifest now includes existing migration 0238 and new migration 0239, requires 0239, and probes the
-new columns. Local evidence: Agents phone suites **41/41**, Agents/Shell typechecks, release migration
-runner **13/13**, release inventory/deployment-manifest validators and `git diff --check`.
+`origin/Mcbt5s-Backup-2` at code `9d5a0c23c506e41dffd0ba81dd2992ea56887839`. P10/P24 now support
+an owner-reviewed, same-publisher update only for a paused, version-only static Canvas package with
+no declared permissions, settings, dependencies, connections, channels, state migrations or other
+runtime surfaces. The worker re-verifies the signed candidate and active publisher key; SpaceDO checks
+the exact version pin and signature, keeps the installation paused, and atomically writes a durable,
+idempotent receipt with the new pin. Owner/admin Shell can apply and view bounded update history.
+SpaceDO migration 125 stores receipts. Local evidence: Spaces package/update/runtime/migration suites
+**49/49**, Spaces/Shell typechecks and `git diff --check`. Fetch confirmed `origin/Mcbt5s-Backup-2`
+at the same SHA. Only the pre-existing untracked `infra/scripts/__pycache__/` remains.
 
-P04 code `849bf78a` previews exact additive SQLite merge insert/skip counts in a rolled-back
-transaction, rechecks on apply, persists skipped counts and shows them in Settings. Archive tests
-**18/18**, Spaces/Shell typechecks and diff check pass. Both checkpoints use local mocks/static checks;
-no provider, deployed D1/R2, deployed worker, live call or recovery drill ran. P04 remains PARTIAL for
-limits, cross-service coverage, point-in-time/overwrite policy, key/legal/jurisdiction rules and
-isolated/live acceptance. P06 remains PARTIAL for customer voice lifecycle, streaming, complete
-invoice reconciliation and live carrier/region acceptance. P01/P02 actual resource separation,
-ownership, 158 read-only receipts and operator-attested D1 baselines remain external gates. Preserve
-untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+The generic package path is still PARTIAL: active-work admission/drain, stateful channel/gadget updates,
+settings/data migrations, rollback UI/version selection, permission or dependency expansion, provider
+connections, price changes, compromise response, scanning/retention and live acceptance are uncoded
+or unverified. P04/P06 remain PARTIAL as recorded below; P01/P02 resource separation, ownership,
+158 read-only receipts and operator-attested D1 baselines remain external gates. No deployed DO,
+provider, Marketplace, live call or recovery drill was exercised. Rollouts remain disabled.
 
-Exact next action: continue P10/P24 general signed package update lifecycle. The owner UI reaches the
-review API, but apply remains explicitly unsupported because active-work drain and safe update/rollback
-are uncoded. Trace all shared-package invocation paths, add durable per-installation activity
-admission/drain and an atomic update receipt, then enable only a narrowly reviewed compatible update.
-Keep schema, permission, dependency, provider-connection and price changes gated behind their own
-migration/approval paths. This is implementation work, not a credential blocker. After compaction,
+Exact next action: continue P10/P24 by tracing every channel and gadget invocation from admission to
+completion. Add a durable per-installation active-work lease that blocks new admissions after pause and
+supports a bounded drain before any runtime-bearing update. Add tests for concurrent calls, lost
+response and restart/revocation; keep state migrations, authority expansions, dependencies,
+connections and prices disabled until their separate review/rollback paths exist. After compaction,
 interruption or a new session, read both plans, both progress records and this runbook; inspect the
 actual worktree and branch; resume from this exact action. Do not deploy, purchase, reset, clean,
 switch branches or force-push.

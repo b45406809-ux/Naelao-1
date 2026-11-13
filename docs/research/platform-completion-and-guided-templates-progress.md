@@ -2,13 +2,17 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `b2d4ac0f71992a8d66fc5ad9c6a9cc7b28235dc2` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`; the preceding P04 code checkpoint is `849bf78a54af5921dbf33c7d807f16eff61153a5`. Migration `0239_telnyx_extension_call_installation_pin.sql` records the exact active extension installation and handler hash when Telnyx admits a call, with an atomic active-assignment recheck. Old rows remain unpinned. Owner phone status returns the pin without the provider call ID; Shell groups recent calls and provider-reported cost observations by installation and handler. The release manifest now covers `0238` and `0239`, requires `0239`, and probes the new columns.
+Updated 2026-11-13 after code `9d5a0c23c506e41dffd0ba81dd2992ea56887839` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`; it follows P06 `b2d4ac0f71992a8d66fc5ad9c6a9cc7b28235dc2` and P04 `849bf78a54af5921dbf33c7d807f16eff61153a5`.
 
-P06 local evidence: Agents phone tests **41/41**, Agents/Shell typechecks, release migration runner **13/13**, release inventory and deployment-manifest validators, and `git diff --check`. P04 local evidence: archive/migration tests **18/18**, Spaces/Shell typechecks and diff check. These are local Worker/SQLite/provider mocks and static checks; no live provider call, deployed D1/R2, deployment or archive drill ran. P06 remains PARTIAL for customer voice package lifecycle, public streaming, richer operations, full cost/invoice reconciliation and carrier/region acceptance. Keep rollouts disabled.
+P10/P24: an owner/admin can now review and apply a signed update only when the installation is paused, publisher/key are unchanged, and current/candidate manifests differ only by release version. The package is static Canvas only, requires only the Canvas-mount capability, and has no declared permissions, settings, dependencies, provider connections, channels, shared storage, schema or other runtime surfaces. A short-lived token is bound to actor, Space, installation, version pins, publisher and artifact. Apply re-verifies candidate artifact/publisher signature and active key, then SpaceDO enforces host signature, paused status, exact-pin CAS and atomic migration-125 receipt persistence. It stays paused. Lost responses replay the exact receipt before rechecking current publisher trust. Owner/admin Shell shows bounded receipt history. All other updates remain blocked.
 
-P04 `849bf78a` adds an additive row-merge simulation inside a rolled-back SQLite transaction, per-table insert/skip counts and preview time, apply-time rechecking, durable skipped counts and Shell restore status. It preserves current rows and is not point-in-time rollback. Archive limits, cross-service coverage, legal/key/jurisdiction policy and isolated/live recovery remain open.
+Local evidence: `shared-extension-packages.test.ts`, `extension-runtime-install.test.ts` and `SpaceDO-migrations.test.ts` **49/49**; Spaces/Shell typechecks and `git diff --check`. These are local Worker/SQLite/DB/R2 mocks and static checks only; no deployed DO, live Marketplace/provider, live call, deployment or recovery drill ran. P10/P24 remain PARTIAL for active-work admission/drain on runtime packages, settings/data migrations, rollback/version selection, authority/dependency expansion, provider connection and price changes, compromised-key response, scanning, retention and live acceptance. Keep rollouts disabled.
 
-Exact next action: continue P10/P24 general signed package update lifecycle. The owner UI reaches the signed update review, but apply is explicitly unsupported because active-work drain and safe update/rollback remain uncoded. Trace current shared-package invocation paths; implement durable per-installation admission/drain and an atomic update receipt, then enable only a narrowly reviewed compatible update. Keep schema, permission, dependency, provider-connection and price changes blocked until their migration and approval paths exist. This is an implementation gap, not a credential blocker. Preserve `infra/scripts/__pycache__/`.
+P06 migration `0239` pins each new Telnyx extension call to the exact active installation and handler hash with an insert-time assignment recheck; old calls remain unpinned. Owner status omits provider call IDs and Shell groups bounded provider-reported observations by pin. Release metadata covers `0238` and `0239`, requires `0239`, and probes the columns. Prior local evidence: Agents phone tests **41/41**, Agents/Shell typechecks, release migration runner **13/13**, release inventory/deployment-manifest validators. P06 remains PARTIAL for customer voice lifecycle, streaming, richer operations, cost/invoice reconciliation and carrier/region acceptance.
+
+P04 `849bf78a` previews additive merge insert/skip counts in a rolled-back SQLite transaction, rechecks on apply, persists skipped counts and shows restore status. It is not point-in-time rollback. Archive caps, cross-service coverage, legal/key/jurisdiction policy and isolated/live recovery remain open. P01/P02 still lack actual resource separation, service ownership, 158 read-only receipts and operator-attested D1 baselines. Preserve `infra/scripts/__pycache__/`.
+
+Exact next action: trace every shared channel and gadget invocation from admission to completion. Add a durable per-installation active-work lease that blocks new admissions after pause and supports a bounded drain before runtime-bearing updates; test concurrent calls, lost response, restart and revocation. Keep settings/data migrations, authority expansion, dependencies, provider connections and price changes disabled until separate review/rollback paths exist. This is implementation work, not a credential blocker.
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
 packages can declare bounded text attachment access, which requires explicit owner/admin approval.
@@ -763,7 +767,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, schema validation, encrypted drafts, localized/conditional forms and setup-only schema migrations are local. General package update/drain/rollback, revocation/uninstall effects, complete verified rates and visual authoring remain. |
+| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. Code `9d5a0c23` adds owner-approved paused updates for same-publisher version-only static Canvas packages, with signed artifact recheck and durable receipt. Runtime-bearing update/drain, settings/data migration, rollback version selection, revocation/uninstall effects, verified rates and visual authoring remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |
@@ -777,7 +781,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore and owner-authorized cross-Space package closure import are pushed in `b4cf5214`; update/schema migration, active-work drain, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`) and paused passive-Canvas update receipts (`9d5a0c23`) are local. Runtime active-work drain, schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 
@@ -796,9 +800,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    those without new evidence. §5's bounded setup schema, draft/resume, installation status and
    per-installation extension settings schema migration are implemented locally; Marketplace Template
    release migration, lifecycle/rates/authoring gaps are listed above. Continue at the current
-   checkpoint's P10/P24 task: add durable shared-package invocation admission/drain and an atomic
-   compatible-update receipt before enabling signed release updates. Keep permission, schema,
-   dependency, connection and price changes gated until their own review/migration paths exist. P22's
+   checkpoint's P10/P24 task: trace channel/gadget invocations and add durable per-installation
+   active-work admission/drain before runtime-bearing updates. The passive Canvas receipt path is in
+   `9d5a0c23`; keep permission, schema, dependency, connection and price changes gated until their
+   own review/migration/rollback paths exist. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
