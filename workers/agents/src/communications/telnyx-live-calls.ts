@@ -9,6 +9,7 @@ import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { observeTelnyxVoiceCallCost } from "./telnyx-voice-cost.js";
 import { claimLiveCall, liveCallAllowed, liveCallTicket, liveCodeHash, type LiveCall } from "./live-calls.js";
 import { phonePublicOrigin } from "./phone-provider.js";
+import { validateVoiceChannelResponse } from "@naelao/agent-sdk";
 
 const internalCallSid = async (bindingId: string, callControlId: string) => {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${bindingId}:${callControlId}`)));
@@ -173,9 +174,9 @@ async function callExtension(env: AgentsEnv, binding: AssistantPhoneBinding, ide
 /** Execute a deliberately small carrier language. Public extension code returns data only; the
  * host validates it and owns every Telnyx command. Telnyx gather is currently DTMF-only here. */
 function extensionGatherPlan(value: unknown): { kind: "hangup" } | { kind: "say"; prompt: string } | { kind: "gather"; prompt: string; digits: number } | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const actions = (value as { actions?: unknown }).actions;
-  if (!Array.isArray(actions) || actions.length < 1 || actions.length > 8) return null;
+  const response = validateVoiceChannelResponse(value);
+  if (!response) return null;
+  const actions = response.actions;
   let prompt = "";
   let gather: { text: string; digits: number } | null = null;
   for (const raw of actions) {

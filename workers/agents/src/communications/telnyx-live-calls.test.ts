@@ -73,7 +73,7 @@ describe("Telnyx live call command contract", () => {
     const extension = vi.fn(async (request: Request) => {
       const body = await request.json() as { event: { id: string; type: string; payload: Record<string, unknown> } };
       extensionEvents.push(body);
-      if (body.event.type === "call.received") return Response.json({ response: { actions: [
+      if (body.event.type === "call.received") return Response.json({ response: { schema_version: 1, actions: [
         { type: "say", text: "Welcome." }, { type: "gather", input: "dtmf", digits: 1, text: "Press one for support." },
       ] } });
       return Response.json({ response: { actions: [{ type: "hangup" }] } });

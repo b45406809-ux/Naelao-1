@@ -13,7 +13,7 @@ import type {
 export type { Space, Session, Message, ApiResult };
 export { meaningfulFactTokens, projectFactRelevance } from "./project-fact-relevance.js";
 export { toNormalizedInboundMessage, type InboundEnvelopeInput, type NormalizedInboundMessage } from "./channel-envelope.js";
-export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";
+export { validateVoiceChannelResponse, type VoiceChannelAction, type VoiceChannelResponse, type VoiceChannelResponseV1, type VoiceChannelEventPayload, type VoiceChannelEventType, type VoiceChannelEventV1 } from "./voice-channel.js";
 export { resolveConnectorProvider, pinConnectorProvider, type ConnectorProvider, type ConnectorProviderChoice, type ConnectorProviderPreference, type ConnectorProviderRegistry } from "./connector-provider.js";
 export { presentAutonomyPolicy, type AutonomyLevel, type AutonomyPresentation, type StoredApprovalMode, type StoredAutonomyPolicy } from "./autonomy-policy.js";
 export { SPACE_COORDINATION_DISCLOSURE_V1, validateSpaceCoordinationDraft, createSpaceCoordinationClient,
