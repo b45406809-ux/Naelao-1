@@ -2,18 +2,21 @@
 
 ## Active checkpoint
 
-Current continuation (2026-11-13): P24 publisher revocation/drain code `f5b3c1dd` is pushed to
-`origin/Mcbt5s-Backup-2`. Migration 127 stores a per-key SpaceDO fence and durable receipt. The
+Current continuation (2026-11-13): P24 publisher revocation/drain `f5b3c1dd` and receipt readback
+`0ba70840` are pushed to `origin/Mcbt5s-Backup-2`. Migration 127 stores a per-key SpaceDO fence and durable receipt. The
 owner/admin DELETE caller authenticates its internal SpaceDO request, disables matching active
 installations, blocks new leases/re-enable/install/import, and returns draining/drained counts.
 Already admitted work may finish; the response and Shell caller do not claim it was terminated.
-Local evidence: SpaceDO runtime/install and migration suites **34/34**, Spaces/Shell typechecks, and
-`git diff --check`. No deployed DO or live package acceptance ran; rollouts remain disabled.
-P24 revocation is IMPLEMENTED_LOCAL for this path. Remaining: persisted receipt readback in Shell,
-full Worker/R2 lost-response acceptance, dependency closure, cross-Space restoration, broader update
-migrations/rollback, scanning, retention and key-custody/compromise notice. Exact next action: add an
-owner/admin per-key receipt read route and a Shell refresh/status view that survives page reload; test
-tenant/Space/role isolation, then continue the next uncoded P24 item and remaining S4–S9/U01–U12 gaps.
+Local evidence for readback: SpaceDO runtime/install, migration and receipt gateway suites **37/37**,
+Spaces/Shell typechecks, and `git diff --check`. No deployed DO or live package acceptance ran;
+rollouts remain disabled. Publisher revocation, durable drain receipts and owner/admin readback are
+IMPLEMENTED_LOCAL. Remaining: blueprint activation does not call the existing explicit same-tenant
+package-closure import, cross-tenant seller artifacts lack an authorization/packaging contract, and
+full Worker/R2 lost-response acceptance, broader updates/rollback, scanning, retention and
+key-custody/compromise notice remain. Exact next action: connect owner-reviewed package-closure
+import to blueprint activation using an explicitly selected same-tenant source Space and exact pins;
+test source/destination authorization, digest mismatch, revocation and lost response, then continue
+remaining S4–S9/U01–U12 gaps.
 
 Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.
@@ -21,7 +24,7 @@ It accepts synthetic `call.received` and normalized `call.digits`, validates and
 response actions, and performs no carrier request or saved-session write. Fresh local evidence:
 Agents suites **46/46**, Space route suite **18/18**, Agents/Spaces/Shell typechecks. No carrier,
 deployment or live test ran. The next action recorded then was P17 source/caller reconciliation; its
-result is recorded below. Resume from the active P24 receipt-readback action above.
+result is recorded below. Resume from the active P24 blueprint-import action above.
 
 Updated 2026-11-13 after P05 visual setup authoring code `b3feecb5` was fetched and pushed to
 `origin/Mcbt5s-Backup-2`. Foundry Template Studio now authors optional v1/v2 declarative setup
@@ -411,7 +414,7 @@ legal/key/jurisdiction policy, safe external side-effect reconnection, and live/
 evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, lost-response
 acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy and
 supply-chain scanning. The drain receipt gap from this checkpoint was later closed locally in
-`f5b3c1dd`; owner readback remains next. P01/P02 protections
+`f5b3c1dd`, and owner readback followed in `0ba70840`. P01/P02 protections
 remain fail-closed on shared resources, missing ownership/receipts and operator-attested migration
 baselines. P03/P20 caller work is recorded in the subsequent `41996f29` checkpoint; policy and
 operator-identity gaps remain open.
@@ -426,8 +429,8 @@ Local evidence at that checkpoint: six focused Spaces suites **67/67**, Spaces/S
 `git diff --check`. No deployed R2, publisher registry, runtime or live provider acceptance was
 exercised. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, full
 Worker/R2 lost-response acceptance, key compromise notice, removal/retention policy and
-supply-chain scanning. The revocation/drain receipt code gap was subsequently closed in `f5b3c1dd`;
-see the active checkpoint for evidence and remaining receipt-readback work.
+supply-chain scanning. The revocation/drain receipt code gap was subsequently closed in `f5b3c1dd`,
+with owner readback in `0ba70840`; see the active checkpoint for current evidence.
 
 ## Prior checkpoints
 
@@ -813,7 +816,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated per-key revocation/drain receipts (`f5b3c1dd`) are local. Receipt readback, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package closure import (`b4cf5214`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated per-key revocation/drain receipt plus readback (`f5b3c1dd`, `0ba70840`) are local. Blueprint activation wiring to the explicit same-tenant package import remains, as do cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance. |
 
 ## Requirement queue
 

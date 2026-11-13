@@ -12,17 +12,17 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P24 publisher revocation/drain code `f5b3c1dd` is pushed to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. SpaceDO migration 127 stores a
-per-key fence and durable drain receipt. The owner/admin route authenticates its internal SpaceDO
-request, revokes matching releases, disables active installations, blocks new leases and attempts to
-re-enable/install/import under the revoked key, then returns current drain state. Already admitted
-work may finish. Shell displays the immediate status without claiming termination. Local evidence:
-SpaceDO runtime/install and migration suites **34/34**, Spaces/Shell typechecks and `git diff --check`;
-no deployed DO or live package acceptance ran. Exact next action: add an owner/admin readback route
-for the persisted revocation receipt and a Shell refresh/status view that survives reload, test
-tenant/Space/role isolation, then continue remaining P24 and S2–S9/U01–U12 gaps. Keep rollouts
-disabled and preserve the untracked `infra/scripts/__pycache__/`.
+Current checkpoint (2026-11-13): P24 publisher revocation/drain `f5b3c1dd` and receipt readback
+`0ba70840` are pushed to `origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`.
+SpaceDO migration 127 stores a per-key fence/receipt; the owner/admin gateway disables active
+installs, blocks new leases and re-enable/install/import, returns live drain counts, and supports
+no-store readback after reload. Admitted work may finish. Local evidence: SpaceDO runtime/install,
+migration and gateway suites **37/37**, Spaces/Shell typechecks and `git diff --check`; no deployed
+DO or live package acceptance ran. Exact next action: connect the existing owner-reviewed signed
+package-closure import to blueprint activation using an explicitly selected same-tenant source Space
+and exact required pins; test both Space admin checks, digest mismatch, revocation and lost-response
+retry. Keep cross-tenant seller artifacts gated without an authorization contract, keep rollouts
+disabled, and preserve `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
@@ -255,9 +255,9 @@ Space data-operations suite passes **9/9**, Spaces typecheck passes, and `git di
 These are local SQLite/R2-mock results; no deployment, isolated restore, live R2 check, or measured
 RPO/RTO drill was performed. P04 remains PARTIAL for archive size/row limits, merge-only relational
 restore, legal/key/jurisdiction policy, provider reconnection safety, and isolated/live recovery
-evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration and package
-retention/compromise notices. The drain receipt is now implemented locally in `f5b3c1dd`; owner
-readback remains next. Preserve the unrelated
+evidence. P24 remains PARTIAL for dependency closure, template-activation artifact transfer and
+package retention/compromise notices. Revocation/drain receipt and owner readback are implemented
+locally in `f5b3c1dd` and `0ba70840`. Preserve the unrelated
 `infra/scripts/__pycache__/`.
 
 P16 code commit `1056a322` remains pushed. One shared versioned capability definition supplies
