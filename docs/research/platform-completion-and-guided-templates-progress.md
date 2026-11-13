@@ -12,9 +12,11 @@ and `git diff --check`. These are local checks; no deployment, payment or provid
 exercised. P03 remains PARTIAL for grace/restriction/escalation policy and live delivery. P20 remains
 PARTIAL for refund/dispute/access and author-accounting policy and independently authenticated
 operator resolution; the existing list API uses a shared secret and caller-supplied ID, and no safe
-operator UI exists without an identity contract. Exact next task: resume the managed-services mission
-at U11, then U12 and the remaining S2–S9/U01–U12 reconciliation before continuing later platform
-requirements.
+operator UI exists without an identity contract. The managed-services matrix already reconciles
+S2–S9/U01–U12, including completed U11/U12 caller audits; see that ledger instead of repeating them.
+Exact next task: continue at §5, Developer-authored guided template installation. Compare current
+authoring, installation, cost-estimate and activation callers with the older-checkout research, then
+implement the next independent gap.
 
 Updated 2026-11-13 after P04 code commit `937fbdd5` was pushed to
 `origin/Mcbt5s-Backup-2`. New full archives place

@@ -18,11 +18,13 @@
   independently authenticated operator identity/UI. The existing operator list route uses a shared
   secret plus caller-supplied operator ID; do not expose the secret to a browser or present the
   supplied ID as authenticated identity.
-- Exact next task: continue the managed-services mission at U11 by tracing settlement, provider-cost,
-  threshold and notification outcomes, owner controls and unsupported invoice/billed-idle feeds to
-  reachable callers. Close any independent code gap, then audit U12 and reconcile S2–S9/U01–U12.
-  After the managed-services audit, continue the platform requirements in dependency order. Preserve
-  `infra/scripts/__pycache__/`; keep rollouts disabled.
+- The managed-services matrix already reconciles S2–S9/U01–U12. In particular, U11's supported
+  metering, cost-budget, alert and push callers and U12's pinned esbuild/toolchain callers were
+  audited in the historical entries below; their remaining limits are explicit unsupported feeds,
+  policy or live evidence, not an unfinished repeated audit. Exact next task: continue the integrated
+  platform plan at §5, Developer-authored guided template installation. Reconcile current authoring,
+  install, cost-estimate and activation callers with the old-checkout findings, then implement the
+  next independent gap. Preserve `infra/scripts/__pycache__/`; keep rollouts disabled.
 
 ### Active continuation (2026-11-13; P04 object recovery `937fbdd5` pushed)
 

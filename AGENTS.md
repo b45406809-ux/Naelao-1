@@ -71,10 +71,12 @@ policy and live provider delivery. P23 remains partial on general channel exhaus
 and receipt coverage outside the Product auth outbox; see
 `docs/operations/notification-delivery-contract.md`. P24 local code `415ba199` is pushed; its
 remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
-in the two progress ledgers. Exact next task: resume the managed-services audit at U11 by tracing
-settlement, provider-cost, threshold and notification outcomes to their reachable callers; close
-independent gaps, then audit U12 and reconcile S2–S9/U01–U12. P01/P02 already fail closed on the
-recorded resource and baseline evidence gates. P17 remains partial for the
+in the two progress ledgers. The managed-services progress source already reconciles S2–S9/U01–U12;
+in particular, U11 and U12 were audited and have no remaining ordinary caller/toolchain gap. Exact
+next task: continue the integrated platform plan at §5, Developer-authored guided template
+installation. Reconcile the old-checkout findings against current authoring, installation, cost
+estimate, and activation callers, then implement the next independent gap. P01/P02 remain fail-closed
+on recorded external resource and baseline evidence gates. P17 remains partial for the
 Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
 P01/P02
 remain fail-closed on actual
