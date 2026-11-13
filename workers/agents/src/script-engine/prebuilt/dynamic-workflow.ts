@@ -40,7 +40,7 @@ export const dynamicWorkflow: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 3,
   paramHints: {
-    "workflow.extensions": "no parameters; lists only this project’s active bound/shared workflow extensions with runtime, installation ID, version, scope, exact declared dependency pins, primitive IDs/kinds, workflow entry/tool names, and worker-role bindings",
+    "workflow.extensions": "no parameters; lists only this project’s active bound/shared extensions with installation ID, version, scope, exact declared dependency pins, primitive IDs/kinds, workflow runtime and entries when present, and worker-role bindings",
     "workflow.create": "name, code: export async function execute(step, ctx); capabilities: installed operation names; use ctx.params and ctx.tools.call(stableStepKey, operation, params)",
     "workflow.run": "name, params, start_key (reuse for retries), workflow_class, budget_credits, optional installation_id",
     "workflow.status": "id: workflow run ID",

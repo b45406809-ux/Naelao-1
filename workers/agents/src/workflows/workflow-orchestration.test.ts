@@ -93,7 +93,7 @@ describe("container work inside durable workflows", () => {
     );
   });
 
-  it("lists only workflows installed in the active project after rechecking membership", async () => {
+  it("lists active project installations without leaking other project or Space-shared packages", async () => {
     const fetch = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/spaces/space/members")
@@ -156,6 +156,61 @@ describe("container work inside durable workflows", () => {
             },
             {
               instance: {
+                instance_id: "install-canvas",
+                project_id: "project",
+                scope: "PROJECT_SHARED",
+                status: "active",
+              },
+              manifest: {
+                id: "ext_dashboard",
+                type: "extension",
+                declaredPermissions: [],
+                capabilityRequirements: ["canvas.view"],
+                gadgets: [],
+                daemons: [],
+                commands: [],
+                bundle: {
+                  schemaVersion: "1.0",
+                  kind: "extension_bundle",
+                  id: "ext_dashboard",
+                  version: "1.0.0",
+                  primitives: [
+                    { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./dashboard.ts", dynamicPage: false },
+                  ],
+                },
+              },
+            },
+            {
+              instance: {
+                instance_id: "install-space-shared",
+                project_id: null,
+                scope: "SPACE_SHARED",
+                status: "active",
+              },
+              manifest: {
+                id: "ext_space_service",
+                type: "extension",
+                declaredPermissions: [],
+                capabilityRequirements: ["canvas.view"],
+                gadgets: [],
+                daemons: [],
+                commands: [],
+                bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_space_service", version: "1.0.0", primitives: [
+                  { schemaVersion: "1.0", kind: "canvas", id: "space_dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./dashboard.ts", dynamicPage: false },
+                ] },
+              },
+            },
+            {
+              instance: {
+                instance_id: "install-malformed",
+                project_id: "project",
+                scope: "PROJECT_BOUND",
+                status: "active",
+              },
+              manifest: { id: "ext_malformed" },
+            },
+            {
+              instance: {
                 instance_id: "install-b",
                 project_id: "other",
                 scope: "PROJECT_BOUND",
@@ -163,16 +218,19 @@ describe("container work inside durable workflows", () => {
               },
               manifest: {
                 id: "ext_other",
+                type: "extension",
+                declaredPermissions: [],
+                capabilityRequirements: ["canvas.view"],
+                gadgets: [],
+                daemons: [],
+                commands: [],
                 bundle: {
+                  schemaVersion: "1.0",
+                  kind: "extension_bundle",
                   id: "ext_other",
                   version: "1.0.0",
                   primitives: [
-                    {
-                      kind: "workflow",
-                      id: "private",
-                      entry: "./private.ts",
-                      toolNames: [],
-                    },
+                    { schemaVersion: "1.0", kind: "canvas", id: "private", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./private.ts", dynamicPage: false },
                   ],
                 },
               },
@@ -206,7 +264,7 @@ describe("container work inside durable workflows", () => {
         installationId: "install-a",
         scope: "PROJECT_BOUND",
         status: "active",
-        runtime: "Cloudflare Workflows",
+        workflowRuntime: "Cloudflare Workflows",
         dependencyPins: [{ extensionId: "ext_catalog", version: "2.1.0", manifestSha256: "a".repeat(64) }],
         parts: [
           { id: "mentor_console", kind: "canvas" },
@@ -229,6 +287,17 @@ describe("container work inside durable workflows", () => {
             ],
           },
         ],
+      },
+      {
+        extensionId: "ext_dashboard",
+        version: "1.0.0",
+        installationId: "install-canvas",
+        scope: "PROJECT_SHARED",
+        status: "active",
+        workflowRuntime: null,
+        dependencyPins: [],
+        parts: [{ id: "dashboard", kind: "canvas" }],
+        workflows: [],
       },
     ]);
     expect(fetch).toHaveBeenCalledTimes(3);

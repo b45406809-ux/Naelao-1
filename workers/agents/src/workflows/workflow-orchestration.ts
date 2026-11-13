@@ -36,10 +36,10 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
         const workflows = (bundle.primitives ?? []).filter((part): part is WorkflowContract => part.kind === "workflow")
           .map(part => ({ id: part.id, entry: part.entry, toolNames: [...part.toolNames],
             workerRoles: (bundle.workerRoles ?? []).filter(role => role.primitiveIds?.includes(part.id!)).map(role => ({ id: role.id, principal: role.principal, invocation: role.invocation, execution: role.execution, entry: role.entry })) }));
-        return workflows.length ? [{ extensionId: bundle.id, version: bundle.version, installationId: instanceId,
+        return [{ extensionId: bundle.id, version: bundle.version, installationId: instanceId,
           scope: instance.scope as "PROJECT_BOUND" | "PROJECT_SHARED", status: "active" as const,
-          runtime: "Cloudflare Workflows" as const,
-          dependencyPins: (manifest.dependencies ?? []).map(dependency => ({ ...dependency })), parts, workflows }] : [];
+          workflowRuntime: workflows.length ? "Cloudflare Workflows" as const : null,
+          dependencyPins: (manifest.dependencies ?? []).map(dependency => ({ ...dependency })), parts, workflows }];
       });
     },
     workflowCreate: async (name, code, options) => {
