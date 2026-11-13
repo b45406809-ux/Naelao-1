@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
+import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, createExtensionSettingsClient, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
 
 describe("polymorphic canvas descriptors", () => {
   it("exposes the maintained shells and a generic third-party mount socket", () => {
@@ -27,5 +27,27 @@ describe("polymorphic canvas descriptors", () => {
     expect(parseCanvasMessage({ type: "canvas.state", projectId: "p1", revision: 3, data: { title: "ok" } }, "p1").type).toBe("canvas.state");
     expect(() => parseCanvasMessage({ type: "canvas.action", projectId: "p2", action: "save", payload: {} }, "p1")).toThrow();
     expect(() => parseCanvasMessage({ type: "canvas.action", projectId: "p1", action: "save", payload: { script: { code: "run" } } }, "p1")).toThrow();
+  });
+});
+
+describe("extension settings host client", () => {
+  it("uses the narrow settings RPC and disposes pending host calls", async () => {
+    const sent: Record<string, unknown>[] = [];
+    let listener: ((event: { source: unknown; data: unknown }) => void) | undefined;
+    const parent = { postMessage(message: unknown) {
+      const rpc = message as Record<string, unknown>; sent.push(rpc);
+      queueMicrotask(() => listener?.({ source: parent, data: { type: "naelao.extension.rpc.result", id: rpc.id, ok: true,
+        result: { schema: { schemaVersion: 1, fields: [] }, settings: { language: "en" }, revision: sent.length - 1 } } }));
+    } };
+    const target = { parent, addEventListener: (_: "message", receive: typeof listener) => { listener = receive; },
+      removeEventListener: () => { listener = undefined; }, setTimeout: () => 1, clearTimeout: () => undefined };
+    const client = createExtensionSettingsClient({ window: target as never });
+    await expect(client.getSettings()).resolves.toMatchObject({ revision: 0, settings: { language: "en" } });
+    await expect(client.updateSettings({ language: "fr" }, 0)).resolves.toMatchObject({ revision: 1 });
+    expect(sent.map(message => [message.method, message.path])).toEqual([["GET", "/api/settings"], ["PATCH", "/api/settings"]]);
+    expect(sent[1]?.body).toEqual({ settings: { language: "fr" }, revision: 0 });
+    await expect(client.updateSettings({ credential: "not allowed by schema" }, -1)).rejects.toThrow("invalid extension settings update");
+    client.dispose();
+    await expect(client.getSettings()).rejects.toThrow("extension settings client disposed");
   });
 });

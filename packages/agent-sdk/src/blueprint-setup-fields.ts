@@ -89,6 +89,54 @@ function validateField(field: unknown): asserts field is BlueprintSetupField {
   throw new Error(`Unsupported setup field type: ${field.type}`);
 }
 
+/** Validates the shared, version-1 field vocabulary for template and extension settings. */
+export function validateSetupFieldDefinitions(raw: unknown): BlueprintSetupField[] {
+  if (!Array.isArray(raw) || raw.length > MAX_FIELDS_PER_PROJECT) throw new Error("Setup field list exceeds the field limit");
+  const ids = new Set<string>();
+  for (const field of raw) {
+    validateField(field);
+    if (ids.has(field.id)) throw new Error(`Duplicate setup field id: ${field.id}`);
+    ids.add(field.id);
+  }
+  return structuredClone(raw) as BlueprintSetupField[];
+}
+
+/** Validates values against one field list and applies declared defaults. */
+export function validateSetupFieldValues(fields: readonly BlueprintSetupField[], raw: unknown, options: { allowIncomplete?: boolean } = {}): Record<string, BlueprintSetupValue> {
+  const definitions = validateSetupFieldDefinitions(fields);
+  if (!isRecord(raw)) throw new Error("Setup values must be an object");
+  const byId = new Map(definitions.map(field => [field.id, field]));
+  for (const fieldId of Object.keys(raw)) if (!byId.has(fieldId)) throw new Error(`Unknown setup field: ${fieldId}`);
+  const normalized: Record<string, BlueprintSetupValue> = Object.create(null) as Record<string, BlueprintSetupValue>;
+  let bytes = 0;
+  for (const field of definitions) {
+    const supplied = Object.hasOwn(raw, field.id) ? raw[field.id] : undefined;
+    const value = supplied === undefined ? field.defaultValue : supplied;
+    if (value === undefined) {
+      if (options.allowIncomplete) continue;
+      if (field.required) throw new Error(`Required setup value missing: ${field.id}`);
+      continue;
+    }
+    if (field.required && typeof value === "string" && value.trim() === "") throw new Error(`Required setup value missing: ${field.id}`);
+    if (field.type === "text") {
+      const min = field.minLength ?? 0, max = field.maxLength ?? 1_000;
+      if (!boundedText(value, min, max, `setup value ${field.id}`) || value.length < min) throw new Error(`Invalid setup value: ${field.id}`);
+    } else if (field.type === "number") {
+      const minimum = field.minimum ?? -1_000_000_000, maximum = field.maximum ?? 1_000_000_000;
+      if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum || (field.integer === true && !Number.isInteger(value)))
+        throw new Error(`Invalid setup value: ${field.id}`);
+    } else if (field.type === "boolean") {
+      if (typeof value !== "boolean") throw new Error(`Invalid setup value: ${field.id}`);
+    } else if (typeof value !== "string" || !field.options.some(option => option.value === value)) {
+      throw new Error(`Invalid setup value: ${field.id}`);
+    }
+    bytes += new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    if (bytes > MAX_VALUE_BYTES) throw new Error("Setup values exceed the byte limit");
+    normalized[field.id] = value;
+  }
+  return normalized;
+}
+
 /** Validates the bounded declarative schema used by signed Space Template artifacts. */
 export function validateBlueprintSetupSchema(blueprint: SpaceBlueprint): BlueprintSetupFieldGroup[] {
   if (blueprint.setupSchemaVersion !== undefined && blueprint.setupSchemaVersion !== 1) throw new Error("Unsupported setup schema version");
@@ -103,15 +151,10 @@ export function validateBlueprintSetupSchema(blueprint: SpaceBlueprint): Bluepri
     if (blueprint.setupSchemaVersion !== 1) throw new Error("setupSchemaVersion 1 is required when setup fields are declared");
     if (typeof project.id !== "string" || !PROJECT_ID_PATTERN.test(project.id) || projectIds.has(project.id)) throw new Error(`Setup fields require a unique stable project id: ${project.name}`);
     projectIds.add(project.id);
-    const ids = new Set<string>();
-    for (const field of fields) {
-      validateField(field);
-      if (ids.has(field.id)) throw new Error(`Duplicate setup field id: ${field.id}`);
-      ids.add(field.id);
-    }
+    const checkedFields = validateSetupFieldDefinitions(fields);
     total += fields.length;
     if (total > MAX_FIELDS_TOTAL) throw new Error("Space Template setup schema exceeds the field limit");
-    groups.push({ project_id: project.id, project_name: project.name, fields: structuredClone(fields) });
+    groups.push({ project_id: project.id, project_name: project.name, fields: checkedFields });
   }
   return groups;
 }
@@ -123,39 +166,12 @@ export function validateBlueprintSetupValues(blueprint: SpaceBlueprint, raw: unk
   const byProject = new Map(groups.map(group => [group.project_id, group]));
   for (const projectId of Object.keys(raw)) if (!byProject.has(projectId)) throw new Error(`Unknown setup project: ${projectId}`);
   const normalized: BlueprintSetupValues = Object.create(null) as BlueprintSetupValues;
-  let bytes = 0;
   for (const group of groups) {
     const submitted = raw[group.project_id];
     if (submitted !== undefined && !isRecord(submitted)) throw new Error(`Setup values for ${group.project_id} must be an object`);
-    const submittedValues = submitted === undefined ? {} : submitted as Record<string, unknown>;
-    const definitions = new Map(group.fields.map(field => [field.id, field]));
-    for (const fieldId of Object.keys(submittedValues)) if (!definitions.has(fieldId)) throw new Error(`Unknown setup field: ${group.project_id}.${fieldId}`);
-    const values: Record<string, BlueprintSetupValue> = Object.create(null) as Record<string, BlueprintSetupValue>;
-    for (const field of group.fields) {
-      const supplied = Object.hasOwn(submittedValues, field.id) ? submittedValues[field.id] : undefined;
-      const value = supplied === undefined ? field.defaultValue : supplied;
-      if (value === undefined) {
-        if (field.required) throw new Error(`Required setup value missing: ${group.project_id}.${field.id}`);
-        continue;
-      }
-      if (field.required && typeof value === "string" && value.trim() === "") throw new Error(`Required setup value missing: ${group.project_id}.${field.id}`);
-      if (field.type === "text") {
-        const min = field.minLength ?? 0, max = field.maxLength ?? 1_000;
-        if (!boundedText(value, min, max, `setup value ${field.id}`) || value.length < min) throw new Error(`Invalid setup value: ${group.project_id}.${field.id}`);
-      } else if (field.type === "number") {
-        const minimum = field.minimum ?? -1_000_000_000, maximum = field.maximum ?? 1_000_000_000;
-        if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum || (field.integer === true && !Number.isInteger(value)))
-          throw new Error(`Invalid setup value: ${group.project_id}.${field.id}`);
-      } else if (field.type === "boolean") {
-        if (typeof value !== "boolean") throw new Error(`Invalid setup value: ${group.project_id}.${field.id}`);
-      } else if (typeof value !== "string" || !field.options.some(option => option.value === value)) {
-        throw new Error(`Invalid setup value: ${group.project_id}.${field.id}`);
-      }
-      bytes += new TextEncoder().encode(JSON.stringify(value)).byteLength;
-      if (bytes > MAX_VALUE_BYTES) throw new Error("Space Template setup values exceed the byte limit");
-      values[field.id] = value;
-    }
+    const values = validateSetupFieldValues(group.fields, submitted ?? {});
     if (Object.keys(values).length) normalized[group.project_id] = values;
   }
+  if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > MAX_VALUE_BYTES) throw new Error("Setup values exceed the byte limit");
   return normalized;
 }

@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateWidgetHostEvent, validateBlueprintSetupValues, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupValues, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2389,6 +2389,16 @@ const MIGRATIONS: Migration[] = [
     description: "persist validated Space Template setup values with installation claims",
     up: `ALTER TABLE space_blueprint_installations ADD COLUMN setup_values_json TEXT NOT NULL DEFAULT '{}';`,
   },
+  {
+    version: 113,
+    description: "store versioned extension settings per installation",
+    up: `CREATE TABLE extension_installation_settings (
+      instance_id TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 1),
+      updated_at TEXT NOT NULL
+    );`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3426,6 +3436,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/executive/verify") return this.verifyExecutiveContact(request);
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
+      if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
         if (!userId) return Response.json({error_code:"user_required"},{status:400});
@@ -11819,6 +11830,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     const apps = rows.flatMap(row => {
       const manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
+      let settingsSchema = undefined as ExtensionManifest["settingsSchema"];
+      try { settingsSchema = validateExtensionManifest(manifest).settingsSchema; } catch { /* Invalid legacy schemas are not exposed to the host form. */ }
       const gadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
       const canvases = (manifest.bundle?.primitives ?? []).filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
       const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name })), ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id }))];
@@ -11827,10 +11840,79 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status,
         // Filesystem grants are worker-only and must never flow into the iframe's host API list.
         capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],
+        ...(settingsSchema ? { settings_schema: settingsSchema } : {}),
         requested_shared_filesystem: manifest.shared_filesystem ?? [],
         approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }));
     });
     return Response.json({ apps });
+  }
+
+  private async extensionSettings(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "", appId = url.searchParams.get("app_id") ?? "";
+    if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    const role = request.headers.get("x-naelao-role") ?? "";
+    if (request.method === "PATCH" && role !== "owner" && role !== "admin") return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const rows = queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; scope: string; status: string; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json
+       FROM extension_installation_manifests i
+       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'`, tenantId, spaceId);
+    const matches = rows.flatMap(row => {
+      try {
+        const raw = JSON.parse(row.manifest_json) as ExtensionManifest;
+        const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+        const suffixes = [
+          ...(manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3).map(gadget => gadget.id),
+          ...(manifest.bundle?.primitives ?? []).filter(primitive => primitive.kind === "canvas").map(primitive => primitive.id),
+        ];
+        const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
+        return new Set(suffixes.map(id => `${prefix}${id}`)).has(appId) ? [{ row, manifest }] : [];
+      } catch { return []; }
+    });
+    if (matches.length !== 1) return Response.json({ error_code: matches.length ? "extension_app_ambiguous" : "extension_settings_unavailable" }, { status: matches.length ? 409 : 404 });
+    const { row, manifest } = matches[0]!;
+    const schema = manifest.settingsSchema;
+    const capabilities = new Set(manifest.capabilityRequirements);
+    const permissions = new Set(manifest.declaredPermissions);
+    if (!schema || !capabilities.has("extension.settings.read") || !permissions.has("extension.settings.read"))
+      return Response.json({ error_code: "extension_settings_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    if (request.method === "PATCH" && (!capabilities.has("extension.settings.configure") || !permissions.has("extension.settings.configure")))
+      return Response.json({ error_code: "extension_settings_write_not_declared" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+
+    const current = queryOne<{ settings_json: string; revision: number; updated_at: string }>(this.ctx.storage.sql as never,
+      "SELECT settings_json,revision,updated_at FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+    if (request.method === "GET") {
+      let settings: Record<string, unknown>;
+      try { settings = validateExtensionSettingsValues(manifest, current ? JSON.parse(current.settings_json) : {}, { allowIncomplete: !current }); }
+      catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
+      return Response.json({ schema, settings, revision: current?.revision ?? 0, ...(current ? { updated_at: current.updated_at } : {}) }, { headers: { "cache-control": "private, no-store" } });
+    }
+
+    let body: { settings?: unknown; revision?: number };
+    try {
+      const bytes = await readBoundedRequestBytes(request, 64 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+      if (!body || Object.keys(body).some(key => key !== "settings" && key !== "revision")
+        || !Number.isSafeInteger(body.revision) || Number(body.revision) < 0 || Number(body.revision) >= Number.MAX_SAFE_INTEGER)
+        throw new Error("invalid_settings_revision");
+    } catch { return Response.json({ error_code: "extension_settings_invalid" }, { status: 400, headers: { "cache-control": "private, no-store" } }); }
+    let settings: Record<string, unknown>;
+    try { settings = validateExtensionSettingsValues(manifest, body.settings); }
+    catch (error) { return Response.json({ error_code: "extension_settings_invalid", message: (error as Error).message.slice(0, 200) }, { status: 400, headers: { "cache-control": "private, no-store" } }); }
+    if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "extension_settings_storage_unavailable" }, { status: 503 });
+    const updatedAt = new Date().toISOString();
+    const outcome = this.ctx.storage.transactionSync(() => {
+      const latest = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
+        "SELECT revision FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+      if ((latest?.revision ?? 0) !== body.revision) return "revision_conflict";
+      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at`,
+      row.instance_id, JSON.stringify(settings), body.revision! + 1, updatedAt);
+      return "ok";
+    });
+    if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    return Response.json({ schema, settings, revision: body.revision! + 1, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {

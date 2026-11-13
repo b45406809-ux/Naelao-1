@@ -101,6 +101,31 @@ describe("gadget MCP host adapter", () => {
     expect(actorFetch).toHaveBeenCalledOnce();
   });
 
+  it("forwards extension settings to SpaceDO and requires an administrator for updates", async () => {
+    const idFromName = vi.fn((name: string) => name as never);
+    const spaceFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method,
+      tenant_id: new URL(request.url).searchParams.get("tenant_id"), space_id: new URL(request.url).searchParams.get("space_id"), app_id: new URL(request.url).searchParams.get("app_id"),
+      body: request.method === "PATCH" ? await request.json() : undefined }));
+    const platformFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? (args[2] === "active-member" ? { 1: 1 } : null) : args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
+      SPACE_DO: { idFromName, get: () => ({ fetch: spaceFetch }) },
+      MICRO_APP_DO: { idFromName: vi.fn(), get: () => ({ fetch: platformFetch }) },
+    } as never;
+    const memberRead = await app.request("/spaces/s/apps/voice_dashboard/api/settings", { headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
+    expect(memberRead.status).toBe(200);
+    expect(await memberRead.json()).toMatchObject({ path: "/extension-settings", method: "GET", tenant_id: "t", space_id: "s", app_id: "voice_dashboard" });
+    const memberWrite = await app.request("/spaces/s/apps/voice_dashboard/api/settings", { method: "PATCH", headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member", "content-type": "application/json" }), body: JSON.stringify({ settings: {}, revision: 0 }) }, env);
+    expect(memberWrite.status).toBe(403);
+    expect(spaceFetch).toHaveBeenCalledOnce();
+    const adminWrite = await app.request("/spaces/s/apps/voice_dashboard/api/settings", { method: "PATCH", headers: await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" }), body: JSON.stringify({ settings: { language: "en" }, revision: 2 }) }, env);
+    expect(await adminWrite.json()).toMatchObject({ path: "/extension-settings", method: "PATCH", body: { settings: { language: "en" }, revision: 2 } });
+    expect(idFromName).toHaveBeenCalledTimes(2);
+    expect(platformFetch).not.toHaveBeenCalled();
+    expect(spaceFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));

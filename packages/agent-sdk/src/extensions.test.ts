@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, validateExtensionManifest } from "./extensions.js";
+import { isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
@@ -41,6 +41,26 @@ describe("immutable extension kernel", () => {
   });
   it("fails closed without explicit requirements", () => expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: [] })).toThrow("capability_requirements_required"));
   it("rejects missing Gatekeeper grants", () => expect(() => validateExtensionManifest(valid, { gatekeeperCapabilities: [] })).toThrow("gatekeeper_capability_denied"));
+  it("validates signed, per-installation settings schemas and normalized values", () => {
+    const schema = { schemaVersion: 1, fields: [
+      { id: "language", type: "select", label: "Language", options: [{ value: "en", label: "English" }, { value: "fr", label: "French" }], defaultValue: "en" },
+      { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+    ] } as const;
+    const manifest = validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
+      capabilityRequirements: ["repo.read", "extension.settings.read"], settingsSchema: schema });
+    expect(manifest.settingsSchema).toEqual(schema);
+    expect(validateExtensionSettingsValues(manifest, { greeting: "Hello" })).toEqual({ language: "en", greeting: "Hello" });
+    expect(validateExtensionSettingsValues(manifest, {}, { allowIncomplete: true })).toEqual({ language: "en" });
+    expect(() => validateExtensionSettingsValues(manifest, { greeting: "" })).toThrow("Required setup value missing");
+    expect(() => validateExtensionSettingsValues(manifest, { greeting: "Hello", extra: true })).toThrow("Unknown setup field");
+    expect(() => validateExtensionManifest({ ...valid, settingsSchema: schema })).toThrow("settings_read_capability_required");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"], capabilityRequirements: ["repo.read", "extension.settings.read"],
+      settingsSchema: { schemaVersion: 2, fields: [] } })).toThrow("unsupported_settings_schema_version");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"], capabilityRequirements: ["repo.read", "extension.settings.read"],
+      settingsSchema: { schemaVersion: 1, fields: [{ id: "api_key", type: "text", label: "Provider access" }] } })).toThrow("cannot request provider credentials");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
+      capabilityRequirements: ["repo.read", "extension.settings.read", "extension.settings.configure"], settingsSchema: schema })).toThrow("settings_configure_permission_required");
+  });
   it.each([{ systemPromptLayers: ["replace"] }, { replLoopStepBounds: 999 }, { bypassWriteGuard: true }, { unsandboxedTools: ["bash"] }])("rejects kernel mutation %#", attack => expect(() => validateExtensionManifest({ ...valid, ...attack })).toThrow("invalid_extension_manifest"));
   it("accepts all four ownership scopes while preserving legacy names", () => {
     const scopes = ["PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"] as const;

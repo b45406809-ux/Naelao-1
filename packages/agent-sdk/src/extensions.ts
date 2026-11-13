@@ -1,6 +1,17 @@
 import { assertExtensionId, type ExtensionId, type GadgetScope, type GadgetTier, type RuntimeScope, type ExecutionMode, type PermissionAction } from "./types.js";
 import type { CanvasLayout } from "./canvas-runtime.js";
 import { WIDGET_EVENT_TYPES, type WidgetEventType } from "./widget-events.js";
+import { validateSetupFieldDefinitions, validateSetupFieldValues } from "./blueprint-setup-fields.js";
+import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
+import type { BlueprintSetupField } from "./types.js";
+
+export interface ExtensionSettingsSchema { schemaVersion: 1; fields: BlueprintSetupField[] }
+export interface ExtensionSettingsSnapshot {
+  schema: ExtensionSettingsSchema;
+  settings: Partial<Record<string, BlueprintSetupValue>>;
+  revision: number;
+  updated_at?: string;
+}
 
 export interface ExtensionGadgetManifest {
   id: string;
@@ -55,6 +66,8 @@ export interface ExtensionManifest {
   shared_filesystem?: readonly SharedFilesystemGrant[];
   /** Delivery requires the owner-approved `events.subscribe` install grant and a signed handler artifact. */
   widgetSubscriptions?: readonly ExtensionWidgetSubscription[];
+  /** Optional per-installation settings for a package-owned microapp dashboard. */
+  settingsSchema?: ExtensionSettingsSchema;
 }
 
 /** Stable content pin for the canonical modular extension manifest stored by the host. */
@@ -120,7 +133,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -132,6 +145,21 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     const granted = new Set(context.gatekeeperCapabilities);
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
   }
+  let settingsSchema: ExtensionSettingsSchema | undefined;
+  if (raw.settingsSchema !== undefined) {
+    assert(raw.settingsSchema !== null && typeof raw.settingsSchema === "object" && !Array.isArray(raw.settingsSchema), "invalid_settings_schema");
+    const schema = raw.settingsSchema as Record<string, unknown>;
+    assert(Object.keys(schema).every(key => key === "schemaVersion" || key === "fields"), "unknown_settings_schema_field");
+    assert(schema.schemaVersion === 1, "unsupported_settings_schema_version");
+    try { settingsSchema = { schemaVersion: 1, fields: validateSetupFieldDefinitions(schema.fields) }; }
+    catch (error) { throw new Error(`invalid_extension_manifest:invalid_settings_schema:${error instanceof Error ? error.message : "invalid"}`); }
+    assert((raw.capabilityRequirements as string[]).includes("extension.settings.read")
+      && (raw.declaredPermissions as string[]).includes("extension.settings.read"), "settings_read_capability_required");
+  }
+  const hasSettingsCapability = (raw.capabilityRequirements as string[]).some(capability => capability.startsWith("extension.settings."));
+  assert(!hasSettingsCapability || settingsSchema !== undefined, "settings_schema_required");
+  if ((raw.capabilityRequirements as string[]).includes("extension.settings.configure"))
+    assert((raw.declaredPermissions as string[]).includes("extension.settings.configure"), "settings_configure_permission_required");
   let widgetSubscriptions: ExtensionWidgetSubscription[] | undefined;
   if (raw.widgetSubscriptions !== undefined) {
     assert(Array.isArray(raw.widgetSubscriptions) && raw.widgetSubscriptions.length <= 32, "invalid_widget_subscriptions");
@@ -226,7 +254,12 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
+  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}), ...(settingsSchema ? { settingsSchema } : {}) } as unknown as ExtensionManifest;
+}
+
+export function validateExtensionSettingsValues(manifest: Pick<ExtensionManifest, "settingsSchema">, raw: unknown, options: { allowIncomplete?: boolean } = {}): Record<string, BlueprintSetupValue> {
+  if (!manifest.settingsSchema || manifest.settingsSchema.schemaVersion !== 1) throw new Error("extension_settings_schema_unavailable");
+  return validateSetupFieldValues(manifest.settingsSchema.fields, raw, options);
 }
 
 /** Verify a file path is contained in an installed Space-shared directory grant. */

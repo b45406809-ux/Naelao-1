@@ -1,4 +1,5 @@
 import type { ProjectKind, ViewportConfiguration } from "./types.js";
+import type { ExtensionSettingsSnapshot } from "./extensions.js";
 
 /** The two first-party shells are deliberately layout contracts, not vertical products. */
 export const CANVAS_LAYOUTS = ["DualPane.Document", "DualPane.DataGrid"] as const;
@@ -219,6 +220,64 @@ export function createExtensionCanvasClient(projectId: string, options: {
         target.clearTimeout(request.timer);
         request.reject(new Error("canvas host client disposed"));
       }
+      pending.clear();
+    },
+  };
+}
+
+export interface ExtensionSettingsClient {
+  /** Read the current installation's schema, saved values and optimistic revision. */
+  getSettings(): Promise<ExtensionSettingsSnapshot>;
+  /** Replace the complete settings value set using the revision returned by getSettings. */
+  updateSettings(settings: Record<string, string | number | boolean>, revision: number): Promise<ExtensionSettingsSnapshot>;
+  dispose(): void;
+}
+
+/** Narrow host client for package-owned Space-shared configuration microapps. The host validates
+ * the signed manifest, installation scope, owner role, field values and revision on every call. */
+export function createExtensionSettingsClient(options: { window?: CanvasBridgeWindow; timeoutMs?: number } = {}): ExtensionSettingsClient {
+  const target = options.window ?? globalThis as unknown as CanvasBridgeWindow;
+  if (target.parent === target) throw new Error("extension settings client must run in a hosted frame");
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("invalid extension settings timeout");
+  let sequence = 0, disposed = false;
+  const prefix = `s${crypto.randomUUID().replaceAll("-", "")}`;
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: number }>();
+  const receive = (event: CanvasBridgeMessageEvent) => {
+    if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
+    const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+    if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    target.clearTimeout(request.timer);
+    if (message.ok === true) request.resolve(message.result);
+    else request.reject(new Error(typeof message.error === "string" ? message.error.slice(0, 300) : "Extension settings request failed"));
+  };
+  target.addEventListener("message", receive);
+  const send = (method: "GET" | "PATCH", body?: { settings: Record<string, string | number | boolean>; revision: number }): Promise<ExtensionSettingsSnapshot> => {
+    if (disposed) return Promise.reject(new Error("extension settings client disposed"));
+    if (body) {
+      if (!Number.isSafeInteger(body.revision) || body.revision < 0 || body.revision >= Number.MAX_SAFE_INTEGER
+        || Object.keys(body.settings).length > 32 || Object.entries(body.settings).some(([key, value]) => !/^[a-z][a-z0-9_-]{0,47}$/.test(key)
+          || !["string", "number", "boolean"].includes(typeof value) || typeof value === "number" && !Number.isFinite(value) || typeof value === "string" && value.length > 2_000)
+        || new TextEncoder().encode(JSON.stringify(body)).byteLength > 64_000) return Promise.reject(new Error("invalid extension settings update"));
+    }
+    const id = `${prefix}_${++sequence}`;
+    return new Promise((resolve, reject) => {
+      const timer = target.setTimeout(() => { pending.delete(id); reject(new Error("Extension settings request timed out")); }, timeoutMs);
+      pending.set(id, { resolve: value => resolve(value as ExtensionSettingsSnapshot), reject, timer });
+      target.parent.postMessage({ type: "naelao.extension.rpc", id, method, path: "/api/settings", ...(body ? { body } : {}) }, "*");
+    });
+  };
+  return {
+    getSettings: () => send("GET"),
+    updateSettings: (settings, revision) => send("PATCH", { settings, revision }),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      target.removeEventListener("message", receive);
+      for (const request of pending.values()) { target.clearTimeout(request.timer); request.reject(new Error("extension settings client disposed")); }
       pending.clear();
     },
   };

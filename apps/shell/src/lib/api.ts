@@ -1551,7 +1551,7 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; capabilities: string[]; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; requested_shared_filesystem: SharedFilesystemGrant[] }
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
@@ -1600,7 +1600,7 @@ export function callSpaceSharedExtensionOperation(spaceId: string, session: Sess
   }
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/graduate`, { method: "POST", session, body: JSON.stringify(input) });
 }
-export function callSpaceSharedExtensionApi(spaceId: string, appId: string, session: SessionCredentials, request: { method: "GET" | "POST" | "DELETE"; path: "/api/data" | "/api/storage" | "/mcp"; query?: Record<string, string>; body?: unknown }) {
+export function callSpaceSharedExtensionApi(spaceId: string, appId: string, session: SessionCredentials, request: { method: "GET" | "POST" | "DELETE" | "PATCH"; path: "/api/data" | "/api/storage" | "/api/settings" | "/mcp"; query?: Record<string, string>; body?: unknown }) {
   const query = new URLSearchParams(request.query ?? {});
   return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}${request.path}${query.size ? `?${query}` : ""}`, {
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
