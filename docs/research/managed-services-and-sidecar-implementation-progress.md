@@ -2,7 +2,7 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P24 template import connected and revocation rechecked)
+### Active continuation (2026-11-13; P24 package import and reload recovery pushed)
 
 - Code `536853b9` connects Template activation setup to the existing owner-reviewed same-tenant
   signed dependency-closure import. The owner selects an active source Space, reviews signer, version,
@@ -10,24 +10,26 @@
   permissions/capabilities and explicitly installs the exact required pin without shared-folder
   grants. The Shell refreshes activation readiness and can reconcile an ambiguous install result from
   the persisted exact pin. Code `b646ec16` corrects revoked-key status and rechecks destination trust
-  between review and copy; revoked packages return 403 without destination writes. Both commits are
-  pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks.
+  between review and copy; revoked packages return 403 without destination writes. Code `edf08814`
+  lets the owner check the destination's persisted signed-install review after page reload, so an
+  imported package can resume without repeating the source copy. All three commits are pushed to
+  `origin/Mcbt5s-Backup-2` after fetch and ancestry checks.
 - Local evidence: signed Space package/import suite **17/17**, Spaces and Shell typechecks, and
   `git diff --check`. Tests cover source/destination authorization, manifest-digest mismatch,
   publisher revocation after review, interrupted partial closure retry, and retry after completed
   import when its response may have been lost. These are local Worker/R2 mocks; no browser, deployed
   DO, Marketplace, provider or live acceptance ran. Rollouts remain disabled; preserve
   `infra/scripts/__pycache__/`.
-- The P24 activation-import code gap is IMPLEMENTED_LOCAL. P24 remains PARTIAL for cross-tenant
+- The P24 activation-import and reload-resume code gaps are IMPLEMENTED_LOCAL. P24 remains PARTIAL for cross-tenant
   seller transfer rights, general migration/rollback, key-compromise notice, scanning, retention and
-  deployed/live acceptance. P05 remains PARTIAL for reload recovery of an imported-but-not-installed
-  package, supported customer provider journeys, broad update/uninstall effects, verified rates and
-  live acceptance. P01/P02 still require operator-attested resource/baseline evidence; P03/P20 policy
+  deployed/live acceptance. P05 remains PARTIAL for supported customer provider journeys, broad
+  update/uninstall effects, verified rates and live acceptance. P01/P02 still require
+  operator-attested resource/baseline evidence; P03/P20 policy
   remains undecided. These are not credential-only code claims.
-- Exact next action: let activation setup resume a package already imported into its destination after
-  page reload by checking the destination signed-install review before requiring another source import;
-  preserve exact pin, publisher revocation and owner approval checks. Keep cross-tenant seller artifacts
-  gated where the listing does not authorize transfer.
+- Exact next action: trace every reachable §9.5 voice-pipeline caller for the documented MeloTTS
+  deprecation, migrate only reachable unsupported use to a host-approved supported model, and keep the
+  current OpenRouter owner-call path unchanged. Record whether a code change is required before
+  proceeding to Shared-Space coordination.
 
 ### Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded)
 

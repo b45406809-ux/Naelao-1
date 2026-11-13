@@ -3,8 +3,9 @@
 ## Active checkpoint
 
 Current continuation (2026-11-13): code `536853b9` connects signed same-tenant dependency import to
-guided Template activation; `b646ec16` rechecks publisher revocation between package review and copy.
-Both commits are pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks. The setup UI
+guided Template activation; `b646ec16` rechecks publisher revocation between package review and copy;
+`edf08814` resumes install review after reload using the destination's persisted signed release. All
+three commits are pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks. The setup UI
 requires explicit active source Space selection, verifies the exact required version and optional
 manifest digest, shows the signed closure, imports immutable package bytes with retry, reviews
 destination permissions/capabilities and explicitly installs with no shared-folder grants. It
@@ -13,15 +14,16 @@ active exact pin. Cross-tenant seller artifacts remain behind listing entitlemen
 
 Local evidence: signed Space package/import tests **17/17**, Spaces/Shell typechecks and
 `git diff --check`. Tests cover both Space admin boundaries, digest mismatch, revocation after review,
-partial closure retry and repeat after successful import (ambiguous-response recovery). Evidence is
-local Worker/R2 mocks; no browser, deployed DB/DO, Marketplace or live provider acceptance ran.
-P24 activation import is IMPLEMENTED_LOCAL; P24 remains PARTIAL for cross-tenant rights, broad
-schema/data migration and rollback, compromise notice, scanning, retention and live acceptance. P05
-remains PARTIAL for resume after reload between import and install, supported customer/provider
-journeys, general update/uninstall effects, verified rates and live acceptance. Exact next action:
-let activation setup resume an already imported destination release after page reload through its
-read-only signed-install review, keeping exact pin, key revocation and owner confirmation checks.
-Rollouts remain disabled.
+partial closure retry and repeat after successful import (ambiguous-response recovery). The destination
+install-review route verifies the persisted release and exact pin after reload. Evidence is local
+Worker/R2 mocks and typechecks; no browser, deployed DB/DO, Marketplace or live provider acceptance
+ran. P24 activation import/reload resume is IMPLEMENTED_LOCAL; P24 remains PARTIAL for cross-tenant
+rights, broad schema/data migration and rollback, compromise notice, scanning, retention and live
+acceptance. P05 remains PARTIAL for supported customer/provider journeys, general update/uninstall
+effects, verified rates and live acceptance. Exact next action: trace every reachable §9.5 voice-pipeline
+caller for the documented MeloTTS deprecation, migrate only reachable unsupported use to a host-approved
+supported model, and keep the current OpenRouter owner-call path unchanged. Then continue Shared-Space
+coordination. Rollouts remain disabled.
 
 Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.
@@ -763,7 +765,8 @@ reviews every signed package/digest, copies the immutable closure, then separate
 authority and installs the exact root pin without folder grants. Source and destination admins and
 active publisher trust are rechecked; publisher revocation after review prevents copy. Partial and
 ambiguous imports can retry. The Shell currently keeps the import/install stage in page state, so
-after reload the owner may repeat the idempotent source import before resuming installation.
+after reload the owner can query the persisted destination release through the read-only install
+review and continue without repeating the source copy (`edf08814`).
 
 The code `b3feecb5` visual setup-field editor/export is also present; it authors validated fields and
 conditional/localized help, not the full visual channel/action/price workflow described in the plan.
@@ -771,9 +774,8 @@ conditional/localized help, not the full visual channel/action/price workflow de
 §5 remains PARTIAL. This does not implement general package updates, changed-permission/pricing
 approval, rollback, revocation/uninstall effects on generated projects/extensions/provider
 resources/licenses and retained receipts, complete usage/provider/runtime rates, broader visual
-authoring or
-end-to-end live acceptance. Unknown rates remain unknown; these are not credential-only gaps. No
-deployed Marketplace, DB, payment or provider acceptance is claimed.
+authoring, or end-to-end live acceptance. Unknown rates remain unknown; these are not credential-only
+gaps. No deployed Marketplace, DB, payment or provider acceptance is claimed.
 
 ### Prior P24 checkpoint (before `5f94c924`): scoped rollback and key-registry checks implemented
 
@@ -814,7 +816,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin, same-tenant signed dependency import and installation with digest/revocation checks and retry. Binary/image/audio reads, broader customer/provider journeys, setup after reload between import and install, general update/uninstall effects, verified rates and deployed/live acceptance remain. |
+| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin, same-tenant signed dependency import and installation with digest/revocation checks and retry; `edf08814` resumes destination install review after reload. Binary/image/audio reads, broader customer/provider journeys, general update/uninstall effects, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
@@ -833,7 +835,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`) are local. Cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`) are local. Cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 

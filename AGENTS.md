@@ -14,7 +14,8 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 Current checkpoint (2026-11-13): P24 template dependency import is pushed to
 `origin/Mcbt5s-Backup-2` as `536853b9`; revocation recheck/status correction is pushed as
-`b646ec16`. The owner-facing Template setup UI now selects an active same-tenant source Space,
+`b646ec16`; reload recovery is pushed as `edf08814`. The owner-facing Template setup UI now
+selects an active same-tenant source Space,
 reviews the signed dependency closure against the exact required version and optional manifest
 digest, imports immutable artifacts with retry, reviews destination permissions/capabilities, and
 installs the exact pin with no shared-folder grants. It refreshes activation readiness and reconciles
@@ -23,17 +24,20 @@ manifest digest; both source/destination admin authorization and publisher trust
 revoked after review blocks copy with 403 and no destination writes. Cross-tenant seller packages
 remain behind existing listing entitlement checks.
 
+After reload, the owner can query the destination's existing signed-install review directly without
+repeating the source copy. The destination endpoint rechecks exact package pins and publisher trust.
 Local evidence: signed Space package/import suite **17/17**, Spaces and Shell typechecks, and
-`git diff --check`. The test covers source/destination authorization, exact-digest mismatch, revoked
-key after review, partial and post-success retry. These are local Worker/R2 mocks and typechecks; no
+`git diff --check`. Tests cover source/destination authorization, exact-digest mismatch, revoked key
+after review, partial and post-success retry. These are local Worker/R2 mocks and typechecks; no
 browser, deployed DO, Marketplace, provider or live acceptance ran. P24 remains PARTIAL for
 cross-tenant artifact rights, general migration/rollback, compromise notice, scanning, retention and
 deployed/live acceptance. P05 remains PARTIAL for supported customer channels/provider journeys,
 broader update/uninstall effects, rates and live acceptance. Exact next action: make the activation
-setup flow resume a package already imported into the destination after page reload by checking the
-destination signed-install review before requiring another source import; preserve exact pin, publisher
-revocation and owner approval checks. Keep cross-tenant seller artifacts gated, rollouts disabled, and
-preserve `infra/scripts/__pycache__/`.
+trace every reachable §9.5 voice-pipeline caller for the documented MeloTTS deprecation, migrate only
+reachable unsupported use to a host-approved supported model, and keep the current OpenRouter owner-call
+path unchanged. Record whether an independent code change is required before proceeding to Shared-Space
+coordination. Keep cross-tenant seller artifacts gated, rollouts disabled, and preserve
+`infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
