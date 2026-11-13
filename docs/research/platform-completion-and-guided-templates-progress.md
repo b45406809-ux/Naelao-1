@@ -2,6 +2,36 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` was pushed to
+`origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. The owner voice-settings
+API now returns the current host-approved speech/transcription model IDs, voice IDs, sample rates,
+catalog languages, per-unit list prices and their 2026-11-12 source links. The Shell Assistant Voice
+panel and signed Space voice microapp show an illustrative 30-second transcription plus 375-character
+speech subtotal, with assumptions, costs excluded and explicit unverified-provider caveats. Local
+evidence: Space settings **4/4**, Agent SDK microapp **3/3**, Agent SDK/Spaces/Shell typechecks and
+`git diff --check`. No provider availability, actual billing, deployment or live call was verified.
+
+§9.5 remains PARTIAL: the existing microapp configures Space Assistant preferences; it is not a
+customer voice-agent package and does not add conversational streaming, provider provisioning,
+publish/version/rollback, invoices or full call cost. Exact next action: trace signed extension
+installation and phone-handler callers against the supported bounded Telnyx `say`/DTMF response
+contract, then implement only a customer-facing package workflow that can run on that contract with
+local tests. Keep streaming and live acceptance disabled. The expected-version-fenced, audience-
+confirmed §10.2 amendment is already implemented and pushed in `bfc22ce6`.
+
+Updated 2026-11-13 after code `7a0098ee5586d29c28cfe7bd372024a15da8eec5` was pushed to `origin/Mcbt5s-Backup-2` following fetch and
+fast-forward verification. Extension settings PATCH writes now require a stamped actor and atomically
+write metadata-only audit events with their optimistic revision. Migration 123 records installation,
+tenant/Space/Project scope, actor/role, prior/new revision, schema, changed field IDs and timestamp,
+never setting values. Owners/admins and project managers have bounded history reads in the API and
+Shell. Uninstall retains entries; Space erasure clears them in the existing atomic sweep. Focused
+Space settings/migration/erasure/route tests pass **27/27**, Spaces/Shell typechecks and
+`git diff --check` pass. These are local mocks; no deployed DB or live test occurred.
+
+Historical pre-`2ef44afa` state: the owner API stripped model details from its reviewed voice catalog.
+That caller gap is closed locally by the current checkpoint above. Provider/model availability,
+regional eligibility, billed rates and complete call costs remain unverified.
+
 Updated 2026-11-13 after code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` was pushed to
 `origin/Mcbt5s-Backup-2`; implementation branch `autonomous-managed-services-20261111` matches the
 fetched remote. Code `249c7930` installs exact Space-local signed package releases with Canvas/Gadget
@@ -25,24 +55,25 @@ Permission/price changes, general upgrade/rollback/uninstall, project/provider-r
 lifecycle, verified rates, visual authoring and live acceptance remain uncoded or lack approved
 contracts.
 
-**§9.5 — PARTIAL.** Per-installation settings, signed handler discovery, masked owner call history,
-non-persistent text simulation, generic installation of Space-local signed packages, and provider-
-reported cost joins to recent owner-visible call rows are local. Settings writes lack a durable,
-metadata-only actor audit. Voice/model catalogs and verified rates, publish/version/rollback, richer
-operations and composition remain. Streaming is unavailable; keypad behavior remains. No
-provider/account acceptance is claimed.
+**§9.5 — PARTIAL.** Per-installation settings with durable metadata-only actor audit, signed handler
+discovery, masked owner call history, non-persistent text simulation, generic installation of
+Space-local signed packages, provider-reported cost joins, and host catalog details/list-rate
+estimates are local. The reference microapp configures Space Assistant preferences only. A customer
+voice-agent package/microapp, verified rates, publish/version/rollback, richer operations and
+composition remain. Streaming is unavailable; bounded keypad behavior remains. No provider/account
+acceptance is claimed.
 
-**§10 — PARTIAL.** Audience-filtered facts, receipts, amendments/revocation, published cards/proposals
-and access rechecks have local code. Configurable posture/defaults, private publication/request
-authority, extension/dependency ownership, reservations, expiry/concurrency policy and broad
-non-disclosure acceptance remain.
+**§10 — PARTIAL.** Audience-filtered facts, disclosure previews, owner/admin publication, expected-
+version-fenced audience-confirmed amendments, revocation receipts, published cards/proposals and
+access rechecks have local code. Configurable posture/defaults, private publication/request authority,
+extension/dependency ownership, reservations, expiry/concurrency policy and broad non-disclosure
+acceptance remain.
 
-Exact next action: add durable metadata-only actor-attributed audit events for generic signed-extension
-settings `PATCH`, atomically with optimistic revision updates. Record installation/scope, actor/role,
-prior/new revision, schema version, changed field IDs and time; never setting values. Test authorization,
-conflicts, scope isolation, uninstall and erasure cleanup, then continue the remaining requirements in
-dependency order. After compaction, interruption or a new session, read both plans, both progress
-records and AGENTS.md; inspect the actual worktree and branch; resume from this action.
+Exact next action: trace signed extension installation and phone-handler callers against the bounded
+Telnyx `say`/DTMF contract. Implement a customer-facing package workflow only for behavior supported
+by that contract, with local caller tests. Keep public streaming and live acceptance gated. After
+compaction, interruption or a new session, read both plans, both progress records and AGENTS.md; inspect
+the actual worktree and branch; resume from this action.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
@@ -51,9 +82,9 @@ summary. Codes `1b9146f1`, `6d5f442c`, `307c8445` retire state on unpublish/arch
 tests immediate project ACL revocation. The focused four-file suite passes **10/10**, Spaces
 typecheck and `git diff --check` pass. These are local SQLite/Worker results, not deployed D1 or live
 acceptance. §10 remains PARTIAL for policy, private publication, lifecycle links, reservations,
-expiry, concurrency and non-disclosure. Exact next task: implement owner/admin-only, expected-version-
-fenced amendment of coordination facts with explicit audience disclosure, then wire the SDK/Router and
-owner settings caller; leave expiry and singleton defaults unimplemented pending policy decisions.
+expiry, concurrency and non-disclosure. The historical owner/admin expected-version-fenced amendment
+with audience disclosure was implemented in `bfc22ce6`, including SDK, Router, SpaceDO and owner
+settings callers. Do not repeat that work; leave expiry and singleton defaults undecided pending policy.
 
 Updated 2026-11-13 after project coordination lifecycle codes `1b9146f1`, `6d5f442c`, `307c8445` and
 access test `52f52e16` were pushed. Request creation requires a still-published target card in the D1
@@ -683,7 +714,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archive, checksum-checked object restore and partial-retry receipts exist; restore limits, merge semantics, policy and drills remain. |
 | P05 | PARTIAL | Restricted text-oriented channel tools exist; extension media handles and full supported attachment journeys remain uncoded. |
-| P06 | PARTIAL | Owner voice and bounded keypad phone paths exist; public streaming and managed voice billing are unavailable. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Customer voice package lifecycle, public streaming, managed voice billing and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |

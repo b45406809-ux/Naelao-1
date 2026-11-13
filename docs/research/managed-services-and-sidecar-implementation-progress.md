@@ -2,6 +2,49 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; owner voice catalog and estimate `2ef44afa` pushed)
+
+- Code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
+  `origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. Preserve the unrelated
+  untracked `infra/scripts/__pycache__/`.
+- The owner voice-settings API now exposes the existing host-approved speech/transcription models,
+  voice IDs, sample rates, catalog languages, rate units, published rates and 2026-11-12 source
+  references. The Shell settings panel and signed Space voice microapp show an illustrative
+  30-second transcription + 375-character speech subtotal with its assumptions and excluded costs.
+  No provider availability or live rate is asserted.
+- Local evidence: Space assistant-voice settings tests **4/4**, Agent SDK dogfood dashboard test
+  **3/3**, Agent SDK/Spaces/Shell typechecks and `git diff --check`. No provider, deployed database or
+  live call acceptance was exercised. The `pnpm` wrapper aborted before changing dependencies because
+  it requested a noninteractive workspace reinstall; verification used already-installed binaries.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 retain their row-level external
+  contract, policy, feed and acceptance gates. Rollouts remain disabled.
+- Exact next action: reconcile the signed extension installation and phone-handler callers against
+  the existing bounded Telnyx `say`/DTMF runtime; implement a customer-facing package microapp only
+  for supported behavior, and add local caller tests. Keep public streaming unavailable. The earlier
+  §10.2 amendment task is already implemented/pushed in `bfc22ce6`.
+
+### Active continuation (2026-11-13; extension settings audit `7a0098ee5586d29c28cfe7bd372024a15da8eec5` pushed)
+
+- Code `7a0098ee5586d29c28cfe7bd372024a15da8eec5` is pushed to `origin/Mcbt5s-Backup-2` after fetch/fast-forward verification; local
+  branch `autonomous-managed-services-20261111` matches. Preserve `infra/scripts/__pycache__/`.
+- Migration 123 adds `extension_settings_audit_events`. Generic signed-extension settings `PATCH`
+  now requires an authenticated actor and inserts audit metadata in the same transaction as its
+  optimistic settings revision. It records tenant/Space/Project/installation scope, extension,
+  actor/role, prior/new revision, schema, changed field IDs and timestamp; setting values are never
+  stored. Conflicts and failed writes create no event. Owners/admins and project managers can read a
+  bounded recent history through scoped APIs/Shell. Uninstall retains history; the existing atomic
+  Space erasure removes it.
+- Local evidence: focused Space settings, migration, data-erasure and route tests **27/27**; Spaces
+  and Shell typechecks; `git diff --check`. No deployed DB, provider or live acceptance was exercised.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and U01–U12 keep their row-level status.
+  U05/U06 runtime observation/writer-admission/drain/handoff gaps are unsupported contracts, not
+  credential blockers. P01/P02 remain fail-closed on real resource separation/ownership, read-only
+  receipts and operator-attested baselines. Rollouts remain disabled.
+- Exact next action: expose existing host-approved voice catalog model IDs, languages, rate units and
+  research provenance through the owner voice-settings API and Shell, labeling list-rate estimates
+  and excluded call costs. Then continue the customer voice microapp lifecycle and remaining
+  source-supported §5/§10 plus S2–S9/U01–U12 work.
+
 ### Active continuation (2026-11-13; Telnyx extension cost join `90b6ddd7` pushed)
 
 - Code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` is pushed to `origin/Mcbt5s-Backup-2` and matches
@@ -759,13 +802,13 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
 | §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. P17 current-caller reconciliation is next. |
 | §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge. P16 code `1056a322` exposes the shared versioned Discord capability contract through the verified Agents route and Shell setup; downloader and storage bounds use the same values. Focused Agents tests **10/10**, Router path tests **35/35**, and Agents/Shell/Router typechecks pass locally. Ordinary attachments remain unsupported; scoped extension media handles and live provider acceptance remain open. |
-| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants and cost observations are reusable. Public extension streaming remains explicitly rejected; voice SDK lifecycle, package-owned microapp, test/publish/monitor dashboards and versioned rate calculator remain uncoded. Carrier/region/billing acceptance is a separate live gate. |
+| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants, bounded text simulation, signed handler discovery and provider-cost observations are local. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated published list rates and an explicitly incomplete estimate. A customer voice-agent package, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain unavailable. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |
 | §6 / P09 provider training | PARTIAL | Imported model lifecycle exists; provider training submission is disabled pending a verified API/contract. Dataset consent, provenance, deletion, evaluation and rollback are also incomplete; provider enablement is externally gated but local lifecycle work is not thereby complete. |
 | §7 / P24 publisher lifecycle trust | PARTIAL | Code `415ba199` scopes rollback to an exact installation/current pin, checks target publisher trust against current D1 state, and requires approval for added permissions/capabilities on rollback and supported upgrades. SpaceDO rejects incomplete publisher metadata; existing execution and template paths verify host attestations/artifact digests and recheck publisher registry state. Focused suites **67/67**, Spaces/Shell typechecks, diff check. Remaining: no transitive dependency resolver/closure, no cross-Space extension artifact transfer on blueprint restore, incomplete Worker/R2 lost-response acceptance, manual key rotation/compromise notice, no scan or uninstall purge policy, and no drain/termination receipt for already-running work. No live or deployed acceptance. |
-| §9 voice routing, rates and scoped knowledge | PARTIAL | Owner voice sessions/tickets and Telnyx media bridge are real local paths. Versioned provider-rate calculator, shared-number business/person disambiguation, scoped knowledge and complete extension-owned voice products remain. Zimbabwe availability/rates and selected carrier terms need account-specific evidence; illustrative US prices are not Naelao quotes. |
-| §10 shared-Space coordination | PARTIAL | Workspace Coordinator, shared task ledger, duplicate detection, blackboard routing and member/Project access controls exist. Separating coordination facts from private project knowledge, configurable policies, assignment/conflict UX, extension-owned task visibility and SDK lifecycle remain incomplete. |
+| §9 voice routing, rates and scoped knowledge | PARTIAL | Owner voice sessions/tickets, Telnyx media bridge, and bounded provider-catalog list-rate estimates with dated source links are local. Full provider-cost reconciliation, shared-number business/person disambiguation, scoped knowledge and customer voice packages remain. Zimbabwe availability/rates and selected carrier terms need account-specific evidence; illustrative subtotals are not Naelao quotes or full call costs. |
+| §10 shared-Space coordination | PARTIAL | Workspace Coordinator, shared task ledger, duplicate detection, Blackboard routing, audience-filtered advisory facts, explicit disclosure, version-fenced amendment/revocation, public-card proposals and access rechecks exist locally. Configurable policy/defaults, private publication/request authority, extension/dependency ownership, reservations, expiry/concurrency policy, broad non-disclosure and deployed acceptance remain. |
 
 The P02/P19 guard is a local protective check, not evidence that environments are isolated. External credentials/platform access are not used to excuse missing code. Continue adjacent caller audits before treating each finding as complete.
 

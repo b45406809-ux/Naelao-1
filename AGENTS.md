@@ -12,17 +12,33 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` is pushed to
+Current checkpoint (2026-11-13): code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the only
+untracked work, `infra/scripts/__pycache__/`. Code `2ef44afa` exposes host-approved speech and
+transcription models, sample rates, supported catalog languages, per-unit published list rates and
+dated source links through the owner voice-settings API. The Shell Assistant Voice panel and signed
+Space voice microapp show the rates with a reproducible 30-second transcription/375-character speech
+subtotal and explicit exclusions; both say availability and billed rates are unverified. Local checks:
+Space voice-settings tests **4/4**, Agent SDK dogfood microapp test **3/3**, Agent SDK/Spaces/Shell
+typechecks and `git diff --check`. These are local tests only; no provider availability, rate, deployed
+or live-call acceptance was exercised. The prior `7a0098ee` extension-settings audit checkpoint adds
+metadata-only extension-settings
+audit events in SpaceDO migration 123, atomically with optimistic revision writes, plus owner/project-
+manager history APIs and Shell views. Events record installation/scope, actor/role, old/new revision,
+schema, changed field IDs and time; no setting values. Uninstall preserves the audit trail and the
+existing Space-erasure sweep removes it. Focused Space settings/migration/erasure/route tests pass
+**27/27**, Spaces/Shell typechecks pass, and `git diff --check` passes. These are local SQLite/Worker
+mocks; no deployed DB or live acceptance was exercised.
+
+Prior code checkpoint `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` is pushed to
 `origin/Mcbt5s-Backup-2`; local branch `autonomous-managed-services-20261111` matches the fetched
-remote. Preserve the only untracked work, `infra/scripts/__pycache__/`. Code `249c7930` added generic
-Space-local installation of exact host-attested signed extension packages with Canvas/Gadget actor
-initialization and runtime publisher rechecks. Code `90b6ddd7` adds a binding-scoped hash to admitted
-Telnyx call-cost receipts, joins bounded provider-reported totals to recent extension calls, and labels
-them as provider observations rather than invoices; absent receipts remain unknown. Verification for
-`90b6ddd7`: Agents phone and Telnyx webhook suites **40/40**, Agents and Shell typechecks, release and
-deployment-manifest validators pass, and `git diff --check`. Earlier signed-package suites passed
-**42/42**, with Spaces/Shell typechecks. These are local/mock checks; no provider account, deployed DB,
-deployment or live acceptance was exercised.
+remote. Code `249c7930` added generic Space-local installation of exact host-attested signed extension
+packages with Canvas/Gadget actor initialization and runtime publisher rechecks. Code `90b6ddd7` added
+a binding-scoped hash to admitted Telnyx call-cost receipts, joined bounded provider-reported totals to
+recent extension calls, and labels them as provider observations rather than invoices; absent receipts
+remain unknown. Its Agents phone/webhook suites passed **40/40**, Agents/Shell typechecks, release and
+deployment-manifest validators, and `git diff --check`. The signed-package suites passed **42/42**,
+with Spaces/Shell typechecks. No provider account, deployment or live acceptance was exercised.
 
 The detailed S2–S9/U01–U12 ledger already reconciles U11/U12 for supported local callers/toolchain;
 actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence remain. Do not repeat
@@ -31,16 +47,15 @@ U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTI
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
 product, policy, runtime contract and live acceptance gates remain in both progress records.
 
-Exact next action: add durable, metadata-only actor-attributed audit events for the existing generic
-signed-extension settings `PATCH`, atomically with its optimistic revision update. Record installation
-and project/Space scope, actor and role, prior/new revision, schema version, changed field IDs and time;
-never store setting values. Enforce authenticated actor identity, test authorization and revision
-conflicts, project/user isolation, and align event cleanup with existing installation removal and
-Space-erasure paths. Then continue the platform plan's guided-template, voice dashboard and
-Shared-Space requirements alongside the remaining S2–S9/U01–U12 matrix. After compaction,
-interruption or a new session, read both plans, both progress records and this runbook; inspect the
-actual worktree, branch and dirty state; resume from that exact action. The older next-action notes
-below are historical; this checkpoint and the two progress records govern continuation.
+Exact next action: continue §9.5 by tracing the signed extension package install and phone-handler
+callers against the existing bounded Telnyx `say`/DTMF runtime. Implement a customer-facing package
+microapp only for behavior that runtime actually supports, with local caller tests; keep public
+streaming and provider/live acceptance gated. Then continue uncoded requirements in both ledgers.
+The earlier §10.2 expected-version-fenced, audience-confirmed amendment is already implemented and
+pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read both
+plans, both progress records and this runbook; inspect the actual worktree, branch and dirty state;
+resume from that exact action. Older next-action notes below are historical; this checkpoint and the
+two progress records govern.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing
