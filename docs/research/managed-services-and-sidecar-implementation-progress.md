@@ -2,26 +2,30 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; bounded owner phone simulation `c31a8640` pushed)
+### Active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 
-- Code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` is pushed to `origin/Mcbt5s-Backup-2` after
+- Code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` is pushed to `origin/Mcbt5s-Backup-2` after
   fetch confirmed the remote was an ancestor. Preserve `infra/scripts/__pycache__/`.
-- The owner Assistant Phone simulator now accepts synthetic call-start, DTMF and supported Twilio
-  speech events. Shell shows the provider-appropriate choices. Owner authorization and active
-  binding checks remain; the internal route accepts only event-specific bounded fields. SpaceDO
-  dispatch rechecks the signed installation/scope, validates v1 response data and runs the existing
-  host renderer. Telnyx speech is rejected. This path sends no carrier command and writes no call or
-  session receipt.
-- Local evidence: five Agents phone/route/Telnyx/response/SpaceDO files **50/50**, Agents and Shell
-  typechecks, and `git diff --check`. No deployed DB or live provider test occurred.
-- S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain the ledger's specific
-  partials. §9.5 remains PARTIAL; this closes the keypad sample's local preview, not a full customer
-  voice agent. Rollouts remain disabled.
-- Exact next action: continue P05/MS05 from the recorded unsupported media-handle gap. Trace the
-  existing `channel_attachments` rows and channel dispatch IDs; then add a host-mediated, bounded,
-  opaque media read only if tenant, Space, project, installation and exact message can all be checked.
-  Never pass provider URLs/credentials to the extension. Verify expiry/deletion, cross-scope denial,
-  MIME/byte limits and preserve the existing independent storage lifecycle.
+- Signed channel packages may declare bounded text attachment access; the Shell requires explicit
+  owner/admin approval. Migration 0238 binds stored rows to project, installation and provider
+  connection. Ingress callers persist those fields, and the handler receives only opaque metadata
+  for its exact channel message. The host checks the active signed installation/binding again before
+  list/read, validates requested IDs against the listed handles, verifies tenant/Space/project/
+  installation/provider/channel/message/expiry in D1, reads private R2 content, enforces MIME/size
+  limits and uses selected extracted text only as untrusted grounded-answer sources. No URL,
+  credential, storage key or raw bytes reach guest code; legacy unscoped ID derivation/object paths
+  remain unchanged.
+- Local evidence: Agents attachment-store/index/runtime/scope suites **18/18**; Spaces migration,
+  extension runtime/install-route suites **36/36**; SDK extension contract suite **29/29**; Agents,
+  Spaces, Shell and SDK typechecks; `git diff --check`. No deployed DB, provider traffic or live
+  acceptance occurred. Rollouts remain disabled.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 retain their row-level gaps.
+  P05/P16 are PARTIAL: image/audio/binary extension access, richer response semantics, full provider
+  journeys and live acceptance remain uncoded or unverified.
+- Exact next action: continue §9.5 voice package dashboards from the signed keypad package and the
+  reachable owner phone status/test APIs. Implement the next per-install customer configuration or
+  operational view with local caller coverage; label simulated results and keep streaming, provider
+  provisioning and rollout disabled. Then continue the remaining S2–S9/U01–U12 and platform queue.
 
 ### Active continuation (2026-11-13; bounded keypad phone menu `b4c0100f` pushed)
 
@@ -844,7 +848,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P14 browser sessions | PARTIAL | Product Shell logout now calls the authenticated server logout path, which advances the Product account generation; Dashboard and Portal builder logout call `/v1/auth/revoke` before clearing local state. Builder reset already updates password and `token_version` atomically. Product generation is checked at protected Product session/ticket callers, with retryable DO cleanup. Local tests cover copied/stale tokens and reset/logout generation. Shell/Portal/Dashboard still store bearer tokens in localStorage, so XSS exposure and a cookie/CSRF migration remain; no deployed cross-product session acceptance has run.
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
 | §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. P17 current-caller reconciliation is next. |
-| §6 / P05 and P16 extension media | PARTIAL | Channel media ingestion and U04 MIME provenance exist; the restricted extension contract still carries bounded text/knowledge. P16 code `1056a322` exposes the shared versioned Discord capability contract through the verified Agents route and Shell setup; downloader and storage bounds use the same values. Focused Agents tests **10/10**, Router path tests **35/35**, and Agents/Shell/Router typechecks pass locally. Ordinary attachments remain unsupported; scoped extension media handles and live provider acceptance remain open. |
+| §6 / P05 and P16 extension media | PARTIAL | Code `5e0c6501` adds explicit owner-approved, per-channel `read_text` opt-in, scope-bound attachment rows, opaque metadata in the exact message event and host revalidation before grounded text extraction. It supports declared text/CSV/Markdown/JSON/XML, PDF and DOCX within 3-file/2-MiB bounds; no provider URL, key or raw bytes reaches guest code. Migration 0238 and ingress, SDK, install approval, runtime, answer and Shell callers are wired. Agents **18/18**, Spaces **36/36**, SDK **29/29**, affected typechecks and `git diff --check` pass locally. P16 Discord non-ephemeral retrieval remains unsupported; image/audio/raw binary access, richer multi-message responses and provider/deployed acceptance remain open. |
 | §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants, bounded text simulation, signed handler discovery and provider-cost observations are local. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated published list rates and an explicitly incomplete estimate. A customer voice-agent package, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain unavailable. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |

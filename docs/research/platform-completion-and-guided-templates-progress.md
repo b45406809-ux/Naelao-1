@@ -2,19 +2,24 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` was pushed to
-`origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. The owner Assistant Phone
-simulator now tests call start, DTMF digits and supported Twilio speech through the exact active
-signed handler. Event fields are normalized and bounded; SpaceDO validates the versioned response and
-host renderer. Telnyx previews remain DTMF-only. The simulator makes no provider calls and persists no
-call/session state. Local evidence: Agents phone/route/Telnyx/renderer/SpaceDO suites **50/50**,
-Agents/Shell typechecks and `git diff --check`. No deployed or live acceptance was run.
+Updated 2026-11-13 after scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
+pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
+packages can declare bounded text attachment access, which requires explicit owner/admin approval.
+Ingress persists project/installation/provider-connection scope; dispatch returns opaque metadata for
+the exact message, and the host rechecks active installation, binding, tenant, Space, project,
+installation, provider, channel and expiry before reading private storage. Selected text/PDF/DOCX
+excerpts are bounded untrusted sources for the existing host-grounded answer path. Provider URLs,
+credentials, storage keys and raw bytes stay out of extension code; legacy non-extension attachment
+IDs/object paths are preserved. Local evidence: Agents focused tests **18/18**, Spaces migration,
+runtime and installer tests **36/36**, SDK extension tests **29/29**, Agents/Spaces/Shell/SDK
+typechecks and `git diff --check`. No deployed DB, live provider traffic or acceptance was run.
 
-§9.5 remains PARTIAL; call preview now covers the supported keypad path. The example is an IVR, not a
-conversational voice-agent product. Exact next action: continue P05 by linking already-stored inbound
-media to exact signed channel dispatches and implement host-mediated, opaque, bounded attachment reads
-only where scope, expiry and deletion can be revalidated. Keep provider URLs/credentials out of the
-extension, then verify cross-tenant/project/installation denial and MIME/size bounds.
+P05/P16 remain PARTIAL for image/audio/raw binary access, richer outbound response semantics, Discord
+non-ephemeral retrieval and provider/deployed acceptance. §9.5 remains PARTIAL; the keypad package is
+an IVR, not a conversational voice-agent product. Exact next action: continue §9.5 voice package
+dashboards from the signed keypad package and reachable owner phone status/test APIs. Implement the
+next per-install customer configuration or operational view with local caller coverage; identify
+simulated results and keep streaming, provider provisioning and rollout disabled.
 
 Updated 2026-11-13 after code `b4c0100f1d5c898ddde137ebf88fea294f99d386` was pushed to
 `origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. Added the signed-extension
@@ -745,7 +750,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archive, checksum-checked object restore and partial-retry receipts exist; restore limits, merge semantics, policy and drills remain. |
-| P05 | PARTIAL | Restricted text-oriented channel tools exist; extension media handles and full supported attachment journeys remain uncoded. |
+| P05 | PARTIAL | Code `5e0c6501` adds owner-approved, per-installation opaque handles for bounded text extraction from supported files on the exact inbound message, with active-binding rechecks, expiry/scope/MIME/byte enforcement and a grounded-answer caller. Binary/image/audio extension reads, richer outbound responses, complete provider journeys and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Customer voice package lifecycle, public streaming, managed voice billing and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
@@ -756,7 +761,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |
 | P14 | PARTIAL | Product generation-based reset/logout and retryable revocation exist; browser token storage and full cross-product security acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
-| P16 | PARTIAL | Shared Discord media bounds/disclosure exist; scoped extension media handles and live provider acceptance remain uncoded/unverified. |
+| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text-only extension handles exist locally. Discord non-ephemeral ingress, image/audio/raw binary extension access and provider/live acceptance remain unsupported or unverified. |
 | P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |

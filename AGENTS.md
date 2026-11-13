@@ -12,23 +12,25 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` is pushed to
-`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
-untracked `infra/scripts/__pycache__/`. The owner Assistant Phone simulator now supports explicit
-synthetic call-start, DTMF, and supported Twilio speech inputs. The owner API and internal route
-validate event-specific fields; the SpaceDO rechecks the active signed handler, provider and scope,
-validates the versioned response, and uses the host renderer. Telnyx previews allow keypad behavior
-only. The local path sends no carrier commands and persists no call/session state. Local evidence:
-Agents phone/route/Telnyx/renderer/SpaceDO suites **50/50**, Agents/Shell typechecks and
-`git diff --check`. No deployed or live provider behavior was exercised.
+Current checkpoint (2026-11-13): P05 scoped text attachment access code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9`
+is pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor.
+Preserve the untracked `infra/scripts/__pycache__/`. Channel packages may opt into text extraction
+with an owner/admin approval; opaque handles are tied to the exact tenant, Space, project,
+installation, provider connection, channel, provider message and expiry. The host rechecks active
+installation/binding before list/read, enforces file/byte/MIME limits, reads only private R2 objects,
+and passes selected extracted text to the existing grounded-answer path as untrusted sources. No
+provider URL, credential, object key or raw bytes reach extension code. Legacy non-extension IDs and
+object paths remain stable. P05/P16 remain PARTIAL for binary/image/audio media, richer responses,
+remaining provider journeys and live acceptance. Local evidence: Agents focused suites **18/18**,
+Spaces migration/runtime/install-route suites **36/36**, SDK extension suite **29/29**; Agents,
+Spaces, Shell and SDK typechecks; `git diff --check`. No deployed DB, provider traffic or live
+acceptance occurred.
 
-P05 remains PARTIAL: signed inbound media is already stored under bounded private attachment rows,
-but restricted extension handlers cannot retrieve message-scoped media through opaque, authorized
-handles. Exact next action: trace the attachment row's message/tenant/Space/project linkage against
-the channel dispatch record, then implement a host-mediated bounded read handle only where the exact
-message and installed extension scope can be revalidated. Do not expose provider URLs or credentials;
-test expiry, deletion, tenant/project/install mismatch, MIME and byte limits. Continue other uncoded
-requirements after this slice.
+Exact next action: continue §9.5 voice package dashboards from the supported keypad package and
+existing owner phone status/test APIs. Implement the next customer-visible per-install configuration
+or operational view with local caller coverage; clearly mark simulated results and keep streaming,
+provider provisioning and rollout disabled. Then continue the remaining S2–S9/U01–U12 and platform
+requirements from both ledgers; do not repeat completed audits without new source evidence.
 
 Prior keypad-package checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
