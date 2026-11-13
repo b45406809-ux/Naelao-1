@@ -2,19 +2,21 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after keypad draft-preview code `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` was pushed to
-`origin/Mcbt5s-Backup-2` following fetch and ancestor verification. The signed keypad package dashboard
-previews the current draft's call-start greeting and DTMF responses for keys 1, 2 and invalid input.
-It uses the data-only response contract and labels the result simulated; it does not invoke a carrier,
-publish configuration or persist a call session. Local evidence: Agent SDK package tests **4/4**,
-including parity with handler responses, SDK typecheck and `git diff --check`. No Marketplace release,
-provider, deployment or live call was exercised.
+Updated 2026-11-13 after owner-scoped phone dashboard code `53e6970a2744519fae5c6073a500813076ea534d` was
+pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestor verification. The signed keypad dashboard
+reads only its exact active installation's line state and bounded Telnyx calls through an
+owner/admin-only host route. The route rechecks the signed release and `assistant.phone.read`, filters
+by installation binding, masks numbers/callers, returns no-store data, and labels provider amounts as
+non-invoice observations. Local/mock evidence: SDK **4/4**, Spaces package/route/runtime **43/43**,
+Agents phone status **37/37**, SDK/Spaces/Agents/Shell typechecks and `git diff --check`. The pnpm
+wrapper aborted at its noninteractive modules-purge guard; existing local binaries completed checks.
+No Marketplace publication, provider, deployment or live call was exercised.
 
-§9.5 remains PARTIAL. The next exact action is a read-only owner-authorized operational view in the
-signed keypad package dashboard, scoped on the server to its exact active phone installation and
-limited to that installation's line state and bounded history. Cross-tenant, role, signed-release and
-cross-installation denial need focused tests. Provider-reported amounts must remain labeled as
-non-invoice observations. Keep carrier actions, streaming, provisioning and rollout disabled.
+§9.5/P06 remains PARTIAL. Exact next action: add an owner-only server-backed keypad simulation that
+resolves this signed package to its exact active phone binding and invokes the existing synthetic
+`phone-handler-test` path. Use a distinct declared simulation capability and test stale release,
+cross-install, role and malformed-input denial. Keep it data-only and carrier-free; after this slice,
+resume §5/P10 package lifecycle gaps before further optional voice work.
 
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel

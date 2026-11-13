@@ -12,14 +12,27 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): keypad package draft preview code `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` is pushed to
-`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
-untracked `infra/scripts/__pycache__/`. The signed keypad dashboard now previews the call-start
-greeting and all supported DTMF branches from unsaved settings as data-only `gather`/`say`/`hangup`
-responses. It is labeled simulated; it does not contact a carrier, publish the draft or persist a
-call session. Local evidence: Agent SDK package tests **4/4**, including preview/handler response
-parity for call start, digits 1/2 and fallback; SDK typecheck and `git diff --check`. No package was
-published and no provider or live call was exercised.
+Current checkpoint (2026-11-13): code `53e6970a2744519fae5c6073a500813076ea534d` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. The signed keypad
+package now has a read-only owner/admin phone operations view scoped to its exact active signed
+installation. It filters to that installation's lines and bound Telnyx calls, masks numbers/callers,
+and labels provider cost observations as non-invoice data. It has no carrier action, provisioning,
+streaming or rollout path. Local evidence: Agent SDK package **4/4**, Spaces signed-package/route/
+runtime suites **43/43**, Agents phone status **37/37**, SDK/Spaces/Agents/Shell typechecks and
+`git diff --check`. The pnpm wrapper aborted before changing dependencies because it attempted a
+noninteractive modules purge; checks used existing local binaries. No package publication, provider,
+deployment or live call was exercised. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: add an owner-only, server-backed simulated keypad test in the package dashboard.
+Resolve its exact signed installation and active phone binding, call the existing synthetic
+`phone-handler-test` path, and use a distinct declared test capability; verify stale release,
+wrong-installation, role and malformed-input denials. The simulator must stay synthetic and issue no
+carrier operation. Then continue the uncoded §5/P10 package update lifecycle and remaining plan gaps.
+After compaction, interruption, or a new session, read both plans, both progress records and this
+runbook; inspect the actual branch and worktree; resume from the exact next action. Keep rollout
+disabled; do not deploy, purchase, reset, clean, switch branches or force-push. The user has authorized
+normal commits and pushes to `Mcbt5s-Backup-2`: fetch before every push, safely incorporate remote
+advances, and never rewrite remote history.
 
 Earlier code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` adds P05 scoped text attachment access.
 Channel packages may opt into text extraction with owner/admin approval; opaque handles are tied to
