@@ -2,33 +2,31 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `73e10f20` is pushed to
-`origin/Mcbt5s-Backup-2`, after proposal-authority coverage `59906cd8` and project extension settings
-cleanup `bc4528cf`. Migration 121 records each extension settings schema version. The owner form now
-previews compatible values after a schema change, omits incompatible/retired fields, requires an
-explicit save to adopt the new schema, and hides conditional fields. Settings writes recheck the exact
-active installation and schema inside the revision transaction; removing an installation atomically
-revokes its shared-filesystem grant and deletes its settings, so an in-flight write cannot restore
-them. The accepted-public-proposal regression proves acceptance grants no project membership, card
-edit, extension lifecycle or settings-write authority.
+Current continuation checkpoint (2026-11-13): code `e967eaa3` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration 0234 adds a tenant-scoped, non-PII notification queue outcome
+ledger. The Notifications Worker records accepted, rejected, ambiguous, not-sent, persisted and
+terminal dead-letter states; dunning provider attempts stay in their existing ledger, with only its
+terminal dead-letter state added here. Owner/admin Billing status is routed through Router and shown
+in Dashboard settings. The production dead-letter queue has its own name and consumer; the checked-in
+environment resource map was regenerated. No queue resource was created and no deployment occurred.
 
-Local evidence for `73e10f20`: Spaces extension/coordination suites **25/25**, Shell suite **20/20**,
-Spaces and Shell typechecks, and `git diff --check`. These are local SQLite/Worker tests; no deployed
-installation, provider call or live acceptance ran. §5 remains PARTIAL for Marketplace template
-schema migration/update, permission/pricing review, rollback/uninstall effects outside local settings,
-complete verified rates, visual authoring and live acceptance. §9.5 remains PARTIAL for a customer
-voice-agent runtime/dashboard, verified catalogs/rates, safe test/publish, customer call receipts and
-package composition; the owner phone panel remains the separate Space Assistant phone feature. §10
-remains PARTIAL for configurable posture/publication authority, project/service lifecycle links,
-reservation/cardinality, expiry/concurrency policy and broad non-disclosure. Managed S2 is local for
-supported lanes; remaining S3–S9/U01–U12 gaps and their exact runtime, feed, policy and live gates stay
-open in the managed-services ledger. P01/P02 remain fail-closed on real resource isolation, ownership
-receipts, operator-attested D1 baselines and deployed acceptance. Rollout remains disabled.
-Exact next task: update `ExtensionSettingsForm` to display the schema's localized field labels, help
-text and option labels using browser locale with declared fallback; then continue the first remaining
-independently implementable managed-services S3–S9/U01–U12 item. Preserve
-`infra/scripts/__pycache__/` and do not deploy or purchase services.
+Local/mock evidence for `e967eaa3`: Notifications **40/40**, Billing **4/4**, Router **2/2**,
+notification/release/environment Python suites **25/25**, Notifications/Billing/Router/Dashboard
+typechecks, release/deployment manifest validation, and staging/production Wrangler dry runs. No
+provider delivery or deployed D1 was exercised. P23 remains PARTIAL for general synchronous
+notification outcomes, approved retention, audited operator replay and live acceptance. P01/P02
+remain fail-closed on operator-attested D1 baselines, one shared D1, eleven shared KV IDs, unresolved
+`naelao-calls` ownership, and **158** missing read-only resource receipts. No rollout is enabled.
 
+S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 and platform §5/§9.5/§10 retain
+named code, runtime-contract, policy and live-acceptance gaps in their ledgers. The MS07 caller audit
+found an existing searchable Assistant inbox and an AgentMail inbox/search/read view; both use their
+existing authorization paths but remain separate and keep no unified cross-source history. Exact next
+action: add a source-aware inbox search/results view to the Connectors page for the selected assistant
+mailbox and one explicitly selected active AgentMail connection. Keep independent cursors and
+source-tagged message IDs; delegate message/attachment reads to the existing authorized source APIs;
+do not persist message bodies or copy credentials. Preserve `infra/scripts/__pycache__/`, keep rollout
+disabled, and do not deploy or purchase services.
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
 artifact set still verify; the panel selects and fills the exact handler digest, then requests explicit

@@ -2,47 +2,53 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after extension settings schema migration code `73e10f20` was pushed, following
-project removal cleanup `bc4528cf` and accepted-proposal authority coverage `59906cd8`. SpaceDO
-migration 121 records settings schema revisions. On schema change, GET returns a host-validated
-compatible-value preview and `migration_required`; the owner form explains the review and requires an
-explicit save. It hides fields whose declared visibility condition is false and removes incompatible
-or retired values only when the owner saves. PATCH rechecks the active exact installation and schema
-in the revision transaction. Removal atomically clears that installation's settings and filesystem
-grant, and the regression confirms an in-flight write cannot recreate data after removal.
+Updated 2026-11-13 after general notification outcome code `e967eaa3` was pushed. Migration 0234
+adds a tenant-scoped, non-PII outcome ledger for Notifications queue work, including provider
+accepted/rejected/ambiguous, not-sent, in-app persisted and terminal dead-letter outcomes. Dunning
+provider attempts remain on their existing table; the new ledger records only terminal dunning DLQ
+state. Owner/admin outcome reads are tenant-scoped and no-store through Billing and Router, with a
+Dashboard settings caller. Production's notifications DLQ has a distinct configured name and
+consumer, and the redacted environment map was regenerated.
 
-The public-proposal Worker-to-SpaceDO test proves acceptance does not add project membership or grant
-card edit, extension lifecycle or settings-write authority. Local evidence: Spaces
-extension/coordination suites **25/25**, Shell suite **20/20**, Spaces and Shell typechecks, and
-`git diff --check`. No deployed installation, provider call, database migration or live acceptance
-occurred.
+Local/mock evidence: Notifications **40/40**, Billing **4/4**, Router **2/2**, migration/release/
+environment suites **25/25**, affected typechecks, release/deployment manifest validators, and staging/
+production Wrangler dry runs. No remote D1, provider delivery, deployment or live acceptance ran.
+P23 remains PARTIAL for synchronous general outcomes, retention policy, audited operator replay and
+live acceptance. Release/environment preflight still fails closed on one shared D1, eleven shared KV
+IDs, unresolved `naelao-calls`, and **158** absent read-only resource receipts. P01's operator-attested
+legacy D1 baselines and isolated/deployed acceptance remain absent.
+
+The managed-services caller refresh found the Assistant mailbox and AgentMail panels already have
+separate reachable search/page/read flows; no unified cross-source history is stored. The managed
+mission remains open under its source-to-caller ledger. No rollout is enabled.
 
 **§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
-localized setup declarations, expected-usage inputs, install status and owner host forms exist.
-Per-installation extension settings schema migration now has a versioned, owner-reviewed path; the
-separate Marketplace Template release schema migration/update flow remains uncoded. Permission/pricing
-review, rollback/uninstall effects for generated projects, extensions, provider resources, licenses
-and retained receipts, complete verified rates, visual authoring and live acceptance remain uncoded
-or unresolved by the lifecycle contract.
+localized setup declarations, expected-usage inputs, install status, owner host forms and per-extension
+settings migration exist. The Marketplace Template release schema migration/update flow remains
+uncoded. Permission/pricing review, rollback/uninstall effects for generated projects, extensions,
+provider resources, licenses and retained receipts, complete verified rates, visual authoring and
+end-to-end live acceptance remain uncoded or unresolved. No credential blocker is claimed for these
+code gaps.
 
-**§9.5 — PARTIAL.** Per-installation host settings and non-Canvas fallback are implemented locally.
-The phone history feed is only Space Assistant phone operations, not customer voice-agent call
-history. Customer agent runtime, verified catalogs/rates, browser tests/publish, customer call
-receipts, package composition and live acceptance are uncoded without a supported runtime producer;
-live provider acceptance also requires external provider/account evidence. No credential blocker is
-claimed for the uncoded product/runtime.
+**§9.5 — PARTIAL.** Per-installation host settings and non-Canvas fallback are local. The phone history
+feed is Space Assistant phone operations, not customer voice-agent call history. Customer agent
+runtime, verified catalogs/rates, browser test/publish, customer call receipts, package composition and
+live acceptance remain uncoded without a supported runtime producer; provider/account acceptance is a
+separate gate.
 
 **§10 — PARTIAL.** The advisory registry, audience-filtered reads, confirmation receipts, versioned
 amendments/revocation, public project cards/proposals and project access rechecks have local code and
 coverage. Owner-configurable posture/defaults, private publication and request-to-use authority,
 extension/dependency linkage, reservation/cardinality, expiry/concurrency policy and broad
-non-disclosure acceptance remain. Product/policy choices are unresolved; they are not credential
-blocks. P01/P02/P03/P04 external gates and evidence remain in the managed-services ledger.
+non-disclosure acceptance remain. Product/policy choices are unresolved, not credential blocks.
 
-Exact next task: update `ExtensionSettingsForm` to render localized labels, help text and option labels
-from the declared schema using the browser locale with explicit-language fallback. Then continue the
-first remaining independently implementable managed-services S3–S9/U01–U12 requirement and do not
-claim completion while named code gaps remain.
+Exact next task: add a source-aware inbox search/results view on the Connectors page for the selected
+Assistant mailbox and one explicitly selected active AgentMail connection. Keep independent cursors
+and source-tagged message IDs; read messages/attachments only through the existing source-authorized
+APIs, and do not persist cross-provider message content or invent a retention period. After this
+managed-services item, continue the platform plan in release/environment, commercial/recovery, guided
+templates, voice dashboards and Shared-Space order. Preserve implementation, mocked, deployed and
+live acceptance as separate states.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
@@ -383,55 +389,31 @@ on general channel exhaustion and audited operator replay.
 
 ### P01 — ordered releases and migration safety: PARTIAL, local release controls implemented
 
-Current code already provides an ordered 232-file migration SHA-256 manifest, a Python release
-runner with an atomic D1 migration ledger and concurrency lock, checksum drift checks, a resumable
-execution owner after interruption, fail-closed handling for non-idempotent legacy migration 0164,
-pre-deploy required-schema probes, and staging/production workflows that run migrations before
-consumers. Migration 0231 adds the Product auth-email provider receipt column; migration 0232 adds
-durable cache cleanup state and aggregate erasure status, which the release runner requires before
-recording the schema version. Current-source validation exposed a stale checked-in SHA for migration
-0230, which is now corrected to match its source. Current local Python release/migration suite passes
-**47/47**, including the SQLite 0232 backfill/constraint tests; release-manifest and deployment-
-manifest validators pass. Required schema is `0232_semantic_cache_cleanup_operations`. These are
-local tests. No D1 database was inspected.
+Current code pins SHA-256 for **234** exact migration files and requires schema
+`0234_notification_delivery_outcomes`. The Python release runner has an atomic D1 migration ledger,
+concurrency lock, drift checks, resumable owner, fail-closed handling for legacy migration 0164,
+required-schema/column probes and ordered consumer checks. Deployment manifests and post-worker
+health gates run before frontend publication. Latest local checkpoint `e967eaa3` records the affected
+migration/release/environment suites **25/25**, manifest validators, typechecks and staging/production
+Wrangler dry runs. These are local/mock/static checks; no remote D1 or deployed endpoint was queried.
 
-Added `infra/release/deployment-manifest.json`, a validator wired into both preflights, and
-`docs/operations/release-and-environment-safety.md`. The validator checks tag/commit versioning,
-required schema, Worker inventory and order, phase/job dependencies, and disclosures that no
-post-deployment health probes or automatic rollback exist. It confirms the current workflow
-matches this manifest. Staging dashboard, portal, marketplace, and widget publication now depends
-on successful Worker deployment; previously three jobs could publish after Worker deployment
-failed. The manifest distinguishes static preflight and schema probes from deployed health evidence.
-
-Neither `infra/release/baselines/staging.json` nor `production.json` exists. The runner therefore
-cannot contact an existing D1 or adopt its non-idempotent migration history. Do not create a baseline
-without a read-only inspection and operator attestation of the exact database. The workflows have no
-post-deploy runtime probes and no automatic rollback. Restore procedures still depend on the
-separate P04 backup gap.
+Neither staging nor production has an operator-attested baseline file or verified applied-history/data
+inspection. The release runner therefore stops before mutation. There is no isolated migration
+rehearsal, automatic rollback or live health acceptance. Do not create a baseline from source-only
+evidence.
 
 ### P02 — isolated environments: PARTIAL, fail-closed
 
-Code `3e456061` extends source and preflight isolation checks from D1/KV to R2, Vectorize, Queues,
-Workflows, Durable Object script targets and service bindings. It records configured Durable Object
-classes and requires current read-only namespace receipts to prove staging/production namespace IDs
-are distinct. Code `a1827a05` adds a redacted per-environment Wrangler surface inventory: Worker
-targets, routes, endpoint hostnames, variable names and declared jurisdiction fields. Values are
-never copied to the map. The map is current for **28** Wrangler files, **100** binding rows, **56**
-Worker/environment surfaces, **2** configured routes and **30** endpoint-variable entries. No
-jurisdiction is declared in the current Wrangler/D1 source.
-
-Local evidence: environment resource validator **9/9**, Wrangler isolation **6/6**, release manifest
-validator tests **5/5**, `validate_release_manifest.py` confirms **232** migration hashes, source-map
-freshness and `git diff --check`. These are local Python/config checks only. The environment preflight
-correctly remains blocked on **158** missing read-only receipts. Source still shares one D1 and eleven
-KV IDs; `naelao-calls` is shared/unresolved and has no named Worker owner. No account, credential,
-namespace, service owner or deployment was inspected.
-
-Provider secret presence, provider-side webhook/callback registration and account-level jurisdiction
-still need separate read-only inventories; the source map intentionally stores no secret values and
-cannot attest those account facts. Distinct configured resources, those external observations, and
-authorized isolated staging acceptance remain open. Do not guess IDs, account names, timestamps,
-evidence sources or ownership.
+The source-hash-validated map covers **28** Wrangler TOMLs, **100** binding rows, **56**
+Worker/environment surfaces, **2** routes and **30** endpoint-variable entries. Preflight checks
+mutable D1/KV/R2/Vectorize/Queue/Workflow/DO/service targets and requires current read-only receipts,
+including distinct observed DO namespace IDs. The current map requires **158** receipts. It still
+fails closed on one shared D1, eleven shared KV IDs, and shared/unresolved `naelao-calls` ownership
+with no named Worker owner. Staging events/workflows queues and DLQs are separately named from
+production in checked-in configuration, including the production Notifications DLQ; this source-level
+separation does not establish deployed resource identity. Account, credentials, provider callbacks,
+DO namespace IDs, jurisdiction and actual ownership remain uninspected. No IDs or receipts are
+invented.
 
 ### Verification recorded at the initial P01/P02 source reconciliation
 
@@ -530,18 +512,22 @@ tests **47/47**, affected typechecks and both release validators. These are loca
 checks. AutoRAG provider-index deletion, deployed data-store behavior and live acceptance remain
 unverified; retrieval remains disabled.
 
-### P23 — notification outcomes and retry safety: PARTIAL
+### P23 — notification outcomes and retry safety: PARTIAL, durable async outcomes implemented locally
 
-The current email path preserves a stable caller idempotency key and now returns Resend's bounded
-request receipt with an explicit `provider_accepted` outcome. Product reset and verification
-operations persist that receipt on their existing outbox row and expose it through the existing
-HMAC-scoped status route. Queued webhooks now carry a stable event ID, idempotency key, timestamp,
-and versioned HMAC over timestamp/event ID/body; the legacy body-only signature remains for
-consumers during migration. `docs/operations/notification-delivery-contract.md` documents at-least-
-once delivery and receiver deduplication. Local evidence: Notifications **33/33**, Product auth
-recovery **17/17**, release runner **9/9**, 231-file manifest, affected typechecks and release
-validators. These are local mocks/SQLite. Generic provider receipts, terminal exhaustion visibility,
-and scoped/audited operator replay remain code gaps; no inbox or live-provider delivery is claimed.
+Code `e967eaa3` and migration 0234 add a tenant-scoped, non-PII outcome ledger for general
+Notifications queue work: provider accepted/rejected/ambiguous, not sent, in-app persisted and
+terminal dead-lettered. Dunning provider attempts remain in `dunning_notification_attempts`; only
+terminal dunning DLQ state is recorded in the general table. An owner/admin-only no-store read is
+reachable through Billing and Router and rendered in Dashboard settings. Production Notifications
+uses a distinct configured DLQ. Earlier webhook event IDs/signatures and Product auth-email Resend
+acceptance receipts remain on their existing paths. Local/mock evidence at `e967eaa3`: Notifications
+**40/40**, Billing **4/4**, Router **2/2**, notification/release/environment Python suites **25/25**,
+affected typechecks, release/deployment manifest validation and staging/production Wrangler dry runs.
+No deployed D1 or provider delivery was exercised.
+
+Remaining code/policy gaps are general synchronous-send outcomes, an approved retention rule and
+scoped/audited operator replay. Provider request acceptance does not prove inbox delivery or reading.
+No provider/deployed live acceptance is claimed.
 
 ### P15 — large-Space Blackboard discovery: PARTIAL, indexed bounded path implemented locally
 
@@ -672,6 +658,40 @@ DO retry test. Key compromise notification, automated rotation, supply-chain sca
 artifact retention/purge rules are absent. Revocation blocks new admissions, but no drain/termination
 receipt exists for already-running executions; currently admitted work may continue. These are code
 or product/runtime gaps, not credential blockers.
+
+## Current status index for P01–P24
+
+The findings were researched against an older checkout. This index is the current source/caller
+reconciliation; details and evidence remain in the corresponding sections above and the managed
+S/U ledgers. `PARTIAL` means some current code is locally verified but an implementation, contract,
+policy or acceptance gap remains. There is no live-accepted P requirement.
+
+| Requirement | Current status | Reconciled state |
+| --- | --- | --- |
+| P01 | PARTIAL | Release runner, manifest and promotion health gates are local; operator-attested D1 baselines and isolated/deployed acceptance remain. |
+| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
+| P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
+| P04 | PARTIAL | Bounded encrypted archive, checksum-checked object restore and partial-retry receipts exist; restore limits, merge semantics, policy and drills remain. |
+| P05 | PARTIAL | Restricted text-oriented channel tools exist; extension media handles and full supported attachment journeys remain uncoded. |
+| P06 | PARTIAL | Owner voice and bounded keypad phone paths exist; public streaming and managed voice billing are unavailable. |
+| P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
+| P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
+| P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
+| P10 | PARTIAL | Declarative setup, drafts, host validation, settings and localized forms exist; complete package authoring/install/update lifecycle remains. |
+| P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
+| P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
+| P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |
+| P14 | PARTIAL | Product generation-based reset/logout and retryable revocation exist; browser token storage and full cross-product security acceptance remain. |
+| P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
+| P16 | PARTIAL | Shared Discord media bounds/disclosure exist; scoped extension media handles and live provider acceptance remain uncoded/unverified. |
+| P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
+| P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
+| P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |
+| P20 | PARTIAL | Idempotent refund review ledger and buyer/creator status exist; dispute, access reversal, author accounting and independent operator identity remain unresolved. |
+| P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
+| P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
+| P23 | PARTIAL | Async queue outcomes and owner status exist; sync outcomes, retention policy, audited replay and live delivery remain. |
+| P24 | PARTIAL | Signed installed-release checks, scoped rollback and key registry exist; dependency closure, cross-Space restore, active-work drain and compromise handling remain. |
 
 ## Requirement queue
 
