@@ -2,7 +2,28 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P02 Cloudflare account receipt validation `7cac081c` pushed)
+### Active continuation (2026-11-13; template source availability `f725fa2c` pushed)
+
+- Owner/admin Space Template status now reads the newest published, host-certified Marketplace
+  listing from the same publisher for the installed blueprint, validates its certificate and digest,
+  and reports current/update-available/source-unavailable/legacy-unknown. It flags price or
+  license-term differences. This check does not apply updates, change permissions or alter licenses.
+  Code `f725fa2c` is pushed to `origin/Mcbt5s-Backup-2`.
+- Fresh local verification: Spaces activation/status suite **19/19**, Spaces and Shell typechecks, and
+  `git diff --check`. These are local Worker/DO mocks; no Marketplace, provider, deployed database or
+  live installation was accessed.
+- A targeted P03 caller review confirmed `/billing/dunning-notifications` reaches Dashboard through
+  Router, is tenant/owner scoped, and reports provider outcomes without claiming inbox delivery. No
+  independent caller code gap was found. P03/P20 grace/restriction, refund/dispute/author accounting,
+  and independent operator identity remain unresolved product/security contracts; P04 remains partial
+  for coverage/limits, merge-only behavior, legal/key policy and isolated/live drills.
+- P01/P02 remain partial for shared configured resources, missing ownership/existence receipts,
+  operator-attested D1 baselines and isolated/deployed acceptance. Exact next task: extend the signed
+  update candidate summary with schema-version and required-dependency changes without returning setup
+  values or applying updates; then continue §9.5 voice dashboard and §10 lifecycle work. Rollouts stay
+  disabled; preserve `infra/scripts/__pycache__/`.
+
+### Prior active continuation (2026-11-13; P02 Cloudflare account receipt validation `7cac081c` pushed)
 
 - The environment-resource preflight now rejects a nonempty but malformed `account_id`: external Cloudflare account IDs must be 32 hexadecimal characters. This closes a concrete validator gap in the read-only evidence contract without claiming that an ID, account, resource or receipt was observed. Existing checks still fail closed on shared mutable resources, unresolved Worker ownership, stale/missing receipts and unconfigured environment-specific resources.
 - Code `7cac081c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: resource receipt validator tests **10/10**, Wrangler isolation tests **6/6**, `git diff --check`. The live source preflight remains blocked by a shared `PLATFORM_DB`, eleven shared KV IDs, unresolved `naelao-calls`, 62 missing existence receipts, and separate operator-attested staging/production D1 baselines. Secret presence, provider callback registration and jurisdiction need their own read-only evidence. No Cloudflare account was queried.

@@ -2,15 +2,20 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P02 receipt-validation code `7cac081c` is pushed to
-`origin/Mcbt5s-Backup-2`. Resource receipts now require the observed Cloudflare account ID to match
-the 32-character hexadecimal format; the existing environment preflight continues to reject shared
-mutable IDs, unresolved service ownership and missing/stale read-only receipts. Local evidence:
-resource validator **10/10**, Wrangler isolation **6/6**, and `git diff --check`. No Cloudflare account
-was queried and no receipt was fabricated. P02 remains PARTIAL: source still has shared D1/11 KV IDs,
-unresolved `naelao-calls`, 62 missing resource existence receipts, external secret/callback/jurisdiction
-inventory and no isolated/deployed acceptance. P01 test-gate code `e68a8f4c` remains pushed; runner
-tests are required in both release preflights.
+Current continuation checkpoint (2026-11-13): guided-template source availability code `f725fa2c` is
+pushed to `origin/Mcbt5s-Backup-2`. Owner/admin status checks compare each install with the newest
+published host-certified listing from the same publisher and blueprint, report changed artifacts and
+price/license terms, and never mutate an installation. Fresh local evidence: Spaces activation/status
+suite **19/19**, Spaces and Shell typechecks, `git diff --check`. These are local tests; no Marketplace,
+provider, deployed DB or live installation was accessed. A P03 caller check confirmed the tenant-scoped
+provider-outcome API is reachable through Router and Dashboard; no independent code gap was found.
+Provider acceptance remains distinct from inbox delivery. P03/P20 grace, restriction, refund, dispute,
+payout and independent-operator policy remains open. P04 recovery code `b6c408c8` remains pushed, with
+archive, merge, legal/key and isolated/live recovery gates recorded below.
+
+P01/P02 remain PARTIAL: distinct D1/KV resources, resolved `naelao-calls` ownership, read-only resource
+existence receipts, per-environment operator-attested migration baselines and isolated/deployed
+acceptance remain missing. Do not invent receipts or change live configuration.
 
 The prior §10 audience code `9ec259ba` is also pushed. Migration 119 preserves prior facts as schema
 v1 with `space_members`; v2 SDK, gateway, Router and Shell support explicit `space_members` or narrower
@@ -25,10 +30,10 @@ S2 is IMPLEMENTED_LOCAL for currently supported lanes; partial rows retain their
 runtime/provider contracts, missing external feeds, product/legal decisions, external evidence or
 deployed/live acceptance. Keep U05/U06 live runtime disabled; their trusted allocation/observation
 producer and pinned writer-admission/drain/handoff contract are not credential blockers. Preserve the
-untracked `infra/scripts/__pycache__/`. Exact next task: continue P03/P20 commercial recovery from
-their existing dunning and refund ledgers. Close any independent reachable status/retry gap without
-inventing grace/restriction, dispute, author-earnings or operator-identity policy; then continue P04
-recovery. After those gates, proceed to guided templates, voice dashboards and Shared-Space lifecycle.
+untracked `infra/scripts/__pycache__/`. Exact next task: extend the signed template update candidate
+summary with setup-schema and required-dependency changes, without returning setup values or applying
+updates. Then audit §9.5 voice-dashboard callers and implement only existing host-supported
+per-installation configuration before continuing §10 lifecycle and policy gaps.
 Do not deploy, buy services, reset, clean, switch branches or force-push.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable

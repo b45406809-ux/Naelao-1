@@ -2,17 +2,19 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P02 receipt-validation code `7cac081c` was pushed to
-`origin/Mcbt5s-Backup-2`. The resource validator now checks Cloudflare account ID format as 32
-hexadecimal characters. Local evidence: resource validator **10/10**, Wrangler isolation **6/6** and
-`git diff --check`. No Cloudflare account or provider was queried. P02 remains PARTIAL: source uses a
-shared D1 and eleven shared KV IDs, `naelao-calls` ownership is unresolved, 62 fresh resource
-existence receipts are missing, and separate D1 baselines plus secret/callback/jurisdiction evidence
-are unavailable. Do not invent these facts or use placeholder IDs. P01 code `e68a8f4c` now runs its
-interruption/lock/ledger/schema suite in both preflights and requires it through the deployment
-manifest validator. Next: inspect one independent current P03/P20 commercial recovery caller against
-its existing ledgers, preserve unresolved policy/identity gates, then continue P04 and guided-template
-lifecycle before voice dashboards and Shared-Space.
+Updated 2026-11-13 after guided-template source availability code `f725fa2c` was pushed to
+`origin/Mcbt5s-Backup-2`. Owner/admin installation status checks the newest published, host-certified
+listing for the same publisher and blueprint, compares its artifact digest and listing terms with the
+installed record, and never applies an update. Local evidence: Spaces activation/status suite **19/19**,
+Spaces/Shell typechecks and `git diff --check`. No Marketplace, provider, deployed database or live
+installation was accessed. A targeted P03 caller review confirmed its provider-outcome API reaches
+Dashboard through Router; no independent code gap was found, and provider acceptance is not inbox
+delivery. P03/P20 policy and independent operator identity remain unresolved. P04 restore safety is
+implemented locally (`b6c408c8`); archive limits, merge semantics, legal/key policy and isolated/live
+drills remain open. P01/P02 still lack separated resources, read-only receipts, operator-attested
+migration baselines and isolated/deployed acceptance. Exact next task: add a read-only summary of
+changed setup-schema/dependency versions for a signed update candidate, then continue §9.5 voice
+dashboard integration and §10 lifecycle/policy gaps.
 
 Prior §10 audience code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Migration 119 preserves the
 legacy member audience and the v2 flow supports an explicit member or owners/admins audience, with
