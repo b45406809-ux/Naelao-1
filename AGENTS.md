@@ -2,16 +2,22 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P03 code `51defd9f` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Dunning messages now carry
-subscription scope; Resend send attempts record provider-accepted, provider-rejected or ambiguous
-outcomes against their stable notification ID. Owner/admin billing can inspect only platform
-subscription notices for the authenticated tenant, and the Dashboard separates provider acceptance
-from inbox delivery. The release manifest requires migration 0233. Local/mock evidence: Notifications
-4/4, Billing 12/12, Workflows 12/12, Router route 1/1, release migrations 11/11, release manifest
-5/5, deployment manifest 7/7, five affected TypeScript checks and 233 migration hashes. No D1
-deployment, Resend delivery or inbox receipt was tested. P03 remains partial for approved grace,
-restriction/escalation, refund/dispute and manual-resolution policy plus live provider acceptance.
+Current continuation checkpoint (2026-11-13): P04 recovery-safety code `b6c408c8` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Space archive restore previews
+now disclose archived active event triggers; missing trigger rows are inserted disabled, and
+`space_archive_restores.safety_actions_json` records the durable count. Existing destination trigger
+state is preserved. Settings lists verified archives and partial restores, previews and resumes
+restore work, and an owner/admin API can re-enable a reviewed trigger only while its project is
+active; the authenticated actor and time are recorded. Local/mock evidence: four SpaceDO/route test
+files **21/21**, Spaces and Shell typechecks, and `git diff --check`. No deployed D1/R2, isolated
+restore, provider reconnection or RPO/RTO drill was exercised. P04 remains PARTIAL for bounded
+archive limits, merge-only semantics, cross-service recovery, key/legal/jurisdiction policy and live
+acceptance.
+
+P03 code `51defd9f` adds scope-bound durable Resend accepted/rejected/ambiguous outcomes and a
+tenant-scoped owner/admin status list. Local/mock evidence and limits are in the managed-services
+ledger; grace/restriction/escalation and refund/dispute policy plus live provider acceptance remain
+open.
 
 P01/P02 code `3e456061` and `a1827a05` remains pushed. The preflight checks mutable cross-environment
 D1, KV, R2, Vectorize, Queue, Workflow, Durable Object script and service targets; requires 158
@@ -64,10 +70,10 @@ while any named requirement remains uncoded or gated. The active platform order 
 safety, commercial integrity/recovery, guided-template lifecycle and cost, voice-extension dashboards,
 then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route stays closed and public
 extension streaming stays unavailable. Do not repeat completed audits without new source evidence.
-Exact next task: add a recovery-safe pause for restored event triggers so an archive cannot reactivate
-scripts that emit external effects; report the pause in preview and the durable restore receipt, and
-provide an owner/admin path to explicitly re-enable a reviewed trigger. Then continue P04's remaining
-recovery and data lifecycle gaps before moving back through §5, §9 and §10.
+Exact next task: continue §5 guided-template lifecycle at browser draft/resume. Trace the current
+Space creation wizard and its existing installation state, then persist a bounded per-owner draft
+that resumes the exact selected signed listing and setup-schema revision without creating duplicate
+paid resources. Keep secrets in host-managed connections and label unresolved costs as unknown.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.

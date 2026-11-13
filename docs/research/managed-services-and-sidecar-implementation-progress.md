@@ -2,7 +2,32 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P03 dunning provider outcomes `51defd9f` pushed)
+### Active continuation (2026-11-13; P04 restore safety `b6c408c8` pushed)
+
+- Code `b6c408c8` is pushed to `origin/Mcbt5s-Backup-2` from
+  `autonomous-managed-services-20261111`. Migration 116 adds audited event-trigger reactivation and
+  a durable `space_archive_restores.safety_actions_json`. Restore preview reports active archived
+  triggers; missing trigger rows are inserted disabled and existing destination rows retain their
+  state. Owner/admin Settings now lists verified archives and restore receipts, supports preview,
+  apply and resume of partial restores, and explains additive merge limits. The explicit trigger
+  re-enable route requires owner/admin and project-management access, validates the project remains
+  active and records the authenticated actor/time.
+- Local/mock evidence: SpaceDO archive, migration, automation and route tests **21/21**, Spaces and
+  Shell typechecks, `git diff --check`. These tests use the SQLite/R2 mock and route mocks only; no
+  deployed D1/R2, provider reconnection, isolated restore or RPO/RTO drill was run. P04 remains
+  PARTIAL for archive-size/row limits, merge-only relational state, cross-service backup coverage,
+  legal/key/jurisdiction policy, provider reconciliation and live acceptance.
+- P03 code `51defd9f` remains pushed with durable scope-bound notification provider outcomes.
+  Grace/restriction/escalation, refund/dispute/manual-intervention policies and live provider
+  acceptance remain unresolved. P01/P02 remain partial for operator-attested D1 baselines, actual
+  resource IDs/receipts, resolved service ownership and isolated/deployed acceptance. The S2–S9 and
+  U01–U12 ledger remains authoritative; unsupported U05/U06 runtime contracts are not credentials
+  blockers. Keep all rollout flags false.
+- Exact next task: continue the new plan in dependency order at §5 browser draft/resume. Bind saved
+  drafts to the exact selected signed template listing and setup-schema revision; do not create
+  duplicate paid resources or store provider credentials in form values.
+
+### Prior continuation (2026-11-13; P03 dunning provider outcomes `51defd9f` pushed)
 
 - Code `51defd9f` is pushed to `origin/Mcbt5s-Backup-2` from
   `autonomous-managed-services-20261111`. Migration 0233 records Resend provider outcomes by tenant,
@@ -27,9 +52,8 @@
 - S2–S9/U01–U12 remains reconciled in the matrix. U05/U06's candidate/observation producer and
   writer-drain/handoff contract remain unsupported, not credential-blocked; keep live runtime and
   all rollout flags disabled. Preserve `infra/scripts/__pycache__/`.
-- Exact next task: prevent P04 archive restore from reactivating event triggers that can repeat
-  external effects. Add preview and durable receipt counts, plus an owner/admin reviewed re-enable
-  path; then continue the uncoded independent P04 lifecycle gaps before returning to §5, §9 and §10.
+- Exact next task at this historical checkpoint: prevent P04 archive restore from reactivating event
+  triggers. This was closed in `b6c408c8`; current action is listed above.
 
 ### Active continuation (2026-11-13; S4/MS03c-d sidecar receipts `ebe98120` pushed)
 

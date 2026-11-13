@@ -2,16 +2,23 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P03 dunning outcome code `51defd9f` was pushed to
-`origin/Mcbt5s-Backup-2`. Migration 0233 records Resend accepted, rejected and ambiguous attempts by
-stable notification ID, tenant and subscription scope; owner/admin Billing lists only platform
-subscription messages for the authenticated tenant, and the Dashboard does not equate provider
-acceptance with inbox delivery. Local/mock evidence: Notifications **4/4**, Billing **12/12**,
-Workflows **12/12**, Router route **1/1**, release migrations **11/11**, release-manifest **5/5**,
-deployment manifest **7/7**, five affected TypeScript checks, 233 migration hashes and `git diff
---check`. No deployed D1, Resend send, provider delivery or inbox receipt was tested. P03 remains
-PARTIAL for grace/restriction/escalation and refund/dispute/manual-intervention policy and live
-acceptance; P20's independent identity and accounting policy remain partial.
+Updated 2026-11-13 after P04 restore-safety code `b6c408c8` was pushed to
+`origin/Mcbt5s-Backup-2`. Migration 116 persists safety actions with restore receipts. Preview shows
+archived active event triggers; missing triggers are inserted disabled, while existing destination
+state is preserved. Owner/admin Settings now lists archives and restores, shows merge-only restore
+previews, and can resume partial restores. A separate owner/admin, project-authorized route re-enables
+a reviewed trigger only if its project remains active, recording actor and time. Local/mock evidence:
+SpaceDO archive/migration/automation/route tests **21/21**, Spaces and Shell typechecks, and
+`git diff --check`. No deployed D1/R2, isolated restore, provider reconnection or RPO/RTO drill was
+run. P04 remains PARTIAL for archive caps, merge semantics, cross-service coverage, key/legal/
+jurisdiction policy and live acceptance.
+
+P03 code `51defd9f` records scope-bound Resend accepted/rejected/ambiguous outcomes; local provider
+outcomes do not establish inbox delivery. Grace/restriction/escalation, refund/dispute/manual
+intervention and live acceptance remain open. P20 identity and accounting policy remain partial.
+P01/P02 remain blocked on actual resource separation/receipts and operator-attested migration
+baselines. Exact next task: continue §5 at browser draft/resume, bound to the selected signed listing
+and setup-schema revision without duplicate paid resources or provider credentials in form values.
 
 P01/P02 code `3e456061` and `a1827a05` remains pushed. The source map contains **28** Wrangler
 configs, **100** binding rows, **56** Worker/environment surfaces, **2** routes and **30** endpoint
@@ -20,10 +27,9 @@ requires **158** read-only receipts and rejects shared observed DO namespace IDs
 closed on one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership and missing
 receipts. Secret presence, provider callbacks, jurisdiction and actual resources require external
 read-only evidence. P01 lacks operator-attested D1 baselines and isolated/live release acceptance.
-Exact next task: prevent P04 restore from reactivating external-effect event triggers; show the
-disabled count in preview and the durable restore receipt, and add a deliberate owner/admin re-enable
-path. Continue independent P04 lifecycle gaps, then return to §5, §9 and §10. Keep implementation,
-mocked, deployed and live evidence distinct.
+Historical next task: prevent P04 restore from reactivating external-effect event triggers. This was
+closed in `b6c408c8`; current next action is the §5 browser draft/resume work above. Keep
+implementation, mocked, deployed and live evidence distinct.
 
 Prior S4/MS03c-d continuation (2026-11-13, code `ebe98120`):
 
