@@ -12,32 +12,31 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): Code `0f07a512` is pushed to `origin/Mcbt5s-Backup-2`. It connects
-the signed declarative template setup migration (`4dbd5c99`) to Marketplace source verification,
-owner/admin status UI, and SpaceDO persistence. Preview/apply revalidate the newest same-publisher
-signed candidate, fence installed artifact/listing/setup revision, and permit setup values only when
-runtime content, dependencies and price are unchanged. Dropped saved values need explicit owner
-confirmation; successful updates create a durable actor-attributed event. Rollback is unavailable and
-the broader template lifecycle remains partial.
+Current checkpoint (2026-11-13): Branch `autonomous-managed-services-20261111` is at pushed code
+`1a7806e3` on `origin/Mcbt5s-Backup-2`. The tracked worktree is clean; preserve the unrelated
+untracked `infra/scripts/__pycache__/`. This code adds owner/admin phone-extension call history,
+showing the latest 50 calls from seven days with masked callers and no provider call IDs. Local
+verification: Agents phone suite **35/35**, Agents and Shell typechecks, `git diff --check`. No
+provider, deployed database, deployment or live call acceptance ran.
 
-Local/mock evidence for `0f07a512`: Agent SDK **10/10** and typecheck; Spaces focused suites **29/29**
-and typecheck; Router route test **49/49** and typecheck; Shell typecheck; `git diff --check`. No
-Marketplace provider, deployed database, deployment, or live installation acceptance was exercised.
-The separately pushed P23 synchronous outcomes (`27683db1`, migrations 0235/0236) remain PARTIAL for
-approved retention, audited replay and live acceptance. S2 is IMPLEMENTED_LOCAL for supported lanes;
-S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10 retain their specific gaps in the ledgers. P01/P02
-remain fail-closed on shared configured IDs, unresolved `naelao-calls`, missing read-only receipts and
-operator-attested migration baselines. Preserve untracked `infra/scripts/__pycache__/`; keep rollouts
-disabled.
+The detailed S2–S9/U01–U12 ledger has already reconciled U11 and U12 for supported local callers and
+toolchain; its missing invoices, billed-idle/CPU-size feeds, policy and live evidence remain explicit.
+The older top-level “U11 next” note is stale. Do not repeat that audit without new source evidence.
+S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and U01–U12 retain their per-row status and
+gaps. §5, §9.5 and §10 remain PARTIAL. P01/P02 fail closed on actual environment separation,
+ownership/resource receipts and operator-attested D1 baselines; other product, policy, runtime contract
+and live acceptance gates remain in the progress records.
 
-Exact next action: resume the managed-services progress matrix at U11 (S3 cost and settlement
-outcomes). Trace the current settlement outbox, provider-cost sources, threshold/alert delivery,
-owner controls and unsupported invoice/billed-idle feeds; close only an independent reachable local
-code gap, then verify U12 and update the S4–S9/U01–U12 reconciliation. Keep external commercial,
-provider/runtime-contract and live acceptance gates explicit. Continue the platform queue afterward
-from P01/P02 evidence gates and P03/P20 policy gates, then §5 remaining lifecycle, §9.5 voice and §10
-coordination gaps. After each meaningful checkpoint, update both ledgers and this runbook; after a
-session boundary, reread both plans, both ledgers and the actual worktree before resuming.
+Exact next action: connect saved settings from the exact active signed phone extension installation
+to its customer-call handler. Add an internal, tenant/Space/instance-scoped host read that rechecks
+active installation, `phone` declaration, `extension.settings.read` capability and permission, schema
+and persisted values; pass only validated settings and revision into the phone channel context. Reject
+cross-installation, revoked, undeclared and invalid-schema reads. Add focused authorization/runtime
+coverage and affected typechecks. Keep the public streaming route retired, keypad handler behavior
+working, rollout disabled, and all live gates explicit. Then resume the uncoded §9.5 dashboard/test/
+operations work and the ledgers’ remaining §5/§10 and S2–S9 gaps in dependency order. After compaction,
+interruption or a new session, reread both plans, both progress records and this file; inspect the actual
+worktree and resume from the exact next unfinished action recorded there.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing
@@ -450,7 +449,9 @@ Latest continuation (2026-11-12): U01 code `afc0c4fe` is pushed to `origin/Mcbt5
 
 ## Autonomous continuation and verification
 
-- Read the plan and progress before resuming. Reconcile earlier status with current source and
+- After compaction, interruption or a new session, read both active plans, both progress records
+  and this runbook, inspect the actual worktree/branch/dirty files, and resume the exact next action.
+  Reconcile earlier status with current source and
   newer evidence. Preserve original transcripts. Historical guidance is archived at
   `docs/operations/agents-historical-runbook.md`; its older mission and commit policy are superseded.
 - Give each requirement an ID and track `NOT_STARTED`, `IN_PROGRESS`, `IMPLEMENTED_LOCAL`,

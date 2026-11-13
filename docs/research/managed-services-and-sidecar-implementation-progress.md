@@ -2,47 +2,33 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; pushed code `0f07a512`)
+### Active continuation (2026-11-13; owner phone call history `1a7806e3` pushed)
 
-- `0f07a512` is pushed to `origin/Mcbt5s-Backup-2`. It completes the reachable setup-only update path
-  built on `4dbd5c99`: Marketplace rechecks the newest same-publisher signed source and unchanged
-  runtime/dependencies/price; owner/admin UI previews and applies with installed artifact, listing and
-  setup-revision fences; SpaceDO validates the exact migration, persists new setup values/provenance
-  and an actor-attributed audit event. Dropped fields require explicit confirmation. No project,
-  extension, permission, provider resource or license changes occur, and automatic rollback is absent.
-- Local/mock verification for `0f07a512`: Agent SDK **10/10** and typecheck; Spaces focused suites
-  **29/29** and typecheck; Router route test **49/49** and typecheck; Shell typecheck; `git diff --check`.
-  No Marketplace/provider, deployed DB, deployment or live installation acceptance ran. §5 remains
-  PARTIAL for permission/pricing review, full package update/rollback/uninstall lifecycle, provider and
-  generated-project effects, complete verified rates, visual authoring and live acceptance.
-- P23 code `27683db1` remains pushed. Notifications claims a stable operation ID before
-  provider egress, stores non-PII not-sent/rejected/accepted/ambiguous results, returns the ID and
-  outcome, and does not automatically resend an ambiguous operation. Reachable Agent, Auth, Space,
-  Billing and script callers were checked; IDs derive from event/operation identity where available.
-  Migrations 0235 and 0236 expand delivery channels and add terminal ambiguous cost-alert status.
-- Local/mock evidence: Notifications **44/44**; Agents **1,481 passed, 7 skipped** across 270 files;
-  Auth **34/34**; Auth/Agents/Billing/Shell/Dashboard typechecks; migration/release tests **18/18**;
-  release inventory and deployment manifest validators; `git diff --check`. Inventory is 236
-  migrations and requires `0236_cost_alert_ambiguous_delivery_status`. No provider, deployed database,
-  deployment or live acceptance ran. P23 remains PARTIAL for approved retention, audited replay and
-  live acceptance; provider acceptance is not inbox delivery.
-- P01/P02 controls pass locally and remain fail-closed on one shared D1, eleven shared KV IDs,
-  unresolved `naelao-calls`, **158** missing read-only resource receipts and absent operator-attested
-  D1 baselines. No independent release/environment code gap is recorded. P03/P12/P20 and P04 code
-  paths are present; remaining grace/restriction, refund/dispute/accounting, archive/key/jurisdiction
-  policy and deployed/live recovery acceptance are not credential blockers. Keep rollouts disabled.
-- S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain governed by their source/
-  caller matrix and are not declared complete. Preserve the untracked `infra/scripts/__pycache__/`.
-- Code `4dbd5c99` adds the signed, data-only setup migration schema pinned to source artifact and
-  schema SHA-256 values. Rename/drop/default operations are bounded and type-checked; preview preserves
-  existing values without coercion and reports required owner input. Agent SDK test **10/10**, SDK
-  typecheck and `git diff --check` pass. It is not yet wired to the installation UI or persistence.
-- Exact next task: resume S3 at U11. Trace the settlement outbox, provider-cost sources,
-  threshold/alert delivery and owner controls against current callers; implement any independent
-  reachable gap, keeping provider invoices, billed-idle/CPU-size feeds and supported-account
-  acceptance distinct. Then verify U12 and finish the S4–S9/U01–U12 source/caller reconciliation.
-  Keep U05/U06 runtime contracts, external policy and live acceptance as explicit gates; preserve
-  `infra/scripts/__pycache__/` and keep rollouts disabled.
+- Branch `autonomous-managed-services-20261111` is at `1a7806e3`, pushed to
+  `origin/Mcbt5s-Backup-2`. The tracked worktree is clean; preserve the unrelated untracked
+  `infra/scripts/__pycache__/`.
+- Owner/admin phone status now returns at most 50 Telnyx customer-extension calls started in the
+  prior seven days, scoped to the exact phone identity. It masks caller numbers, omits provider call
+  control IDs, and labels the rows as call history rather than invoice/recording/transcript evidence.
+  Non-managers receive none. Local evidence: Agents phone **35/35**, Agents and Shell typechecks,
+  `git diff --check`. No provider, deployed DB, deployment or live call ran.
+- S2 remains IMPLEMENTED_LOCAL for supported provider lanes. U11/U12 have already been reconciled
+  against source and callers for supported local behavior; no ordinary alert-delivery/toolchain gap
+  is the current next action. Actual invoices, billed idle/CPU-size feeds, policy and live acceptance
+  remain explicit. S3–S9 and U01–U12 keep their individual ledger statuses and named gaps; U05/U06's
+  trusted observation and pinned writer-admission/drain/handoff contracts remain unsupported and are
+  not credential blockers. Rollouts remain disabled.
+- Platform §5/§9.5/§10 are PARTIAL; P01/P02 stay fail-closed on shared resource IDs, unresolved
+  `naelao-calls`, missing ownership/resource receipts and operator-attested D1 baselines. Other
+  product/legal policy and deployed/live recovery gates remain as recorded below and in the platform
+  ledger.
+- Exact next action: add an internal host read for saved configuration belonging to the exact active
+  signed phone extension installation. Recheck tenant, Space, installation, active status, phone
+  declaration, `extension.settings.read` capability/permission and signed schema; validate persisted
+  values and pass only those values plus revision to the phone channel runtime. Deny revoked,
+  cross-installation, undeclared and invalid-schema reads. Add focused authorization/runtime tests and
+  typechecks, then continue §9.5 dashboard/test/operations plus remaining §5/§10 and managed-service
+  code gaps. Do not repeat the completed U11/U12 audit without new source evidence.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
