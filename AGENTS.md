@@ -2,19 +2,25 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P02 source-isolation code `3e456061` and `a1827a05`
-are pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. The preflight now
-checks mutable cross-environment D1, KV, R2, Vectorize, Queue, Workflow, Durable Object script and
-service targets; requires 158 read-only receipts for configured resources in both environments; and
-checks distinct observed Durable Object namespace IDs. A redacted Wrangler surface inventory records
+Current continuation checkpoint (2026-11-13): P03 code `51defd9f` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Dunning messages now carry
+subscription scope; Resend send attempts record provider-accepted, provider-rejected or ambiguous
+outcomes against their stable notification ID. Owner/admin billing can inspect only platform
+subscription notices for the authenticated tenant, and the Dashboard separates provider acceptance
+from inbox delivery. The release manifest requires migration 0233. Local/mock evidence: Notifications
+4/4, Billing 12/12, Workflows 12/12, Router route 1/1, release migrations 11/11, release manifest
+5/5, deployment manifest 7/7, five affected TypeScript checks and 233 migration hashes. No D1
+deployment, Resend delivery or inbox receipt was tested. P03 remains partial for approved grace,
+restriction/escalation, refund/dispute and manual-resolution policy plus live provider acceptance.
+
+P01/P02 code `3e456061` and `a1827a05` remains pushed. The preflight checks mutable cross-environment
+D1, KV, R2, Vectorize, Queue, Workflow, Durable Object script and service targets; requires 158
+read-only resource receipts and distinct observed DO namespace IDs. The redacted Wrangler map covers
 28 config files, 100 binding rows, 56 Worker/environment surfaces, two routes and 30 endpoint-host
-entries without copying variable values. Local evidence: resource validator **9/9**, Wrangler
-isolation **6/6**, release-manifest tests **5/5**, 232 migration hashes, current map generation and
-`git diff --check`. The preflight correctly remains blocked on one shared D1, eleven shared KV IDs,
-the shared/unresolved `naelao-calls` target, and all 158 absent read-only receipts. Secret presence,
-provider webhook/callback registration, account jurisdiction, deployed resources and D1 baselines
-remain uninspected. P01 release probes are present in both workflows; no deployment/live acceptance
-was run.
+entries. Local evidence was resource validator 9/9, Wrangler isolation 6/6 and release manifest 5/5.
+Preflight still fails closed on one shared D1, eleven shared KV IDs, the shared/unresolved
+`naelao-calls` target and absent receipts. P01 also lacks operator-attested D1 baselines and isolated
+or live release acceptance. No Cloudflare account or provider was inspected.
 
 The prior code `99a036cd` also exposes persisted Template setup values to the exact active required
 SPACE_SHARED extension through host validation, capability checks and optimistic revisions.
@@ -58,6 +64,10 @@ while any named requirement remains uncoded or gated. The active platform order 
 safety, commercial integrity/recovery, guided-template lifecycle and cost, voice-extension dashboards,
 then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route stays closed and public
 extension streaming stays unavailable. Do not repeat completed audits without new source evidence.
+Exact next task: add a recovery-safe pause for restored event triggers so an archive cannot reactivate
+scripts that emit external effects; report the pause in preview and the durable restore receipt, and
+provide an owner/admin path to explicitly re-enable a reviewed trigger. Then continue P04's remaining
+recovery and data lifecycle gaps before moving back through §5, §9 and §10.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.

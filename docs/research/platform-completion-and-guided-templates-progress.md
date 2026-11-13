@@ -2,21 +2,28 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P02 source-isolation commits `3e456061` and `a1827a05` were pushed to
-`origin/Mcbt5s-Backup-2`. Current Wrangler map covers **28** config files, **100** binding rows,
-**56** Worker/environment surfaces, **2** declared routes and **30** endpoint-host entries, without
-storing variable values. P02 preflight detects mutable target sharing across D1, KV, R2, Vectorize,
-Queues, Workflows, DO script targets and service bindings; it requires **158** read-only receipts
-across both environments and rejects shared observed DO namespace IDs. Local evidence: resource
-validator **9/9**, Wrangler isolation **6/6**, release-manifest tests **5/5**, 232 migration hashes,
-fresh source-map generation and `git diff --check`. P02 remains blocked on one shared D1, eleven
-shared KV IDs, unresolved `naelao-calls` ownership and all 158 absent receipts. Provider secret
-presence, callback registration and jurisdiction require separate read-only evidence; no account,
-provider or deployment was inspected. P01 remains partial for absent operator-attested D1 baselines
-and isolated/live release acceptance. Exact next task: continue P03/P20 by adding durable
-provider-acceptance outcomes linked to stable dunning notification IDs, without treating provider
-acceptance as inbox delivery or inventing commercial/operator policy. Then proceed through P04
-recovery gaps before guided-template lifecycle, voice dashboards and Shared-Space coordination.
+Updated 2026-11-13 after P03 dunning outcome code `51defd9f` was pushed to
+`origin/Mcbt5s-Backup-2`. Migration 0233 records Resend accepted, rejected and ambiguous attempts by
+stable notification ID, tenant and subscription scope; owner/admin Billing lists only platform
+subscription messages for the authenticated tenant, and the Dashboard does not equate provider
+acceptance with inbox delivery. Local/mock evidence: Notifications **4/4**, Billing **12/12**,
+Workflows **12/12**, Router route **1/1**, release migrations **11/11**, release-manifest **5/5**,
+deployment manifest **7/7**, five affected TypeScript checks, 233 migration hashes and `git diff
+--check`. No deployed D1, Resend send, provider delivery or inbox receipt was tested. P03 remains
+PARTIAL for grace/restriction/escalation and refund/dispute/manual-intervention policy and live
+acceptance; P20's independent identity and accounting policy remain partial.
+
+P01/P02 code `3e456061` and `a1827a05` remains pushed. The source map contains **28** Wrangler
+configs, **100** binding rows, **56** Worker/environment surfaces, **2** routes and **30** endpoint
+host entries. Preflight detects mutable D1/KV/R2/Vectorize/Queue/Workflow/DO/service target sharing,
+requires **158** read-only receipts and rejects shared observed DO namespace IDs. It remains fail
+closed on one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership and missing
+receipts. Secret presence, provider callbacks, jurisdiction and actual resources require external
+read-only evidence. P01 lacks operator-attested D1 baselines and isolated/live release acceptance.
+Exact next task: prevent P04 restore from reactivating external-effect event triggers; show the
+disabled count in preview and the durable restore receipt, and add a deliberate owner/admin re-enable
+path. Continue independent P04 lifecycle gaps, then return to §5, §9 and §10. Keep implementation,
+mocked, deployed and live evidence distinct.
 
 Prior S4/MS03c-d continuation (2026-11-13, code `ebe98120`):
 

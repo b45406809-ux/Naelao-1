@@ -2,41 +2,34 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P02 source isolation `3e456061` / `a1827a05` pushed)
+### Active continuation (2026-11-13; P03 dunning provider outcomes `51defd9f` pushed)
 
-- Code `3e456061` and `a1827a05` are pushed to `origin/Mcbt5s-Backup-2` from
-  `autonomous-managed-services-20261111`. The source-derived environment preflight now checks
-  staging/production separation for mutable D1, KV, R2, Vectorize, Queue, Workflow, Durable Object
-  script and service targets. It inventories Durable Object classes and requires read-only namespace
-  receipts for both environments, rejecting reused observed namespace IDs. The Wrangler map also
-  records routes, public endpoint hostnames, variable names and explicit jurisdiction fields without
-  storing variable values.
-- Current inventory: **28** Wrangler TOMLs, **100** binding rows, **56** Worker/environment surfaces,
-  **2** declared routes, **30** endpoint-variable entries and **158** required read-only resource
-  receipts. Current config declares no jurisdiction. Secret presence, provider callback registration
-  and account jurisdiction require separate read-only account/provider evidence; no secret values are
-  stored.
-- Fresh local evidence: environment resource validator **9/9**, Wrangler isolation **6/6**, release
-  manifest tests **5/5**, release manifest confirms **232** migrations, source map regenerates without
-  drift, and `git diff --check` passes. The environment preflight intentionally still fails closed on
-  one shared D1, eleven shared KV IDs, the shared/unresolved `naelao-calls` service with no named
-  Worker owner, and all **158** missing receipts. No Cloudflare account/resource, provider callback,
-  secret presence, namespace ID, D1 baseline or deployment was inspected.
-- P01's ordered migration runner, deployment manifest and post-Worker health gate are implemented
-  locally. Its remaining gates are operator-attested staging/production D1 baselines, actual applied
-  history/data evidence, and isolated/deployed health acceptance. The release runbook was corrected
-  to describe the existing worker health probes and their acceptance limits.
-- S2–S9/U01–U12 remains partial for the exact runtime/platform contracts, policy choices, missing
-  provider evidence, external consumer durability and deployed/live acceptance listed in the matrix.
-  P03/P20 policy remains unresolved; no access restriction, refund/dispute, payout or operator
-  identity rule was invented. P04 retains archive size/row limits, merge restore semantics and
-  isolated/live recovery evidence gaps.
-- Exact next task: continue P03/P20 with durable notification-provider acceptance outcomes linked to
-  the existing stable dunning notification IDs. Report provider acceptance separately from inbox
-  delivery; do not implement grace/restriction, refund/dispute, author payout or privileged operator
-  resolution without the missing policy/identity contract. Then continue P04 independent recovery
-  code gaps before guided-template lifecycle work. Preserve `infra/scripts/__pycache__/`, disabled
-  rollouts, and separate local/mock/deployed/live evidence.
+- Code `51defd9f` is pushed to `origin/Mcbt5s-Backup-2` from
+  `autonomous-managed-services-20261111`. Migration 0233 records Resend provider outcomes by tenant,
+  subscription scope and stable notification ID. Workflows label platform-subscription versus
+  Product-user messages; Notifications records accepted, rejected or ambiguous attempts without
+  storing email/body or claiming inbox delivery. Owner/admin Billing lists only platform notices for
+  the authenticated tenant, and Dashboard distinguishes provider acceptance from inbox receipt.
+- Local/mock evidence: Notifications **4/4**, Billing **12/12**, Workflows **12/12**, Router route
+  **1/1**, release migration tests **11/11**, release-manifest **5/5**, deployment manifest **7/7**,
+  five affected TypeScript checks, 233 migration hashes and `git diff --check`. No deployed D1,
+  Resend, provider delivery or inbox receipt was exercised.
+- P03 remains PARTIAL for unapproved grace/restriction/escalation, refund/dispute/manual-intervention
+  policy, external event ambiguity and live provider acceptance. P20 remains PARTIAL for
+  refund/dispute/access and author-accounting policy plus an independently authenticated operator
+  resolution surface. These are unresolved policy/identity contracts, distinct from credentials.
+- P01/P02 remain implemented locally but PARTIAL: the source checks cover mutable resource classes,
+  158 read-only receipts and observed DO namespace separation; current preflight remains blocked on
+  one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership and missing receipts.
+  Operator-attested D1 baselines and isolated/deployed release acceptance are also absent. Current
+  redacted source map: **28** Wrangler TOMLs, **100** binding rows, **56** Worker/environment
+  surfaces, **2** routes and **30** endpoint-host entries.
+- S2–S9/U01–U12 remains reconciled in the matrix. U05/U06's candidate/observation producer and
+  writer-drain/handoff contract remain unsupported, not credential-blocked; keep live runtime and
+  all rollout flags disabled. Preserve `infra/scripts/__pycache__/`.
+- Exact next task: prevent P04 archive restore from reactivating event triggers that can repeat
+  external effects. Add preview and durable receipt counts, plus an owner/admin reviewed re-enable
+  path; then continue the uncoded independent P04 lifecycle gaps before returning to §5, §9 and §10.
 
 ### Active continuation (2026-11-13; S4/MS03c-d sidecar receipts `ebe98120` pushed)
 
