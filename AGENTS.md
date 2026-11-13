@@ -12,33 +12,33 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `61642261f44b14adef7e312bca90a4e370006170` is pushed to
-`origin/Mcbt5s-Backup-2` and fetch-confirmed. Code `5f94c924` adds owner review of each exact signed
-dependency release and one receipt-gated, topological install action with durable per-package staging,
-partial progress and idempotent recovery. `61642261` extends full encrypted Space archives to include
-bounded Space-local extension artifacts; restore verifies captured bytes and metadata, never overwrites
-conflicting objects, and resumes durable partial progress. Archive envelopes remain bound to their
-originating tenant and Space. No migrations were needed.
+Current checkpoint (2026-11-13): code `b4cf52146aac2c53184fa89622cd4060748652f2` is pushed to
+`origin/Mcbt5s-Backup-2` and fetch-confirmed. It completes owner-authorized cross-Space signed package
+closure import: source and destination admin checks, source plus exact destination publisher-key
+trust (same key bytes), verified closure/artifact copy with create-only R2 writes and readback,
+immutable host-signed destination release rows, durable per-object/per-package retry, and an explicit
+Shell review/import caller. Trust keys never copy; import does not install or grant package access.
+The earlier dependency review/install recovery (`5f94c924`) and same-Space encrypted archive artifact
+restore (`61642261`) remain in place. No migration was needed.
 
-Local evidence: dependency/runtime suites **71/71**, package review/retry suite **10/10**, SDK dependency
-tests **31/31**, Space archive/data-ops suite **10/10**, Spaces/Shell typechecks and `git diff --check`.
-These are local Worker/SQLite/R2 mocks only; no deployment, publisher submission, provider or live
-acceptance ran. P24 remains PARTIAL: owner-authorized cross-Space package artifact import/restore,
-update/schema migration, active-work drain, publisher compromise notices, scanning and artifact
-retention/purge rules remain. These are implementation or product/policy gaps, not credential blockers.
-Live restore acceptance requires authorized deployed source/destination Spaces and D1/R2 resources;
-none was accessed. Destination trust must already contain the exact active publisher key; do not copy
-trust keys during restore. S2–S9/U01–U12 status is otherwise unchanged. Rollouts remain disabled.
-Preserve unrelated untracked `infra/scripts/__pycache__/`.
+Local evidence: cross-Space package plus SpaceDO runtime suites **38/38**, Spaces/Shell typechecks and
+`git diff --check`. The tests cover a mid-transfer interruption/retry, immutable release rows,
+source-role denial, missing destination trust and tenant isolation. These are local Worker/SQLite/R2
+mocks only; no deployed Space, D1/R2, provider or live acceptance ran. P24 remains PARTIAL for update
+and schema migration, active-work drain, publisher compromise notices, scanning and retention/purge
+rules. P04 remains PARTIAL for archive caps, merge policy and isolated/live recovery drills. P01/P02
+local controls are implemented; actual operator-attested D1 baselines, distinct Cloudflare resources,
+ownership and read-only receipts remain external gates. S2–S9/U01–U12 status is otherwise unchanged.
+Rollouts remain disabled. Preserve unrelated untracked `infra/scripts/__pycache__/`.
 
-Exact next action: implement owner-authorized cross-Space package closure import/restore, with source
-and destination admin checks, exact active publisher-key trust at the destination, immutable release
-metadata and content-digest-verified artifact copying, durable per-package retry, and no trust-key
-copying. Add a reachable owner caller and tests for tenant/Space/key denial and interrupted transfer.
-Then continue the remaining release/update and guided-template work without enabling update apply or
-rollout. After compaction, interruption or a new session, read both plans, both progress records and
-this runbook; inspect the actual worktree and resume from that exact action. Do not deploy, purchase,
-reset, clean, switch branches or force-push.
+Exact next action: continue recovery at P04 by tracing the current full Space archive preview/restore
+caller and implementing the next non-destructive recovery gap with explicit collision/partial-state
+visibility; preserve merge-only restore semantics while overwrite/deletion policy is undecided. Then
+continue remaining commercial/recovery, guided-template, voice and Shared-Space requirements. P01/P02
+have no newly found independent code gap; do not invent baselines or resource receipts. After
+compaction, interruption or a new session, read both plans, both progress records and this runbook;
+inspect the actual worktree and resume from that exact action. Do not deploy, purchase, reset, clean,
+switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
 fetch before each push, safely incorporate remote advances, and never rewrite remote history.
 

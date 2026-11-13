@@ -2,11 +2,11 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `61642261f44b14adef7e312bca90a4e370006170` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`. P24 owner review and receipt-gated dependency installation from `5f94c924` verify the full exact closure and recover multi-package partial installs. `61642261` extends bounded encrypted full Space archives to include Space-local signed extension artifact bytes; same-Space restore verifies checksums and metadata, preserves conflicting destination objects, and retries partial writes. Archives remain tenant/Space bound; cross-Space package import is not implemented.
+Updated 2026-11-13 after code `b4cf52146aac2c53184fa89622cd4060748652f2` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`. P24 now supports owner-authorized cross-Space signed package closure import after read-only review: both source and destination admin checks, the exact same active publisher key at each Space, verified artifact copy with conditional writes/readback, immutable host-signed destination release metadata and retry after partial transfer. The Shell provides an explicit import caller; package installation and grant review remain separate. Trust keys are never copied. Earlier commits `5f94c924` and `61642261` provide dependency install recovery and same-Space encrypted archive artifact restore.
 
-Local/mock evidence: the dependency checkpoint passed six focused Spaces suites **71/71**, package review/retry **10/10**, SDK dependency tests **31/31**, and Spaces/Shell typechecks. The archive/data-ops suite passes **10/10**, Spaces typecheck and `git diff --check`. No deployed Space, D1/R2, publisher submission, provider or live acceptance occurred. P04 remains PARTIAL for archive caps, merge semantics, policy and isolated/live drills. P24 remains PARTIAL for cross-Space package restore, update/schema migration, active-work drain, publisher compromise notices, scanning and retention/purge rules. These are code or product/policy gaps, not credential blockers. Live restore acceptance needs authorized deployed source/destination Spaces and D1/R2 resources; none were accessed. Keep rollouts disabled.
+Local/mock evidence: cross-Space package and SpaceDO runtime suites **38/38**, Spaces/Shell typechecks and `git diff --check`; interruption/retry, immutable metadata, role/key/tenant denial are covered. No deployed Space, D1/R2, publisher submission, provider or live acceptance occurred. P04 remains PARTIAL for archive caps, merge policy and isolated/live drills. P24 remains PARTIAL for update/schema migration, active-work drain, compromise response, scanning, retention/purge and live acceptance. P01/P02 code remains fail-closed; operator-attested baselines, distinct real resources, ownership and receipts remain external gates. Keep rollouts disabled.
 
-Exact next action: implement owner-authorized cross-Space package closure import/restore with source and destination admin checks, exact active publisher-key trust in the destination, immutable release metadata, content-digest-verified artifact copying and durable partial retry. Add an owner caller and tenant/Space/key denial plus interrupted-transfer tests. Do not copy publisher trust keys. Continue release/update and guided-template gaps after this.
+Exact next action: continue P04 at the full Space archive preview/restore caller and implement the next non-destructive collision/partial-state visibility gap. Preserve merge-only behavior while overwrite/deletion policy is undecided. Then continue remaining commercial/recovery paths and the guided-template, voice and Shared-Space queue.
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
 packages can declare bounded text attachment access, which requires explicit owner/admin approval.
@@ -755,7 +755,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, manifest and promotion health gates are local; operator-attested D1 baselines and isolated/deployed acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
-| P04 | PARTIAL | Bounded encrypted archives now include Space-local extension artifacts with checksum-checked partial retry; archive caps, same-Space merge semantics, cross-Space import, policy and isolated/live drills remain. |
+| P04 | PARTIAL | Bounded encrypted archives now include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Archive caps, same-Space merge policy and isolated/live archive drills remain; archive envelopes stay bound to the original tenant/Space. |
 | P05 | PARTIAL | Code `5e0c6501` adds owner-approved, per-installation opaque handles for bounded text extraction from supported files on the exact inbound message, with active-binding rechecks, expiry/scope/MIME/byte enforcement and a grounded-answer caller. Binary/image/audio extension reads, richer outbound responses, complete provider journeys and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview whose outputs match the handler. The per-install operations view, customer voice package lifecycle, public streaming, managed voice billing and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
@@ -775,7 +775,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery and same-Space archive artifact restore are local in `61642261`; owner-authorized cross-Space import, update/schema migration, active-work drain, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore and owner-authorized cross-Space package closure import are pushed in `b4cf5214`; update/schema migration, active-work drain, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 
@@ -794,13 +794,13 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    those without new evidence. §5's bounded setup schema, draft/resume, installation status and
    per-installation extension settings schema migration are implemented locally; Marketplace Template
    release migration, lifecycle/rates/authoring gaps are listed above. Continue at the exact task
-   above. P22's
+   above: continue P04's full archive preview/restore caller and close the next non-destructive collision/partial-state visibility gap without changing merge-only semantics. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
    non-ephemeral retrieval and live provider acceptance remain partial. P17's direct catalog, license
    status, return URL and Shell category-selection gaps are committed; preserve its cross-origin
-   identity/install handoff and P20 accounting policy as open. P24's exact dependency closure, owner review, resumable receipt-gated multi-package install and same-Space archive artifact restore are implemented locally in `61642261`; owner-authorized cross-Space package import, update/schema migration, active-work drain, key compromise notice, scanning and package retention rules remain open. The next task is the cross-Space import path recorded at the top of this ledger. P15's indexed path is
+   identity/install handoff and P20 accounting policy as open. P24's exact dependency closure, owner review, resumable receipt-gated install and same-Space archive artifact restore are in `61642261`; owner-authorized cross-Space package import is pushed in `b4cf5214`. Update/schema migration, active-work drain, key compromise notice, scanning, package retention and live acceptance remain open. P15's indexed path is
    implemented; realistic private-member density and task-quality evidence remain open. Reuse the
    S/U ledgers for overlapping requirements and do not repeat completed audits without a source
    change or specific evidence need.
