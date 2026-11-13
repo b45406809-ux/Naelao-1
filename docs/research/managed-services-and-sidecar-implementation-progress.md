@@ -2,6 +2,31 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §5 guided-template draft/resume `f5050258` pushed)
+
+- Code `f5050258` is pushed to `origin/Mcbt5s-Backup-2` from
+  `autonomous-managed-services-20261111`. SpaceDO migration 117 persists setup drafts as AES-GCM
+  ciphertext with a tenant/Space-derived key and binding data for the selected listing, signed
+  artifact digest, schema version and schema digest. Owner/admin host routes verify the exact
+  pending template and listing fork, validate incomplete declarative values and enforce revision
+  compare-and-set; stale contexts require explicit replacement and successful activation clears the
+  draft. The Shell resumes the saved values in its review flow. Setup fields still reject
+  credential-like inputs.
+- Local/mock evidence: Spaces draft, activation and migration tests **25/25**, Agent SDK setup schema
+  **6/6**, Router product route **41/41**, Shell template test **1/1**, Spaces and Shell typechecks,
+  and `git diff --check`. pnpm's wrapper tried to reinstall dependencies and aborted without a TTY;
+  these checks used preinstalled binaries. No deployed DO, marketplace payment, provider call or live
+  acceptance was exercised.
+- This does not change S2–S9/U01–U12 classifications. U05/U06's producer and pinned-runtime writer
+  admission/drain/handoff remain unsupported contracts; P01/P02 external resource receipts and D1
+  baselines, commercial/retention decisions, and deployed/live acceptance remain separately open.
+  Rollouts remain disabled.
+- Exact next task: add a bounded, versioned conditional/localization vocabulary to the signed
+  template setup schema and host validator, then extend the current cost-estimate source with
+  expected-usage inputs. Show unknown components as unknown and do not infer binding rates. Continue
+  package lifecycle/update/uninstall only after those fields are covered; keep the S2–S9/U01–U12
+  ledger authoritative for remaining managed-services work.
+
 ### Active continuation (2026-11-13; P04 restore safety `b6c408c8` pushed)
 
 - Code `b6c408c8` is pushed to `origin/Mcbt5s-Backup-2` from

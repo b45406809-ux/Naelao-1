@@ -2,6 +2,21 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after guided-template draft/resume code `f5050258` was pushed to
+`origin/Mcbt5s-Backup-2`. Migration 117 stores owner setup drafts as AES-GCM ciphertext, bound to the
+Space tenant, listing, signed artifact digest, setup-schema version and digest. The host requires the
+exact pending blueprint and fork, checks owner/admin access, validates incomplete values, enforces
+optimistic revisions, and requires explicit replacement after a binding change. The Shell restores
+matching drafts in the owner review flow; successful activation clears them. Local/mock evidence:
+Spaces draft/activation/migration **25/25**, Agent SDK setup-schema **6/6**, Router product-path
+**41/41**, Shell template **1/1**, Spaces and Shell typechecks and `git diff --check`. The pnpm wrapper
+attempted a dependency reinstall and aborted without a TTY, so checks used installed binaries. No
+deployed DO, payment or live provider behavior was tested. §5 remains PARTIAL for conditional and
+localized fields, expected-usage inputs and complete rates, package lifecycle/update/uninstall, and
+end-to-end acceptance. Exact next task: add a bounded signed conditional/localization vocabulary
+with host validation, then add expected-usage inputs to the existing estimate while retaining unknown
+rates as unknown.
+
 Updated 2026-11-13 after P04 restore-safety code `b6c408c8` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 116 persists safety actions with restore receipts. Preview shows
 archived active event triggers; missing triggers are inserted disabled, while existing destination
@@ -17,8 +32,7 @@ P03 code `51defd9f` records scope-bound Resend accepted/rejected/ambiguous outco
 outcomes do not establish inbox delivery. Grace/restriction/escalation, refund/dispute/manual
 intervention and live acceptance remain open. P20 identity and accounting policy remain partial.
 P01/P02 remain blocked on actual resource separation/receipts and operator-attested migration
-baselines. Exact next task: continue §5 at browser draft/resume, bound to the selected signed listing
-and setup-schema revision without duplicate paid resources or provider credentials in form values.
+baselines. Historical next task was browser draft/resume, now closed in `f5050258`.
 
 P01/P02 code `3e456061` and `a1827a05` remains pushed. The source map contains **28** Wrangler
 configs, **100** binding rows, **56** Worker/environment surfaces, **2** routes and **30** endpoint

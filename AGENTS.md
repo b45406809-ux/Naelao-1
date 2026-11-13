@@ -2,17 +2,29 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P04 recovery-safety code `b6c408c8` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Space archive restore previews
-now disclose archived active event triggers; missing trigger rows are inserted disabled, and
-`space_archive_restores.safety_actions_json` records the durable count. Existing destination trigger
-state is preserved. Settings lists verified archives and partial restores, previews and resumes
-restore work, and an owner/admin API can re-enable a reviewed trigger only while its project is
-active; the authenticated actor and time are recorded. Local/mock evidence: four SpaceDO/route test
-files **21/21**, Spaces and Shell typechecks, and `git diff --check`. No deployed D1/R2, isolated
-restore, provider reconnection or RPO/RTO drill was exercised. P04 remains PARTIAL for bounded
-archive limits, merge-only semantics, cross-service recovery, key/legal/jurisdiction policy and live
-acceptance.
+Current continuation checkpoint (2026-11-13): guided-template draft/resume code `f5050258` is
+pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Migration 117 stores
+owner setup drafts encrypted with tenant/Space-derived AES-GCM keys and binds them to the selected
+Marketplace listing, signed artifact digest and setup-schema version/digest. The Spaces host verifies
+the pending template and exact fork, restricts reads/writes to owners/admins, validates incomplete
+values, and enforces optimistic revisions and explicit replacement after context changes. Shell
+resumes drafts in the owner review flow; successful activation deletes the draft. Local/mock evidence:
+Spaces draft/activation/migration tests **25/25**, Agent SDK schema tests **6/6**, Router product-path
+tests **41/41**, Shell template test **1/1**, Spaces and Shell typechecks and `git diff --check`. The
+pnpm workspace command attempted a dependency reinstall and aborted without a TTY; these checks used
+already-installed binaries directly. No deployed database, marketplace payment or live provider was
+exercised. §5 remains PARTIAL for conditional/localized fields, usage estimates/rate completeness and
+package lifecycle/update/uninstall acceptance. Exact next task: extend the declarative setup-field
+contract only with bounded, signed conditional/localization metadata and host-side validation, then
+use the existing cost-estimate ledger to add explicit expected-usage inputs without inventing rates.
+
+P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
+triggers; missing rows are inserted disabled, existing destination state is preserved, and durable
+receipts track that action. Owner/admin Settings lists archives/restore records and can resume partial
+restores; a project-authorized owner/admin API re-enables reviewed triggers while the project remains
+active. No deployed D1/R2, isolated restore, provider reconnection or RPO/RTO drill was exercised.
+P04 remains PARTIAL for bounded archive limits, merge-only semantics, cross-service recovery,
+key/legal/jurisdiction policy and live acceptance.
 
 P03 code `51defd9f` adds scope-bound durable Resend accepted/rejected/ambiguous outcomes and a
 tenant-scoped owner/admin status list. Local/mock evidence and limits are in the managed-services
@@ -70,10 +82,9 @@ while any named requirement remains uncoded or gated. The active platform order 
 safety, commercial integrity/recovery, guided-template lifecycle and cost, voice-extension dashboards,
 then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route stays closed and public
 extension streaming stays unavailable. Do not repeat completed audits without new source evidence.
-Exact next task: continue §5 guided-template lifecycle at browser draft/resume. Trace the current
-Space creation wizard and its existing installation state, then persist a bounded per-owner draft
-that resumes the exact selected signed listing and setup-schema revision without creating duplicate
-paid resources. Keep secrets in host-managed connections and label unresolved costs as unknown.
+Historical next task: implement §5 browser draft/resume. This closed in `f5050258`; continue with the
+new exact next action above. Preserve the S2–S9/U01–U12 ledger and do not label unsupported U05/U06
+runtime contracts, product policy, missing external receipts, or untested live behavior as complete.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
