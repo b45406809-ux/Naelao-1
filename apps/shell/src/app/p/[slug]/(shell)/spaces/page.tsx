@@ -428,7 +428,7 @@ export default function SpacesPage() {
         ? "Installation review is read-only. Review permissions, capabilities and dependencies below; no folder access will be granted by this flow."
         : "The package is imported, but its destination installation review has blockers." });
     } catch (error) {
-      patchDependencyImport(extensionId, { notice: `Installation review failed: ${error instanceof Error ? error.message : "request failed"}` });
+      patchDependencyImport(extensionId, { notice: `Could not review an exact release in this destination Space: ${error instanceof Error ? error.message : "request failed"}. If no release has been imported here yet, select its same-tenant source Space and review the package closure first.` });
     } finally { setDependencyImportBusy(null); }
   }
 
@@ -785,11 +785,9 @@ export default function SpacesPage() {
                     <Button type="button" disabled={busy || dependencyImportBusy !== null || importReview.expires_at <= Date.now()}
                       onClick={() => void importTemplateDependency(item.extension_id)}>{busy ? "Importing package closure…" : "Import reviewed package closure"}</Button>
                   </div>}
-                  {progress.importedPackages && <div style={{ marginTop: 8 }}>
-                    <p role="status">Imported or verified immutable releases: {progress.importedPackages.join(", ") || "none"}. A partial response can be retried through the same package review.</p>
-                    <Button type="button" variant="secondary" disabled={busy || dependencyImportBusy !== null}
-                      onClick={() => void reviewTemplateDependencyInstall(item.extension_id)}>{busy ? "Reviewing destination…" : "Review destination installation"}</Button>
-                  </div>}
+                  {progress.importedPackages && <p role="status" style={{ marginTop: 8 }}>Imported or verified immutable releases: {progress.importedPackages.join(", ") || "none"}. A partial response can be retried through the same package review.</p>}
+                  <Button type="button" variant="secondary" disabled={busy || dependencyImportBusy !== null}
+                    onClick={() => void reviewTemplateDependencyInstall(item.extension_id)}>{busy ? "Reviewing destination…" : progress.importedPackages || installReview ? "Refresh destination install review" : "Check for an exact release already imported here"}</Button>
                   {installReview && <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
                     <strong>Destination install review · {installReview.requested_package.extension_id}@{installReview.requested_package.version}</strong>
                     {[installReview.requested_package, ...installReview.dependency_packages].map(pkg => <div key={`${pkg.extension_id}@${pkg.version}`} style={{ marginTop: 6 }}>
