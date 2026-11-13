@@ -756,8 +756,121 @@ app.get("/spaces/:spaceId/blueprints/installations", async c => {
     headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
   }));
   if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
-  return new Response(response.body, { status: 200, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+  const status = await response.json() as { installations?: unknown };
+  const installations = Array.isArray(status.installations) ? status.installations as Array<{
+    blueprint_id: string; artifact_sha256: string; listing_id: string | null;
+  }> : [];
+  const sourceChecks = await checkTemplateSourceUpdates(c.env, tenantId, installations);
+  return c.json({ installations: installations.map(installation => ({
+    ...installation,
+    source_update: sourceChecks.get(installation.listing_id ?? "") ?? {
+      status: installation.listing_id ? "source_unavailable" : "unknown_legacy",
+      checked_at: new Date().toISOString(),
+      source_listing_id: null,
+      source_artifact_sha256: null,
+      terms_changed: null,
+    },
+  })) }, 200, { "cache-control": "private, no-store" });
 });
+
+type TemplateSourceUpdateStatus = "current" | "update_available" | "source_unavailable" | "unknown_legacy";
+interface TemplateSourceUpdateCheck {
+  status: TemplateSourceUpdateStatus;
+  checked_at: string;
+  source_listing_id: string | null;
+  source_artifact_sha256: string | null;
+  terms_changed: boolean | null;
+}
+interface TemplateSourceCandidateRow {
+  source_listing_id: string;
+  publisher_tenant_id: string;
+  blueprint_id: string;
+  installed_price_model: string;
+  installed_price_cents: number;
+  candidate_listing_id: string | null;
+  candidate_artifact_json: string | null;
+  candidate_certificate_json: string | null;
+  candidate_price_model: string | null;
+  candidate_price_cents: number | null;
+}
+
+async function templateArtifactDigest(value: unknown): Promise<string | null> {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  } catch { return null; }
+}
+
+/**
+ * Compare installed records with the newest published, host-certified listing from the same
+ * publisher for the same blueprint. This is a read-only availability check; it never installs,
+ * migrates configuration, changes a license, or applies a price/permission change.
+ */
+async function checkTemplateSourceUpdates(
+  env: Env,
+  tenantId: string,
+  installations: Array<{ blueprint_id: string; artifact_sha256: string; listing_id: string | null }>,
+): Promise<Map<string, TemplateSourceUpdateCheck>> {
+  const checkedAt = new Date().toISOString();
+  const listingIds = [...new Set(installations.flatMap(item =>
+    typeof item.listing_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.listing_id) ? [item.listing_id] : []))].slice(0, 100);
+  const checks = new Map<string, TemplateSourceUpdateCheck>();
+  for (const item of installations) {
+    if (!item.listing_id) checks.set("", { status: "unknown_legacy", checked_at: checkedAt,
+      source_listing_id: null, source_artifact_sha256: null, terms_changed: null });
+    else checks.set(item.listing_id, { status: "source_unavailable", checked_at: checkedAt,
+      source_listing_id: null, source_artifact_sha256: null, terms_changed: null });
+  }
+  if (!listingIds.length) return checks;
+
+  const placeholders = listingIds.map(() => "?").join(",");
+  const rows = await env.PLATFORM_DB.prepare(`
+    SELECT source.id AS source_listing_id, source.tenant_id AS publisher_tenant_id,
+      source.space_type_id AS blueprint_id, source.pricing_model AS installed_price_model,
+      source.price_cents AS installed_price_cents,
+      latest.id AS candidate_listing_id,
+      latest.conformance_artifact_json AS candidate_artifact_json,
+      latest.conformance_certificate_json AS candidate_certificate_json,
+      latest.pricing_model AS candidate_price_model, latest.price_cents AS candidate_price_cents
+    FROM marketplace_listings source
+    JOIN marketplace_forks fork ON fork.listing_id=source.id AND fork.tenant_id=?
+      AND fork.blueprint_id=source.space_type_id
+    LEFT JOIN marketplace_listings latest ON latest.id=(
+      SELECT candidate.id FROM marketplace_listings candidate
+      WHERE candidate.tenant_id=source.tenant_id AND candidate.space_type_id=source.space_type_id
+        AND candidate.status='published'
+      ORDER BY COALESCE(candidate.published_at,candidate.created_at) DESC,candidate.id DESC LIMIT 1
+    )
+    WHERE source.id IN (${placeholders})
+  `).bind(tenantId, ...listingIds).all<TemplateSourceCandidateRow>();
+
+  const bySourceId = new Map((rows.results ?? []).map(row => [row.source_listing_id, row]));
+  for (const installation of installations) {
+    const listingId = installation.listing_id;
+    if (!listingId || !listingIds.includes(listingId)) continue;
+    const row = bySourceId.get(listingId);
+    if (!row || row.blueprint_id !== installation.blueprint_id || !row.candidate_listing_id ||
+        !row.candidate_artifact_json || !row.candidate_certificate_json) continue;
+    try {
+      const artifact = JSON.parse(row.candidate_artifact_json) as Record<string, unknown>;
+      const certificate = JSON.parse(row.candidate_certificate_json) as ConformanceCertificate;
+      if (!artifact || typeof artifact !== "object" || Array.isArray(artifact) || artifact.id !== installation.blueprint_id ||
+          certificate?.issuerTenantId !== row.publisher_tenant_id ||
+          !await verifyArtifactCertificate(artifact, certificate, env.PLATFORM_SECRET, "state-delta")) continue;
+      const sourceDigest = await templateArtifactDigest(artifact);
+      if (!sourceDigest) continue;
+      const termsChanged = row.installed_price_model !== row.candidate_price_model || row.installed_price_cents !== row.candidate_price_cents;
+      checks.set(listingId, {
+        status: sourceDigest === installation.artifact_sha256 ? "current" : "update_available",
+        checked_at: checkedAt,
+        source_listing_id: row.candidate_listing_id,
+        source_artifact_sha256: sourceDigest,
+        terms_changed: termsChanged,
+      });
+    } catch { /* Invalid source bytes remain unavailable; never treat them as an update. */ }
+  }
+  return checks;
+}
 
 app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c => {
   const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");

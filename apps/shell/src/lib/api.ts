@@ -2542,6 +2542,13 @@ export interface SpaceTemplateInstallationRecord {
   error_code: string | null;
   created_at: string;
   updated_at: string;
+  source_update?: {
+    status: "current" | "update_available" | "source_unavailable" | "unknown_legacy";
+    checked_at: string;
+    source_listing_id: string | null;
+    source_artifact_sha256: string | null;
+    terms_changed: boolean | null;
+  };
 }
 
 export function listSpaceTemplateInstallations(spaceId: string, session: SessionCredentials): Promise<{ installations: SpaceTemplateInstallationRecord[] }> {

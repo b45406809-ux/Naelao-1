@@ -629,6 +629,17 @@ export default function SpacesPage() {
                 <dt>Artifact SHA-256</dt><dd style={{ margin: 0, fontFamily: "monospace" }}>{record.artifact_sha256}</dd>
                 <dt>Marketplace listing</dt><dd style={{ margin: 0 }}>{record.listing_id ?? "Unknown for this legacy installation"}</dd>
                 <dt>Setup schema / revision</dt><dd style={{ margin: 0 }}>{record.setup_schema_version ?? "Not recorded"} / {record.setup_revision}</dd>
+                <dt>Latest source check</dt><dd style={{ margin: 0 }}>
+                  {record.source_update?.status === "current" ? "Installed source is current" :
+                    record.source_update?.status === "update_available" ? "A newer signed listing is available for review" :
+                      record.source_update?.status === "unknown_legacy" ? "Unknown for this legacy installation" : "Current source could not be verified"}
+                  {record.source_update?.checked_at ? ` · checked ${new Date(record.source_update.checked_at).toLocaleString()}` : ""}
+                </dd>
+                {record.source_update?.status === "update_available" && <>
+                  <dt>New source listing</dt><dd style={{ margin: 0 }}>{record.source_update.source_listing_id ?? "Unavailable"}</dd>
+                  {record.source_update.source_artifact_sha256 && <><dt>New source SHA-256</dt><dd style={{ margin: 0, fontFamily: "monospace" }}>{record.source_update.source_artifact_sha256}</dd></>}
+                  {record.source_update.terms_changed && <><dt>Listing terms</dt><dd style={{ margin: 0 }}>Price or license terms changed; review before any update.</dd></>}
+                </>}
                 <dt>Required extensions</dt><dd style={{ margin: 0 }}>{record.required_extension_ids.length ? record.required_extension_ids.join(", ") : "None recorded"}</dd>
                 <dt>Generated projects</dt><dd style={{ margin: 0 }}>{record.project_ids.length ? record.project_ids.join(", ") : "None recorded"}</dd>
                 <dt>Created</dt><dd style={{ margin: 0 }}>{new Date(record.created_at).toLocaleString()}</dd>
@@ -636,7 +647,7 @@ export default function SpacesPage() {
                 {record.error_code && <><dt>Failure code</dt><dd style={{ margin: 0 }}>{record.error_code}</dd></>}
               </dl>
             </section>)}
-            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>This is the recorded installed artifact. Latest source and update availability have not been checked. No automatic update or uninstall has been performed.</p>
+            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>Each view checks the newest published, signed listing for this publisher and blueprint. A newer listing needs a separate review of its license, price, permissions and setup migration. This read-only check does not update or uninstall the installation.</p>
           </div>}
       </Modal>
       <Toast toast={toast} />
