@@ -16,6 +16,7 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
+import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
 import { updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
@@ -494,6 +495,7 @@ export function ChannelConnect({
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
+  const [settingsOnlyInstallations, setSettingsOnlyInstallations] = React.useState<ContainerInstallation[]>([]);
   const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
   const [runtimeSlotLimit, setRuntimeSlotLimit] = React.useState<number | null>(null);
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState<string | null>(null);
@@ -547,9 +549,9 @@ export function ChannelConnect({
   }, [canvasManifestDraft]);
 
   React.useEffect(() => {
-    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
+    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
     let cancelled = false;
-    setExtensionInstallations([]); setOtherProjectInstallations([]);
+    setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]);
     setExtensionsLoading(true);
     setExtensionLoadError(null);
     Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true), listExtensionPublisherKeys(spaceId, session)])
@@ -560,8 +562,17 @@ export function ChannelConnect({
         const channelInstances = new Set(items.map(item => item.instance_id));
         setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
           && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        setSettingsOnlyInstallations(installed.installations.filter(item => {
+          const { instance, manifest } = item;
+          const capabilities = new Set(manifest.capabilityRequirements ?? []);
+          const permissions = new Set(manifest.declaredPermissions ?? []);
+          const hasCanvasDashboard = manifest.bundle?.primitives?.some(primitive => primitive.kind === "canvas") ?? false;
+          return instance.project_id === projectId && (instance.scope === "PROJECT_BOUND" || instance.scope === "PROJECT_SHARED")
+            && instance.status === "active" && Boolean(instance.instance_id) && Boolean(manifest.settingsSchema) && !hasCanvasDashboard
+            && capabilities.has("extension.settings.read") && permissions.has("extension.settings.read");
+        }));
       })
-      .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
+      .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
       .finally(() => { if (!cancelled) setExtensionsLoading(false); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session, canManage]);
@@ -928,6 +939,23 @@ export function ChannelConnect({
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,
               version: item.manifest.bundle.version, release_version: item.instance.release_version ?? null,
               permissions: item.manifest.declaredPermissions ?? [], capabilities: item.manifest.capabilityRequirements ?? [] }} />}
+          </div>;
+        })}
+      </details>}
+      {projectId && canManage && settingsOnlyInstallations.length > 0 && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Configuration for non-Canvas extensions ({settingsOnlyInstallations.length})</summary>
+        <p style={{ fontSize: 11.5, color: "var(--text3)" }}>These fields use the installed extension's declared schema. Values are checked and stored by the host for this installation; manage provider credentials in Connections.</p>
+        {settingsOnlyInstallations.map(item => {
+          const instanceId = item.instance.instance_id;
+          const schema = item.manifest.settingsSchema;
+          if (!instanceId || !schema) return null;
+          const capabilities = new Set(item.manifest.capabilityRequirements ?? []);
+          const permissions = new Set(item.manifest.declaredPermissions ?? []);
+          return <div key={instanceId} style={{ borderTop: "1px solid var(--border)", paddingTop: 8, marginTop: 8 }}>
+            <strong style={{ fontSize: 11.5 }}>{item.manifest.id ?? item.instance.extension_id} · {item.instance.instance_key ?? "default"}</strong>
+            <ExtensionSettingsForm spaceId={spaceId} appId={item.manifest.id ?? item.instance.extension_id} schema={schema} session={session}
+              canConfigure={capabilities.has("extension.settings.configure") && permissions.has("extension.settings.configure")}
+              projectScope={{ projectId, installationId: instanceId }} />
           </div>;
         })}
       </details>}
