@@ -2,6 +2,28 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; all project archive callers retire coordination)
+
+- Codes `1b9146f1`, `6d5f442c` and `307c8445` are pushed to `origin/Mcbt5s-Backup-2`. New
+  request-to-use rows are conditionally inserted only while the target card remains published.
+  Unpublishing removes the card, its share/wake policy, policy-use rows, and pending requests/events
+  directed at it; accepted proposals remain. The project `DELETE` workflow and generic owner/admin
+  project `PATCH {status:"archived"}` path both retire project-linked cards, requests, events and
+  policies. If D1 retirement fails after archival, both return a retryable 503; the delete workflow
+  does not begin workspace cleanup. The event FKs cascade receipts, delivery rows and wake records.
+- Focused Spaces coordination/deletion/pagination suites pass **9/9**, Spaces typecheck passes, and
+  `git diff --check` passes. The cascade test uses the migration's actual composite foreign-key
+  behavior in local SQLite. No deployed D1, cross-service recovery or live acceptance ran.
+- §10 remains PARTIAL for configured sharing/default policy, private publication approval,
+  extension/resource dependency links and transfer/disable semantics, reservation/cardinality policy,
+  expiry and broad non-disclosure acceptance. The blackboard card model is project-scoped and has no
+  per-extension dependency provenance; disabling one extension cannot safely withdraw an entire
+  project's card. Accepted-request retention after unpublishing is behavior, not approved policy.
+- Exact next task: add an end-to-end local authorization test proving project membership revocation
+  blocks existing card/request/event reads and mutations immediately, then continue remaining §10
+  policy and request-to-use gaps. Keep S2–S9/U01–U12 gates, disabled rollouts and live evidence
+  distinctions unchanged; preserve `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; §10 project coordination lifecycle `1b9146f1` pushed)
 
 - New request-to-use rows and pending events are inserted only if the target remains published at

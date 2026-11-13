@@ -2,18 +2,20 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §10 project coordination lifecycle code `1b9146f1` is
-pushed to `origin/Mcbt5s-Backup-2`. New requests are inserted only while the target card remains
-published; unpublishing atomically removes the card, its policies and pending incoming requests/events;
-project archival retires all project-linked coordination state before workspace cleanup. A failed D1
-retirement leaves the project archived, returns a retryable 503 and does not start workspace cleanup.
-Accepted requests are retained when a card is merely unpublished and removed when either project is
-archived. Local evidence: focused Spaces coordination/deletion/pagination tests **8/8**, Spaces
-typecheck and `git diff --check`; these use local SQLite/Worker mocks, not deployed D1. Code does not
-resolve broader retention, sharing, uniqueness or cross-service transaction policy.
-Exact next task: trace extension disable/transfer/uninstall and project membership/access-revocation
-callers against the new retirement path; implement the next independently supported lifecycle link,
-then continue the remaining §10 policy and request-to-use contract without inventing defaults.
+Current continuation checkpoint (2026-11-13): §10 project coordination lifecycle codes `1b9146f1`,
+`6d5f442c` and `307c8445` are pushed to `origin/Mcbt5s-Backup-2`. New requests are inserted only
+while the target card remains published; unpublishing atomically removes its card, policy state and
+pending incoming requests/events. Both project deletion and the ordinary owner/admin `PATCH
+status=archived` route retire linked coordination state. A failed D1 retirement leaves the project
+archived and returns retryable 503; deletion also stops before workspace cleanup. Event deletion
+cascades read receipts, delivery rows and wake records under the actual migration foreign keys.
+Accepted requests remain after unpublishing and are removed on project archive. Local evidence:
+focused Spaces coordination/deletion/pagination tests **9/9**, Spaces typecheck and `git diff --check`;
+these are local SQLite/Worker mocks, not deployed D1. Broader retention, sharing, uniqueness and
+cross-service transaction policy remain unresolved.
+Exact next task: add an end-to-end local authorization test proving project membership revocation
+blocks existing card/request/event reads and mutations immediately, then continue the remaining §10
+policy and request-to-use gaps without inventing defaults.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
