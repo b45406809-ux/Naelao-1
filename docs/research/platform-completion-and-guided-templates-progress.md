@@ -2,16 +2,36 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `bfc22ce6` was pushed to `origin/Mcbt5s-Backup-2`. The v2 host route,
-SDK, Router allowlist and owner Settings form support amendment of existing facts with a fresh
-disclosure preview, explicit confirmation, expected-version fencing, version increment and a new
-approver stamp; the original author/provenance remains. Stale revisions return 409. Local checks:
-Spaces focused suite **19/19**, SDK **4/4**, Router **45/45**, Spaces/SDK/Shell/Router typechecks and
-`git diff --check`. No deployed DO or live acceptance occurred. §10 remains PARTIAL for policy,
-private publication approvals, extension/dependency lifecycle, reservations, expiry and
-non-disclosure. Exact next task: add durable `last_confirmed_at` on explicit publish/amend, expose the
-timestamp without the confirmer ID and backfill older explicitly approved facts; then continue
-remaining §10 lifecycle/policy gaps without inventing defaults.
+Updated 2026-11-13 after code `08c9e4b9` was pushed to `origin/Mcbt5s-Backup-2`. Project Canvas
+extensions now use an exact installation-scoped settings API and host-rendered schema form. Project
+read/manage authority, declared permissions/capabilities and submitted values are checked server
+side; updates use optimistic revisions. PROJECT_USER installs are visible only to their owner,
+while readable members cannot change PROJECT_BOUND/PROJECT_SHARED settings without project manage
+authority. The iframe RPC admits only `/api/settings` on this project path. Local evidence: Spaces
+route/DO tests **7/7**, Router product-path **47/47**, Spaces/Router/Shell typechecks and
+`git diff --check`. No deployed installation or provider acceptance occurred.
+
+This implements installation settings plumbing only. §9.5 remains PARTIAL for customer voice-agent
+runtime, verified provider catalogs/rates, safe browser tests and publish, knowledge/tools, signed
+package composition, call receipts and live acceptance. The separate owner phone dashboard already
+has bounded action/event APIs but its UI reads only the first page. §10 coordination and P01/P02/P03/
+P04 gaps remain as recorded in the managed-services ledger; no live evidence is inferred.
+
+§10 remains PARTIAL for owner-configured posture/publication authority, extension and dependency
+lifecycle, reservations/cardinality, expiry, concurrency and broad non-disclosure. P01/P02 local
+release controls remain fail-closed on actual isolated resources, ownership/existence receipts,
+operator-attested D1 baselines and deployed acceptance. P03/P20 recovery and P04 restore code is
+present, with the separately recorded grace/restriction, refund/accounting/operator-identity, archive
+limits and external acceptance gaps. §5 already has signed source-update detection, setup-schema and
+cost disclosures, encrypted draft/resume and owner installation status. The status screen does not
+apply updates. A safe update/uninstall contract for generated projects, extensions, provider
+resources, license state and retained receipts has not been decided, so update mutation and deletion
+remain unimplemented product/lifecycle work rather than credential blocks.
+
+Exact next task: connect the owner phone dashboard's existing bounded `phone-actions` and
+`phone-events` cursor responses to separate load-older controls, keeping operation pages bounded and
+Space/owner scoped. Do not equate provider API cost observations with invoices or label this feature
+as the customer voice-agent runtime. Then continue remaining §9.5 requirements in dependency order.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting

@@ -2,24 +2,35 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; versioned owner/admin fact amendments)
+### Active continuation (2026-11-13; project extension settings `08c9e4b9` pushed)
 
-- Code `bfc22ce6` is pushed to `origin/Mcbt5s-Backup-2`. Owner/admins can amend a v1 or v2 registry
-  fact through the v2 route after previewing and explicitly confirming the selected audience. The
-  host validates the draft, compares `expected_version`, increments the version, stamps the new
-  approver, and preserves original `created_by` and provenance. Stale writes return 409. SDK and
-  Router path authorization reach the owner Settings form's Edit flow; the panel refreshes the row
-  using the returned revision.
-- Local evidence: Spaces coordination/deletion/privacy suite **19/19**, SDK contract **4/4**, Router
-  product-path suite **45/45**, Spaces/SDK/Shell/Router typechecks, and `git diff --check`. No deployed
-  DO, live multi-user or production D1 acceptance ran.
-- §10 remains PARTIAL for posture/default/inheritance decisions, private-project publication approvals,
-  extension/resource dependency lifecycle, uniqueness and reservation rules, expiry and broad
-  non-disclosure. Amendments do not change access rights and cannot create an enforced singleton.
-- Exact next task: persist `last_confirmed_at` on explicit publish/amend, expose that timestamp without
-  exposing the confirmer ID, and backfill existing entries from their initial explicitly approved
-  creation; then continue the remaining §10 lifecycle and policy gaps. Preserve all managed-service
-  gates and `infra/scripts/__pycache__/`.
+- Code `08c9e4b9` is pushed to `origin/Mcbt5s-Backup-2`. Project Canvas settings now flow through an
+  exact installation-scoped product route to SpaceDO. Current project read/manage authorization is
+  rechecked at the gateway; SpaceDO requires declared settings read/configure capability and
+  permission, validates values with the installed schema, and persists with optimistic revision
+  fencing. PROJECT_USER installations are visible only to their owner; for PROJECT_BOUND and
+  PROJECT_SHARED installations, readable members may review settings while only project managers
+  can write. The Shell host form and the iframe's narrowly scoped `/api/settings` RPC use this path.
+- Local evidence: Spaces route/DO tests **7/7**, Router product-path tests **47/47**, Spaces/Router/
+  Shell typechecks, and `git diff --check`. No deployed installation or provider acceptance ran.
+- This closes per-installation settings plumbing only. It does not establish a customer voice-agent
+  runtime or provide voice catalogs, rates, test/publish operations, knowledge/tools, call receipts or
+  provider invoice reconciliation. The owner phone panel remains a distinct supported feature.
+- The managed-services S2–S9/U01–U12 matrix remains the status source of truth. S2 is
+  IMPLEMENTED_LOCAL for supported provider lanes; unsupported U05/U06 trusted runtime allocation,
+  observation, writer admission/drain/handoff remain non-credential platform-contract gaps. Other
+  partial rows retain only their recorded product/legal decisions, missing provider feeds/evidence,
+  external consumer durability and deployed/live acceptance. Keep rollout disabled.
+- §10 remains PARTIAL for owner-configured posture and publication authority, extension/dependency
+  lifecycle, reservation/cardinality, expiry, concurrency and broad non-disclosure. The published
+  template lifecycle status path is read-only and signed-source-checked; there is no agreed contract
+  for removing generated projects, extensions, provider resources, licenses or retained receipts.
+- Exact next task: connect the owner phone panel to its already bounded `phone-actions` and
+  `phone-events` cursor responses with separate load-older controls, preserving bounded pages and
+  owner/Space scoping. Keep carrier API observations distinct from invoices and customer voice-agent
+  runtime. Then continue §9.5 against supported source contracts. The S2–S9/U01–U12 matrix remains
+  the managed-services status source; its named platform-contract, policy, external evidence and
+  deployed/live acceptance gaps remain open. Preserve `infra/scripts/__pycache__/` and rollout flags.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

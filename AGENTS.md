@@ -2,20 +2,28 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §10 codes `1b9146f1`, `6d5f442c`, `307c8445`,
-`52f52e16`, `fb988c26`, `82e36d16` and `bfc22ce6` are pushed to `origin/Mcbt5s-Backup-2`. Public
-cards are Space-scoped; members can request collaboration, but accepting a proposal does not grant
-project membership or edit rights. Project unpublish/archive retires related blackboard state, and
-current private-project ACLs are rechecked on reads and mutations. The owner/admin amendment API now
-uses explicit audience confirmation and expected-version CAS, preserves author/provenance, and stamps
-the new approver. The SDK, Router, and existing Settings panel reach this operation. Local evidence:
-Spaces coordination/deletion/privacy suites **19/19**, SDK contract **4/4**, Router product-path
-tests **45/45**, Spaces/SDK/Shell/Router typechecks, and `git diff --check`. No deployed D1 or live
-multi-user acceptance ran. Collaboration defaults, expiry/dependency rules, uniqueness, cross-service
-transaction policy and broad non-disclosure acceptance remain open.
-Exact next task: add a durable `last_confirmed_at` receipt to coordination facts, set it only on
-explicit publish/amend confirmation, expose the timestamp without the confirming user's ID, and test
-legacy backfill. Then continue the remaining §10 lifecycle and policy gaps without inventing defaults.
+Current continuation checkpoint (2026-11-13): code `08c9e4b9` is pushed to
+`origin/Mcbt5s-Backup-2`. Active Project Canvas installations can read and persist settings through
+an exact project/installation-scoped host route. The host rechecks project read/manage authority,
+extension capabilities and permissions, validates values against the installed schema, and uses
+optimistic revisions. PROJECT_USER settings are limited to the owning user; readable non-managers
+can inspect shared project settings but cannot change them. The Shell exposes the host form and only
+allows the project's `/api/settings` RPC through this route. Local evidence: Spaces route/DO tests
+**7/7**, Router product-path tests **47/47**, Spaces/Router/Shell typechecks and `git diff --check`.
+No deployed installation or provider acceptance ran. This closes per-installation configuration
+plumbing only. §9.5 remains PARTIAL for customer voice runtime, provider catalogs/rates, safe test and
+publish flows, package composition, operational call receipts and live acceptance. §10 remains
+PARTIAL for configurable posture/publication authority, extension/dependency lifecycle,
+reservation/cardinality, expiry, concurrency and broad non-disclosure. P01/P02 remain fail-closed on
+actual resource isolation, ownership receipts, operator-attested D1 baselines and deployed
+acceptance. Template update/uninstall effects on generated projects, extensions, provider resources,
+licenses and retained receipts have no agreed product contract; no destructive action is inferred.
+Exact next task: wire the owner phone dashboard's existing bounded `phone-actions` and `phone-events`
+cursor responses into separate load-older controls, so earlier recorded activity is reachable without
+unbounded reads. Keep provider API cost observations distinct from invoice reconciliation, and do not
+represent this phone panel as a customer voice-agent dashboard. Then continue the remaining §9.5 work
+against supported source contracts. Preserve `infra/scripts/__pycache__/` and keep all rollouts
+disabled.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
