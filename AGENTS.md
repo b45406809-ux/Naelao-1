@@ -14,18 +14,24 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-13
 
-Coordination lifecycle audit history is pushed to `origin/Mcbt5s-Backup-2` as
-`d208ec02cdc047b455759d6887ed69e3abc680aa`. The append-only SpaceDO event table records actor/role,
-action, versions, audience, expiry and status without fact text; mutations and audit writes are
-atomic. The API and Settings history view are owner/admin-only. Optional owner-selected expiry
-(`f0d38035`) and owner/admin creator/approver/provenance metadata (`e8f77f7f`) remain in place.
-Verification: SDK coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/
-Shell typechecks and `git diff --check`. Local SQLite/Worker checks only; no deployed multi-user or
-live acceptance. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+P08's bounded video-frame code is pushed to `origin/Mcbt5s-Backup-2` as
+`87374fc2da4ae44a4c361ea145109308782571e5`. It adds a separate default-off owner setting, task-owned
+video question operation, scoped MediaSandbox extraction at 0/10/20 seconds, 6 MiB input, 1 MiB and
+20 MP per frame, three-frame/30-second coverage disclosure, and an atomic shared rolling 20-call
+Space quota with existing image OCR. The planner classifier and Shell settings caller are connected.
+Local evidence: Agents focused tests **69/69**, SDK tests **36/36**, Agents/SDK/Shell typechecks,
+container JavaScript syntax, `git diff --check`, and a local 2-second FFmpeg sample that returned only
+the frame at 0 seconds. No deployed Container, Cloudflare Workers AI billing, or live acceptance ran;
+P08 remains PARTIAL for deployed/provider acceptance. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-Code `e97a2841` and follow-up `fbfac9caa26913bc18ac9871b8a3215dea9d3642` are pushed. The member-authorized human page now shows runtime primitive, installation ID/key and declared exact dependency pins. The actor/project-grant-checked assistant inventory returns all valid active `PROJECT_BOUND`/`PROJECT_SHARED` packages in the current project, including packages with no workflow; tests exclude Space-shared, other-project and malformed entries. Verification: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`.
-
-The remaining §10.1 maintenance proposal/delegation path is not coded. Current project settings and lifecycle writes require project-management access; no assistant proposal API exists. Which actors may approve delegated maintenance and which actions can be proposed still needs a product contract; no authority was widened. Exact next action: implement bounded video-frame extraction in the existing task-scoped MediaSandbox and connect authorized frame questions to Workers AI behind a separate owner-disabled-by-default video-analysis setting, with per-Space rate/byte/frame limits and tests. Keep rollout disabled and preserve the Python cache.
+S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 keep their ledgered partial code,
+runtime, policy/feed and acceptance gaps. §10 maintenance proposals/delegation remain uncoded because
+approver authority and allowed actions need a product contract. Exact next action: make the current
+project channel-extension uninstall sequence durable and retryable across pause/drain, Agents state
+cleanup, SpaceDO removal and ambiguous responses; keep external provider-resource disconnect and
+broad package deletion outside this slice. This closes only a local P05/P10/P23 lifecycle gap. Keep
+rollouts disabled and preserve the Python cache.
 
 ## Recent completed-work record
 

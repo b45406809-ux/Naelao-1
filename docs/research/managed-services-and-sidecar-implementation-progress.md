@@ -3,6 +3,11 @@
 
 ## Current checkpoint — 2026-11-13
 
+Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
+`origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
+with fixed frame/time limits and shared daily AI-call quota. Verification and live-evidence limits are
+in the platform ledger and `AGENTS.md`. This does not change the managed-services row statuses.
+
 Code `d208ec02cdc047b455759d6887ed69e3abc680aa` is pushed to `origin/Mcbt5s-Backup-2` after fetch
 confirmed the remote was an ancestor. It adds atomic metadata-only coordination publish/amend/revoke
 events, an owner/admin paged history API and a Settings history view; fact labels/descriptions are not
@@ -11,10 +16,16 @@ stored in the events. Optional expiry and owner/admin actor metadata remain in `
 SDK/Spaces/Shell typechecks and `git diff --check`; no deployed or live multi-user acceptance.
 
 S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their ledgered code,
-platform, policy or live-evidence gaps; U05/U06 runtime producers/contracts are not credential gates.
-Platform §10 remains PARTIAL. Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` are pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks. The member-visible Space-shared extension page shows primitive runtime, installation ID/key, version, scope/status and declared exact dependency pins. The assistant inventory rechecks the actor's project grant and returns all valid active project-bound/shared packages, including packages without workflows; Space-shared, other-project and malformed records are excluded. Verification: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`; local checks only.
+platform, policy/feed or live-evidence gaps; U05/U06 runtime producers/contracts are not credential
+gates. Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` remain pushed: the human
+Space-shared page shows runtime and dependency metadata, and the assistant inventory returns valid
+active project packages after actor/project-grant checks. Local verification is recorded above.
 
-S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their row-level code, runtime, policy/feed and live-evidence gaps. §10 remains PARTIAL. Maintenance proposals/delegation are uncoded; manager-only settings/lifecycle routes exist, but who can authorize assistant proposals and which actions to delegate needs product direction. Exact next action: implement owner-disabled-by-default bounded video-frame extraction and vision analysis on the existing task-scoped MediaSandbox/Workers AI path; reuse the current attachment ID/Space checks, add a distinct owner setting and bounded rate/frame/byte checks. Keep rollouts disabled and preserve the Python cache.
+Platform §10 remains PARTIAL. Maintenance proposals/delegation are uncoded because approver authority
+and allowed actions need a product contract. Exact next action: make the existing project
+channel-extension uninstall sequence durable and retryable across pause/drain, Agents state cleanup,
+SpaceDO removal and ambiguous responses; do not disconnect external provider resources or broaden
+deletion. Keep rollouts disabled and preserve the Python cache.
 
 ## Prior checkpoint details
 

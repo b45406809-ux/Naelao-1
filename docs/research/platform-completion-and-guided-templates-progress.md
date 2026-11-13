@@ -11,7 +11,26 @@ coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/
 
 Code `e97a2841` and `fbfac9caa26913bc18ac9871b8a3215dea9d3642` are pushed after fetch and ancestry checks. The member-authorized Space-shared extension page shows runtime primitive, installation ID/key, version, scope, status and declared exact dependency pins. The assistant's project-grant-checked inventory now returns every valid active project-bound/shared package, including those without workflows, while excluding Space-shared, other-project and malformed records. Local evidence: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`; no deployed or live acceptance.
 
-§10 remains PARTIAL for collaboration posture/private-project authority, delegated maintenance proposals, singleton reservations/concurrency and broad non-disclosure acceptance. Project settings/lifecycle changes are manager-authorized; assistant proposal authority and allowable delegated actions need a product contract and remain unchanged. Exact next action: close P08's uncoded bounded video-frame path by extending task-scoped MediaSandbox extraction and the existing Workers AI image question path behind a distinct owner-disabled-by-default setting, with byte/frame/rate bounds and local tests. Do not enable rollout.
+P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to `origin/Mcbt5s-Backup-2` after
+fetching and confirming the previous remote tip was an ancestor. It adds a distinct default-off owner
+setting and reachable `attachment.describe_video` caller. The host accepts only exact task-owned
+MP4/WebM/QuickTime/Matroska attachments in a non-air-gapped Space with egress allowed; the isolated
+MediaSandbox extracts at most JPEG frames sampled at 0/10/20 seconds from the first 30 seconds. Input
+is capped at 6 MiB, each frame at 1 MiB and 20 MP, output at three frames/5 MiB, and frame calls reserve
+atomically from the existing 20-call rolling Space-day OCR/visual-analysis quota. UI and planner
+disclose sampled-only coverage and unknown per-video image cost. Local evidence: Agents tests **69/69**,
+SDK tests **36/36**, Agents/SDK/Shell typechecks, container syntax, `git diff --check`, and a local
+FFmpeg 2-second clip check (one frame at 0s; no frames at 10s/20s). No deployed Container, Workers AI
+billing, or live provider acceptance ran. P08 remains PARTIAL until deployed/provider acceptance; keep
+the setting off and rollouts disabled.
+
+§10 remains PARTIAL for collaboration posture/private-project authority, delegated maintenance
+proposals, singleton reservations/concurrency and broad non-disclosure acceptance. Project
+settings/lifecycle changes are manager-authorized; assistant proposal authority and allowable
+delegated actions need a product contract and remain unchanged. Exact next action: make the existing
+project channel-extension uninstall sequence durable and retryable across pause/drain, Agents state
+cleanup, SpaceDO removal and ambiguous responses; keep provider-resource disconnection and broader
+package deletion outside this implementation slice. Do not enable rollout.
 
 ## Previous checkpoint details
 
@@ -843,7 +862,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin, same-tenant signed dependency import and installation with digest/revocation checks and retry; `edf08814` resumes destination install review after reload. Binary/image/audio reads, broader customer/provider journeys, general update/uninstall effects, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
-| P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
+| P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused updates for same-publisher version-only static Canvas/channel-code packages, with signed artifact recheck, active-work drain and durable receipt; `15a04f7e` adds runtime-work admission/drain. Gadget/schema/data migration preview/recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, revocation/uninstall effects, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
