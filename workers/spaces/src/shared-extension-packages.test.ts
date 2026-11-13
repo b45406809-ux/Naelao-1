@@ -40,9 +40,13 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     if (path === "/extension-package-release") return Response.json({ release });
     if (path === "/extension-installations") return Response.json({ installations: installedRows.filter(row => row.status !== "removed") });
     if (path === "/extensions") {
-      const body = await request.clone().json() as { manifest: unknown; instanceKey: string; scope: string };
-      installedRows.push({ instance_id: "install-voice", extension_id: release.extension_id, instance_key: body.instanceKey,
-        scope: body.scope, status: "staging", release_version: release.version, manifest: body.manifest });
+      const body = await request.clone().json() as { manifest: unknown; instanceKey: string; scope: string; approvedSharedFilesystem?: unknown[] };
+      const prior = installedRows.find(row => row.instance_id === "install-voice");
+      if (prior) Object.assign(prior, { status: "staging", release_version: release.version, manifest: body.manifest,
+        approvedSharedFilesystem: body.approvedSharedFilesystem });
+      else installedRows.push({ instance_id: "install-voice", extension_id: release.extension_id, instance_key: body.instanceKey,
+        scope: body.scope, status: "staging", release_version: release.version, manifest: body.manifest,
+        approvedSharedFilesystem: body.approvedSharedFilesystem });
       return Response.json({ installationId: "install-voice", release: {
         version: release.version, artifactSha256: release.artifact_sha256,
         hostSignature: await signHmac(JSON.stringify([release.extension_id, release.version, release.manifest_json, release.artifact_sha256]), secret),
@@ -83,7 +87,7 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     } : null },
     AGENTS_WORKER: { fetch: async () => Response.json({ valid: true }) },
   } as never;
-  return { env, spaceRequests, microAppRequests, spaceStub, microAppStub, release };
+  return { env, spaceRequests, microAppRequests, spaceStub, microAppStub, release, installedRows };
 }
 
 async function signedRequest(path: string, method = "GET", body?: unknown, role = "owner") {
@@ -217,6 +221,24 @@ describe("signed Space-shared extension packages", () => {
     expect(await response.json()).toMatchObject({ error_code: "extension_package_canvas_initialization_failed" });
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/abort")).toBe(true);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);
+  });
+
+  it("resumes the exact staged pin after a lost install response and preserves prior grants", async () => {
+    const h = harness();
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
+    const priorGrant = { path: "/space/shared/customer-data/", access: "READ" as const };
+    h.installedRows.push({ instance_id: "install-voice", extension_id: "ext_customer_voice", project_id: null, scope: "SPACE_SHARED",
+      instance_key: "default", status: "staging", release_version: "1.2.0", publisher_key_id: "a".repeat(64),
+      publisher_attestation_valid: true, manifest, activation_summary: { approved_shared_filesystem: [priorGrant] } });
+    const response = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", approved_shared_filesystem: [] }), h.env);
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(201);
+    expect(await response.json()).toMatchObject({ installation_id: "install-voice" });
+    const stage = h.spaceRequests.find(request => new URL(request.url).pathname === "/extensions");
+    expect(await stage?.json()).toMatchObject({ approvedSharedFilesystem: [priorGrant], deferActivation: true });
+    expect(h.microAppRequests).toHaveLength(1);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(true);
+    expect(h.installedRows[0]?.status).toBe("active");
   });
 
   it("fails closed when a signed package dependency is not installed at its exact pin", async () => {

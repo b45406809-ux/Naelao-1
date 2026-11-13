@@ -1590,18 +1590,26 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
   if (!collisions.ok) return { ok: false, error: "extension_installation_lookup_unavailable" };
   const installed = await readBoundedResponseJson<{ installations?: Array<{ instance_id?: string; extension_id: string; instance_key?: string; scope: string;
     status: string; project_id: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean;
-    release_version?: string | null; manifest_sha256?: string | null; manifest?: ReturnType<typeof validateExtensionManifest> }> }>(collisions, 2 * 1024 * 1024);
+    release_version?: string | null; manifest_sha256?: string | null; manifest?: ReturnType<typeof validateExtensionManifest>;
+    activation_summary?: { approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } }> }>(collisions, 2 * 1024 * 1024);
   const dependencyClosure = await resolveSpaceExtensionDependencies(env, tenantId, spaceId, manifest, "SPACE_SHARED", undefined, installed.installations ?? []);
   if (!dependencyClosure.resolved) return { ok: false, error: `extension_package_${dependencyClosure.error}` };
   const prior = installed.installations?.find(row => row.extension_id === extensionId && row.instance_key === instanceKey
     && row.scope === "SPACE_SHARED" && ["active", "disabled", "staging"].includes(row.status ?? ""));
+  let approvedGrants = approvedSharedFilesystem;
   if (prior) {
     if (prior.release_version === version && prior.status === "active" && prior.instance_id) return { ok: true, installationId: prior.instance_id };
-    return { ok: false, error: "extension_shared_installation_update_requires_review" };
+    if (prior.release_version !== version || prior.status !== "staging" || !prior.instance_id)
+      return { ok: false, error: "extension_shared_installation_update_requires_review" };
+    // A lost response or transient failure may leave the deterministic installation in staging.
+    // Resume only that exact pin, preserving its already approved grants and reinitializing the
+    // same app actors idempotently before the host activation check.
+    approvedGrants = prior.activation_summary?.approved_shared_filesystem ?? [];
   }
   const appIds = new Set<string>();
   for (const row of installed.installations ?? []) {
     if (row.scope !== "SPACE_SHARED" || !["active", "disabled", "staging"].includes(row.status ?? "")) continue;
+    if (row.instance_id === prior?.instance_id) continue;
     const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
     for (const primitive of row.manifest?.bundle?.primitives ?? []) if (primitive.kind === "canvas" || primitive.kind === "gadget") appIds.add(`${prefix}${primitive.id}`);
     for (const gadget of row.manifest?.gadgets ?? []) if (gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3) appIds.add(`${prefix}${gadget.id}`);
@@ -1613,7 +1621,7 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
   const manifestJson = release.manifest_json;
   const installedResponse = await spaceStub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy, tenantId, spaceId, scope: "SPACE_SHARED", instanceKey,
-      approvedSharedFilesystem, gatekeeperCapabilities: manifest.capabilityRequirements, artifactSha256: artifactDigest,
+      approvedSharedFilesystem: approvedGrants, gatekeeperCapabilities: manifest.capabilityRequirements, artifactSha256: artifactDigest,
       publisherId: release.publisher.id, publisherKeyId: release.publisher.key_id,
       publisherSignature: release.publisher.signature, publisherPayloadSha256: release.publisher.payload_sha256, deferActivation: true,
     }) }));
