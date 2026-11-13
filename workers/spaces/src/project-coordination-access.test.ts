@@ -38,6 +38,16 @@ describe("project coordination access after membership revocation", () => {
       ('project-a','user-a','viewer'),('source-a','user-a','editor'),('public-a','owner-b','owner')`);
     storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('space-a','user-a','member'),('space-a','owner-b','member')");
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const settingsManifest = {
+      id: "ext_public_settings", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure"],
+      capabilityRequirements: ["extension.settings.read", "extension.settings.configure"], gadgets: [], daemons: [], commands: [],
+      settingsSchema: { schemaVersion: 1, fields: [{ id: "routing_note", type: "text", label: "Routing note", maxLength: 80 }] },
+    };
+    const installedSettings = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: settingsManifest, installedBy: "owner-b", tenantId: "tenant-a", spaceId: "space-a", scope: "PROJECT_BOUND", projectId: "public-a",
+        gatekeeperCapabilities: settingsManifest.capabilityRequirements }) }));
+    expect(installedSettings.status).toBe(201);
+    const { installationId } = await installedSettings.json() as { installationId: string };
     const env = {
       ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: platformDb,
       SPACE_DO: { idFromName: (name: string) => name, get: () => space },
@@ -71,6 +81,10 @@ describe("project coordination access after membership revocation", () => {
     await expect(accepted.json()).resolves.toMatchObject({ id: "public-proposal", status: "accepted" });
     const extensionLifecycle = await call("/spaces/space-a/projects/public-a/extension-installations/untrusted-instance/lifecycle", "PATCH", { action: "disable" });
     expect(extensionLifecycle.status).toBe(403);
+    const extensionSettings = await call(`/spaces/space-a/projects/public-a/extension-installations/${encodeURIComponent(installationId)}/settings`, "PATCH", {
+      settings: { routing_note: "changed without project authority" }, revision: 0,
+    });
+    expect(extensionSettings.status).toBe(403);
     const stillCannotManage = await call("/internal/spaces/space-a/blackboard/cards/public-a", "PUT", {
       summary: "Changed without grant", capabilities: [], evidence: [],
     });
