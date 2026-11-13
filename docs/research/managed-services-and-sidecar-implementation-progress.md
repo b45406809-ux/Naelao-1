@@ -1,8 +1,27 @@
 # Managed services and sidecar implementation progress
 
-## Current checkpoint
 
-### Active continuation (2026-11-13; P24 package import and reload recovery pushed)
+## Current checkpoint — 2026-11-13
+
+Code `d208ec02cdc047b455759d6887ed69e3abc680aa` is pushed to `origin/Mcbt5s-Backup-2` after fetch
+confirmed the remote was an ancestor. It adds atomic metadata-only coordination publish/amend/revoke
+events, an owner/admin paged history API and a Settings history view; fact labels/descriptions are not
+stored in the events. Optional expiry and owner/admin actor metadata remain in `f0d38035` and
+`e8f77f7f`. Local evidence: SDK coordination **4/4**, Spaces coordination/route/migration **20/20**,
+SDK/Spaces/Shell typechecks and `git diff --check`; no deployed or live multi-user acceptance.
+
+S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their ledgered code,
+platform, policy or live-evidence gaps; U05/U06 runtime producers/contracts are not credential gates.
+Platform §10 remains PARTIAL. Source audit found the member Space-extension inventory omits runtime
+primitive, visible installation ID and dependency pins; the permission-checked assistant workflow
+inventory omits explicit scope/status and dependency pins. Exact next action: add these details to the
+existing authorized human and assistant inventory callers without widening visibility or grants,
+then continue §10.1 maintenance authority and other uncoded requirements. Preserve the Python cache;
+keep rollouts disabled.
+
+## Prior checkpoint details
+
+### Earlier continuation (2026-11-13; P24 package import and reload recovery pushed)
 
 - Code `536853b9` connects Template activation setup to the existing owner-reviewed same-tenant
   signed dependency-closure import. The owner selects an active source Space, reviews signer, version,
@@ -43,11 +62,7 @@
   creator, approver/role, provenance and revocation actor metadata. Member responses still omit actor
   fields. SDK/Spaces/Shell typechecks and the same focused suites above pass; these remain local mocks,
   not deployed multi-user evidence.
-- Exact next action: add append-only metadata-only publish/amend/revoke events with actor/role,
-  prior/new version, audience and expiry; expose history only to owner/admin and show it in Settings.
-  Do not store fact labels/descriptions or project content in audit events. Then continue §10.1–§10.6
-  and remaining independent S2–S9/U01–U12 and platform-plan gaps. Preserve
-  `infra/scripts/__pycache__/`; keep rollout disabled.
+- This earlier next action is complete in `d208ec02`; resume from the active checkpoint above.
 
 ### Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded)
 

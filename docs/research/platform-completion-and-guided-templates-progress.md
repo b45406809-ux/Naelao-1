@@ -1,8 +1,25 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint
 
-Current continuation (2026-11-13): code `536853b9` connects signed same-tenant dependency import to
+## Active checkpoint — 2026-11-13
+
+Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
+events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry
+(`f0d38035`) and owner/admin actor metadata (`e8f77f7f`) remain implemented. Local checks: SDK
+coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/Shell typechecks and
+`git diff --check`; these are local Worker/SQLite checks, with no deployed multi-user acceptance.
+
+§10 remains PARTIAL for collaboration posture/private-project authority, extension maintenance grants,
+singleton reservations/concurrency and broad non-disclosure acceptance. The source audit found the
+member Space-extension page omits runtime primitive, installation ID and dependency pins; the existing
+permission-checked assistant workflow inventory omits explicit scope/status and dependency pins. Exact
+next action: add accurate scope/runtime/instance/version/status/dependency details to these existing
+human and assistant inventories without broadening authorization, then continue §10.1 maintenance
+authority and remaining uncoded requirements. Keep rollout disabled.
+
+## Previous checkpoint details
+
+Earlier continuation (2026-11-13): code `536853b9` connects signed same-tenant dependency import to
 guided Template activation; `b646ec16` rechecks publisher revocation between package review and copy;
 `edf08814` resumes install review after reload using the destination's persisted signed release. All
 three commits are pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks. The setup UI
@@ -33,11 +50,7 @@ multi-user or live acceptance ran. §10 remains PARTIAL for configurable posture
 publication/request authority, extension ownership/dependencies, reservations, concurrency, durable
 audit history and broad non-disclosure acceptance. Code `e8f77f7f` exposes persisted creator,
 approver, approval role, provenance and revocation actor only to owner/admin v2 reads and the Settings
-lifecycle view; member responses omit these fields. Exact next action: persist append-only
-metadata-only publish/amend/revoke events with actor/role, prior/new version, audience and expiry;
-provide owner/admin history reads and a Settings view without storing labels/descriptions or project
-content. Continue the remaining §10 requirements and uncoded S2–S9/U01–U12 and platform-plan code
-gaps. Rollouts remain disabled.
+lifecycle view; member responses omit these fields. This earlier next action is complete in `d208ec02`; resume from the active checkpoint above.
 
 Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.

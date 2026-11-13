@@ -12,7 +12,29 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P24 template dependency import is pushed to
+## Active checkpoint — 2026-11-13
+
+Coordination lifecycle audit history is pushed to `origin/Mcbt5s-Backup-2` as
+`d208ec02cdc047b455759d6887ed69e3abc680aa`. The append-only SpaceDO event table records actor/role,
+action, versions, audience, expiry and status without fact text; mutations and audit writes are
+atomic. The API and Settings history view are owner/admin-only. Optional owner-selected expiry
+(`f0d38035`) and owner/admin creator/approver/provenance metadata (`e8f77f7f`) remain in place.
+Verification: SDK coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/
+Shell typechecks and `git diff --check`. Local SQLite/Worker checks only; no deployed multi-user or
+live acceptance. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+Source reconciliation for §10.1: the member-authorized Space extensions page lists only `SPACE_SHARED`
+apps and displays version/scope/status, but not runtime primitive, installation ID or dependency
+pins. The assistant's existing `workflow.extensions` tool rechecks the actor's project grant and
+lists active project workflows with package/instance details, but omits explicit scope/status and
+dependency pins. Exact next action: extend these already permission-checked human and assistant
+inventories with accurate runtime, instance, version, scope, status and dependency details, then
+continue §10.1 maintenance authority and remaining uncoded requirements. Do not add grants or infer
+private-project visibility.
+
+## Recent completed-work record
+
+Earlier completed-work checkpoint: P24 template dependency import is pushed to
 `origin/Mcbt5s-Backup-2` as `536853b9`; revocation recheck/status correction is pushed as
 `b646ec16`; reload recovery is pushed as `edf08814`. The owner-facing Template setup UI now
 selects an active same-tenant source Space,
@@ -45,10 +67,7 @@ no deployed multi-user or live acceptance ran. Code `e8f77f7f` is pushed and exp
 creator, approver, approval role, provenance and revocation actor only in authenticated owner/admin v2
 responses and the Settings lifecycle view. Member list responses continue to omit actor metadata.
 Verification remains SDK coordination **4/4**, Spaces coordination/route/migration **17/17**, and
-SDK/Spaces/Shell typechecks; local mocks only. Exact next action: persist append-only metadata-only
-audit events for publish/amend/revoke, recording actor/role, action, prior/new version, audience and
-expiry without storing labels/descriptions; add an owner/admin history read and Settings history view,
-then continue §10.1–§10.6 and remaining S2–S9/U01–U12 code gaps. Keep cross-tenant seller
+SDK/Spaces/Shell typechecks; local mocks only. This earlier next action is complete in `d208ec02`; resume from the active checkpoint above. Keep cross-tenant seller
 artifacts gated, rollouts disabled, and preserve `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
