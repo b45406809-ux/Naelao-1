@@ -12,22 +12,23 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` is pushed to
-`origin/Mcbt5s-Backup-2`, fetch-confirmed at the same SHA. P24 now has a signed SDK dependency pin
-(extension ID, exact version and canonical manifest digest), transitive closure checks for cycles,
-conflicts and missing/replaced releases, same-Space/project trusted-install resolution, install and
-rollback admission, activation rechecks, and runtime checks for workflow, Canvas/Gadget, channel and
-phone-settings callers. Removal of an exact package pin is blocked while an installed dependent uses
-it. Catalog and update-review UI show exact pins and unresolved closure. No new persistence schema was
-needed; pins live in the signed manifest and existing release/installation records.
+Current checkpoint (2026-11-13): code `c68725bd980f03a5d22362959d84a38d01de5cb3` is pushed to
+`origin/Mcbt5s-Backup-2`, fetch-confirmed at the same SHA. P24 adds signed exact-version dependency
+pins, transitive trusted same-Space/project closure checks, admission and runtime rechecks, and blocks
+removing exact dependencies still used by installed packages (code `2546fd1c`). The installer now
+recovers a matching staged Space-shared release after a lost response, preserves previously approved
+filesystem grants, and retries idempotent app initialization and activation with the stable
+installation ID. Catalog and update review show exact pins and unresolved closure. Existing signed
+manifest/release/installation records hold pins and staging state; no migration was needed.
 
-Local evidence: SDK extension tests **31/31**, Spaces focused package/runtime/channel/phone/Gadget
-suites **66/66**, SDK/Spaces/Shell typechecks and `git diff --check`. These are local mocks only; no
-deployment, provider or live acceptance ran. Automatic fetching/installation of missing dependencies,
-durable multi-package partial-install recovery, update apply/migration, active-work drain, cross-Space
-artifact restore, compromise notices, scanning and retention rules remain uncoded or contract-limited;
-none is credential-blocked. P24 remains PARTIAL. S2–S9/U01–U12 status is unchanged. Rollouts remain
-disabled. Preserve unrelated untracked `infra/scripts/__pycache__/`.
+Local evidence: latest recovery change, Spaces signed-package suite **9/9**, Spaces typecheck and
+`git diff --check`; the dependency code also passed SDK **31/31**, Spaces focused suites **66/66**,
+SDK/Spaces/Shell typechecks. These are local mocks only; no deployment, provider or live acceptance
+ran. Missing dependency fetching/installation, explicit review of the full dependency closure,
+multi-package partial-install recovery, update apply/migration, active-work drain, cross-Space artifact
+restore, compromise notices, scanning and retention rules remain uncoded or contract-limited; none is
+credential-blocked. P24 remains PARTIAL. S2–S9/U01–U12 status is unchanged. Rollouts remain disabled.
+Preserve unrelated untracked `infra/scripts/__pycache__/`.
 
 Exact next action: continue P24's install journey with a read-only owner review of the complete exact
 dependency closure, including each publisher, permissions and capabilities; require explicit approval

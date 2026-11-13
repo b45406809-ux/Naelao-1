@@ -2,20 +2,19 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after dependency-closure code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` was
-pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`. P24 now has signed extension dependency pins
-with exact version and manifest digest, transitive closure validation, trusted same-Space/project
-resolution, admission and rollback checks, activation and runtime rechecks, and protection against
-removing an exact dependency used by installed packages. The shared catalog and update preview show
-required pins and whether closure resolves. Workflow, Canvas/Gadget, channel and phone-settings
-callers fail closed on unresolved dependencies. Pins use the existing signed manifest, release and
-installation storage; no migration was needed.
+Updated 2026-11-13 after code `c68725bd980f03a5d22362959d84a38d01de5cb3` was pushed and fetch-
+confirmed on `origin/Mcbt5s-Backup-2`. P24 now has signed exact dependency pins, transitive trusted
+same-Space/project resolution, install/rollback/activation/runtime rechecks, and protection against
+removing a needed pin. Catalog and update review show dependency pins. `c68725bd` also resumes an exact
+staged Space-shared package after a lost response, preserving prior grants and retrying app
+initialization and activation with the stable installation ID. Existing signed release/installation
+records persist state; no migration was needed.
 
-Local/mock evidence: SDK extension suite **31/31**; Spaces runtime, package, channel, phone-settings
-and Gadget suites **66/66**; SDK/Spaces/Shell typechecks and `git diff --check`. No deployment,
-provider, publisher submission or live acceptance was exercised. P10/P24 remain PARTIAL: missing
-dependency fetching and installation, full owner review of dependency publisher/access changes,
-multi-package retry recovery, update application/schema migration and active-work drain remain
+Local/mock evidence: latest signed-package suite **9/9**, Spaces typecheck and `git diff --check`; the
+dependency checkpoint passed SDK **31/31**, Spaces focused suites **66/66**, and SDK/Spaces/Shell
+typechecks. No deployment, provider, publisher submission or live acceptance was exercised. P10/P24
+remain PARTIAL: dependency fetch/installation, complete owner review of dependency publisher/access
+changes, multi-package retry recovery, update application/schema migration and active-work drain remain
 uncoded. Cross-Space artifact restore, publisher compromise notice, scanning and retention policy also
 remain open. These are ordinary implementation or contract gaps, not credential blockers. §9.5/P06
 remains PARTIAL; the phone dashboard and synthetic handler preview do not provide conversational

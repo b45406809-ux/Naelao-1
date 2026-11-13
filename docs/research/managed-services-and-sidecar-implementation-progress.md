@@ -2,25 +2,26 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; dependency closure `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` pushed)
+### Active continuation (2026-11-13; dependency closure and staged-install recovery `c68725bd980f03a5d22362959d84a38d01de5cb3` pushed)
 
-- Code `2546fd1c7fe4aae491e7d4e4f85b2f0837458398` is pushed to `origin/Mcbt5s-Backup-2` and fetch-
-  confirmed. P24 now stores signed exact dependency pins in the extension manifest, resolves transitive
-  version/digest closure against active trusted installations visible in the same Space/project, and
-  rejects cycles, pin conflicts, missing releases, unsupported scopes and invalid attestations.
-  Marketplace, project and channel admission, rollback, staged activation and runtime callers recheck
-  closure. Workflow, Canvas/Gadget, phone settings and channel handlers fail closed after a dependency
-  disappears; uninstall blocks removal of an exact pin still needed by a dependent. Catalog and update
-  review display required pins and resolution state. Existing signed manifest/release/installation
-  records provide persistence; no migration was required.
-- Local evidence: SDK extension suite **31/31**; Spaces runtime, signed-package, channel, phone-settings
-  and Gadget suites **66/66**; SDK/Spaces/Shell typechecks and `git diff --check`. No deployment,
-  provider, publisher submission or live acceptance was exercised. Preserve untracked
-  `infra/scripts/__pycache__/`; rollouts remain disabled.
-- P24 remains PARTIAL. Missing-dependency fetching/installation, explicit whole-closure owner review,
-  durable multi-package partial-install recovery, update apply/migration, active-work drain, cross-Space
-  artifact restore, compromise notices, scanning and retention policy remain uncoded or contract-
-  limited; these are not credential blockers. S2–S9/U01–U12 statuses remain as previously reconciled.
+- Code `c68725bd980f03a5d22362959d84a38d01de5cb3` is pushed to `origin/Mcbt5s-Backup-2` and fetch-
+  confirmed. Prior code `2546fd1c` added signed exact dependency pins, transitive version/digest
+  resolution against active trusted same-Space/project installations, cycle/conflict/missing-pin
+  checks, install/rollback/activation rechecks, runtime gates for workflow, Canvas/Gadget, channel and
+  phone-settings callers, removal protection for needed pins, and catalog/update-review pin display.
+  `c68725bd` adds single-package lost-response recovery: a matching deterministic staged Space-shared
+  install retries initialization and activation with its stable ID and previously approved grants;
+  different pins and disabled installs remain blocked. The existing signed manifest/release and
+  installation records persist the pins and recovery state; no migration was needed.
+- Local evidence: latest signed-package suite **9/9**, Spaces typecheck and `git diff --check`. The
+  dependency checkpoint passed SDK **31/31**, Spaces focused suites **66/66**, SDK/Spaces/Shell
+  typechecks. No deployed DB, publisher submission, provider, deployment or live acceptance occurred.
+  Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+- P24 remains PARTIAL. Missing dependency fetching/installation, full owner review of every dependency
+  publisher/access change, multi-package partial-install recovery, update apply/migration, active-work
+  drain, cross-Space artifact restore, compromise notices, scanning and retention policy are still
+  uncoded or contract-limited; none is credential-blocked. S2–S9/U01–U12 statuses remain as previously
+  reconciled. No live external blocker was exercised in this checkpoint.
 - Exact next action: add a read-only owner review of every exact dependency release, publisher,
   permission and capability; require explicit approval before adding packages. Then implement resumable,
   idempotent multi-package installation and lost-response recovery. Keep update apply and rollout disabled.
