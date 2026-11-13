@@ -2,6 +2,25 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; coordination retirement and access revocation)
+
+- Project lifecycle codes `1b9146f1`, `6d5f442c`, `307c8445` and access test `52f52e16` are pushed
+  to `origin/Mcbt5s-Backup-2`. Request creation is conditioned on a published target card. Unpublish
+  withdraws its pending incoming proposals/events and policy state; project DELETE and generic
+  `PATCH status=archived` retire all linked blackboard state. Event foreign keys cascade read receipts,
+  delivery and wake rows. A failed retirement returns retryable 503 after archival, and DELETE does
+  not start workspace cleanup.
+- A Worker-to-real-SpaceDO local test confirms live private-project ACL revocation blocks existing
+  card/request/event reads, request creation/transition and unpublish with 403 and no hidden summary or
+  request ID in the response. The focused four-file Spaces suite passes **10/10**, Spaces typecheck
+  and `git diff --check` pass. No deployed D1 or live multi-user acceptance ran.
+- §10 remains PARTIAL for owner-configured posture/authority, private publication approval, extension
+  dependency and transfer/disable links, reservations/cardinality, expiry and broad non-disclosure.
+  Accepted-request history retention after unpublish remains current behavior, not approved policy.
+- Exact next task: verify accepted blackboard proposals remain advisory and do not grant project
+  membership or extension authority; then continue owner-configurable §10 policy gaps without
+  inventing defaults. Preserve S2–S9/U01–U12 gates and `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; all project archive callers retire coordination)
 
 - Codes `1b9146f1`, `6d5f442c` and `307c8445` are pushed to `origin/Mcbt5s-Backup-2`. New

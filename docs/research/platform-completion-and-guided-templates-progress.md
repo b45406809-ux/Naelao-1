@@ -2,18 +2,18 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after project coordination lifecycle codes `1b9146f1`, `6d5f442c` and `307c8445`
-were pushed to `origin/Mcbt5s-Backup-2`. Request creation requires a still-published target card in
-the D1 batch; unpublishing withdraws pending incoming proposals/events and policy state while
-retaining accepted requests. Both project DELETE and the generic `PATCH status=archived` caller retire
-all project-linked blackboard state. D1 failure returns a retryable error after archival. Local
-SQLite verifies that event deletion cascades read receipts, deliveries and wakes. Focused
-coordination/deletion/pagination tests pass **9/9**, Spaces typecheck and `git diff --check` pass.
-No deployed D1, cross-service recovery or live acceptance occurred. §10 remains PARTIAL for broader
-policy, privacy, extension dependency/ownership lifecycle, reservations, expiry, concurrency and
-non-disclosure scenarios. Exact next task: add an end-to-end local authorization test proving project
-membership revocation blocks existing card/request/event reads and mutations immediately; then
-continue remaining policy and request-to-use gaps without inventing defaults.
+Updated 2026-11-13 after project coordination lifecycle codes `1b9146f1`, `6d5f442c`, `307c8445` and
+access test `52f52e16` were pushed. Request creation requires a still-published target card in the D1
+batch; unpublishing withdraws pending incoming proposals/events and policy state while retaining
+accepted requests. Both project DELETE and generic `PATCH status=archived` retire all linked
+blackboard state, with retryable failure after archival. Local SQLite confirms event deletion cascades
+receipts, deliveries and wakes. A Worker-to-SpaceDO test confirms removed project members immediately
+lose card/request/event reads and request creation/transition/unpublish access without response leaks.
+The focused suite passes **10/10**, Spaces typecheck and `git diff --check` pass. No deployed D1 or
+live multi-user acceptance occurred. §10 remains PARTIAL for broader policy, privacy, extension
+dependency/ownership lifecycle, reservations, expiry, concurrency and non-disclosure. Exact next task:
+verify accepted proposals remain advisory and do not grant project membership or extension authority;
+then continue configurable §10 policy gaps without inventing defaults.
 
 Updated 2026-11-13 after §9.5 signed phone-handler candidate discovery code `881c1d1a` was pushed to
 `origin/Mcbt5s-Backup-2`. The owner phone dashboard now selects a handler only from active,
