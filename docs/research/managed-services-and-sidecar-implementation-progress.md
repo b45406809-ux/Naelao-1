@@ -2,11 +2,21 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; signed phone settings reach the handler `95429a34`)
+### Active continuation (2026-11-13; owner phone-handler text simulation `61d1b649` pushed)
 
-- Code commit `95429a34` is the branch tip and is being pushed with this ledger checkpoint to
-  `origin/Mcbt5s-Backup-2`; branch `autonomous-managed-services-20261111`. Preserve unrelated
-  untracked `infra/scripts/__pycache__/`.
+- Code `61d1b6498f36c2f3c227d155e0e254a52b39dccf` is pushed to `origin/Mcbt5s-Backup-2`; branch
+  `autonomous-managed-services-20261111` is synchronized. Preserve unrelated untracked
+  `infra/scripts/__pycache__/`.
+- Owner phone action requires manager authority, the active extension binding and bounded synthetic
+  text. The Agent DO reloads the exact active signed handler and saved settings, runs the same isolated
+  channel runtime at its declared limits, validates bounded host-renderable voice actions, and returns
+  a simulation response. It does not create a call event, read or write persisted extension session
+  state, or contact the carrier. The owner phone panel exposes this only for active assigned handlers.
+- Local/mock evidence: Agents phone + DO simulation tests **40/40**, Agents and Shell typechecks,
+  `git diff --check`. Coverage includes role denial, stale/revoked handler denial, settings in runtime,
+  input/output bounds, no provider fetch and zero call/session writes. Earlier settings bridge suites
+  remain Agents **8/8**, Spaces **28/28**, Agent SDK **29/29**. No provider egress, deployed DB,
+  deployment or live call ran.
 - The phone handler now receives settings saved for its exact active signed extension installation.
   Spaces checks tenant/Space/instance and Project or SPACE_SHARED scope, current host-signed release
   version and artifact digest, exact phone declaration, `extension.settings.read` capability and
@@ -25,12 +35,12 @@
   writer-admission/drain/handoff contracts are unsupported, not credential blockers. P01/P02 remain
   fail-closed on shared IDs, unresolved `naelao-calls`, missing receipts and operator-attested D1
   baselines. §5/§9.5/§10 remain PARTIAL; rollouts stay disabled.
-- Exact next action: build an owner-authorized text simulation for a selected active signed phone
-  handler, using synthetic caller text and the bounded isolated runtime. Return only a clearly labeled
-  simulated reply/status; do not call providers, create call records, or persist simulated session
-  state. Add the owner phone UI caller and tests for role, installation/revocation, settings, output
-  bounds and absence of provider egress. Then proceed through remaining §9.5 publish/operations and
-  the uncoded §5/§10 plus S2–S9/U01–U12 rows. Do not repeat closed U11/U12 audits absent new evidence.
+- Exact next action: trace the §9.5 package-owned dashboard path from signed extension release through
+  Space-shared installation, microapp artifact initialization and the Shell generic app list. Current
+  installed-app discovery accepts shared manifests, but catalog/install appears first-party-only.
+  Confirm the source boundary and implement the first missing signed-package caller/persistence link
+  with focused authorization/lifecycle coverage. Then continue §9.5 publish/operations and remaining
+  §5/§10 plus S2–S9/U01–U12 rows. Do not repeat closed U11/U12 audits absent new evidence.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

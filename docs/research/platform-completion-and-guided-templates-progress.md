@@ -2,17 +2,17 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 at code commit `95429a34`, being pushed with this checkpoint to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Saved extension settings now reach
-the exact active signed phone handler through an internal Spaces host read. The host rechecks tenant,
-Space, installation, Project/SPACE_SHARED scope, active status, current release version/artifact,
-phone declaration, read capability/permission, schema and complete values. It fails closed on stale,
-revoked, invalid, oversized or incomplete configuration. The Agent SDK exposes a read-only frozen
-settings snapshot with schema version/revision to the isolated handler. Packages without settings
-permission remain on the prior runtime path.
+Updated 2026-11-13 after code `61d1b6498f36c2f3c227d155e0e254a52b39dccf` was pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The owner phone panel now invokes a
+manager-authorized text simulation for the exact active extension binding. The host revalidates its
+active signed installation, artifact and settings, passes synthetic speech to the same bounded isolated
+runtime, and validates the bounded voice response. No call record or simulated session is read or
+written; the UI labels the result as simulated and states no carrier call occurs.
 
-Local/mock evidence: Agents focused tests **8/8** and typecheck; Spaces focused suites **28/28** and
-typecheck; Agent SDK **29/29** and typecheck; Shell typecheck; `git diff --check`. No provider, deployed
+Local/mock evidence: Agents phone + DO tests **40/40**, Agents and Shell typechecks, and
+`git diff --check`. Coverage includes owner authorization, handler revocation/unavailability, settings
+delivery, input/output bounds, no carrier fetch and zero call/session writes. Earlier settings bridge
+verification remains Agents **8/8**, Spaces **28/28**, Agent SDK **29/29**. No provider egress, deployed
 DB, deployment or live call acceptance was exercised. Preserve untracked
 `infra/scripts/__pycache__/`.
 
@@ -28,22 +28,24 @@ Permission/price changes, general upgrade/rollback/uninstall, project/provider-r
 lifecycle, verified rates, visual authoring and live acceptance remain uncoded or lack approved
 contracts.
 
-**§9.5 — PARTIAL.** Per-installation settings now reach the customer phone handler; signed handler
-discovery and masked owner call history are local. Package dashboard runtime, voice/model catalogs and
-rates, text/browser test, publish/version/rollback, operations and composition remain. Streaming is
-unavailable; keypad behavior remains. No provider/account acceptance is claimed.
+**§9.5 — PARTIAL.** Per-installation settings, signed handler discovery, masked owner call history and
+non-persistent text simulation are local. Generic package-owned dashboard installation and artifact
+initialization, voice/model catalogs and verified rates, publish/version/rollback, operations and
+composition remain. Streaming is unavailable; keypad behavior remains. No provider/account acceptance
+is claimed.
 
 **§10 — PARTIAL.** Audience-filtered facts, receipts, amendments/revocation, published cards/proposals
 and access rechecks have local code. Configurable posture/defaults, private publication/request
 authority, extension/dependency ownership, reservations, expiry/concurrency policy and broad
 non-disclosure acceptance remain.
 
-Exact next action: implement an owner-authorized text simulation for the selected active signed phone
-handler, using synthetic caller text and the same bounded isolated runtime, without provider egress or
-persistent call/session writes. Wire the owner phone UI; cover authorization, signed installation and
-revocation, settings, output bounds and no-provider-egress behavior. Then continue §9.5 publish/
-operations and remaining §5/§10 plus S2–S9/U01–U12 implementation gaps. After compaction or interruption,
-reread both plans, both progress records, AGENTS.md and the actual worktree.
+Exact next action: trace the §9.5 package-owned dashboard path from signed extension release through
+Space-shared installation, microapp artifact initialization and the Shell generic app list. Current
+installed-app discovery accepts shared manifests, but catalog/install appears first-party-only. Confirm
+the source boundary and implement the first missing signed-package caller/persistence link with focused
+authorization/lifecycle coverage. Then continue §9.5 publish/operations and remaining §5/§10 plus
+S2–S9/U01–U12 implementation gaps. After compaction or interruption, reread both plans, both progress
+records, AGENTS.md and the actual worktree.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
