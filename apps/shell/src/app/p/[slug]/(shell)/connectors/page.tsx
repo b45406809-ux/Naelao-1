@@ -34,6 +34,7 @@ import {
 import { AppCard, type AppCardModel } from "@/components/AppCard";
 import { AssistantMailboxPanel } from "@/components/AssistantMailboxPanel";
 import { ManagedServicesPanel } from "@/components/ManagedServicesPanel";
+import { UnifiedInboxSearchPanel } from "@/components/UnifiedInboxSearchPanel";
 import { WebsiteConnections } from "@/components/WebsiteConnections";
 import { ConnectorAliases } from "@/components/ConnectorAliases";
 
@@ -294,6 +295,7 @@ export default function ConnectorsPage() {
 
       {creds && <ManagedServicesPanel spaceId={activeSpaceId} session={creds} />}
       {creds && <AssistantMailboxPanel spaceId={activeSpaceId} session={creds} />}
+      {creds && <UnifiedInboxSearchPanel spaceId={activeSpaceId} session={creds} />}
       {creds && <WebsiteConnections spaceId={activeSpaceId} session={creds} />}
 
       {creds && <ConnectorAliases spaceId={activeSpaceId} session={creds} connectors={connectors} onError={show} />}
