@@ -421,6 +421,13 @@ async function livePhoneAllowed(env: AgentsEnv, scope: CommunicationScope) {
   )
     throw new Error("assistant_phone_disabled_or_forbidden");
 }
+async function extensionPhoneSetupAllowed(env: AgentsEnv, scope: CommunicationScope) {
+  if (
+    !(await scopeAccess(env, scope, false)) ||
+    (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId))
+  )
+    throw new Error("phone_extension_disabled_or_forbidden");
+}
 function metadata(binding: AssistantPhoneBinding | null) {
   if (!binding) return null;
   return {
@@ -545,6 +552,8 @@ export async function handlePhoneAction(
         `BYO ${currentPhone?.provider === "telnyx" ? "Telnyx" : "Twilio"} bills your carrier account directly; rental, calls, messages, taxes and regulatory charges are separate.`,
     };
   }
+  const extensionSetup = action === "phone-handler" ||
+    (action === "phone-import" && typeof body.legacy_binding_id === "string" && body.legacy_binding_id.length > 0);
   if (
     ![
       "phone-live",
@@ -578,8 +587,10 @@ export async function handlePhoneAction(
       "phone-telnyx-cost",
       "phone-twilio-cost",
     ].includes(action)
-  )
-    await livePhoneAllowed(env, scope);
+  ) {
+    if (extensionSetup) await extensionPhoneSetupAllowed(env, scope);
+    else await livePhoneAllowed(env, scope);
+  }
   let binding = await assistantPhone(env, identity.id);
   if (action === "phone-telnyx-cost-status") {
     if (!manager || agent || !binding || binding.provider !== "telnyx" || binding.status !== "active")

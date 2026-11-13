@@ -968,6 +968,29 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
  });
 
+ it("keeps owner extension assignment available when Space Assistant phone is disabled", async () => {
+  const f = await phoneFixture();
+  f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")
+    ? Response.json({ effective_role: "owner" })
+    : Response.json({ preferences: { enabled: { email: true, phone: false } } }));
+  f.env.AGENTS_WORKER = { fetch: vi.fn(async () => Response.json({ valid: true })) } as unknown as Fetcher;
+
+  await f.act("phone-handler", {
+    installation_id: "extension",
+    handler_sha256: "a".repeat(64),
+    confirm: true,
+  });
+
+  const status = await f.act("phone-status") as {
+    enabled: boolean;
+    phone: unknown;
+    extension_lines: Array<{ handler_status: string }>;
+  };
+  expect(status.enabled).toBe(false);
+  expect(status.phone).toBeNull();
+  expect(status.extension_lines).toMatchObject([{ handler_status: "active" }]);
+ });
+
  it("keeps public extension voice turn-by-turn and returns only host-rendered actions", async () => {
   const f = await phoneFixture();
   const dispatchedRequests: Request[] = [];

@@ -245,7 +245,7 @@ export function AssistantPhonePanel({
     <section aria-label="Assistant phone">
       <h4>Optional phone</h4>
       {state?.legacy_numbers?.map((line) => (
-        <fieldset key={line.id} disabled={busy || !state.enabled}>
+        <fieldset key={line.id} disabled={busy}>
           <legend>Phone number awaiting extension migration</legend>
           <p>{line.phone_number} · currently uses a retired callback</p>
           <p>Move it onto Naelao’s phone transport, then assign an installed phone extension. The old callback will not be restored if you later detach this number.</p>
@@ -257,7 +257,7 @@ export function AssistantPhonePanel({
       ))}
       {state?.extension_lines?.map((line) => {
         const assignment = extensionAssignments[line.id] ?? { installation: "", digest: "" };
-        return <fieldset key={line.id} disabled={busy || !state.enabled}>
+        return <fieldset key={line.id} disabled={busy}>
           <legend>Extension phone handler</legend>
           <p>{line.phone_number ?? "Phone number"} · {line.status} · {line.handler_status ?? "No handler assigned"}</p>
           <label>Installation ID <input value={assignment.installation} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, installation: e.target.value } }))} /></label>
@@ -276,7 +276,7 @@ export function AssistantPhonePanel({
           Telnyx per-call cost events are disabled or have not been verified for this Call Control Application. Enable call cost webhooks at Telnyx, then check the setting below. Until enabled, provider cost observations omit these calls; the dashboard does not reconcile invoices.
         </p>}
       <p>
-        Phone is optional for Space and Project assistants. Enable it in assistant channel settings first.
+        Space Assistant phone actions require the phone channel to be enabled. Customer extension lines are managed separately.
         {state?.phone?.payer === "managed" ? " Naelao bills rental and usage to the space plan using the configured carrier price schedule." : " Your carrier bills your account directly for rental, calls, SMS/MMS and other carrier charges."}
       </p>
       {state?.managed_rates && <p>Managed Telnyx rate schedule {state.managed_price_version ?? "unversioned"}: {state.managed_rates.rental_credits_per_month} credits/month, {state.managed_rates.sms_credits_per_segment} credits/SMS segment, {state.managed_rates.call_credits_per_minute} credits/call minute.{state.managed_available ? " Rates are saved when you confirm a managed line." : " Managed Telnyx rollout is unavailable."}</p>}
@@ -540,7 +540,7 @@ export function AssistantPhonePanel({
                   Create approval draft
                 </button>
               </fieldset>
-              <fieldset disabled={busy || !state.enabled}>
+              <fieldset disabled={busy}>
                 <legend>Inbound calls</legend>
                 <fieldset disabled={busy}>
                   <legend>Talk to your assistant by phone</legend>
@@ -551,6 +551,7 @@ export function AssistantPhonePanel({
                   </p>
                   <button
                     type="button"
+                    disabled={!state.enabled}
                     onClick={() => {
                       const managed = state.phone?.provider === "telnyx" && state.phone.payer === "managed";
                       const seconds = state.phone?.policy.maxCallSeconds ?? 300;
@@ -629,6 +630,7 @@ export function AssistantPhonePanel({
                   </button>
                 </fieldset>
 
+                <fieldset disabled={busy || !state.enabled}>
                 <p>
                   Call speech, keypad input, and SMS are delivered to the assigned
                   extension as untrusted input. Extension conversation state is
@@ -711,6 +713,7 @@ export function AssistantPhonePanel({
                     ? "Disable voicemail"
                     : "Enable voicemail and transcription"}
                 </button>
+                </fieldset>
               </fieldset>
             </>
           )}
