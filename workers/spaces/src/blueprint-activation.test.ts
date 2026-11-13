@@ -97,28 +97,44 @@ describe("Space Template activation preview", () => {
 
   it("checks for a newer signed listing from the same publisher without applying it", async () => {
     const secret = "template-source-update-status-secret";
-    const installed = blueprint({ id: "tpl_update", metadata: { name: "Installed support" }, requiredExtensions: [], requiredCredentials: [] });
-    const candidate = blueprint({ id: "tpl_update", metadata: { name: "Updated support" }, requiredExtensions: [], requiredCredentials: [] });
+    const installed = blueprint({ id: "tpl_update", metadata: { name: "Installed support" }, setupSchemaVersion: 1,
+      requiredExtensions: ["ext_old"], requiredExtensionVersions: { ext_old: "1.0.0" }, requiredCredentials: [] });
+    const candidate = blueprint({ id: "tpl_update", metadata: { name: "Updated support" }, setupSchemaVersion: 2,
+      requiredExtensions: ["ext_old", "ext_new"], requiredExtensionVersions: { ext_old: "2.0.0", ext_new: "1.0.0" }, requiredCredentials: [] });
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `source-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(candidate, suite, {
       runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0,
       tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [],
     }, secret, "publisher-tenant");
     if (!certificate) throw new Error("template_source_certificate_not_issued");
+    const installedCertificate = await certifyStateDeltaArtifact(installed, suite, {
+      runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0,
+      tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [],
+    }, secret, "publisher-tenant");
+    if (!installedCertificate) throw new Error("installed_template_certificate_not_issued");
     const sha256 = async (value: unknown) => [...new Uint8Array(await crypto.subtle.digest("SHA-256",
       new TextEncoder().encode(JSON.stringify(value))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     const installedDigest = await sha256(installed);
     const candidateDigest = await sha256(candidate);
     let installedArtifactDigest = installedDigest;
+    let installationListingId = "listing-installed";
+    let installedArtifactJson = JSON.stringify(installed);
+    let installedCertificateJson = JSON.stringify(installedCertificate);
+    let installedPriceModel = "fixed_license";
+    let installedPriceCents = 2500;
+    let installationSchemaVersion: 1 | 2 = 1;
+    let installationRequiredExtensionIds = ["ext_old"];
     let candidateArtifactJson = JSON.stringify(candidate);
     const stub = { fetch: async () => Response.json({ installations: [{ blueprint_id: installed.id, artifact_sha256: installedArtifactDigest,
-      listing_id: "listing-installed", setup_schema_version: 2, setup_revision: 4, required_extension_ids: [], project_ids: ["project-a"],
+      listing_id: installationListingId, setup_schema_version: installationSchemaVersion, setup_revision: 4,
+      required_extension_ids: installationRequiredExtensionIds, project_ids: ["project-a"],
       status: "installed", error_code: null, created_at: "2026-11-13T00:00:00.000Z", updated_at: "2026-11-13T00:01:00.000Z" }] }) };
     const db = { prepare: (sql: string) => ({ bind: (..._args: unknown[]) => ({
       first: async () => ({ id: "space-update" }),
       all: async () => ({ results: sql.includes("FROM marketplace_listings source") ? [{
-        source_listing_id: "listing-installed", publisher_tenant_id: "publisher-tenant", blueprint_id: installed.id,
-        installed_price_model: "fixed_license", installed_price_cents: 2500, candidate_listing_id: "listing-new",
+        source_listing_id: installationListingId, publisher_tenant_id: "publisher-tenant", blueprint_id: installed.id,
+        installed_price_model: installedPriceModel, installed_price_cents: installedPriceCents, candidate_listing_id: "listing-new",
+        installed_artifact_json: installedArtifactJson, installed_certificate_json: installedCertificateJson,
         candidate_artifact_json: candidateArtifactJson, candidate_certificate_json: JSON.stringify(certificate),
         candidate_price_model: "freemium_tiered", candidate_price_cents: 0,
       }] : [] }),
@@ -131,11 +147,21 @@ describe("Space Template activation preview", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { installations: Array<Record<string, unknown>> };
     expect(body.installations[0]).toMatchObject({ source_update: { status: "update_available", source_listing_id: "listing-new",
-      source_artifact_sha256: candidateDigest, terms_changed: true } });
+      source_artifact_sha256: candidateDigest, terms_changed: true, setup_schema_changed: true,
+      added_required_extensions: ["ext_new"], changed_required_extension_versions: [
+        { extension_id: "ext_old", installed_version: "1.0.0", source_version: "2.0.0" },
+      ] } });
     expect(JSON.stringify(body)).not.toContain("setup_values");
     expect(JSON.stringify(body)).not.toContain("Updated support");
 
     installedArtifactDigest = candidateDigest;
+    installationListingId = "listing-new";
+    installedArtifactJson = JSON.stringify(candidate);
+    installedCertificateJson = JSON.stringify(certificate);
+    installedPriceModel = "freemium_tiered";
+    installedPriceCents = 0;
+    installationSchemaVersion = 2;
+    installationRequiredExtensionIds = ["ext_old", "ext_new"];
     const current = await worker.fetch(new Request("https://spaces/spaces/space-update/blueprints/installations", { headers }), env, {} as ExecutionContext);
     expect(await current.json()).toMatchObject({ installations: [{ source_update: { status: "current", source_listing_id: "listing-new" } }] });
 

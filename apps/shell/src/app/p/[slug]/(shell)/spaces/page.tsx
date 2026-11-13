@@ -639,6 +639,10 @@ export default function SpacesPage() {
                   <dt>New source listing</dt><dd style={{ margin: 0 }}>{record.source_update.source_listing_id ?? "Unavailable"}</dd>
                   {record.source_update.source_artifact_sha256 && <><dt>New source SHA-256</dt><dd style={{ margin: 0, fontFamily: "monospace" }}>{record.source_update.source_artifact_sha256}</dd></>}
                   {record.source_update.terms_changed && <><dt>Listing terms</dt><dd style={{ margin: 0 }}>Price or license terms changed; review before any update.</dd></>}
+                  {record.source_update.setup_schema_changed && <><dt>Setup fields</dt><dd style={{ margin: 0 }}>Setup schema changed; a reviewed migration is required.</dd></>}
+                  {record.source_update.added_required_extensions.length > 0 && <><dt>New dependencies</dt><dd style={{ margin: 0 }}>{record.source_update.added_required_extensions.join(", ")}</dd></>}
+                  {record.source_update.removed_required_extensions.length > 0 && <><dt>Removed dependencies</dt><dd style={{ margin: 0 }}>{record.source_update.removed_required_extensions.join(", ")}</dd></>}
+                  {record.source_update.changed_required_extension_versions.length > 0 && <><dt>Dependency versions</dt><dd style={{ margin: 0 }}>{record.source_update.changed_required_extension_versions.map(change => `${change.extension_id}: ${change.installed_version ?? "unpinned"} → ${change.source_version ?? "unpinned"}`).join("; ")}</dd></>}
                 </>}
                 <dt>Required extensions</dt><dd style={{ margin: 0 }}>{record.required_extension_ids.length ? record.required_extension_ids.join(", ") : "None recorded"}</dd>
                 <dt>Generated projects</dt><dd style={{ margin: 0 }}>{record.project_ids.length ? record.project_ids.join(", ") : "None recorded"}</dd>

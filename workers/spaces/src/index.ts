@@ -759,6 +759,7 @@ app.get("/spaces/:spaceId/blueprints/installations", async c => {
   const status = await response.json() as { installations?: unknown };
   const installations = Array.isArray(status.installations) ? status.installations as Array<{
     blueprint_id: string; artifact_sha256: string; listing_id: string | null;
+    setup_schema_version: 1 | 2 | null; required_extension_ids: string[];
   }> : [];
   const sourceChecks = await checkTemplateSourceUpdates(c.env, tenantId, installations);
   return c.json({ installations: installations.map(installation => ({
@@ -769,6 +770,10 @@ app.get("/spaces/:spaceId/blueprints/installations", async c => {
       source_listing_id: null,
       source_artifact_sha256: null,
       terms_changed: null,
+      setup_schema_changed: null,
+      added_required_extensions: [],
+      removed_required_extensions: [],
+      changed_required_extension_versions: [],
     },
   })) }, 200, { "cache-control": "private, no-store" });
 });
@@ -780,6 +785,10 @@ interface TemplateSourceUpdateCheck {
   source_listing_id: string | null;
   source_artifact_sha256: string | null;
   terms_changed: boolean | null;
+  setup_schema_changed: boolean | null;
+  added_required_extensions: string[];
+  removed_required_extensions: string[];
+  changed_required_extension_versions: Array<{ extension_id: string; installed_version: string | null; source_version: string | null }>;
 }
 interface TemplateSourceCandidateRow {
   source_listing_id: string;
@@ -787,6 +796,8 @@ interface TemplateSourceCandidateRow {
   blueprint_id: string;
   installed_price_model: string;
   installed_price_cents: number;
+  installed_artifact_json: string;
+  installed_certificate_json: string;
   candidate_listing_id: string | null;
   candidate_artifact_json: string | null;
   candidate_certificate_json: string | null;
@@ -801,6 +812,30 @@ async function templateArtifactDigest(value: unknown): Promise<string | null> {
   } catch { return null; }
 }
 
+function templateRequiredExtensions(artifact: Record<string, unknown>): { ids: string[]; versions: Record<string, string> } {
+  const ids = Array.isArray(artifact.requiredExtensions)
+    ? [...new Set(artifact.requiredExtensions.filter((value): value is string => typeof value === "string" && /^ext_[a-z0-9_-]{2,62}$/.test(value)))]
+    : [];
+  const rawVersions = artifact.requiredExtensionVersions;
+  const versions: Record<string, string> = {};
+  if (rawVersions && typeof rawVersions === "object" && !Array.isArray(rawVersions)) {
+    for (const [id, version] of Object.entries(rawVersions)) {
+      if (ids.includes(id) && typeof version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) versions[id] = version;
+    }
+  }
+  return { ids, versions };
+}
+
+function templateSetupSchemaProjection(artifact: Record<string, unknown>): string | null {
+  if (!Array.isArray(artifact.projects)) return null;
+  const projects = artifact.projects.flatMap(project => {
+    if (!project || typeof project !== "object" || Array.isArray(project)) return [];
+    const row = project as Record<string, unknown>;
+    return [{ id: typeof row.id === "string" ? row.id : null, setupFields: row.setupFields ?? [] }];
+  });
+  return JSON.stringify({ setupSchemaVersion: artifact.setupSchemaVersion ?? null, projects });
+}
+
 /**
  * Compare installed records with the newest published, host-certified listing from the same
  * publisher for the same blueprint. This is a read-only availability check; it never installs,
@@ -809,7 +844,8 @@ async function templateArtifactDigest(value: unknown): Promise<string | null> {
 async function checkTemplateSourceUpdates(
   env: Env,
   tenantId: string,
-  installations: Array<{ blueprint_id: string; artifact_sha256: string; listing_id: string | null }>,
+  installations: Array<{ blueprint_id: string; artifact_sha256: string; listing_id: string | null;
+    setup_schema_version: 1 | 2 | null; required_extension_ids: string[] }>,
 ): Promise<Map<string, TemplateSourceUpdateCheck>> {
   const checkedAt = new Date().toISOString();
   const listingIds = [...new Set(installations.flatMap(item =>
@@ -817,9 +853,11 @@ async function checkTemplateSourceUpdates(
   const checks = new Map<string, TemplateSourceUpdateCheck>();
   for (const item of installations) {
     if (!item.listing_id) checks.set("", { status: "unknown_legacy", checked_at: checkedAt,
-      source_listing_id: null, source_artifact_sha256: null, terms_changed: null });
+      source_listing_id: null, source_artifact_sha256: null, terms_changed: null, setup_schema_changed: null,
+      added_required_extensions: [], removed_required_extensions: [], changed_required_extension_versions: [] });
     else checks.set(item.listing_id, { status: "source_unavailable", checked_at: checkedAt,
-      source_listing_id: null, source_artifact_sha256: null, terms_changed: null });
+      source_listing_id: null, source_artifact_sha256: null, terms_changed: null, setup_schema_changed: null,
+      added_required_extensions: [], removed_required_extensions: [], changed_required_extension_versions: [] });
   }
   if (!listingIds.length) return checks;
 
@@ -828,6 +866,7 @@ async function checkTemplateSourceUpdates(
     SELECT source.id AS source_listing_id, source.tenant_id AS publisher_tenant_id,
       source.space_type_id AS blueprint_id, source.pricing_model AS installed_price_model,
       source.price_cents AS installed_price_cents,
+      fork.artifact_json AS installed_artifact_json, fork.certificate_json AS installed_certificate_json,
       latest.id AS candidate_listing_id,
       latest.conformance_artifact_json AS candidate_artifact_json,
       latest.conformance_certificate_json AS candidate_certificate_json,
@@ -850,22 +889,52 @@ async function checkTemplateSourceUpdates(
     if (!listingId || !listingIds.includes(listingId)) continue;
     const row = bySourceId.get(listingId);
     if (!row || row.blueprint_id !== installation.blueprint_id || !row.candidate_listing_id ||
+        !row.installed_artifact_json || !row.installed_certificate_json ||
         !row.candidate_artifact_json || !row.candidate_certificate_json) continue;
     try {
+      const installedArtifact = JSON.parse(row.installed_artifact_json) as Record<string, unknown>;
+      const installedCertificate = JSON.parse(row.installed_certificate_json) as ConformanceCertificate;
       const artifact = JSON.parse(row.candidate_artifact_json) as Record<string, unknown>;
       const certificate = JSON.parse(row.candidate_certificate_json) as ConformanceCertificate;
-      if (!artifact || typeof artifact !== "object" || Array.isArray(artifact) || artifact.id !== installation.blueprint_id ||
+      if (!installedArtifact || typeof installedArtifact !== "object" || Array.isArray(installedArtifact) ||
+          installedArtifact.id !== installation.blueprint_id || installedCertificate?.issuerTenantId !== row.publisher_tenant_id ||
+          !await verifyArtifactCertificate(installedArtifact, installedCertificate, env.PLATFORM_SECRET, "state-delta") ||
+          await templateArtifactDigest(installedArtifact) !== installation.artifact_sha256 ||
+          !artifact || typeof artifact !== "object" || Array.isArray(artifact) || artifact.id !== installation.blueprint_id ||
           certificate?.issuerTenantId !== row.publisher_tenant_id ||
           !await verifyArtifactCertificate(artifact, certificate, env.PLATFORM_SECRET, "state-delta")) continue;
       const sourceDigest = await templateArtifactDigest(artifact);
       if (!sourceDigest) continue;
       const termsChanged = row.installed_price_model !== row.candidate_price_model || row.installed_price_cents !== row.candidate_price_cents;
+      const installedDependencies = templateRequiredExtensions(installedArtifact);
+      const sourceDependencies = templateRequiredExtensions(artifact);
+      const installedSchemaVersion = installedArtifact.setupSchemaVersion === 1 || installedArtifact.setupSchemaVersion === 2
+        ? installedArtifact.setupSchemaVersion : null;
+      if (installation.setup_schema_version !== installedSchemaVersion) continue;
+      const recordedDependencyIds = [...new Set((installation.required_extension_ids ?? [])
+        .filter((id): id is string => typeof id === "string" && /^ext_[a-z0-9_-]{2,62}$/.test(id)))].sort();
+      if (JSON.stringify(recordedDependencyIds) !== JSON.stringify([...installedDependencies.ids].sort())) continue;
+      const installedExtensionIds = new Set(installedDependencies.ids);
+      const sourceExtensionIds = new Set(sourceDependencies.ids);
+      const addedRequiredExtensions = sourceDependencies.ids.filter(id => !installedExtensionIds.has(id)).slice(0, 128);
+      const removedRequiredExtensions = installedDependencies.ids.filter(id => !sourceExtensionIds.has(id)).slice(0, 128);
+      const changedRequiredExtensionVersions = sourceDependencies.ids.flatMap(id => {
+        if (!installedExtensionIds.has(id) || installedDependencies.versions[id] === sourceDependencies.versions[id]) return [];
+        return [{ extension_id: id, installed_version: installedDependencies.versions[id] ?? null,
+          source_version: sourceDependencies.versions[id] ?? null }];
+      }).slice(0, 128);
+      const installedSchema = templateSetupSchemaProjection(installedArtifact);
+      const sourceSchema = templateSetupSchemaProjection(artifact);
       checks.set(listingId, {
         status: sourceDigest === installation.artifact_sha256 ? "current" : "update_available",
         checked_at: checkedAt,
         source_listing_id: row.candidate_listing_id,
         source_artifact_sha256: sourceDigest,
         terms_changed: termsChanged,
+        setup_schema_changed: installedSchema === null || sourceSchema === null ? null : installedSchema !== sourceSchema,
+        added_required_extensions: addedRequiredExtensions,
+        removed_required_extensions: removedRequiredExtensions,
+        changed_required_extension_versions: changedRequiredExtensionVersions,
       });
     } catch { /* Invalid source bytes remain unavailable; never treat them as an update. */ }
   }

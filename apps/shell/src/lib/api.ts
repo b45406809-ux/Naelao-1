@@ -2548,6 +2548,10 @@ export interface SpaceTemplateInstallationRecord {
     source_listing_id: string | null;
     source_artifact_sha256: string | null;
     terms_changed: boolean | null;
+    setup_schema_changed: boolean | null;
+    added_required_extensions: string[];
+    removed_required_extensions: string[];
+    changed_required_extension_versions: Array<{ extension_id: string; installed_version: string | null; source_version: string | null }>;
   };
 }
 
