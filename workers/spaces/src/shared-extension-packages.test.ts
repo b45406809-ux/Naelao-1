@@ -253,7 +253,7 @@ async function installReviewHarness(options: { failNextRootInitialization?: bool
   return { env, spaceRequests, microAppRequests, installedRows, rootRelease, dependencyRelease, dependencyManifest, dependencyDigest, rootManifest };
 }
 
-async function crossSpaceImportHarness(options: { destinationTrust?: boolean; sourceRole?: string } = {}) {
+async function crossSpaceImportHarness(options: { destinationTrust?: boolean; sourceRole?: string; destinationRole?: string } = {}) {
   const dependencyManifest = validateExtensionManifest({ ...manifest, id: "ext_calendar", channels: undefined,
     bundle: { ...manifest.bundle!, id: "ext_calendar", version: "1.0.0", primitives: manifest.bundle!.primitives.map((primitive, index) => ({
       ...primitive, id: index === 0 ? "calendar_dashboard" : "calendar_handler", version: "1.0.0" })) } });
@@ -295,7 +295,7 @@ async function crossSpaceImportHarness(options: { destinationTrust?: boolean; so
   const tenants = new Map([["source", "tenant-a"], ["destination", "tenant-a"]]);
   const trusted = new Set(["source"]);
   if (options.destinationTrust !== false) trusted.add("destination");
-  const roles = new Map([["source", options.sourceRole ?? "admin"], ["destination", "admin"]]);
+  const roles = new Map([["source", options.sourceRole ?? "admin"], ["destination", options.destinationRole ?? "admin"]]);
   let failRootArtifactOnce = true;
   const db = { prepare: (sql: string) => ({ bind: (...params: unknown[]) => ({
     first: async () => {
@@ -602,14 +602,33 @@ describe("owner-authorized cross-Space package import", () => {
 
   it("reviews without writes, resumes a partial dependency closure, and preserves immutable artifacts", async () => {
     const h = await crossSpaceImportHarness();
-    const reviewResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", body), h.env);
+    const expectedManifestSha256 = await digestExtensionManifest(h.rootRelease.manifest);
+    const wrongPinReview = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", {
+      ...body, expected_manifest_sha256: "b".repeat(64),
+    }), h.env);
+    expect(wrongPinReview.status).toBe(409);
+    expect(await wrongPinReview.json()).toMatchObject({ error_code: "extension_package_import_pin_mismatch",
+      expected_manifest_sha256: "b".repeat(64), observed_manifest_sha256: expectedManifestSha256 });
+    expect(h.destinationReleases.size).toBe(0);
+    expect([...h.objects.keys()].every(key => key.startsWith("spaces/source/"))).toBe(true);
+
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", { ...body, expected_manifest_sha256: expectedManifestSha256 }), h.env);
     expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
-    const review = await reviewResponse.json() as { review_token: string; packages: Array<{ extension_id: string }> };
+    const review = await reviewResponse.json() as { review_token: string; expected_manifest_sha256: string; packages: Array<{ extension_id: string }> };
+    expect(review.expected_manifest_sha256).toBe(expectedManifestSha256);
     expect(review.packages.map(item => item.extension_id)).toEqual(["ext_calendar", "ext_customer_voice"]);
     expect(h.destinationReleases.size).toBe(0);
     expect([...h.objects.keys()].every(key => key.startsWith("spaces/source/"))).toBe(true);
 
-    const importBody = { ...body, review_token: review.review_token };
+    const wrongPinImport = await spacesWorker.fetch(await signedRequest(importPath, "POST", {
+      ...body, review_token: review.review_token, expected_manifest_sha256: "b".repeat(64),
+    }), h.env);
+    expect(wrongPinImport.status).toBe(409);
+    expect(await wrongPinImport.json()).toMatchObject({ error_code: "extension_package_import_pin_mismatch" });
+    expect(h.destinationReleases.size).toBe(0);
+    expect([...h.objects.keys()].every(key => key.startsWith("spaces/source/"))).toBe(true);
+
+    const importBody = { ...body, review_token: review.review_token, expected_manifest_sha256: expectedManifestSha256 };
     const interrupted = await spacesWorker.fetch(await signedRequest(importPath, "POST", importBody), h.env);
     expect(interrupted.status).toBe(503);
     expect(await interrupted.json()).toMatchObject({ error_code: "extension_package_destination_artifact_write_conflict", retryable: true,
@@ -628,6 +647,17 @@ describe("owner-authorized cross-Space package import", () => {
       ] });
     expect(h.destinationReleases.size).toBe(2);
     expect([...h.objects.keys()].filter(key => key.startsWith("spaces/destination/")).length).toBe(4);
+
+    // The request may have completed remotely while its response was lost. Retrying the same
+    // owner-reviewed receipt must confirm the immutable copy without creating duplicate state.
+    const ambiguousRetry = await spacesWorker.fetch(await signedRequest(importPath, "POST", importBody), h.env);
+    expect(ambiguousRetry.status).toBe(200);
+    expect(await ambiguousRetry.json()).toMatchObject({ imported: true, completed_packages: [
+      { extension_id: "ext_calendar", copied_artifacts: 0, reused_artifacts: 2, metadata_imported: false },
+      { extension_id: "ext_customer_voice", copied_artifacts: 0, reused_artifacts: 2, metadata_imported: false },
+    ] });
+    expect(h.destinationReleases.size).toBe(2);
+    expect([...h.objects.keys()].filter(key => key.startsWith("spaces/destination/")).length).toBe(4);
   });
 
   it("requires source and destination admin membership and an already trusted destination key", async () => {
@@ -636,6 +666,12 @@ describe("owner-authorized cross-Space package import", () => {
     const memberResponse = await spacesWorker.fetch(memberRequest, sourceDenied.env);
     expect(memberResponse.status).toBe(403);
     expect(await memberResponse.json()).toMatchObject({ error_code: "source_and_destination_space_admin_required" });
+
+    const destinationDenied = await crossSpaceImportHarness({ destinationRole: "member" });
+    const destinationResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", body, "product_end_user"), destinationDenied.env);
+    expect(destinationResponse.status).toBe(403);
+    expect(await destinationResponse.json()).toMatchObject({ error_code: "forbidden" });
+    expect(destinationDenied.destinationReleases.size).toBe(0);
 
     const untrusted = await crossSpaceImportHarness({ destinationTrust: false });
     const keyResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", body), untrusted.env);

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
@@ -23,6 +23,14 @@ interface SpaceActivity {
   credits: number;
   successRate: number | null;
   failed: boolean;
+}
+
+interface TemplateDependencyImportProgress {
+  sourceSpaceId: string;
+  importReview?: SpaceSharedExtensionImportReview | undefined;
+  importedPackages?: string[] | undefined;
+  installReview?: SpaceSharedExtensionInstallReview | undefined;
+  notice?: string | undefined;
 }
 
 function defaultSetupValues(preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
@@ -95,6 +103,8 @@ export default function SpacesPage() {
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
+  const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
   const [setupDraftRevision, setSetupDraftRevision] = React.useState(0);
   const [setupDraftNeedsReplacement, setSetupDraftNeedsReplacement] = React.useState(false);
@@ -118,6 +128,12 @@ export default function SpacesPage() {
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
+
+  function patchDependencyImport(extensionId: string, patch: Partial<TemplateDependencyImportProgress>) {
+    setDependencyImports(current => ({ ...current, [extensionId]: {
+      sourceSpaceId: current[extensionId]?.sourceSpaceId ?? "", ...current[extensionId], ...patch,
+    } }));
+  }
 
   async function openTemplateStatus(space: SpaceSummary) {
     if (!creds) return;
@@ -294,6 +310,7 @@ export default function SpacesPage() {
         try {
           const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
           await loadTemplateSetupDraft(created.id, fork.space_type_id, preview, true);
+          setDependencyImports({});
           setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview });
           setCreatedSpaceId(created.id);
           setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -348,6 +365,108 @@ export default function SpacesPage() {
     finally { setActivatingTemplate(false); }
   }
 
+  async function reviewTemplateDependencyImport(extensionId: string) {
+    if (!creds || !activationReview || dependencyImportBusy) return;
+    const dependency = activationReview.preview.dependencies.find(item => item.extension_id === extensionId);
+    const sourceSpaceId = dependencyImports[extensionId]?.sourceSpaceId;
+    if (!dependency?.required_version || dependency.status !== "unavailable") return;
+    if (!sourceSpaceId || sourceSpaceId === activationReview.spaceId) {
+      patchDependencyImport(extensionId, { notice: "Choose another Space in this tenant as the package source." }); return;
+    }
+    setDependencyImportBusy(extensionId);
+    patchDependencyImport(extensionId, { notice: undefined, importReview: undefined, installReview: undefined });
+    try {
+      const review = await previewSpaceSharedExtensionImport(activationReview.spaceId, sourceSpaceId, extensionId,
+        dependency.required_version, creds, dependency.required_digest);
+      const root = review.packages.find(pkg => pkg.extension_id === extensionId);
+      if (review.source_space_id !== sourceSpaceId || review.destination_space_id !== activationReview.spaceId
+        || review.extension_id !== extensionId || review.version !== dependency.required_version || !root
+        || root.version !== dependency.required_version || root.publisher_signature_verified !== true
+        || dependency.required_digest !== undefined && root.manifest_sha256 !== dependency.required_digest)
+        throw new Error("The source Space does not contain the exact signed release required by this template.");
+      patchDependencyImport(extensionId, { importReview: review, importedPackages: undefined,
+        notice: "Read-only package review is ready. No package bytes or installation state changed." });
+    } catch (error) {
+      patchDependencyImport(extensionId, { notice: `Package review failed: ${error instanceof Error ? error.message : "request failed"}` });
+    } finally { setDependencyImportBusy(null); }
+  }
+
+  async function importTemplateDependency(extensionId: string) {
+    if (!creds || !activationReview || dependencyImportBusy) return;
+    const progress = dependencyImports[extensionId];
+    const review = progress?.importReview;
+    if (!review || review.expires_at <= Date.now()) {
+      patchDependencyImport(extensionId, { notice: "The package review expired. Review the source package again." }); return;
+    }
+    setDependencyImportBusy(extensionId);
+    patchDependencyImport(extensionId, { notice: undefined });
+    try {
+      const result = await importSpaceSharedExtension(activationReview.spaceId, review, creds);
+      patchDependencyImport(extensionId, { importReview: undefined, installReview: undefined,
+        importedPackages: result.completed_packages.map(item => `${item.extension_id}@${item.version}`),
+        notice: "The signed package closure is in this Space. Review its requested authority before installation." });
+    } catch (error) {
+      patchDependencyImport(extensionId, { notice: `Import did not return a completion receipt: ${error instanceof Error ? error.message : "request failed"}. Retry this same review while it is valid, or review the source again; completed package copies are immutable and retryable.` });
+    } finally { setDependencyImportBusy(null); }
+  }
+
+  async function reviewTemplateDependencyInstall(extensionId: string) {
+    if (!creds || !activationReview || dependencyImportBusy) return;
+    const dependency = activationReview.preview.dependencies.find(item => item.extension_id === extensionId);
+    if (!dependency?.required_version) return;
+    setDependencyImportBusy(extensionId);
+    patchDependencyImport(extensionId, { notice: undefined, installReview: undefined });
+    try {
+      const review = await previewSpaceSharedExtensionInstall(activationReview.spaceId, extensionId, creds,
+        dependency.required_version, []);
+      if (review.space_id !== activationReview.spaceId || review.extension_id !== extensionId
+        || review.version !== dependency.required_version || review.requested_package.extension_id !== extensionId
+        || review.requested_package.version !== dependency.required_version
+        || dependency.required_digest !== undefined && review.requested_package.manifest_sha256 !== dependency.required_digest)
+        throw new Error("The destination package does not match the template's exact extension pin.");
+      patchDependencyImport(extensionId, { installReview: review, notice: review.ready_to_install
+        ? "Installation review is read-only. Review permissions, capabilities and dependencies below; no folder access will be granted by this flow."
+        : "The package is imported, but its destination installation review has blockers." });
+    } catch (error) {
+      patchDependencyImport(extensionId, { notice: `Installation review failed: ${error instanceof Error ? error.message : "request failed"}` });
+    } finally { setDependencyImportBusy(null); }
+  }
+
+  async function installTemplateDependency(extensionId: string) {
+    if (!creds || !activationReview || dependencyImportBusy) return;
+    const dependency = activationReview.preview.dependencies.find(item => item.extension_id === extensionId);
+    const review = dependencyImports[extensionId]?.installReview;
+    if (!dependency?.required_version || !review?.ready_to_install || !review.review_token) return;
+    if (review.review_expires_at !== undefined && review.review_expires_at <= Date.now()) {
+      patchDependencyImport(extensionId, { notice: "The installation review expired. Review the exact package again." }); return;
+    }
+    setDependencyImportBusy(extensionId);
+    patchDependencyImport(extensionId, { notice: undefined });
+    let installError: unknown;
+    try {
+      await installSpaceSharedExtension(activationReview.spaceId, extensionId, creds, [], dependency.required_version, review.review_token);
+    } catch (error) { installError = error; }
+    try {
+      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
+      setActivationReview(current => current && current.spaceId === activationReview.spaceId ? { ...current, preview } : current);
+      const refreshed = preview.dependencies.find(item => item.extension_id === extensionId);
+      const exactPinActive = refreshed?.status === "installed" && refreshed.available_version === dependency.required_version
+        && (dependency.required_digest === undefined || refreshed.available_digest === dependency.required_digest);
+      if (exactPinActive) {
+        patchDependencyImport(extensionId, { installReview: undefined,
+          notice: installError ? "The install response was ambiguous, but the refreshed template preview confirms the exact signed pin is active."
+            : "The exact signed pin is active in the destination Space. Refresh the preview and continue template activation." });
+        setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+      } else if (installError) {
+        patchDependencyImport(extensionId, { notice: `Installation was not confirmed: ${installError instanceof Error ? installError.message : "request failed"}. Refresh the package review before retrying.` });
+      } else {
+        patchDependencyImport(extensionId, { notice: "The install request completed, but the refreshed preview does not show the exact required pin as active." });
+      }
+    } catch (error) {
+      patchDependencyImport(extensionId, { notice: `Could not verify the install outcome: ${installError instanceof Error ? installError.message : error instanceof Error ? error.message : "request failed"}. Refresh the template preview before retrying.` });
+    } finally { setDependencyImportBusy(null); }
+  }
+
   async function recheckTemplateActivation() {
     if (!creds || !activationReview || refreshingPreview) return;
     setRefreshingPreview(true); setCreateError(null);
@@ -370,6 +489,7 @@ export default function SpacesPage() {
     try {
       const preview = await previewSpaceTemplateActivation(space.id, space.pending_blueprint_id, creds);
       await loadTemplateSetupDraft(space.id, space.pending_blueprint_id, preview, true);
+      setDependencyImports({});
       setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview });
       setCreatedSpaceId(space.id);
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -393,6 +513,7 @@ export default function SpacesPage() {
     pendingPreviewed.current.add(key);
     void previewSpaceTemplateActivation(pending.id, pending.pending_blueprint_id, creds).then(preview => {
       void loadTemplateSetupDraft(pending.id, pending.pending_blueprint_id!, preview, true).then(() => {
+        setDependencyImports({});
         setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
         setCreatedSpaceId(pending.id);
         setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -634,6 +755,61 @@ export default function SpacesPage() {
                 </div>}
                 {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation}; ${role.primitive_ids.join(", ") || "no primitives"}${role.gadget_actions.length ? `; ${role.gadget_actions.map(action => `${action.gadget_id} ${action.operations.join("/")} on ${action.tables.join(",")}`).join("; ")}` : ""})`).join("; ")}</div>}
               </div>}
+              {item.status === "unavailable" && item.required_version && (() => {
+                const progress = dependencyImports[item.extension_id] ?? { sourceSpaceId: "" };
+                const sourceSpaces = spaces.filter(space => space.id !== activationReview.spaceId && space.membership_status === "active"
+                  && space.space_status === "active" && (space.role === "owner" || space.role === "admin"));
+                const importReview = progress.importReview;
+                const installReview = progress.installReview;
+                const busy = dependencyImportBusy === item.extension_id;
+                return <section style={{ margin: "10px 0 4px 12px", padding: 10, border: "1px solid var(--border)", borderRadius: 8 }}>
+                  <strong>Import this exact release from another Space</strong>
+                  <p style={{ color: "var(--text3)", margin: "4px 0 8px" }}>Choose an active Space in this tenant where you are an owner or admin. Naelao verifies the signed dependency closure and required pin before any copy. Cross-tenant seller artifacts still need an authorized listing entitlement.</p>
+                  <label style={{ display: "grid", gap: 4 }}>Source Space
+                    <select aria-label={`Package source Space for ${item.extension_id}`} value={progress.sourceSpaceId}
+                      onChange={event => patchDependencyImport(item.extension_id, { sourceSpaceId: event.target.value,
+                        importReview: undefined, importedPackages: undefined, installReview: undefined, notice: undefined })}>
+                      <option value="">Choose a Space…</option>{sourceSpaces.map(space => <option key={space.id} value={space.id}>{space.name} · {space.id}</option>)}
+                    </select>
+                  </label>
+                  {sourceSpaces.length === 0 && <p role="status">No other active Space where you are an owner or admin is available in this account.</p>}
+                  <Button type="button" variant="secondary" disabled={busy || dependencyImportBusy !== null || !progress.sourceSpaceId}
+                    onClick={() => void reviewTemplateDependencyImport(item.extension_id)}>{busy ? "Verifying signed release…" : importReview ? "Refresh package review" : `Review ${item.extension_id}@${item.required_version}`}</Button>
+                  {importReview && <div style={{ marginTop: 8 }}>
+                    <p>Source {importReview.source_space_id} → destination {importReview.destination_space_id} · exact root {importReview.extension_id}@{importReview.version}
+                      {item.required_digest ? ` · required manifest SHA-256 ${item.required_digest}` : " · this template pins the exact version but does not record a manifest digest"}</p>
+                    <ul>{importReview.packages.map(pkg => <li key={`${pkg.extension_id}@${pkg.version}`}>
+                      {pkg.extension_id}@{pkg.version} · publisher {pkg.publisher_id} / key {pkg.publisher_key_id} · manifest {pkg.manifest_sha256} · artifacts {pkg.artifact_sha256} · signature verified
+                    </li>)}</ul>
+                    <p>This review is read-only. Import copies immutable signed package bytes and release metadata; it does not install packages or grant folder access.</p>
+                    <Button type="button" disabled={busy || dependencyImportBusy !== null || importReview.expires_at <= Date.now()}
+                      onClick={() => void importTemplateDependency(item.extension_id)}>{busy ? "Importing package closure…" : "Import reviewed package closure"}</Button>
+                  </div>}
+                  {progress.importedPackages && <div style={{ marginTop: 8 }}>
+                    <p role="status">Imported or verified immutable releases: {progress.importedPackages.join(", ") || "none"}. A partial response can be retried through the same package review.</p>
+                    <Button type="button" variant="secondary" disabled={busy || dependencyImportBusy !== null}
+                      onClick={() => void reviewTemplateDependencyInstall(item.extension_id)}>{busy ? "Reviewing destination…" : "Review destination installation"}</Button>
+                  </div>}
+                  {installReview && <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+                    <strong>Destination install review · {installReview.requested_package.extension_id}@{installReview.requested_package.version}</strong>
+                    {[installReview.requested_package, ...installReview.dependency_packages].map(pkg => <div key={`${pkg.extension_id}@${pkg.version}`} style={{ marginTop: 6 }}>
+                      <strong>{pkg.extension_id}@{pkg.version}</strong> · {pkg.publisher_id}/{pkg.publisher_key_id} · manifest {pkg.manifest_sha256} · {pkg.publisher_signature_verified ? "signature verified" : "signature not verified"} · {pkg.installed_state}
+                      <div>Permissions: {pkg.permissions.join(", ") || "none"}. Capabilities: {pkg.capabilities.join(", ") || "none"}.</div>
+                      <div>Folder access requested: {pkg.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ") || "none"}; this setup flow grants none.</div>
+                      <div>Provider connections: {pkg.connections.map(connection => `${connection.provider}/${connection.id}${connection.required ? " (required)" : " (optional)"}`).join(", ") || "none"}.</div>
+                    </div>)}
+                    {installReview.unavailable_dependencies.map(dep => <p key={`${dep.extension_id}@${dep.version}`} role="alert">{dep.extension_id}@{dep.version}: {dep.error}</p>)}
+                    {!installReview.dependency_resolution.resolved && <p role="alert">Dependency resolution failed: {installReview.dependency_resolution.error}.</p>}
+                    <p>Installation is a separate owner action. This flow grants no shared-folder access. After install, refresh the template preview to check every required pin again.</p>
+                    {installReview.ready_to_install && installReview.review_token
+                      ? <Button type="button" disabled={busy || dependencyImportBusy !== null || installReview.review_expires_at !== undefined && installReview.review_expires_at <= Date.now()}
+                        onClick={() => void installTemplateDependency(item.extension_id)}>{busy ? "Installing exact release…" : "Install reviewed exact release"}</Button>
+                      : <p role="status">Resolve the install-review blockers before installation.</p>}
+                  </div>}
+                  {progress.notice && <p role="status" style={{ color: "var(--text3)" }}>{progress.notice}</p>}
+                </section>;
+              })()}
+              {item.status === "version_mismatch" && <p role="alert" style={{ marginLeft: 12 }}>A different version is already installed. This import flow will not replace an installed version; review the supported update path first.</p>}
             </li>)}</ul> : <p>None required</p>}
             <strong>Project runtimes</strong>
             {activationReview.preview.runtime_requirements.length ? <ul>{activationReview.preview.runtime_requirements.map(item => <li key={`${item.project_id}:${item.runtime_id}`}>{item.project_id} · {item.runtime_id}: {item.status === "installable" ? "will install after approval" : item.status} ({item.reason}){item.required ? item.status === "installable" ? " · required" : " · required; install is blocked" : " · optional; omitted from this install"}{item.project_slots_required !== undefined && item.project_slots_limit !== undefined ? ` · ${item.project_slots_required} of ${item.project_slots_limit} project container slots planned` : ""}{item.resources ? ` · ${item.resources.cpu_cores} CPU cores / ${item.resources.memory_mb} MiB combined declared resources` : ""}</li>)}</ul> : <p>None declared</p>}

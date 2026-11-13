@@ -2329,13 +2329,14 @@ app.post(sharedExtensionImportReviewPath, async c => {
   const destinationSpaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const destination = await loadOwnedSpace(c, destinationSpaceId);
   if (!destination.ok) return c.json({ error_code: destination.error_code, message: destination.message }, destination.status);
-  const body = await c.req.json<{ source_space_id?: unknown; extension_id?: unknown; version?: unknown }>()
-    .catch(() => ({} as { source_space_id?: unknown; extension_id?: unknown; version?: unknown }));
+  const body = await c.req.json<{ source_space_id?: unknown; extension_id?: unknown; version?: unknown; expected_manifest_sha256?: unknown }>()
+    .catch(() => ({} as { source_space_id?: unknown; extension_id?: unknown; version?: unknown; expected_manifest_sha256?: unknown }));
   const sourceSpaceId = typeof body.source_space_id === "string" ? body.source_space_id : "";
   const extensionId = typeof body.extension_id === "string" ? body.extension_id : "";
   const version = typeof body.version === "string" ? body.version : "";
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sourceSpaceId) || sourceSpaceId === destinationSpaceId
-    || !/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version))
+    || !/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+    || body.expected_manifest_sha256 !== undefined && (typeof body.expected_manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expected_manifest_sha256)))
     return c.json({ error_code: "extension_package_import_identity_invalid" }, 400);
   const source = await loadOwnedSpace(c, sourceSpaceId);
   if (!source.ok) return c.json({ error_code: "source_space_not_found" }, 404);
@@ -2348,6 +2349,9 @@ app.post(sharedExtensionImportReviewPath, async c => {
     const status = root.error === "release_not_found" ? 404 : root.error.includes("publisher_key_untrusted") ? 403 : 409;
     return c.json({ error_code: `extension_package_${root.error}` }, status);
   }
+  if (typeof body.expected_manifest_sha256 === "string" && root.package.manifestSha256 !== body.expected_manifest_sha256)
+    return c.json({ error_code: "extension_package_import_pin_mismatch", extension_id: extensionId, version,
+      expected_manifest_sha256: body.expected_manifest_sha256, observed_manifest_sha256: root.package.manifestSha256 }, 409);
   const closure = await inspectSpacePackageDependencyClosure(c.env, destination.tenantId, sourceSpaceId, root.package, trustedSpaces);
   if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, 409);
   const packages = [...closure.packages, root.package];
@@ -2357,7 +2361,8 @@ app.post(sharedExtensionImportReviewPath, async c => {
     actorId: identity.userId ?? "", extensionId, version, packages, expiresAt });
   const payload = JSON.stringify(claims);
   return c.json({ source_space_id: sourceSpaceId, destination_space_id: destinationSpaceId, extension_id: extensionId,
-    version, expires_at: expiresAt, review_token: encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET)),
+    version, ...(typeof body.expected_manifest_sha256 === "string" ? { expected_manifest_sha256: body.expected_manifest_sha256 } : {}),
+    expires_at: expiresAt, review_token: encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET)),
     packages: packages.map(pkg => ({ extension_id: pkg.manifest.id, version: pkg.manifest.bundle?.version ?? "",
       manifest_sha256: pkg.manifestSha256, artifact_sha256: pkg.artifactSha256, publisher_id: pkg.publisherId,
       publisher_key_id: pkg.publisherKeyId, publisher_signature_verified: true })), mutates_storage: false }, 200,
@@ -2368,13 +2373,14 @@ app.post(sharedExtensionImportPath, async c => {
   const destinationSpaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const destination = await loadOwnedSpace(c, destinationSpaceId);
   if (!destination.ok) return c.json({ error_code: destination.error_code, message: destination.message }, destination.status);
-  const body = await c.req.json<{ source_space_id?: unknown; extension_id?: unknown; version?: unknown; review_token?: unknown }>()
-    .catch(() => ({} as { source_space_id?: unknown; extension_id?: unknown; version?: unknown; review_token?: unknown }));
+  const body = await c.req.json<{ source_space_id?: unknown; extension_id?: unknown; version?: unknown; review_token?: unknown; expected_manifest_sha256?: unknown }>()
+    .catch(() => ({} as { source_space_id?: unknown; extension_id?: unknown; version?: unknown; review_token?: unknown; expected_manifest_sha256?: unknown }));
   const sourceSpaceId = typeof body.source_space_id === "string" ? body.source_space_id : "";
   const extensionId = typeof body.extension_id === "string" ? body.extension_id : "";
   const version = typeof body.version === "string" ? body.version : "";
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sourceSpaceId) || sourceSpaceId === destinationSpaceId
     || !/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+    || body.expected_manifest_sha256 !== undefined && (typeof body.expected_manifest_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expected_manifest_sha256))
     || typeof body.review_token !== "string" || body.review_token.length > 16_384)
     return c.json({ error_code: "extension_package_import_request_invalid" }, 400);
   const source = await loadOwnedSpace(c, sourceSpaceId);
@@ -2385,6 +2391,9 @@ app.post(sharedExtensionImportPath, async c => {
   const root = await inspectSignedSpacePackageRelease(c.env, destination.tenantId, sourceSpaceId, extensionId, version,
     [sourceSpaceId, destinationSpaceId]);
   if (!root.ok) return c.json({ error_code: `extension_package_${root.error}` }, root.error === "release_not_found" ? 404 : 409);
+  if (typeof body.expected_manifest_sha256 === "string" && root.package.manifestSha256 !== body.expected_manifest_sha256)
+    return c.json({ error_code: "extension_package_import_pin_mismatch", extension_id: extensionId, version,
+      expected_manifest_sha256: body.expected_manifest_sha256, observed_manifest_sha256: root.package.manifestSha256 }, 409);
   const closure = await inspectSpacePackageDependencyClosure(c.env, destination.tenantId, sourceSpaceId, root.package,
     [sourceSpaceId, destinationSpaceId]);
   if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, 409);
