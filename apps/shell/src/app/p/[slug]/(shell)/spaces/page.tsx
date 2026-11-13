@@ -58,7 +58,8 @@ function TemplateSetupInput({ projectId, field, value, onChange }: {
   onChange: (value: SpaceTemplateSetupValue | undefined) => void;
 }) {
   const inputId = `template-${projectId}-${field.id}`;
-  const locale = typeof navigator === "undefined" ? "en" : navigator.language;
+  const [locale, setLocale] = React.useState("en");
+  React.useEffect(() => { if (typeof navigator !== "undefined") setLocale(navigator.language || "en"); }, []);
   const label = resolveBlueprintSetupFieldLabel(field, locale);
   const helpText = resolveBlueprintSetupFieldHelpText(field, locale);
   return <label htmlFor={inputId} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(180px,1fr)", alignItems: "center", gap: 8, marginTop: 8 }}>
