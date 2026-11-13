@@ -348,6 +348,8 @@ export interface ChannelContract extends ExtensionContractBase {
   outboundEvents: readonly string[];
   /** Named owner-published project collections the channel host may retrieve before dispatch. */
   knowledgeCollections?: readonly string[];
+  /** Explicit opt-in to bounded host-mediated text extraction from this exact inbound message. */
+  attachmentAccess?: { mode: "read_text"; maxFiles?: number; maxTotalBytes?: number };
   /** Optional host-managed per-conversation state; disabled unless explicitly enabled. */
   session?: { enabled: true; maxBytes?: number; ttlDays?: number };
 }
@@ -361,7 +363,7 @@ export interface ChannelOnlyExtensionContext {
     /** Validated settings from this exact installation, available only with extension.settings.read. */
     settings?: { schemaVersion: 1 | 2; revision: number; values: Readonly<Record<string, string | number | boolean>> };
     /** Request one host-bounded, source-grounded response; the handler cannot choose models or tools. */
-    answer(input: { question: string }): Promise<{ answerId: string }>;
+    answer(input: { question: string; attachmentIds?: readonly string[] }): Promise<{ answerId: string }>;
     reply(message: { text: string }): Promise<{ messageId: string }>;
     /** Available only when the owner-approved channel declaration enables bounded session state. */
     session?: { get(): Promise<unknown>; set(value: unknown): Promise<{ saved: true }> };
@@ -451,7 +453,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "parallelExecution", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "attachmentAccess", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "parallelExecution", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -540,6 +542,14 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
         && new Set(raw.knowledgeCollections).size === raw.knowledgeCollections.length
         && (raw.knowledgeCollections as unknown[]).every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{2,63}$/.test(id)
           && !/^(all|all[_-]|project[_-]?all|space[_-]?all)/i.test(id)), "invalid_channel_knowledge_collections");
+    }
+    if (raw.attachmentAccess !== undefined) {
+      contractAssert(raw.attachmentAccess !== null && typeof raw.attachmentAccess === "object" && !Array.isArray(raw.attachmentAccess), "invalid_channel_attachment_access");
+      const access = raw.attachmentAccess as Record<string, unknown>;
+      rejectUnknownContractKeys(access, new Set(["mode", "maxFiles", "maxTotalBytes"]));
+      contractAssert(access.mode === "read_text", "invalid_channel_attachment_mode");
+      contractAssert(access.maxFiles === undefined || (Number.isInteger(access.maxFiles) && Number(access.maxFiles) >= 1 && Number(access.maxFiles) <= 3), "invalid_channel_attachment_max_files");
+      contractAssert(access.maxTotalBytes === undefined || (Number.isInteger(access.maxTotalBytes) && Number(access.maxTotalBytes) >= 1 && Number(access.maxTotalBytes) <= 2 * 1024 * 1024), "invalid_channel_attachment_max_bytes");
     }
     if (raw.session !== undefined) {
       contractAssert(raw.session !== null && typeof raw.session === "object" && !Array.isArray(raw.session), "invalid_channel_session");

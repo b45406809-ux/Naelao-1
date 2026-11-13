@@ -23,6 +23,17 @@ import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
 
+function declaresChannelTextAttachmentAccess(manifestText: string): boolean {
+  try {
+    const value = JSON.parse(manifestText) as {
+      channels?: Array<{ attachmentAccess?: { mode?: unknown } }>;
+      bundle?: { primitives?: Array<{ kind?: string; attachmentAccess?: { mode?: unknown } }> };
+    };
+    return [...(Array.isArray(value.channels) ? value.channels : []), ...(Array.isArray(value.bundle?.primitives) ? value.bundle.primitives.filter(item => item.kind === "channel") : [])]
+      .some(channel => channel?.attachmentAccess?.mode === "read_text");
+  } catch { return false; }
+}
+
 export const CHANNELS: Array<{
   id: ChannelId;
   name: string;
@@ -513,6 +524,7 @@ export function ChannelConnect({
   const [changingExtension, setChangingExtension] = React.useState<string | null>(null);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
   const [confirmUpgrade, setConfirmUpgrade] = React.useState(false);
+  const [attachmentAccessApproved, setAttachmentAccessApproved] = React.useState(false);
   const [canvasManifestDraft, setCanvasManifestDraft] = React.useState("");
   const [canvasArtifactsDraft, setCanvasArtifactsDraft] = React.useState("");
   const [canvasInstallConfirmed, setCanvasInstallConfirmed] = React.useState(false);
@@ -674,7 +686,8 @@ export function ChannelConnect({
 
   async function installChannelExtension(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!projectId || installingExtension || !installManifestDraft.trim()) return;
+    const requestsAttachmentRead = declaresChannelTextAttachmentAccess(installManifestDraft);
+    if (!projectId || installingExtension || !installManifestDraft.trim() || (requestsAttachmentRead && !attachmentAccessApproved)) return;
     setInstallingExtension(true); setError(null); setExtensionNotice(null);
     try {
       const manifest = JSON.parse(installManifestDraft) as unknown;
@@ -685,11 +698,11 @@ export function ChannelConnect({
       const current = extensionInstallations.find(item => item.extension_id === candidate.id && item.scope === installScope && (item.instance_key ?? "default") === "default");
       const permissionExpansionApproved = confirmExtensionAuthorityExpansion(current, candidate);
       if (permissionExpansionApproved === null) return;
-      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources, confirmUpgrade, permissionExpansionApproved);
+      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources, confirmUpgrade, permissionExpansionApproved, attachmentAccessApproved);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Channel package installation failed");
       const updated = await listChannelExtensionInstallations(spaceId, projectId, session);
       setExtensionInstallations(updated);
-      setInstallManifestDraft(""); setInstallSourcesDraft(""); setConfirmUpgrade(false); setInstallDialogOpen(false);
+      setInstallManifestDraft(""); setInstallSourcesDraft(""); setConfirmUpgrade(false); setAttachmentAccessApproved(false); setInstallDialogOpen(false);
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't install this channel package.");
@@ -708,7 +721,7 @@ export function ChannelConnect({
         && (item.instance.instance_key ?? "default") === canvasInstanceKey.trim());
       const permissionExpansionApproved = confirmExtensionAuthorityExpansion(current ? { permissions: current.manifest.declaredPermissions ?? [], capabilities: current.manifest.capabilityRequirements ?? [] } : undefined, candidate);
       if (permissionExpansionApproved === null) return;
-      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() }, permissionExpansionApproved);
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() }, permissionExpansionApproved, canvasInstallConfirmed);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
       setExtensionNotice(installed.canvas_mount_warning ?? null);
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
@@ -833,15 +846,16 @@ export function ChannelConnect({
             </select>
           </label>
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="channel-extension-manifest">Install manifest JSON</label>
-          <textarea id="channel-extension-manifest" value={installManifestDraft} onChange={event => setInstallManifestDraft(event.target.value)} rows={8} spellCheck={false}
+          <textarea id="channel-extension-manifest" value={installManifestDraft} onChange={event => { setInstallManifestDraft(event.target.value); setAttachmentAccessApproved(false); }} rows={8} spellCheck={false}
             placeholder={'{\n  "id": "ext_student_helper",\n  "bundle": { "kind": "extension_bundle", "...": "..." }\n}'}
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="channel-extension-sources">Handler source files (optional JSON map)</label>
           <textarea id="channel-extension-sources" value={installSourcesDraft} onChange={event => setInstallSourcesDraft(event.target.value)} rows={8} spellCheck={false}
             placeholder={'{\n  "./student-answer.ts": "export async function run(args, ctx) { ... }"\n}'}
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          {declaresChannelTextAttachmentAccess(installManifestDraft) && <label style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11.5 }}><input type="checkbox" checked={attachmentAccessApproved} onChange={event => setAttachmentAccessApproved(event.target.checked)} />Allow this signed handler to request bounded text extraction from supported files attached to its exact inbound message. The host returns untrusted extracted text only; it does not expose provider URLs or storage keys. Limits are at most 3 files and 2 MiB total.</label>}
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
-          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim()}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
+          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim() || (declaresChannelTextAttachmentAccess(installManifestDraft) && !attachmentAccessApproved)}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
         </form>
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
           <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>Installed project handlers</div>
@@ -860,6 +874,7 @@ export function ChannelConnect({
               </div>
             </div>
             {installation.status === "disabled" && <div style={{ color: "var(--text3)", fontSize: 11 }}>New handler invocations are paused. Existing work may finish; data and grants are retained.</div>}
+            {installation.channels.some(channel => channel.attachment_access) && <div style={{ color: "var(--text3)", fontSize: 11 }}>This package may request host-extracted text from supported attachments on its exact inbound message. Extracted content is untrusted and limited to the declared file and byte caps.</div>}
             {installation.status === "active" && <>{installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} />)}
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
@@ -912,7 +927,7 @@ export function ChannelConnect({
             <input id="canvas-publisher-signature" value={canvasPublisherSignature} onChange={event => setCanvasPublisherSignature(event.target.value)} required placeholder="Sign the canonical manifest and original artifact map with @naelao/agent-sdk" />
           </label>
           <div style={{ fontSize: 10.5, color: "var(--text3)" }}>Create and retain your P-256 private key outside Naelao. Sign the host-canonical manifest and exact original path-to-source map, then paste the returned signature. Example: <code>const manifestJson = canonicalExtensionManifestForPublisher(manifest); const signed = await signExtensionPublisherRelease(signingInput); signed.signature</code>. These helpers are exported by <code>@naelao/agent-sdk</code>. Only the signature is sent to Naelao.</div>
-          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, and each workflow toolNames grant. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, each workflow toolNames grant, and any channel attachment text access. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
           <div><button type="submit" className="btn-ghost" disabled={installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed || !canvasPublisherKeyId || !canvasPublisherSignature.trim()}>{installingExtension ? "Installing…" : "Review and install Canvas bundle"}</button></div>
         </form>

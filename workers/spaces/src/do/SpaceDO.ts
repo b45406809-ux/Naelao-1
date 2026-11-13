@@ -3756,7 +3756,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             ...(publisher?.publisher_key_id ? { publisher_key_id: publisher.publisher_key_id } : {}), publisher_attestation_valid: publisher ? publisherReleaseFieldsValid(publisher) : row.release_version === null,
             permissions: [...new Set(manifest.declaredPermissions)].sort(), capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
             name: manifest.id ?? row.extension_id,
-            channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
+            channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.attachmentAccess ? { attachment_access: { mode: channel.attachmentAccess.mode, max_files: channel.attachmentAccess.maxFiles ?? 3, max_total_bytes: channel.attachmentAccess.maxTotalBytes ?? 2 * 1024 * 1024 } } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
         });
         return Response.json({ installations });

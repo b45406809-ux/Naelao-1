@@ -48,6 +48,18 @@ describe("scoped channel attachment storage", () => {
     expect(explicit?.mimeType).toBe("application/x-provider-recorded");
   });
 
+  it("binds opted-in channel attachments to one project, installation, and provider connection", async () => {
+    const state = setup();
+    const input = { ...state, platformSecret: "secret", tenantId: "tenant-a", spaceId: "space-a", taskId: "provider-event", channel: "whatsapp", files: [file], now: 1_800_000_000_000 };
+    const first = await storeChannelAttachments({ ...input, extensionScope: { projectId: "project-a", installationId: "install-a", providerConnectionId: "connection-a" } });
+    const otherInstall = await storeChannelAttachments({ ...input, extensionScope: { projectId: "project-a", installationId: "install-b", providerConnectionId: "connection-a" } });
+    expect(first[0]?.id).not.toBe(otherInstall[0]?.id);
+    const rows = state.queries.filter(query => query.sql.includes("INSERT OR IGNORE INTO channel_attachments"));
+    expect(rows[0]?.sql).toContain("project_id, installation_id, provider_connection_id");
+    expect(rows[0]?.values.slice(-3)).toEqual(["project-a", "install-a", "connection-a"]);
+    expect(rows[1]?.values.slice(-3)).toEqual(["project-a", "install-b", "connection-a"]);
+  });
+
   it("rejects zero-byte, oversized, and excessive attachment sets before object storage", async () => {
     const state = setup();
     const input = { ...state, platformSecret: "secret", tenantId: "tenant-a", spaceId: "space-a", taskId: "task", channel: "discord" };

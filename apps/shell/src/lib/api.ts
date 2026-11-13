@@ -1995,7 +1995,7 @@ export interface ChannelExtensionInstallation {
   release_version: string | null;
   permissions?: string[];
   capabilities?: string[];
-  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
+  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; attachment_access?: { mode: "read_text"; max_files: number; max_total_bytes: number }; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
 }
 
@@ -2201,20 +2201,21 @@ export async function installProjectChannelExtension(
   scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND",
   handlerSources?: Record<string, string>,
   upgrade = false,
-  permissionExpansionApproved = false
+  permissionExpansionApproved = false,
+  attachmentAccessApproved = false
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/channel-extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
   });
 }
 
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
   artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
-  permissionExpansionApproved = false,
+  permissionExpansionApproved = false, attachmentAccessApproved = false,
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}), ...(permissionExpansionApproved ? { permissionExpansionApproved: true } : {}), ...(attachmentAccessApproved ? { attachmentAccessApproved: true } : {}) }), session,
   });
 }
 

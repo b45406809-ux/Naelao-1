@@ -10003,7 +10003,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -10023,7 +10023,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const installation = await readBoundedResponseJson<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
       manifest: { id?: string; bundle?: { id?: string; version?: string }; declaredPermissions?: string[]; capabilityRequirements?: string[];
-        settingsSchema?: { schemaVersion?: number }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+        settingsSchema?: { schemaVersion?: number }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; attachmentAccess?: { mode?: string; maxFiles?: number; maxTotalBytes?: number }; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
       release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
       phone_settings?: { schema_version?: number; revision?: number; settings?: unknown };
     }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
@@ -10046,6 +10046,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (session && (session.enabled !== true
       || (session.maxBytes !== undefined && (!Number.isInteger(session.maxBytes) || session.maxBytes < 1 || session.maxBytes > 4_096))
       || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
+    const attachmentAccess = declaration.attachmentAccess;
+    if (attachmentAccess && (attachmentAccess.mode !== "read_text"
+      || (attachmentAccess.maxFiles !== undefined && (!Number.isInteger(attachmentAccess.maxFiles) || attachmentAccess.maxFiles < 1 || attachmentAccess.maxFiles > 3))
+      || (attachmentAccess.maxTotalBytes !== undefined && (!Number.isInteger(attachmentAccess.maxTotalBytes) || attachmentAccess.maxTotalBytes < 1 || attachmentAccess.maxTotalBytes > 2 * 1024 * 1024)))) return null;
     let settings: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> } | undefined;
     const settingsCapability = installation.manifest.capabilityRequirements?.includes("extension.settings.read") ?? false;
     const settingsPermission = installation.manifest.declaredPermissions?.includes("extension.settings.read") ?? false;
@@ -10083,6 +10087,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (actual !== input.scriptSha256) return null;
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
+      ...(attachmentAccess ? { attachmentAccess: { maxFiles: attachmentAccess.maxFiles ?? 3, maxTotalBytes: attachmentAccess.maxTotalBytes ?? 2 * 1024 * 1024 } } : {}),
       ...(settings ? { settings } : {}),
       ...(session?.enabled ? { session: { maxBytes: session.maxBytes ?? 1_024, ttlDays: session.ttlDays ?? 30 } } : {}),
       limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
@@ -10417,6 +10422,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             escalated++; continue;
           }
         }
+        let channelAttachments: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number; expiresAt: string }> = [];
+        if (handler.attachmentAccess && msg.task_id && msg.channel_extension_instance_id && this.env.AGENTS_WORKER) {
+          try {
+            const listing = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/channel-list", {
+              method: "POST", headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
+              body: JSON.stringify({ tenantId, spaceId, taskId: msg.task_id, channel: msg.channel,
+                projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+                providerConnectionId: msg.provider_connection_id, maxFiles: handler.attachmentAccess.maxFiles,
+                maxTotalBytes: handler.attachmentAccess.maxTotalBytes }),
+            }));
+            if (listing.ok) {
+              const result = await readBoundedResponseJson<{ attachments?: Array<{ id?: string; filename?: string; mime_type?: string; size_bytes?: number; expires_at?: string }> }>(listing, 32 * 1024);
+              let totalBytes = 0;
+              for (const row of (result.attachments ?? []).slice(0, handler.attachmentAccess.maxFiles)) {
+                if (typeof row.id !== "string" || !/^ca_[a-f0-9]{40}$/.test(row.id) || typeof row.filename !== "string"
+                  || typeof row.mime_type !== "string" || !Number.isSafeInteger(row.size_bytes) || Number(row.size_bytes) <= 0
+                  || typeof row.expires_at !== "string" || totalBytes + Number(row.size_bytes) > handler.attachmentAccess.maxTotalBytes) continue;
+                totalBytes += Number(row.size_bytes);
+                channelAttachments.push({ id: row.id, filename: row.filename.slice(0, 120), mimeType: row.mime_type.slice(0, 120),
+                  sizeBytes: Number(row.size_bytes), expiresAt: row.expires_at });
+              }
+            }
+          } catch { /* Attachment access remains unavailable; the handler receives no handles. */ }
+        }
         let channelSessionState: unknown = null;
         let channelNamedSessionStates: Record<string, unknown> = {};
         if (handler.session) {
@@ -10436,7 +10465,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const run = await channelRunner.call(engineEnv.codeRunner, {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
           installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
-          channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000), ...(publishedKnowledge.length ? { knowledge: publishedKnowledge } : {}) } },
+          channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000), ...(publishedKnowledge.length ? { knowledge: publishedKnowledge } : {}), ...(channelAttachments.length ? { attachments: channelAttachments } : {}) } },
             conversation: { id: msg.session_id }, ...(handler.session ? { session: { state: channelSessionState, maxBytes: handler.session.maxBytes }, sessions: { states: channelNamedSessionStates, maxBytes: handler.session.maxBytes } } : {}) },
           limits: handler.limits,
         });
@@ -10444,17 +10473,47 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
           ? run.channel_replies[0]!.trim() : "";
         if (run.ok && run.channel_answers?.length === 1 && !(run.channel_replies?.length)) {
-          if (!publishedKnowledge.length) {
+          const answerRequest = run.channel_answers[0]!;
+          let attachmentSources: Array<{ title: string; content: string }> = [];
+          if (answerRequest.attachmentIds?.length) {
+            const available = new Map(channelAttachments.map(item => [item.id, item]));
+            if (!msg.task_id || !msg.channel_extension_instance_id || !this.env.AGENTS_WORKER
+              || answerRequest.attachmentIds.some(id => !available.has(id))) {
+              this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='attachment_scope_invalid' WHERE message_id=?", msg.id);
+              takeover("The requested attachment is unavailable to this installed handler or message. Review the conversation manually."); escalated++; continue;
+            }
+            let attachmentReadFailed = false;
+            for (const id of answerRequest.attachmentIds) {
+              const metadata = available.get(id)!;
+              try {
+                const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/read-text", {
+                  method: "POST", headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
+                  body: JSON.stringify({ tenantId, spaceId, taskId: msg.task_id, id,
+                    extensionScope: { channel: msg.channel, projectId: msg.project_id,
+                      installationId: msg.channel_extension_instance_id, providerConnectionId: msg.provider_connection_id } }),
+                }));
+                if (!response.ok) { attachmentReadFailed = true; break; }
+                const extracted = await readBoundedResponseJson<{ text?: string; mime_type?: string }>(response, 128 * 1024);
+                if (typeof extracted.text !== "string" || !extracted.text.trim() || extracted.text.length > 96 * 1024) { attachmentReadFailed = true; break; }
+                attachmentSources.push({ title: metadata.filename, content: extracted.text.slice(0, 8 * 1024) });
+              } catch { attachmentReadFailed = true; break; }
+            }
+            if (attachmentReadFailed) {
+              this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='attachment_read_failed' WHERE message_id=?", msg.id);
+              takeover("The requested attachment could not be read within the supported text limits. Review the conversation manually."); escalated++; continue;
+            }
+          }
+          if (!publishedKnowledge.length && !attachmentSources.length) {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='published_knowledge_required' WHERE message_id=?", msg.id);
-            takeover("The handler requested a generated answer but has no owner-published Knowledge sources. Review the conversation manually."); escalated++; continue;
+            takeover("The handler requested a generated answer without an approved Knowledge source or message attachment. Review the conversation manually."); escalated++; continue;
           }
           let answer: Awaited<ReturnType<GatewayReasoner["answerExternal"]>>;
           try {
             if (await tenantSuspended()) {
               return stopForSuspension();
             }
-            answer = await reasoner.answerExternal({ question: run.channel_answers[0]!,
-              sources: publishedKnowledge.map(source => ({ title: source.title, content: source.content })), maxOutputTokens: 320 });
+            answer = await reasoner.answerExternal({ question: answerRequest.question,
+              sources: [...publishedKnowledge.map(source => ({ title: source.title, content: source.content })), ...attachmentSources], maxOutputTokens: 320 });
           } catch {
             if (msg.project_id && channelReservation.enabled) {
               await releaseExternalAnswerSpend({ reserved: channelReservation.reserved,

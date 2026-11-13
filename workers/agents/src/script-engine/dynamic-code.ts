@@ -135,7 +135,9 @@ export default {
       answer:async(input)=>{
         if (!input || typeof input.question !== 'string' || !input.question.trim() || input.question.length > 2000) throw new Error('channel_answer_invalid');
         if (answerRequests.length >= 1) throw new Error('channel_answer_limit');
-        answerRequests.push(input.question.trim());
+        const attachmentIds = input.attachmentIds;
+        if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || attachmentIds.length > 3 || attachmentIds.some(id => typeof id !== 'string' || !/^ca_[a-f0-9]{40}$/.test(id)) || new Set(attachmentIds).size !== attachmentIds.length)) throw new Error('channel_answer_attachments_invalid');
+        answerRequests.push({question:input.question.trim(), ...(attachmentIds?.length ? {attachmentIds:[...attachmentIds]} : {})});
         return freeze({answerId:'queued'});
       },
       reply:async(message)=>{

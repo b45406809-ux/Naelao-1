@@ -22,6 +22,8 @@ The included order operation is an integration example, not a broker connection 
 
 The external handler answers only from `course_material` after the owner publishes it. Its bounded channel session state is separate from project Knowledge and internal workflow state.
 
+Channel packages can separately opt in to `attachmentAccess: { "mode": "read_text", "maxFiles": 3, "maxTotalBytes": 2097152 }`. The project installer requires the owner or admin to approve this access explicitly. The host then shows opaque metadata for supported text, PDF, and DOCX files attached to the exact inbound message. A handler can select those IDs in `ctx.channel.answer({ question, attachmentIds })`; the host rechecks the active installation and message scope, extracts bounded text, and sends it to the host answer service as untrusted source material. The handler never receives provider URLs, credentials, object keys, or raw file bytes. Attachment access is disabled when the declaration is omitted. Image analysis, audio transcription, unsupported MIME types, and live provider behavior are not part of this text-only contract.
+
 ## Current product boundary
 
 The bundle-to-role relationship, project install, Canvas/Gadget mounts, public channel handler, and Durable Workflow execution are implemented. The existing planner topology and workspace execution tiers are unchanged.

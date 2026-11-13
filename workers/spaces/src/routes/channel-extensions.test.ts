@@ -188,6 +188,20 @@ describe("project channel-only extension install route", () => {
     });
   });
 
+  it("requires an owner-visible explicit approval for scoped attachment text access", async () => {
+    const manifest = packageManifest();
+    Object.assign(manifest.bundle.primitives[0]!, { attachmentAccess: { mode: "read_text", maxFiles: 2, maxTotalBytes: 512_000 } });
+    const denied = await post(setup("owner").env, "owner", manifest);
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ error_code: "channel_attachment_access_approval_required" });
+
+    const h = setup("owner");
+    const accepted = await post(h.env, "owner", manifest, { attachmentAccessApproved: true });
+    expect(accepted.status).toBe(201);
+    const install = h.forwarded.find(request => new URL(request.url).pathname === "/extensions");
+    expect(await install?.json()).toMatchObject({ manifest: { bundle: { primitives: [{ attachmentAccess: { mode: "read_text", maxFiles: 2 } }] } } });
+  });
+
   it("rejects packages that mix in unsupported UI or member-level primitives", async () => {
     const h = setup("owner");
     const response = await post(

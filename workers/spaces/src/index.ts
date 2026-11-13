@@ -3260,8 +3260,8 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
     const active=await c.env.PLATFORM_DB.prepare("SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'").bind(spaceId,identity.tenantId).first();
     if(!active)return c.json({error_code:"space_unavailable"},403);
   }
-  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean }>()
-    .catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean }));
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean }>()
+    .catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -3271,6 +3271,9 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
     manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["channel.invoke"] });
     const bundle = manifest.bundle;
     const channels = manifest.channels ?? [];
+    if (channels.some(channel => channel.attachmentAccess !== undefined) && body.attachmentAccessApproved !== true) {
+      return c.json({ error_code: "channel_attachment_access_approval_required" }, 409);
+    }
     const supportedProviders = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
     if (!bundle || !channels.length || channels.length > 8
       || bundle.primitives.some(primitive => primitive.kind !== "channel")
@@ -3423,8 +3426,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>()
-    .catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>()
+    .catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; permissionExpansionApproved?: boolean; attachmentAccessApproved?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -3452,6 +3455,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       || role.primitiveIds.some(id => !workflowIds.has(id)))) throw new Error("extension_worker_role_runtime_not_supported");
     const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
     const channels = bundle.primitives.filter(item => item.kind === "channel");
+    if (channels.some(channel => channel.kind === "channel" && channel.attachmentAccess !== undefined) && body.attachmentAccessApproved !== true) {
+      return c.json({ error_code: "channel_attachment_access_approval_required" }, 409);
+    }
     const requirements = bundle.connections ?? [];
     if (channels.some(item => !providerAllowlist.has(item.provider) || !item.connectionId || !requirements.some(connection => connection.id === item.connectionId && connection.provider === item.provider && connection.required))
       || requirements.some(connection => !providerAllowlist.has(connection.provider) || !channels.some(channel => channel.kind === "channel" && channel.connectionId === connection.id)))

@@ -214,7 +214,7 @@ export interface ScriptRunResult {
   runtime_receipt?: { execution_id: string; code_digest?: string; backend: string; wall_ms: number; cpu_ms?: number; memory_limit_mb?: number; output_bytes?: number; cost_usd?: number; cost_source: "provider" | "unreported" };
   /** Captured public-channel replies; emitted only by the restricted channel handler runner. */
   channel_replies?: string[];
-  channel_answers?: string[];
+  channel_answers?: Array<{ question: string; attachmentIds?: string[] }>;
   /** A guest's bounded update is persisted only after confirmed outbound delivery. */
   channel_session_update?: unknown;
   /** Named opaque session records are persisted only after confirmed outbound delivery. */

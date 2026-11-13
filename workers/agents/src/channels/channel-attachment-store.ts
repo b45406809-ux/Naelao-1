@@ -35,6 +35,8 @@ export async function storeChannelAttachments(input: {
   spaceId: string;
   taskId: string;
   channel: string;
+  /** Optional channel-installation fence; omitted for non-extension task attachments. */
+  extensionScope?: { projectId: string | null; installationId: string; providerConnectionId: string | null };
   files: readonly DownloadedChannelAttachment[];
   /** Per-ingress override for separately bounded first-party workspace uploads. */
   limits?: { maxFiles: number; maxFileBytes: number; maxTotalBytes: number };
@@ -51,7 +53,13 @@ export async function storeChannelAttachments(input: {
     throw new Error("channel_attachment_size_limit");
   }
   const scope = `${input.tenantId}\0${input.spaceId}\0${input.taskId}`;
-  const scopeHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope)))]
+  const extensionScope = input.extensionScope
+    ? `${input.extensionScope.projectId ?? ""}\0${input.extensionScope.installationId}\0${input.extensionScope.providerConnectionId ?? ""}`
+    : "";
+  // Preserve legacy retry IDs/object paths for attachment callers that do not opt into a
+  // channel-installation fence; only the new extension-scoped lane changes its derivation.
+  const idScope = input.extensionScope ? `${scope}\0${extensionScope}` : scope;
+  const scopeHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(idScope)))]
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(input.platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const taskSegment = input.taskId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
@@ -66,7 +74,7 @@ export async function storeChannelAttachments(input: {
     const safeFilename = file.filename.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").slice(0, 120) || "attachment";
     const mimeType = file.mimeType === "application/octet-stream" ? inferWorkspaceContentType(safeFilename) : file.mimeType;
     const idDigest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey,
-      new TextEncoder().encode(`${input.channel}\0${scope}\0${recordIndex}`)));
+      new TextEncoder().encode(`${input.channel}\0${idScope}\0${recordIndex}`)));
     const id = `ca_${[...idDigest.slice(0, 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     const existing = await input.db.prepare(
       "SELECT id FROM channel_attachments WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1",
@@ -76,9 +84,11 @@ export async function storeChannelAttachments(input: {
       await input.bucket.put(key, file.bytes, { httpMetadata: { contentType: mimeType } });
       await input.db.prepare(
         `INSERT OR IGNORE INTO channel_attachments
-         (id, tenant_id, space_id, task_id, channel, object_key, filename, mime_type, size_bytes, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(id, input.tenantId, input.spaceId, input.taskId, input.channel, key, safeFilename, mimeType, file.bytes.byteLength, createdAt, expiresAt).run();
+         (id, tenant_id, space_id, task_id, channel, object_key, filename, mime_type, size_bytes, created_at, expires_at,
+          project_id, installation_id, provider_connection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(id, input.tenantId, input.spaceId, input.taskId, input.channel, key, safeFilename, mimeType, file.bytes.byteLength, createdAt, expiresAt,
+        input.extensionScope?.projectId ?? null, input.extensionScope?.installationId ?? null, input.extensionScope?.providerConnectionId ?? null).run();
     }
     stored.push({ id, filename: safeFilename, mimeType, sizeBytes: file.bytes.byteLength });
   }
