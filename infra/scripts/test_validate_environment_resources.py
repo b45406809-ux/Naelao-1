@@ -210,6 +210,43 @@ class EnvironmentResourceMapTests(unittest.TestCase):
             errors = validate(workers, map_path, receipts_path)
         self.assertIn("resource map is stale; regenerate it from the current Worker Wrangler TOMLs", errors)
 
+    def test_deployment_surface_inventory_records_routes_and_redacts_variable_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "workers" / "example"
+            worker.mkdir(parents=True)
+            (worker / "wrangler.toml").write_text(
+                '''name = "example"
+[env.staging]
+name = "example-staging"
+vars = { ENVIRONMENT = "staging", CALLBACK_URL = "https://hooks.staging.example.test/callback?token=do-not-store", CORS_ALLOWLIST = "https://app.staging.example.test,https://admin.staging.example.test", SECRET_TOKEN = "never-store-this" }
+[[env.staging.routes]]
+pattern = "api.staging.example.test/*"
+zone_name = "example.test"
+[env.production]
+name = "example-production"
+vars = { ENVIRONMENT = "production", CALLBACK_URL = "https://hooks.example.test/callback", SECRET_TOKEN = "also-never-store" }
+[[env.production.routes]]
+pattern = "api.example.test/*"
+zone_name = "example.test"
+''',
+                encoding="utf-8",
+            )
+            source_map = build_source_map(root / "workers")
+
+        surfaces = source_map["deployment_surfaces"]
+        self.assertEqual(len(surfaces), 2)
+        staging = next(row for row in surfaces if row["environment"] == "staging")
+        self.assertEqual(staging["routes"], [{"pattern": "api.staging.example.test/*", "zone_name": "example.test"}])
+        endpoints = {row["name"]: row["hostnames"] for row in staging["endpoint_variables"]}
+        self.assertEqual(endpoints["CALLBACK_URL"], ["hooks.staging.example.test"])
+        self.assertEqual(endpoints["CORS_ALLOWLIST"], ["admin.staging.example.test", "app.staging.example.test"])
+        self.assertIn("SECRET_TOKEN", staging["variable_names"])
+        self.assertFalse(staging["external_secret_values_included"])
+        serialized = json.dumps(source_map)
+        self.assertNotIn("never-store-this", serialized)
+        self.assertNotIn("do-not-store", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

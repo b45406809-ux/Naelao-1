@@ -12,6 +12,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -76,12 +77,78 @@ def _resource_rows(environment: dict[str, Any]) -> list[tuple[str, str, str]]:
     return resources
 
 
+def _hostnames(value: Any) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    hosts: set[str] = set()
+    for candidate in value.split(","):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = urlsplit(candidate if "://" in candidate else f"https://{candidate}")
+            hostname = (parsed.hostname or "").lower().removeprefix("*.").rstrip(".")
+        except ValueError:
+            continue
+        if hostname and "." in hostname and all(part and re.fullmatch(r"[a-z0-9-]+", part) for part in hostname.split(".")):
+            hosts.add(hostname)
+    return sorted(hosts)
+
+
+def _deployment_surface(path: Path, worker_name: str, parsed: dict[str, Any], environment_name: str) -> dict[str, Any] | None:
+    environment = parsed.get("env", {}).get(environment_name)
+    if not isinstance(environment, dict):
+        return None
+    routes: list[dict[str, str]] = []
+    raw_routes = environment.get("routes")
+    for route in _rows(raw_routes):
+        item: dict[str, str] = {}
+        for key in ("pattern", "zone_name", "custom_domain"):
+            value = route.get(key)
+            if isinstance(value, str) and value.strip():
+                item[key] = value.strip()
+        if item:
+            routes.append(item)
+    if isinstance(raw_routes, list):
+        routes.extend({"pattern": route.strip()} for route in raw_routes if isinstance(route, str) and route.strip())
+
+    variables = environment.get("vars")
+    var_names = sorted(variables) if isinstance(variables, dict) else []
+    endpoint_names = re.compile(r"(?:URL|DOMAIN|HOST|ORIGIN|ISSUER|ALLOWLIST|CALLBACK|WEBHOOK)$", re.IGNORECASE)
+    endpoint_variables = []
+    if isinstance(variables, dict):
+        for name, value in sorted(variables.items()):
+            if endpoint_names.search(str(name)):
+                endpoint_variables.append({"name": str(name), "hostnames": _hostnames(value)})
+
+    d1 = _rows(environment.get("d1_databases"))
+    d1_jurisdictions = [
+        {"binding": str(row.get("binding") or "D1"), "jurisdiction": row.get("jurisdiction")}
+        for row in d1
+    ]
+    jurisdiction = environment.get("jurisdiction", parsed.get("jurisdiction"))
+    return {
+        "worker": worker_name,
+        "environment": environment_name,
+        "worker_target": str(environment.get("name") or f"{worker_name}-{environment_name}"),
+        "source": path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name,
+        "routes": sorted(routes, key=lambda row: (row.get("pattern", ""), row.get("zone_name", ""), row.get("custom_domain", ""))),
+        "variable_names": var_names,
+        "endpoint_variables": endpoint_variables,
+        "jurisdiction": jurisdiction if isinstance(jurisdiction, str) else None,
+        "d1_jurisdictions": d1_jurisdictions,
+        "external_secret_values_included": False,
+        "provider_callbacks_verified": False,
+    }
+
+
 def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
     files = sorted(workers_dir.glob("*/wrangler.toml"))
     by_binding: dict[tuple[str, str], dict[str, dict[str, set[str]]]] = {}
     receipt_requirements: set[tuple[str, str, str]] = set()
     service_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
     known_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
+    deployment_surfaces: list[dict[str, Any]] = []
 
     for path in files:
         parsed = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -91,6 +158,9 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
             environment = parsed.get("env", {}).get(environment_name)
             if not isinstance(environment, dict):
                 continue
+            surface = _deployment_surface(path, worker_name, parsed, environment_name)
+            if surface is not None:
+                deployment_surfaces.append(surface)
             target_name = environment.get("name")
             known_targets[environment_name].add(str(target_name or f"{worker_name}-{environment_name}"))
             for kind, binding, resource in _resource_rows(environment):
@@ -125,6 +195,13 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
         "status": "source_inventory_only",
         "source_files": source_hashes,
         "bindings": mapped_bindings,
+        "deployment_surfaces": sorted(deployment_surfaces, key=lambda row: (row["worker"], row["environment"])),
+        "external_inventory_limits": {
+            "secret_values": "never collected",
+            "provider_secret_presence": "requires a separate read-only provider inventory",
+            "provider_webhook_callback_registration": "not verifiable from Wrangler source",
+            "cloudflare_jurisdiction_receipts": "requires read-only account observation when not explicitly configured",
+        },
         "unresolved_service_targets": sorted(
             set.union(*(service_targets[name] - known_targets[name] for name in ENVIRONMENTS))
         ),

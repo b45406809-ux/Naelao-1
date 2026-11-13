@@ -2615,6 +2615,1382 @@
       }
     }
   ],
+  "deployment_surfaces": [
+    {
+      "worker": "agentport-api",
+      "environment": "production",
+      "worker_target": "agentport-api-production",
+      "source": "workers/agentport/wrangler.toml",
+      "routes": [
+        {
+          "pattern": "agentport.naelao.com/*",
+          "zone_name": "naelao.com"
+        }
+      ],
+      "variable_names": [
+        "AGENTPORT_ISSUER",
+        "EMAIL_INGRESS_DOMAIN",
+        "EMAIL_PROVISIONING_ENABLED",
+        "EMAIL_SENDING_DOMAIN",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "AGENTPORT_ISSUER",
+          "hostnames": [
+            "agentport.naelao.com"
+          ]
+        },
+        {
+          "name": "EMAIL_INGRESS_DOMAIN",
+          "hostnames": []
+        },
+        {
+          "name": "EMAIL_SENDING_DOMAIN",
+          "hostnames": []
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "agentport-api",
+      "environment": "staging",
+      "worker_target": "agentport-api-staging",
+      "source": "workers/agentport/wrangler.toml",
+      "routes": [
+        {
+          "pattern": "agentport-staging.naelao.com/*",
+          "zone_name": "naelao.com"
+        }
+      ],
+      "variable_names": [
+        "AGENTPORT_ISSUER",
+        "EMAIL_INGRESS_DOMAIN",
+        "EMAIL_PROVISIONING_ENABLED",
+        "EMAIL_SENDING_DOMAIN",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "AGENTPORT_ISSUER",
+          "hostnames": [
+            "agentport-staging.naelao.com"
+          ]
+        },
+        {
+          "name": "EMAIL_INGRESS_DOMAIN",
+          "hostnames": []
+        },
+        {
+          "name": "EMAIL_SENDING_DOMAIN",
+          "hostnames": []
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-admin",
+      "environment": "production",
+      "worker_target": "naelao-admin-production",
+      "source": "workers/admin/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-admin",
+      "environment": "staging",
+      "worker_target": "naelao-admin-staging",
+      "source": "workers/admin/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-agents",
+      "environment": "production",
+      "worker_target": "naelao-agents-production",
+      "source": "workers/agents/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "DYNAMIC_CONTAINERS_ENABLED",
+        "DYNAMIC_CONTAINER_BASE_PROFILE",
+        "DYNAMIC_CONTAINER_MAX_INSTANCES",
+        "DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED",
+        "DYNAMIC_PYTHON_ENABLED",
+        "EMAIL_INGRESS_DOMAIN",
+        "EMAIL_SENDING_DOMAIN",
+        "ENVIRONMENT",
+        "HIGGSFIELD_BYO_ENABLED",
+        "LIVE_WORKSPACE_ENABLED",
+        "NAELAO_ACCOUNT_ID",
+        "NAELAO_GATEWAY_ID",
+        "TELNYX_MANAGED_ENABLED",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "EMAIL_INGRESS_DOMAIN",
+          "hostnames": []
+        },
+        {
+          "name": "EMAIL_SENDING_DOMAIN",
+          "hostnames": []
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-agents",
+      "environment": "staging",
+      "worker_target": "naelao-agents-staging",
+      "source": "workers/agents/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "DYNAMIC_CONTAINERS_ENABLED",
+        "DYNAMIC_CONTAINER_BASE_PROFILE",
+        "DYNAMIC_CONTAINER_MAX_INSTANCES",
+        "DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED",
+        "DYNAMIC_PYTHON_ENABLED",
+        "EMAIL_INGRESS_DOMAIN",
+        "EMAIL_SENDING_DOMAIN",
+        "ENVIRONMENT",
+        "HIGGSFIELD_BYO_ENABLED",
+        "LIVE_WORKSPACE_ENABLED",
+        "NAELAO_ACCOUNT_ID",
+        "NAELAO_GATEWAY_ID",
+        "TELNYX_MANAGED_ENABLED",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "EMAIL_INGRESS_DOMAIN",
+          "hostnames": []
+        },
+        {
+          "name": "EMAIL_SENDING_DOMAIN",
+          "hostnames": []
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-analytics",
+      "environment": "production",
+      "worker_target": "naelao-analytics-production",
+      "source": "workers/analytics/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "CF_ACCOUNT_ID",
+        "CF_ANALYTICS_API_TOKEN",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-analytics",
+      "environment": "staging",
+      "worker_target": "naelao-analytics-staging",
+      "source": "workers/analytics/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "CF_ACCOUNT_ID",
+        "CF_ANALYTICS_API_TOKEN",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-artifact",
+      "environment": "production",
+      "worker_target": "naelao-artifact-production",
+      "source": "workers/artifact/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-artifact",
+      "environment": "staging",
+      "worker_target": "naelao-artifact-staging",
+      "source": "workers/artifact/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-assistant",
+      "environment": "production",
+      "worker_target": "naelao-assistant-production",
+      "source": "workers/assistant/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "LLM_GATEWAY_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "LLM_GATEWAY_URL",
+          "hostnames": [
+            "llm.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-assistant",
+      "environment": "staging",
+      "worker_target": "naelao-assistant-staging",
+      "source": "workers/assistant/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "LLM_GATEWAY_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "LLM_GATEWAY_URL",
+          "hostnames": [
+            "llm.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-auth",
+      "environment": "production",
+      "worker_target": "naelao-auth-production",
+      "source": "workers/auth/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "BUILDER_DASHBOARD_URL",
+        "ENVIRONMENT",
+        "JWT_EXPIRY_SECONDS"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "BUILDER_DASHBOARD_URL",
+          "hostnames": [
+            "dashboard.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-auth",
+      "environment": "staging",
+      "worker_target": "naelao-auth-staging",
+      "source": "workers/auth/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "BUILDER_DASHBOARD_URL",
+        "ENVIRONMENT",
+        "JWT_EXPIRY_SECONDS"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "BUILDER_DASHBOARD_URL",
+          "hostnames": [
+            "staging-dashboard.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-billing",
+      "environment": "production",
+      "worker_target": "naelao-billing-production",
+      "source": "workers/billing/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ALLOW_DEV_CHECKOUTS",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-billing",
+      "environment": "staging",
+      "worker_target": "naelao-billing-staging",
+      "source": "workers/billing/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ALLOW_DEV_CHECKOUTS",
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-browser",
+      "environment": "production",
+      "worker_target": "naelao-browser-production",
+      "source": "workers/browser/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-browser",
+      "environment": "staging",
+      "worker_target": "naelao-browser-staging",
+      "source": "workers/browser/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-connector-gumroad",
+      "environment": "production",
+      "worker_target": "naelao-connector-gumroad-production",
+      "source": "workers/connector-gumroad/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-connector-gumroad",
+      "environment": "staging",
+      "worker_target": "naelao-connector-gumroad-staging",
+      "source": "workers/connector-gumroad/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-connector-whop",
+      "environment": "production",
+      "worker_target": "naelao-connector-whop-production",
+      "source": "workers/connector-whop/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-connector-whop",
+      "environment": "staging",
+      "worker_target": "naelao-connector-whop-staging",
+      "source": "workers/connector-whop/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-credentials",
+      "environment": "production",
+      "worker_target": "naelao-credentials-production",
+      "source": "workers/credentials/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-credentials",
+      "environment": "staging",
+      "worker_target": "naelao-credentials-staging",
+      "source": "workers/credentials/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-eval",
+      "environment": "production",
+      "worker_target": "naelao-eval-production",
+      "source": "workers/eval/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "EVAL_JUDGE_MODEL",
+        "NAELAO_ACCOUNT_ID",
+        "NAELAO_GATEWAY_ID"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-eval",
+      "environment": "staging",
+      "worker_target": "naelao-eval-staging",
+      "source": "workers/eval/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "EVAL_JUDGE_MODEL",
+        "NAELAO_ACCOUNT_ID",
+        "NAELAO_GATEWAY_ID"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-knowledge",
+      "environment": "production",
+      "worker_target": "naelao-knowledge-production",
+      "source": "workers/knowledge/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RETRIEVAL_CONFIDENCE_THRESHOLD",
+        "RETRIEVAL_POLICY_VERSION"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-knowledge",
+      "environment": "staging",
+      "worker_target": "naelao-knowledge-staging",
+      "source": "workers/knowledge/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RETRIEVAL_CONFIDENCE_THRESHOLD",
+        "RETRIEVAL_POLICY_VERSION"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-marketplace",
+      "environment": "production",
+      "worker_target": "naelao-marketplace-production",
+      "source": "workers/marketplace/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "MARKETPLACE_WEB_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "MARKETPLACE_WEB_URL",
+          "hostnames": [
+            "naelao-marketplace.pages.dev"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-marketplace",
+      "environment": "staging",
+      "worker_target": "naelao-marketplace-staging",
+      "source": "workers/marketplace/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "MARKETPLACE_WEB_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "MARKETPLACE_WEB_URL",
+          "hostnames": [
+            "naelao-marketplace-staging.pages.dev"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-mcp-hub",
+      "environment": "production",
+      "worker_target": "naelao-mcp-hub-production",
+      "source": "workers/mcp-hub/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-mcp-hub",
+      "environment": "staging",
+      "worker_target": "naelao-mcp-hub-staging",
+      "source": "workers/mcp-hub/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-notifications",
+      "environment": "production",
+      "worker_target": "naelao-notifications-production",
+      "source": "workers/notifications/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RESEND_API_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "RESEND_API_URL",
+          "hostnames": [
+            "api.resend.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-notifications",
+      "environment": "staging",
+      "worker_target": "naelao-notifications-staging",
+      "source": "workers/notifications/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RESEND_API_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "RESEND_API_URL",
+          "hostnames": [
+            "api.resend.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-portal-router",
+      "environment": "production",
+      "worker_target": "naelao-portal-router-production",
+      "source": "workers/portal-router/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PORTAL_ORIGIN"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PORTAL_ORIGIN",
+          "hostnames": [
+            "portal.naelao.app"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-portal-router",
+      "environment": "staging",
+      "worker_target": "naelao-portal-router-staging",
+      "source": "workers/portal-router/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PORTAL_ORIGIN"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PORTAL_ORIGIN",
+          "hostnames": [
+            "portal.staging.naelao.app"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-provisioner",
+      "environment": "production",
+      "worker_target": "naelao-provisioner-production",
+      "source": "workers/provisioner/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-provisioner",
+      "environment": "staging",
+      "worker_target": "naelao-provisioner-staging",
+      "source": "workers/provisioner/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-router",
+      "environment": "production",
+      "worker_target": "naelao-router-production",
+      "source": "workers/router/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "CORS_ALLOWLIST",
+        "ENVIRONMENT",
+        "PRODUCT_SHELL_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "CORS_ALLOWLIST",
+          "hostnames": [
+            "app.naelao.com",
+            "dashboard.naelao.com",
+            "naelao-marketplace.pages.dev",
+            "portal.naelao.com"
+          ]
+        },
+        {
+          "name": "PRODUCT_SHELL_URL",
+          "hostnames": [
+            "app.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-router",
+      "environment": "staging",
+      "worker_target": "naelao-router-staging",
+      "source": "workers/router/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "CORS_ALLOWLIST",
+        "ENVIRONMENT",
+        "PRODUCT_SHELL_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "CORS_ALLOWLIST",
+          "hostnames": [
+            "naelao-marketplace-staging.pages.dev",
+            "staging-app.naelao.com",
+            "staging-dashboard.naelao.com",
+            "staging-portal.naelao.com"
+          ]
+        },
+        {
+          "name": "PRODUCT_SHELL_URL",
+          "hostnames": [
+            "staging-app.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-sandboxes",
+      "environment": "production",
+      "worker_target": "naelao-sandboxes-production",
+      "source": "workers/sandboxes/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "DATA_JURISDICTION"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-sandboxes",
+      "environment": "staging",
+      "worker_target": "naelao-sandboxes-staging",
+      "source": "workers/sandboxes/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "DATA_JURISDICTION"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-security-gateway",
+      "environment": "production",
+      "worker_target": "naelao-security-gateway-production",
+      "source": "workers/security-gateway/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RATE_LIMIT_AUTH",
+        "RATE_LIMIT_GLOBAL",
+        "RATE_LIMIT_TENANT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-security-gateway",
+      "environment": "staging",
+      "worker_target": "naelao-security-gateway-staging",
+      "source": "workers/security-gateway/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "RATE_LIMIT_AUTH",
+        "RATE_LIMIT_GLOBAL",
+        "RATE_LIMIT_TENANT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-spaces",
+      "environment": "production",
+      "worker_target": "naelao-spaces-production",
+      "source": "workers/spaces/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PRODUCT_SHELL_URL",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PRODUCT_SHELL_URL",
+          "hostnames": [
+            "naelao-shell.pages.dev"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-spaces",
+      "environment": "staging",
+      "worker_target": "naelao-spaces-staging",
+      "source": "workers/spaces/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PRODUCT_SHELL_URL",
+        "UNIFIED_WORKSPACE_ENABLED",
+        "WORKSPACE_DUAL_READ_ENABLED"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PRODUCT_SHELL_URL",
+          "hostnames": []
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-sweeper",
+      "environment": "production",
+      "worker_target": "naelao-sweeper-production",
+      "source": "workers/sweeper/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-sweeper",
+      "environment": "staging",
+      "worker_target": "naelao-sweeper-staging",
+      "source": "workers/sweeper/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-synthetics",
+      "environment": "production",
+      "worker_target": "naelao-synthetics-production",
+      "source": "workers/synthetics/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PLATFORM_API_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PLATFORM_API_URL",
+          "hostnames": [
+            "api.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-synthetics",
+      "environment": "staging",
+      "worker_target": "naelao-synthetics-staging",
+      "source": "workers/synthetics/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "PLATFORM_API_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "PLATFORM_API_URL",
+          "hostnames": [
+            "api.staging.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-threads",
+      "environment": "production",
+      "worker_target": "naelao-threads-production",
+      "source": "workers/threads/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "LLM_GATEWAY_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "LLM_GATEWAY_URL",
+          "hostnames": [
+            "llm.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-threads",
+      "environment": "staging",
+      "worker_target": "naelao-threads-staging",
+      "source": "workers/threads/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT",
+        "LLM_GATEWAY_URL"
+      ],
+      "endpoint_variables": [
+        {
+          "name": "LLM_GATEWAY_URL",
+          "hostnames": [
+            "llm.naelao.com"
+          ]
+        }
+      ],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-workflows",
+      "environment": "production",
+      "worker_target": "naelao-workflows-production",
+      "source": "workers/workflows/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-workflows",
+      "environment": "staging",
+      "worker_target": "naelao-workflows-staging",
+      "source": "workers/workflows/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [
+        {
+          "binding": "PLATFORM_DB",
+          "jurisdiction": null
+        }
+      ],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-ws-gateway",
+      "environment": "production",
+      "worker_target": "naelao-ws-gateway-production",
+      "source": "workers/ws-gateway/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    },
+    {
+      "worker": "naelao-ws-gateway",
+      "environment": "staging",
+      "worker_target": "naelao-ws-gateway-staging",
+      "source": "workers/ws-gateway/wrangler.toml",
+      "routes": [],
+      "variable_names": [
+        "ENVIRONMENT"
+      ],
+      "endpoint_variables": [],
+      "jurisdiction": null,
+      "d1_jurisdictions": [],
+      "external_secret_values_included": false,
+      "provider_callbacks_verified": false
+    }
+  ],
+  "external_inventory_limits": {
+    "secret_values": "never collected",
+    "provider_secret_presence": "requires a separate read-only provider inventory",
+    "provider_webhook_callback_registration": "not verifiable from Wrangler source",
+    "cloudflare_jurisdiction_receipts": "requires read-only account observation when not explicitly configured"
+  },
   "unresolved_service_targets": [
     "naelao-calls"
   ],
