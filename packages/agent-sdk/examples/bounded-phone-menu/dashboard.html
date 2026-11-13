@@ -7,7 +7,7 @@
   <style>
     body{font:16px system-ui,sans-serif;max-width:44rem;margin:1.5rem auto;padding:0 1rem;color:#202124}
     label{display:block;margin:1rem 0;font-weight:600}input,textarea,button{box-sizing:border-box;width:100%;font:inherit;padding:.65rem;border:1px solid #777;border-radius:.35rem}
-    textarea{min-height:5rem}button{width:auto;cursor:pointer}#notice{min-height:1.5rem}fieldset{border:1px solid #aaa;border-radius:.5rem;margin:1rem 0;padding:.5rem 1rem}
+    textarea{min-height:5rem}button{width:auto;cursor:pointer}#notice{min-height:1.5rem}fieldset{border:1px solid #aaa;border-radius:.5rem;margin:1rem 0;padding:.5rem 1rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f4f4;padding:.75rem;border-radius:.35rem}
   </style>
 </head>
 <body>
@@ -27,18 +27,34 @@
     <button type="submit">Save menu</button>
     <button id="reload" type="button">Reload saved menu</button>
   </form>
+  <section aria-labelledby="preview-heading">
+    <h2 id="preview-heading">Try the menu</h2>
+    <p>This is a local preview of the configured keypad response. It is simulated: it does not run a carrier call, contact a provider, publish this draft, or save a call session.</p>
+    <label>Preview event<select id="preview-event"><option value="call.received">Caller starts a call</option><option value="call.digits">Caller enters a key</option></select></label>
+    <label id="preview-digits-label">Key pressed<select id="preview-digits"><option value="1">1 · Option 1</option><option value="2">2 · Option 2</option><option value="9">9 · Invalid selection</option></select></label>
+    <button id="preview" type="button">Preview current settings</button>
+    <pre id="preview-result" aria-label="Simulated keypad menu response" role="status">Choose a preview event.</pre>
+  </section>
   <script>
     (()=>{
       const ids=['greeting','option_1_label','option_1_response','option_2_label','option_2_response','fallback_response'];
       const defaults={greeting:'Thank you for calling.',option_1_label:'Sales',option_1_response:'Please contact our sales team for help.',option_2_label:'Support',option_2_response:'Please contact our support team for help.',fallback_response:'Sorry, that selection is not available.'};
       const pending=new Map();let serial=0,revision=0;
       const notice=document.getElementById('notice');
+      function previewMenuResponse(voiceEvent,digits,values){
+        if(voiceEvent==='call.received')return {schema_version:1,actions:[{type:'gather',input:'dtmf',digits:1,text:`${values.greeting} Press 1 for ${values.option_1_label}. Press 2 for ${values.option_2_label}.`}]};
+        const text=digits==='1'?values.option_1_response:digits==='2'?values.option_2_response:values.fallback_response;
+        return {schema_version:1,actions:[{type:'say',text},{type:'hangup'}]};
+      }
       function call(method,body){return new Promise((resolve,reject)=>{const id='menu_'+(++serial),timer=setTimeout(()=>{pending.delete(id);reject(Error('Host did not respond'))},12000);pending.set(id,{resolve,reject,timer});parent.postMessage({type:'naelao.extension.rpc',id,method,path:'/api/settings',...(body?{body}:{})},'*')})}
       addEventListener('message',event=>{if(event.source!==parent)return;const message=event.data;if(message?.type!=='naelao.extension.rpc.result'||typeof message.id!=='string')return;const item=pending.get(message.id);if(!item)return;clearTimeout(item.timer);pending.delete(message.id);message.ok?item.resolve(message.result):item.reject(Error(message.error||'Settings request failed'))});
       function readForm(){return Object.fromEntries(ids.map(id=>[id,document.getElementById(id).value.trim()]))}
       function fill(values){for(const id of ids)document.getElementById(id).value=typeof values?.[id]==='string'?values[id]:defaults[id]}
       async function reload(){notice.textContent='Loading saved menu…';try{const saved=await call('GET');revision=saved.revision;fill(saved.settings||{});notice.textContent='Loaded installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}}
       document.getElementById('menu').addEventListener('submit',async event=>{event.preventDefault();const values=readForm();if(ids.some(id=>!values[id])){notice.textContent='Fill in all menu fields before saving.';return}notice.textContent='Saving menu…';try{const saved=await call('PATCH',{revision,settings:values});revision=saved.revision;notice.textContent='Saved installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}});
+      const previewEvent=document.getElementById('preview-event'),previewDigits=document.getElementById('preview-digits'),previewDigitsLabel=document.getElementById('preview-digits-label'),previewResult=document.getElementById('preview-result');
+      function updatePreview(){previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm()),null,2)}
+      document.getElementById('preview').addEventListener('click',updatePreview);previewEvent.addEventListener('change',updatePreview);previewDigits.addEventListener('change',updatePreview);
       document.getElementById('reload').addEventListener('click',reload);reload();
     })();
   </script>

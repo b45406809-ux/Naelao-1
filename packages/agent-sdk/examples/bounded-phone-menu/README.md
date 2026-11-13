@@ -9,7 +9,9 @@ The extension's signed Canvas dashboard saves its six bounded text settings thro
 per-installation settings API. Its channel handler receives the host's validated settings snapshot
 and returns the versioned data-only `say`, `gather` and `hangup` response contract. The host checks
 the signed installation and handler digest, validates the response, enforces number policy and
-renders carrier-specific actions. A Space owner separately assigns and confirms the handler in
+renders carrier-specific actions. The dashboard previews call-start and keypad responses from the
+current draft in the browser; this is explicitly simulated and does not invoke a carrier, publish
+the draft, or save a call session. A Space owner separately assigns and confirms the handler in
 Assistant Phone settings. The phone number and provider connection remain under their existing
 owner and provider controls.
 
