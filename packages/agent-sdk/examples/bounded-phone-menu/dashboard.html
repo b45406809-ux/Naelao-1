@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Keypad phone menu</title>
+  <style>
+    body{font:16px system-ui,sans-serif;max-width:44rem;margin:1.5rem auto;padding:0 1rem;color:#202124}
+    label{display:block;margin:1rem 0;font-weight:600}input,textarea,button{box-sizing:border-box;width:100%;font:inherit;padding:.65rem;border:1px solid #777;border-radius:.35rem}
+    textarea{min-height:5rem}button{width:auto;cursor:pointer}#notice{min-height:1.5rem}fieldset{border:1px solid #aaa;border-radius:.5rem;margin:1rem 0;padding:.5rem 1rem}
+  </style>
+</head>
+<body>
+  <h1>Keypad phone menu</h1>
+  <p>Configure a two-option keypad greeting. Calls use the phone extension assigned in Assistant Phone settings. This menu supports recorded text prompts and DTMF digits only; it does not listen to speech, transfer or dial calls, or use an AI agent.</p>
+  <p>Settings are saved to this installation. A Space owner must separately select and confirm this signed handler for a phone number.</p>
+  <div id="notice" role="status" aria-live="polite">Loading saved menu…</div>
+  <form id="menu">
+    <fieldset><legend>Menu prompt</legend>
+      <label>Greeting<input id="greeting" maxlength="160" required></label>
+      <label>Option 1 name<input id="option_1_label" maxlength="60" required></label>
+      <label>Response after option 1<textarea id="option_1_response" maxlength="240" required></textarea></label>
+      <label>Option 2 name<input id="option_2_label" maxlength="60" required></label>
+      <label>Response after option 2<textarea id="option_2_response" maxlength="240" required></textarea></label>
+      <label>Response for another key or invalid selection<textarea id="fallback_response" maxlength="240" required></textarea></label>
+    </fieldset>
+    <button type="submit">Save menu</button>
+    <button id="reload" type="button">Reload saved menu</button>
+  </form>
+  <script>
+    (()=>{
+      const ids=['greeting','option_1_label','option_1_response','option_2_label','option_2_response','fallback_response'];
+      const defaults={greeting:'Thank you for calling.',option_1_label:'Sales',option_1_response:'Please contact our sales team for help.',option_2_label:'Support',option_2_response:'Please contact our support team for help.',fallback_response:'Sorry, that selection is not available.'};
+      const pending=new Map();let serial=0,revision=0;
+      const notice=document.getElementById('notice');
+      function call(method,body){return new Promise((resolve,reject)=>{const id='menu_'+(++serial),timer=setTimeout(()=>{pending.delete(id);reject(Error('Host did not respond'))},12000);pending.set(id,{resolve,reject,timer});parent.postMessage({type:'naelao.extension.rpc',id,method,path:'/api/settings',...(body?{body}:{})},'*')})}
+      addEventListener('message',event=>{if(event.source!==parent)return;const message=event.data;if(message?.type!=='naelao.extension.rpc.result'||typeof message.id!=='string')return;const item=pending.get(message.id);if(!item)return;clearTimeout(item.timer);pending.delete(message.id);message.ok?item.resolve(message.result):item.reject(Error(message.error||'Settings request failed'))});
+      function readForm(){return Object.fromEntries(ids.map(id=>[id,document.getElementById(id).value.trim()]))}
+      function fill(values){for(const id of ids)document.getElementById(id).value=typeof values?.[id]==='string'?values[id]:defaults[id]}
+      async function reload(){notice.textContent='Loading saved menu…';try{const saved=await call('GET');revision=saved.revision;fill(saved.settings||{});notice.textContent='Loaded installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}}
+      document.getElementById('menu').addEventListener('submit',async event=>{event.preventDefault();const values=readForm();if(ids.some(id=>!values[id])){notice.textContent='Fill in all menu fields before saving.';return}notice.textContent='Saving menu…';try{const saved=await call('PATCH',{revision,settings:values});revision=saved.revision;notice.textContent='Saved installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}});
+      document.getElementById('reload').addEventListener('click',reload);reload();
+    })();
+  </script>
+</body>
+</html>

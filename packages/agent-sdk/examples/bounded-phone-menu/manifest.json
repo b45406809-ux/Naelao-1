@@ -1,0 +1,41 @@
+{
+  "id": "ext_bounded_phone_menu",
+  "type": "extension",
+  "releaseVersion": "1.0.0",
+  "declaredPermissions": ["extension.settings.read", "extension.settings.configure"],
+  "capabilityRequirements": ["extension.settings.read", "extension.settings.configure"],
+  "gadgets": [],
+  "daemons": [],
+  "commands": [],
+  "settingsSchema": {
+    "schemaVersion": 1,
+    "fields": [
+      { "id": "greeting", "type": "text", "label": "Greeting", "required": true, "defaultValue": "Thank you for calling.", "minLength": 1, "maxLength": 160 },
+      { "id": "option_1_label", "type": "text", "label": "Option 1 label", "required": true, "defaultValue": "Sales", "minLength": 1, "maxLength": 60 },
+      { "id": "option_1_response", "type": "text", "label": "Option 1 response", "required": true, "defaultValue": "Please contact our sales team for help.", "minLength": 1, "maxLength": 240 },
+      { "id": "option_2_label", "type": "text", "label": "Option 2 label", "required": true, "defaultValue": "Support", "minLength": 1, "maxLength": 60 },
+      { "id": "option_2_response", "type": "text", "label": "Option 2 response", "required": true, "defaultValue": "Please contact our support team for help.", "minLength": 1, "maxLength": 240 },
+      { "id": "fallback_response", "type": "text", "label": "Invalid selection response", "required": true, "defaultValue": "Sorry, that selection is not available.", "minLength": 1, "maxLength": 240 }
+    ]
+  },
+  "bundle": {
+    "schemaVersion": "1.0",
+    "kind": "extension_bundle",
+    "id": "ext_bounded_phone_menu",
+    "version": "1.0.0",
+    "primitives": [
+      {
+        "schemaVersion": "1.0", "kind": "canvas", "id": "phone_menu_dashboard", "version": "1.0.0",
+        "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "layout": "CanvasMount",
+        "component": "./dashboard.html", "dynamicPage": false
+      },
+      {
+        "schemaVersion": "1.0", "kind": "channel", "id": "phone_menu_handler", "version": "1.0.0",
+        "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "provider": "phone",
+        "handlerScript": "./handler.ts", "context": "channel_only",
+        "inboundEvents": ["message.received", "call.received", "call.digits"],
+        "outboundEvents": ["message.reply", "voice.reply"]
+      }
+    ]
+  }
+}
