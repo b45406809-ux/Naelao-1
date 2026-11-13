@@ -2,7 +2,15 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P01 durable runner test gate `e68a8f4c` pushed)
+### Active continuation (2026-11-13; P02 Cloudflare account receipt validation `7cac081c` pushed)
+
+- The environment-resource preflight now rejects a nonempty but malformed `account_id`: external Cloudflare account IDs must be 32 hexadecimal characters. This closes a concrete validator gap in the read-only evidence contract without claiming that an ID, account, resource or receipt was observed. Existing checks still fail closed on shared mutable resources, unresolved Worker ownership, stale/missing receipts and unconfigured environment-specific resources.
+- Code `7cac081c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: resource receipt validator tests **10/10**, Wrangler isolation tests **6/6**, `git diff --check`. The live source preflight remains blocked by a shared `PLATFORM_DB`, eleven shared KV IDs, unresolved `naelao-calls`, 62 missing existence receipts, and separate operator-attested staging/production D1 baselines. Secret presence, provider callback registration and jurisdiction need their own read-only evidence. No Cloudflare account was queried.
+- P02 remains PARTIAL. The exact configured resource IDs, service owner, receipt set and deployed separation cannot be guessed or replaced by placeholder IDs. P01 runner tests are wired into both deployment preflights in `e68a8f4c`; operator baseline adoption and deployed/isolated release acceptance remain open.
+- P03 has durable scheduled dunning intents, retry/status paths and provider outcomes; P20 has an idempotent refund review journal and tenant-scoped status. Both remain PARTIAL for policy and identity decisions: grace/restriction/escalation, refund/dispute and author accounting, independent operator authentication, plus live provider acceptance. P04 has bounded encrypted archive capture and checksum-checked partial restore, but remains partial for coverage, limits, merge-only semantics, key/legal policy and isolated/live drills.
+- Exact next task: use the existing P03/P20 ledgers to inspect one current reachable recovery caller for an independent implementation gap, without repeating their completed source audit or inventing product policy. Then continue P04 recovery and move to guided-template lifecycle/cost in dependency order. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+### Prior checkpoint (2026-11-13; P01 durable runner test gate `e68a8f4c` pushed)
 
 - Both staging and production deployment preflights now execute `test_release_migrations.py`, which exercises durable lock exclusion, atomic interruption recovery, checksum ledger validation and required-schema probes using a local D1 substitute. The deployment-manifest validator checks that the runner suite remains in each preflight, and its regression tests reject removal from either environment or moving the test outside preflight.
 - Code `e68a8f4c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: migration runner **11/11**, deployment-manifest validator tests **8/8**, deployment-manifest validation passes, and `git diff --check`. No real D1, GitHub release workflow, deployment or health probe ran.

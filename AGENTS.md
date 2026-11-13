@@ -2,13 +2,15 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P01 release-safety code `e68a8f4c` is pushed to
-`origin/Mcbt5s-Backup-2`. Both staging and production preflight now run the existing durable D1
-migration-runner interruption/concurrency suite, and the deployment-manifest validator requires that
-test to remain inside each preflight. Local evidence: runner **11/11**, deployment-manifest tests
-**8/8**, manifest validator passes and `git diff --check`. No remote D1, workflow deployment or live
-health probe ran. P01 remains PARTIAL pending operator-attested per-database baselines, distinct real
-environment resources, existence/ownership receipts, and isolated/deployed acceptance.
+Current continuation checkpoint (2026-11-13): P02 receipt-validation code `7cac081c` is pushed to
+`origin/Mcbt5s-Backup-2`. Resource receipts now require the observed Cloudflare account ID to match
+the 32-character hexadecimal format; the existing environment preflight continues to reject shared
+mutable IDs, unresolved service ownership and missing/stale read-only receipts. Local evidence:
+resource validator **10/10**, Wrangler isolation **6/6**, and `git diff --check`. No Cloudflare account
+was queried and no receipt was fabricated. P02 remains PARTIAL: source still has shared D1/11 KV IDs,
+unresolved `naelao-calls`, 62 missing resource existence receipts, external secret/callback/jurisdiction
+inventory and no isolated/deployed acceptance. P01 test-gate code `e68a8f4c` remains pushed; runner
+tests are required in both release preflights.
 
 The prior §10 audience code `9ec259ba` is also pushed. Migration 119 preserves prior facts as schema
 v1 with `space_members`; v2 SDK, gateway, Router and Shell support explicit `space_members` or narrower
@@ -23,10 +25,10 @@ S2 is IMPLEMENTED_LOCAL for currently supported lanes; partial rows retain their
 runtime/provider contracts, missing external feeds, product/legal decisions, external evidence or
 deployed/live acceptance. Keep U05/U06 live runtime disabled; their trusted allocation/observation
 producer and pinned writer-admission/drain/handoff contract are not credential blockers. Preserve the
-untracked `infra/scripts/__pycache__/`. Exact next task: continue P02 resource isolation by reviewing
-the existing rendered-resource receipt/preflight contract for one independent local gap; preserve
-fail-closed behavior and do not guess resource IDs, service ownership or external receipts. Then
-continue commercial integrity/recovery before guided templates, voice and Shared-Space gaps.
+untracked `infra/scripts/__pycache__/`. Exact next task: continue P03/P20 commercial recovery from
+their existing dunning and refund ledgers. Close any independent reachable status/retry gap without
+inventing grace/restriction, dispute, author-earnings or operator-identity policy; then continue P04
+recovery. After those gates, proceed to guided templates, voice dashboards and Shared-Space lifecycle.
 Do not deploy, buy services, reset, clean, switch branches or force-push.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable

@@ -2,17 +2,17 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P01 test-gate code `e68a8f4c` was pushed to
-`origin/Mcbt5s-Backup-2`. Staging and production preflight now run the durable D1 migration runner's
-interruption, lock, ledger and required-schema tests. The deployment-manifest validator enforces that
-the suite remains inside each preflight. Local evidence: runner **11/11**, deployment-manifest tests
-**8/8**, validator passes and `git diff --check`. No remote D1, deployment workflow or live health
-probe ran. P01 remains PARTIAL for per-database operator-attested baselines, real resource separation,
-fresh ownership/existence receipts and isolated/deployed acceptance. Exact next action: inspect P02's
-current rendered-resource receipt/preflight boundary for one remaining independent code gap; retain
-the external Cloudflare ID/ownership/receipt gates and do not invent resource facts. Then continue P03/
-P20 commercial integrity and P04 recovery before guided templates, voice dashboards and Shared-Space
-gaps.
+Updated 2026-11-13 after P02 receipt-validation code `7cac081c` was pushed to
+`origin/Mcbt5s-Backup-2`. The resource validator now checks Cloudflare account ID format as 32
+hexadecimal characters. Local evidence: resource validator **10/10**, Wrangler isolation **6/6** and
+`git diff --check`. No Cloudflare account or provider was queried. P02 remains PARTIAL: source uses a
+shared D1 and eleven shared KV IDs, `naelao-calls` ownership is unresolved, 62 fresh resource
+existence receipts are missing, and separate D1 baselines plus secret/callback/jurisdiction evidence
+are unavailable. Do not invent these facts or use placeholder IDs. P01 code `e68a8f4c` now runs its
+interruption/lock/ledger/schema suite in both preflights and requires it through the deployment
+manifest validator. Next: inspect one independent current P03/P20 commercial recovery caller against
+its existing ledgers, preserve unresolved policy/identity gates, then continue P04 and guided-template
+lifecycle before voice dashboards and Shared-Space.
 
 Prior §10 audience code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Migration 119 preserves the
 legacy member audience and the v2 flow supports an explicit member or owners/admins audience, with
