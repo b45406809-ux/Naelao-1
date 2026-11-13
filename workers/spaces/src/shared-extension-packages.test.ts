@@ -8,7 +8,7 @@ const secret = "shared-extension-package-route-secret";
 const html = "<main>Customer dashboard</main>";
 const handler = "export default async function handle() { return { ok: true }; }";
 const manifest = validateExtensionManifest({
-  id: "ext_customer_voice", type: "extension", declaredPermissions: ["assistant.phone.read"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read"],
+  id: "ext_customer_voice", type: "extension", declaredPermissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"],
   gadgets: [], daemons: [], commands: [],
   bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version: "1.2.0", primitives: [
     { schemaVersion: "1.0", kind: "canvas", id: "voice_dashboard", version: "1.2.0", permissions: [], capabilityRequirements: [], lifecycle: {},
@@ -17,7 +17,7 @@ const manifest = validateExtensionManifest({
       provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"],
       outboundEvents: ["message.reply", "voice.reply"] },
   ] },
-}, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read"] });
+}, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"] });
 
 async function digest(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -110,7 +110,7 @@ describe("signed Space-shared extension packages", () => {
     const stage = h.spaceRequests.find(request => new URL(request.url).pathname === "/extensions");
     expect(await stage?.clone().json()).toMatchObject({ scope: "SPACE_SHARED", deferActivation: true,
       publisherId: "pub_voice", publisherKeyId: "a".repeat(64), publisherSignature: "signed-payload", artifactSha256: h.release.artifact_sha256,
-      gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read"] });
+      gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"] });
     expect(h.microAppRequests).toHaveLength(1);
     expect(await h.microAppRequests[0]!.clone().json()).toMatchObject({ appId: "voice_dashboard", scope: "SPACE_SHARED", gadgetTier: 3,
       html, releaseProof: { extensionId: "ext_customer_voice", version: "1.2.0", canvasPath: "./dashboard.html" } });

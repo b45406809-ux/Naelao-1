@@ -1,9 +1,9 @@
 {
   "id": "ext_bounded_phone_menu",
   "type": "extension",
-  "releaseVersion": "1.0.2",
-  "declaredPermissions": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read"],
-  "capabilityRequirements": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read"],
+  "releaseVersion": "1.0.3",
+  "declaredPermissions": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"],
+  "capabilityRequirements": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"],
   "gadgets": [],
   "daemons": [],
   "commands": [],
@@ -22,15 +22,15 @@
     "schemaVersion": "1.0",
     "kind": "extension_bundle",
     "id": "ext_bounded_phone_menu",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "primitives": [
       {
-        "schemaVersion": "1.0", "kind": "canvas", "id": "phone_menu_dashboard", "version": "1.0.2",
+        "schemaVersion": "1.0", "kind": "canvas", "id": "phone_menu_dashboard", "version": "1.0.3",
         "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "layout": "CanvasMount",
         "component": "./dashboard.html", "dynamicPage": false
       },
       {
-        "schemaVersion": "1.0", "kind": "channel", "id": "phone_menu_handler", "version": "1.0.2",
+        "schemaVersion": "1.0", "kind": "channel", "id": "phone_menu_handler", "version": "1.0.3",
         "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "provider": "phone",
         "handlerScript": "./handler.ts", "context": "channel_only",
         "inboundEvents": ["message.received", "call.received", "call.digits"],

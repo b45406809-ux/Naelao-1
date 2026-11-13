@@ -1669,7 +1669,7 @@ export function callSpaceSharedExtensionOperation(spaceId: string, session: Sess
   }
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/graduate`, { method: "POST", session, body: JSON.stringify(input) });
 }
-export function callSpaceSharedExtensionApi(spaceId: string, appId: string, session: SessionCredentials, request: { method: "GET" | "POST" | "DELETE" | "PATCH"; path: "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/api/phone-dashboard" | "/mcp"; query?: Record<string, string>; body?: unknown }) {
+export function callSpaceSharedExtensionApi(spaceId: string, appId: string, session: SessionCredentials, request: { method: "GET" | "POST" | "DELETE" | "PATCH"; path: "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/api/phone-dashboard" | "/api/phone-simulate" | "/mcp"; query?: Record<string, string>; body?: unknown }) {
   const query = new URLSearchParams(request.query ?? {});
   return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}${request.path}${query.size ? `?${query}` : ""}`, {
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",

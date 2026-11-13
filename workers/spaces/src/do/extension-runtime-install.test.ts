@@ -476,7 +476,7 @@ describe("runtime extension installation", () => {
     const storage = createDOStorage(), secret = "shared-package-activation-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     const artifactSha256 = "e".repeat(64);
-    const manifest = { id: "ext_shared_package", type: "extension", declaredPermissions: ["assistant.phone.read"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read"],
+    const manifest = { id: "ext_shared_package", type: "extension", declaredPermissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilityRequirements: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"],
       gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_shared_package", version: "1.0.0",
         primitives: [{ schemaVersion: "1.0", kind: "canvas", id: "dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
           component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
@@ -485,7 +485,7 @@ describe("runtime extension installation", () => {
             outboundEvents: ["message.reply", "voice.reply"] }] } };
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
-        gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read"], artifactSha256, publisherId: "pub_example", publisherKeyId: "a".repeat(64),
+        gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.read", "assistant.phone.simulate"], artifactSha256, publisherId: "pub_example", publisherKeyId: "a".repeat(64),
         publisherSignature: "publisher-signature", publisherPayloadSha256: "b".repeat(64), deferActivation: true }) }));
     expect(install.status, JSON.stringify(await install.clone().json())).toBe(201);
     const { installationId, release } = await install.json() as { installationId: string; release: { hostSignature: string } };
@@ -512,7 +512,8 @@ describe("runtime extension installation", () => {
       .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", extension_id: "ext_shared_package", status: "active" }] });
     const runtime = () => space.fetch(new Request("http://space/space-shared-extension-runtime?tenant_id=tenant&space_id=space&app_id=dashboard"));
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: true, releaseValid: true,
-      publisherKeyId: "a".repeat(64), installationId, extensionId: "ext_shared_package", phoneChannel: true, phoneDashboardAllowed: true });
+      publisherKeyId: "a".repeat(64), installationId, extensionId: "ext_shared_package", phoneChannel: true,
+      phoneDashboardAllowed: true, phoneSimulationAllowed: true });
     storage.sql.exec("UPDATE extension_releases SET publisher_revoked_at='revoked' WHERE extension_id='ext_shared_package' AND version='1.0.0'");
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: false, releaseValid: false });
     const abort = await space.fetch(new Request("http://space/extension-installation/abort", { method: "POST",

@@ -1474,9 +1474,9 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
 
 const SPACE_SHARED_PACKAGE_CAPABILITIES = new Set([
   "channel.invoke", "events.subscribe", "extension.gadget.read", "extension.project_canvas",
-  "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "space.shared.read", "space.shared.write",
+  "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate", "space.shared.read", "space.shared.write",
 ]);
-const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set(["events.subscribe", "extension.settings.read", "extension.settings.configure", "assistant.phone.read"]);
+const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set(["events.subscribe", "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"]);
 
 async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
   extensionId: string, version: string, instanceKey: string,

@@ -220,6 +220,87 @@ describe("gadget MCP host adapter", () => {
     expect(agentsFetch).toHaveBeenCalledOnce();
   });
 
+  it("runs the installed phone handler only for its exact active signed installation and binding", async () => {
+    const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", phoneChannel: true,
+      phoneDashboardAllowed: true, phoneSimulationAllowed: true };
+    const spaceFetch = vi.fn(async () => Response.json(runtime));
+    let lineInstallation = "install-a";
+    let secondInstallation = "install-b";
+    const agentsFetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (request.method === "GET") {
+        expect(url.searchParams.get("action")).toBe("phone-status");
+        return Response.json({ extension_lines: [
+          { id: "binding-a", provider: "telnyx", installation_id: lineInstallation, status: "active", handler_status: "active" },
+          { id: "binding-b", provider: "twilio", installation_id: secondInstallation, status: "active", handler_status: "active" },
+        ] });
+      }
+      expect(url.searchParams.get("action")).toBe("phone-handler-test");
+      const body = await request.json() as Record<string, unknown>;
+      expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.digits", digits: "1" });
+      expect(request.headers.get("x-naelao-user-id")).toBe("space-owner");
+      expect(request.headers.get("x-naelao-role")).toBe("owner");
+      return Response.json({ simulation: true, response: { schema_version: 1, actions: [{ type: "say", text: "Sales" }, { type: "hangup" }] } });
+    });
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: spaceFetch }) },
+      AGENTS_WORKER: { fetch: agentsFetch },
+    } as never;
+    const path = "/spaces/s/apps/phone_menu_dashboard/api/phone-simulate";
+    const headers = await auth("t", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner", "content-type": "application/json" });
+    const response = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.digits", digits: "1" }) }, env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ simulation: true, event_type: "call.digits",
+      response: { schema_version: 1, actions: [{ type: "say", text: "Sales" }, { type: "hangup" }] },
+      disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." });
+    expect(agentsFetch).toHaveBeenCalledTimes(2);
+
+    const malformed = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.digits", digits: "1#" }) }, env);
+    expect(malformed.status).toBe(400);
+    expect(agentsFetch).toHaveBeenCalledTimes(2);
+
+    const member = await app.request(path, { method: "POST", headers: await auth("t", { "x-naelao-user-id": "member", "x-naelao-role": "member", "content-type": "application/json" }),
+      body: JSON.stringify({ event_type: "call.received" }) }, env);
+    expect(member.status).toBe(403);
+    expect(agentsFetch).toHaveBeenCalledTimes(2);
+
+    lineInstallation = "install-other";
+    const crossInstall = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
+    expect(crossInstall.status).toBe(409);
+    expect(await crossInstall.json()).toMatchObject({ error_code: "phone_simulation_line_unavailable" });
+    expect(agentsFetch).toHaveBeenCalledTimes(3); // Status read only; no handler invocation for another install.
+
+    lineInstallation = "install-a";
+    secondInstallation = "install-a";
+    const ambiguous = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
+    expect(ambiguous.status).toBe(409);
+    expect(await ambiguous.json()).toMatchObject({ error_code: "phone_simulation_line_ambiguous" });
+    expect(agentsFetch).toHaveBeenCalledTimes(4);
+    secondInstallation = "install-b";
+
+    runtime.phoneSimulationAllowed = false;
+    const undeclared = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
+    expect(undeclared.status).toBe(404);
+    expect(agentsFetch).toHaveBeenCalledTimes(4);
+
+    runtime.phoneSimulationAllowed = true;
+    runtime.active = false;
+    const revoked = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
+    expect(revoked.status).toBe(503);
+    expect(agentsFetch).toHaveBeenCalledTimes(4);
+
+    const isolatedApp = testApp(); registerGadgetMcpRoutes(isolatedApp as never);
+    const foreign = await isolatedApp.request(path, { method: "POST", headers: await auth("foreign", {
+      "x-naelao-user-id": "space-owner", "x-naelao-role": "owner", "content-type": "application/json" }),
+      body: JSON.stringify({ event_type: "call.received" }) }, { ...env,
+        PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } } as never);
+    expect(foreign.status).toBe(404);
+    expect(agentsFetch).toHaveBeenCalledTimes(4);
+  });
+
   it("forwards the exact Template setup project query and restricts writes to administrators", async () => {
     const spaceFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname,
       blueprint_id: new URL(request.url).searchParams.get("blueprint_id"), project_id: new URL(request.url).searchParams.get("project_id"),

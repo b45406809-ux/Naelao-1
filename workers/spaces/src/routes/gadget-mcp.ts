@@ -187,6 +187,64 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
     } catch { return c.json({ error_code: "phone_dashboard_data_unavailable" }, 503); }
   };
+  const forwardPhoneSimulation = async (c: Context<{ Bindings: Env }>) => {
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "", userId = c.req.header("x-naelao-user-id") ?? "";
+    const { spaceId = "", appId = "" } = c.req.param();
+    const role = c.req.header("x-naelao-role") ?? "viewer";
+    if (c.req.method !== "POST") return c.json({ error_code: "method_not_allowed" }, 405);
+    if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
+    if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    let body: { event_type?: unknown; digits?: unknown };
+    try {
+      const bytes = await readBoundedRequestBytes(c.req.raw, 4 * 1024);
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body;
+    } catch { return c.json({ error_code: "bad_request" }, 400); }
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some(key => !["event_type", "digits"].includes(key))
+      || (body.event_type !== "call.received" && body.event_type !== "call.digits")
+      || (body.event_type === "call.received" && body.digits !== undefined)
+      || (body.event_type === "call.digits" && (typeof body.digits !== "string" || !/^[0-9]{1,8}$/.test(body.digits))))
+      return c.json({ error_code: "phone_simulation_input_invalid" }, 400);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.json({ error_code: "not_found" }, 404);
+    const runtimeError = await sharedExtensionRuntimeError(c.env, tenantId, spaceId, appId);
+    if (runtimeError) return c.json({ error_code: runtimeError }, 503);
+    if (!c.env.SPACE_DO || !c.env.AGENTS_WORKER) return c.json({ error_code: "phone_simulation_unavailable" }, 503);
+    try {
+      const actor = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+      const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
+      const runtimeResponse = await c.env.SPACE_DO.get(actor).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
+      if (!runtimeResponse.ok) return c.json({ error_code: "phone_simulation_unavailable" }, 503);
+      const runtime = await readBoundedResponseJson<{ managed?: unknown; active?: unknown; releaseValid?: unknown;
+        installationId?: unknown; phoneChannel?: unknown; phoneDashboardAllowed?: unknown; phoneSimulationAllowed?: unknown }>(runtimeResponse, 16 * 1024);
+      if (runtime.managed !== true || runtime.active !== true || runtime.releaseValid !== true
+        || runtime.phoneChannel !== true || runtime.phoneDashboardAllowed !== true || runtime.phoneSimulationAllowed !== true
+        || typeof runtime.installationId !== "string") return c.json({ error_code: "phone_simulation_not_declared" }, 404);
+      const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": role,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
+      const phoneStatus = await c.env.AGENTS_WORKER.fetch(new Request(
+        `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-status`, { headers }));
+      if (!phoneStatus.ok) return c.json({ error_code: phoneStatus.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_data_unavailable" }, phoneStatus.status === 403 ? 403 : 503);
+      const status = await readBoundedResponseJson<{ extension_lines?: Array<{ id?: unknown; provider?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown }> }>(phoneStatus, 512 * 1024);
+      const matchingLines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
+        .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
+          && (line.provider === "telnyx" || line.provider === "twilio") && line.status === "active" && line.handler_status === "active");
+      if (matchingLines.length !== 1) return c.json({ error_code: matchingLines.length ? "phone_simulation_line_ambiguous" : "phone_simulation_line_unavailable" }, 409);
+      const simulation = await c.env.AGENTS_WORKER.fetch(new Request(
+        `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-handler-test`,
+        { method: "POST", headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ action: "phone-handler-test", binding_id: matchingLines[0]!.id, event_type: body.event_type,
+            ...(body.event_type === "call.digits" ? { digits: body.digits } : {}) }) }
+      ));
+      if (!simulation.ok) return c.json({ error_code: simulation.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_failed" }, simulation.status === 403 ? 403 : 409);
+      const result = await readBoundedResponseJson<{ simulation?: unknown; response?: unknown }>(simulation, 32 * 1024);
+      if (result.simulation !== true || !result.response) return c.json({ error_code: "phone_simulation_response_invalid" }, 503);
+      return new Response(JSON.stringify({ simulation: true, event_type: body.event_type, response: result.response,
+        disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." }),
+        { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
+    } catch { return c.json({ error_code: "phone_simulation_unavailable" }, 503); }
+  };
   const forwardTemplateSetup = async (c: Context<{ Bindings: Env }>) => {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const { spaceId = "", appId = "" } = c.req.param();
@@ -228,6 +286,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.patch("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.get("/spaces/:spaceId/apps/:appId/api/phone-dashboard", forwardPhoneDashboard);
+  app.post("/spaces/:spaceId/apps/:appId/api/phone-simulate", forwardPhoneSimulation);
   app.get("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);
   app.patch("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);
   app.post("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, "/api/data"));

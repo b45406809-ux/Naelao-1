@@ -31,9 +31,13 @@ describe("bounded phone menu package", () => {
       provider: "phone", handlerScript: "./handler.ts", context: "channel_only",
       inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"],
     })]);
-    expect(parsed.capabilityRequirements).toEqual(["extension.settings.read", "extension.settings.configure", "assistant.phone.read"]);
+    expect(parsed.capabilityRequirements).toEqual(["extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"]);
     expect(parsed.declaredPermissions).toContain("assistant.phone.read");
+    expect(parsed.declaredPermissions).toContain("assistant.phone.simulate");
     expect(dashboard).toContain("/api/phone-dashboard");
+    expect(dashboard).toContain("/api/phone-simulate");
+    expect(dashboard).toContain("Run installed handler test (synthetic)");
+    expect(dashboard).toContain("saved installation settings");
     expect(dashboard).toContain("Recent Telnyx calls");
     expect(dashboard).toContain("not invoices or customer charges");
     expect(dashboard).toContain("Preview current settings");

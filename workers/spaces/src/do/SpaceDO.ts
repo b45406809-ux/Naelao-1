@@ -12332,10 +12332,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const phoneDashboardAllowed = phoneChannel
         && manifest.capabilityRequirements.includes("assistant.phone.read")
         && manifest.declaredPermissions.includes("assistant.phone.read");
+      const phoneSimulationAllowed = phoneChannel
+        && manifest.capabilityRequirements.includes("assistant.phone.simulate")
+        && manifest.declaredPermissions.includes("assistant.phone.simulate");
       return Response.json({ managed: true, active: releaseValid, releaseValid,
         ...(release.publisher_key_id ? { publisherKeyId: release.publisher_key_id } : {}),
         ...(releaseValid ? { installationId: row.instance_id, extensionId: row.extension_id, phoneChannel,
-          phoneDashboardAllowed } : {}) });
+          phoneDashboardAllowed, phoneSimulationAllowed } : {}) });
     }
     return Response.json({ managed: false, active: false, releaseValid: false });
   }
