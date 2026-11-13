@@ -2,41 +2,35 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P04 owner full-archive export `6fccacaa` pushed)
+### Active continuation (2026-11-13; P10/P24 drained Canvas and channel-code update `c7412170` pushed)
 
-- Code `6fccacaa` is pushed after fetch-confirming `59bdead1`; branch `autonomous-managed-services-20261111`
-  matches `origin/Mcbt5s-Backup-2`. Runtime-work admission/drain is in `15a04f7e`, following static
-  Canvas update receipt `9d5a0c23`.
-- P10/P24 now persist per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch,
-  phone calls/simulations, shared and project Gadget calls, Canvas Gadget reads, workflow Gadget
-  operations, dynamic pages and first-party initialization acquire before runtime invocation. Streamed
-  responses hold the lease until complete or cancelled. Pause blocks new admissions and returns a
-  bounded drain result. Generic install retries preserve disabled/staged state; package pin upgrades
-  and rollback require paused status and zero active work. Owner UI exposes pause/drain status and a
-  wait-for-work action. Static Canvas update receipts remain unchanged.
-- Local evidence: Spaces focused runtime/migration/Gadget/page suites **61/61**; Agents phone scope
-  suite **7/7**; Spaces, Agents and Shell typechecks; `git diff --check`. These are local mocks and
-  SQLite only. No deployed DO, real provider, Marketplace, live call or recovery drill ran. Preserve
-  `infra/scripts/__pycache__/`; rollouts remain disabled.
-- P10/P24 remain PARTIAL: general owner-reviewed update intent/receipt, runtime/data migration preview
-  and recovery, broader rollback/version-selection UI, authority/dependency expansion, connection/price
-  changes, compromise response, scanning/retention and deployed/live acceptance remain uncoded or
-  unverified. A project-scoped rollback picker exists in ChannelConnect but is not a general rollback
-  path. The 30-minute lease expiry is crash cleanup, not measured provider timing. S2–S9/U01–U12
-  status is otherwise unchanged. P01/P02 retain their external resource/ownership/receipt/baseline
-  gates; P03/P20 retain unresolved policy and operator-identity questions.
-- P04 code `6fccacaa` adds the reachable owner/admin full-archive export control to `ArchiveKeyRotationPanel`,
-  using the existing encrypted/resumable endpoint. A Space-and-actor-scoped request ID remains in
-  session storage until the server confirms a verified archive; limits and excluded data are stated.
-  Local checks: Shell focused suites **6/6**, Shell typecheck, Spaces archive suite **11/11**, and
-  `git diff --check`. This does not prove deployed R2 durability or isolated recovery. P04 remains
-  PARTIAL for limits, cross-service coverage, approved retention/key/jurisdiction policy and live drills.
-- Managed-services source/caller reconciliation already closes supported U11/U12 audits. Missing
-  invoices, billed-idle/CPU-size feeds, approved policy and live evidence remain distinct gaps; do not
-  repeat those audits without new source evidence. P03/P20 policy questions remain open. Exact next
-  action: implement the next safely bounded P10/P24 owner-reviewed package update receipt path; keep
-  migration, authority/dependency, connection and price changes gated. Then resume uncoded S4–S9/U01–U12
-  rows from this ledger rather than inferring completion from the reconciliation.
+- Code `c7412170` is pushed to `origin/Mcbt5s-Backup-2` after fetching; branch
+  `autonomous-managed-services-20261111` matched the remote before push. P04 archive export remains in
+  `6fccacaa`; runtime-work admission/drain remains in `15a04f7e`.
+- P10/P24 now allow an owner-reviewed same-publisher code update only when all signed manifest fields
+  match except release versions and the package contains static Canvas and/or channel-handler code.
+  The update review verifies current publisher trust and artifact signature, reads lease count for the
+  exact Space-shared install, and withholds its short-lived token until the install is paused and work
+  is drained. SpaceDO rechecks the reviewed pin, signature, pause state and lease count in the apply
+  transaction, updates the release pin, and persists an idempotent receipt. Shell explains the admitted
+  work gate and the supported package scope. No Gadget, schema/data migration, authority or config
+  change is included.
+- Local evidence: focused Spaces review/DO/contract suites **45/45**, Spaces/Shell typechecks, and
+  `git diff --check`. These are local Worker mocks and SQLite checks; no deployed DO, signed Marketplace
+  transaction, live provider or live acceptance ran. Rollouts remain disabled; preserve
+  `infra/scripts/__pycache__/`.
+- P10/P24 remain PARTIAL for schema/data migration preview and recovery, general rollback/version
+  selection, authority/dependency/connection/price changes, revocation/uninstall effects, key
+  compromise response, scanning, retention and deployed/live acceptance. S2 remains IMPLEMENTED_LOCAL
+  for supported lanes. S3–S9/U01–U12 remain at their row-level statuses below; U05/U06 live runtime
+  producers/contracts are unsupported platform gaps, not credential blockers. P01/P02 need external
+  resource/ownership/receipt/baseline evidence; P03/P20 policy remains undecided.
+- P04 code `6fccacaa` connects the owner/admin full-archive export to the resumable API with a stable
+  session request ID, visible limits and exclusions. Local Shell **6/6**, Shell typecheck and archive
+  suite **11/11** are recorded above; deployed R2 durability and isolated recovery are not established.
+- Exact next action: add validated, visual setup-field authoring to Foundry Template Studio and pass
+  those declarations through the signed Space Template export/conformance path. Then continue uncoded
+  S4–S9/U01–U12 and platform §5/§9/§10 requirements without repeating closed audits.
 
 ### Prior active continuation (2026-11-13; cross-Space signed package import `b4cf5214` pushed)
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
@@ -1019,6 +1013,7 @@ The links below are official provider documentation checked during S1. They esta
 | S1 | IMPLEMENTED_LOCAL | Source audit and six-package typechecks are recorded; fresh Agents Wrangler Docker dry-run now passes after shared vendored dependency staging. | Recheck only when relevant configuration changes. |
 | S2 | IMPLEMENTED_LOCAL for currently supported lanes | Migrations 0179–0183, 0188, 0192, 0194, 0201–0224 cover managed accounts/operations, owner/payer mandates, shared credit holds, Telnyx lifecycle/share, UserPort connector links, Agent37 computer shares and revocation recovery, provider usage/cost evidence, model results, durable cost-alert delivery, call-leg receipts, and exact operation quotes/rates. AgentMail provision/renew and Cloudflare Workers AI have reachable owner quote/admission callers with reprice-safe recovery; managed Telnyx prices and holds are version-pinned; customer-owned Higgsfield/Telnyx estimates require fresh confirmation. UserPort discovery/sync/revoke, Telnyx BYO SMS share, Agent37 selected-action share, Higgsfield generation share and uncertain-revocation retry have reachable owner callers. Current-source audits found no ordinary missing caller for a supported payer rail; each supported reservation uses the existing organization quota and scoped mandate. | Live provider capability/region acceptance, operator-approved exact prices and commercial terms, Telnyx call-cost webhook enablement, invoice reconciliation, funded user/agent wallets, Coinbase custody/settlement and credit transfer/refund policy are not complete. These do not imply support for a provider lane or payment rail that has no reviewed contract. No live acceptance is claimed. |
 | S3 | IN_PROGRESS | Agent37 lifecycle/recovery and matching-task prebuilt routing, owner-only start/sleep reconciliation, U05 authority verifier routes, U07 bounded checkpoint scheduling, U10 runtime inventory/erasure notifications, U01 retention-aware erasure admission, U02 authoritative runtime credits and Agent37/Telnyx/Twilio/OpenRouter costs plus AgentMail quantities, U04 MIME/byte-preservation paths, U09 deployment-pinned command discovery and same-installation pipeline admission, and shared U12 build staging exist. U09–U12 source/caller checks are recorded; U02 settled OpenRouter receipts feed owner thresholds, U05 verifier/routes/runtime-control/coordinator pass **72/72**, U07 WorkspaceCoordinator passes **58/58**, and U08 has prior signed source/build provenance. | U05 lacks a candidate allocation, runtime reservation and trusted mount/sync/flush observation producer. U06 has no supported writer admission/drain/flush/reconnect/handoff contract or bound adapter; U07 has no first-party live-mode caller; U08 publishes no runtime image. These gaps keep runtime mode unavailable. U02 invoice/billed-idle/CPU-size sources, approved spend policy and provider account acceptance remain open. No live Agent37 funding/region/template, R2/alarm, FUSE or runtime acceptance is claimed. |
+| S4 | IN_PROGRESS | Project-main identity/generation fencing, private snapshot inventory and retention recovery, explicit sidecar artifact transfers with checked publication, per-project runtime profiles/limits, owner status, and project erasure receipts exist locally; see U09/U10 and MS03/MS12 evidence above. | No accepted Cloudflare live runtime/adapter, U05 candidate/observation producer or U06 writer admission/drain/flush/handoff contract exists. Encrypted private-state byte fallback, supported process restart recipes, provider snapshot purge and deployed isolation/recovery acceptance remain unavailable or unverified. Keep runtime rollout disabled. |
 | S5 | IN_PROGRESS | Managed account/capability/Billing records, owner dashboard, AgentMail lifecycle and owner-scoped inbox/search/read/attachment/usage caller with persisted US/EU routing, Telnyx BYO search/quote/order plus scheduled read-only recovery and managed-number release reconciliation, owner-selected AgentPort actions, Telnyx signed call-cost callbacks and Twilio/Telnyx SMS cost reads are wired. The Twilio caller supports Call resource costs. Customer-owned Higgsfield has quote, idempotency, status, cancellation, deletion and scheduled reconciliation; capability remains draft and rollout false. Agent37 exposes an owner-triggered account-level cost read. | Telnyx call-cost callbacks require account-side enablement and only supply provider-API observations, not invoices. Sender-registration workflows need account/country policy. Managed ordering requires approved Naelao pricing/entitlement/renewal. Modal’s Node host and Beta private-API contract need explicit platform/product acceptance; do not claim provider support. Higgsfield activation needs operator evidence and end-user/likeness/legal review. |
 | S6 | IN_PROGRESS | AgentPort channel threads persist a bounded, versioned opaque external consumer/session reference through REST, SDK and MCP. The owner/host-only `PUT /threads/:threadId/session-binding` attaches or clears a binding on webhook-created threads. Migration 0229 carries owner-configured principal references for trusted inbound senders through the metadata-only message-reference ledger and grant-checked read API. Owner/host-only revoke and relink endpoints retain historical principal attribution while treating new events as external until the owner relinks. Local route/index tests **21/21**, SDK tests **15/15**, and API/SDK typechecks pass; release manifest validation and its 12 tests pass. AgentMail provider events recheck the exact active subscription tuple, resolve only an owner-selected assistant/wake state/revision, scope sessions by connection/thread/assistant, and dedupe retries with a stable run ID. `AgentPortClient.consumePendingEvents` supplies a sequential, leased poll/claim/callback/ack loop and acknowledges delivery only after the consumer handler resolves. | Sender-principal configuration is not an independent provider identity challenge. Generic shared-channel identity link/reverification, per-user/conversation assistant list/switch/one-message selection, and ordered routing decisions do not have a reachable first-party content/command caller. External consumers still own provider fetch and consumer-specific durable acceptance. `docs/agentport-event-consumers.md` specifies idempotency, lease and wake semantics. These are local mocks, not deployed or live provider acceptance. |
 | S7 | IN_PROGRESS | Organization credits share Billing's existing quota/`usage_events`; reserve/uncertain/release/settle and parent-funded service/operation-scoped agent caps are implemented. Cloudflare Workers AI and managed AgentMail provision/renew persist exact quotes and require quote IDs at Billing admission. Managed Telnyx rental/SMS/call holds are version-bound and capped by owner-confirmed amounts, with durable release retry for unused call holds. AgentMail and Cloudflare preserve consumed quote terms across covered repricing/capability updates; managed Telnyx uses its persisted accepted line schedule. Current-source audit confirms every supported reservation selects the existing organization quota and mandate; no supported user/agent funded balance exists to select. | Independent wallet/funding rails, Coinbase integration/settlement and credit issuance/refund/transfer rules are absent or require product/legal decision. No wallet support is claimed. |

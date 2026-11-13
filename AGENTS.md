@@ -13,17 +13,18 @@ a new session, read both plans, both progress records, and this runbook; inspect
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
 Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` is pushed through
-`6fccacaa` on `origin/Mcbt5s-Backup-2`; runtime-work admission/drain is in `15a04f7e`. P10/P24 now persist
-per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch, phone calls and
-simulations, shared/project Gadgets, Canvas Gadget reads, workflow Gadget actions, dynamic pages and
-first-party initialization acquire before invoking the runtime; streamed responses retain the lease
-through completion or cancellation. Pause closes admission and supports a bounded 0–10 second drain.
-Generic install retries cannot reactivate disabled/staged instances; package pin upgrades and rollback
-require a paused installation with zero active leases. The prior static Canvas path retains its
-receipt. Local evidence: Spaces focused suites **61/61**, Agent phone suite **7/7**, Spaces/Agents/Shell
-typechecks, and `git diff --check`. These are local mocks/SQLite checks; no deployed DO, live provider,
-package, call or recovery drill ran. Preserve the untracked `infra/scripts/__pycache__/`; rollouts stay
-disabled.
+`c7412170` on `origin/Mcbt5s-Backup-2`; runtime-work admission/drain is in `15a04f7e`. P10/P24 now
+allow an owner-reviewed same-publisher release update for version-only manifest changes to static
+Canvas and channel-handler code packages with unchanged authority/configuration. The host verifies
+the signed artifact; review reads active runtime-work leases for active or paused installs and withholds
+the apply token until the install is paused and drained. SpaceDO rechecks signature, version, pause and
+leases transactionally, then updates the pin with a durable replayable receipt. The Shell describes
+the exact scope and shows remaining operation count. Focused Spaces suites pass **45/45**; Spaces and
+Shell typechecks and `git diff --check` pass. This is local Worker/SQLite evidence only; no deployed
+DO, Marketplace, live provider or live acceptance ran. P10/P24 remain PARTIAL for Gadget/schema/data
+migrations, recovery/rollback, broader authority/dependency/connection/price changes, compromise
+response, scanning, retention and live acceptance. Preserve the untracked
+`infra/scripts/__pycache__/`; rollouts stay disabled.
 
 P04 now has an owner/admin full-archive export control in Shell. It calls the existing resumable API,
 retains a Space-and-actor-scoped request ID in session storage through ambiguous responses, and shows
@@ -36,14 +37,18 @@ exists in ChannelConnect; it is not a general rollback path. The 30-minute lease
 provider/deployed timing is not verified. P01/P02 still require actual resource separation, ownership,
 158 read-only receipts and operator-attested D1 baselines. No live or deployed acceptance is claimed.
 
-The detailed managed-services ledger already reconciles supported U11/U12 callers; their remaining
-invoice, billed-idle/CPU-size, policy and live-evidence gaps are not credential blockers. P03/P20 are
-source-reconciled; grace/restriction and refund/access/author-accounting policy remain unresolved and
-must not be guessed. Do not repeat those audits without new source evidence. Exact next action: continue
-P10/P24's uncoded general update review path. Inspect the signed update preview/apply and rollback
-routes, then implement the next owner-reviewed update intent/receipt for a safely bounded package class;
-keep migrations, authority/dependency expansion, connections and price changes gated. Then resume exact
-remaining S4–S9/U01–U12 code gaps, preserving P01/P02 external gates.
+The managed-services ledger reconciles current S2–S9/U01–U12 code and callers. S2 is local for supported
+lanes. S4–S9 remain partial at the row-level gaps in the ledger. U05's missing trusted candidate and
+runtime-observation producer and U06's missing authenticated admission/drain/flush/handoff contract are
+runtime/platform gaps, not credential blockers; do not synthesize observations or invent an adapter.
+U11/U12 supported callers/build wiring are locally implemented, while invoices, billed-idle/CPU-size
+feeds and live evidence remain open. P01/P02 still require real resource separation, ownership, 158
+read-only receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/
+author-accounting policies remain unresolved and must not be guessed. Do not repeat completed audits
+without new evidence. Exact next action: add validated, visual setup-field authoring to Foundry Template
+Studio and pass those declarations through the signed Space Template export/conformance path; keep the
+existing host validation authoritative. Then continue remaining S4–S9/U01–U12 and platform §5/§9/§10
+gaps while preserving all external and unsupported-contract gates.
 After compaction, interruption or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
 purchase, reset, clean, switch branches or force-push.

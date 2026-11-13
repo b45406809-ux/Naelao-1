@@ -2,11 +2,11 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `6fccacaa` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`; it follows runtime-work admission/drain `15a04f7e` and static Canvas update receipt `9d5a0c23c506e41dffd0ba81dd2992ea56887839`.
+Updated 2026-11-13 after code `c7412170` was pushed to `origin/Mcbt5s-Backup-2` following fetch. It follows P04 full-archive export `6fccacaa`, runtime-work admission/drain `15a04f7e`, and the original static Canvas receipt path `9d5a0c23`.
 
-P10/P24 now persist per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch, phone calls/simulations, shared/project Gadget operations, Canvas Gadget reads, workflow Gadget actions, dynamic pages and first-party initialization acquire before runtime invocation. Streamed responses keep leases until completion/cancellation. Pause closes admission and supports a bounded drain. Generic installation retries cannot reactivate paused/staged packages; package pin upgrades and rollback require a paused installation with no active leases. The earlier static Canvas version-only update remains the sole path with an owner review token and durable update receipt. A project-scoped rollback picker exists in ChannelConnect; broader rollback/version selection, general package update review/receipt, and schema/data migration preview/recovery remain uncoded.
+P10/P24 now support an owner-reviewed version-only signed release update for same-publisher Space-shared packages whose only primitives are static Canvas and channel handlers. The normalized signed manifest must be identical except release and primitive versions; settings, dependencies, permissions, capabilities, connections, storage and package configuration cannot change. The update API reads the exact installation's active runtime-work count and withholds its short-lived apply token until the installation is paused and drained. SpaceDO repeats signature, pin, pause and lease checks in the update transaction, writes the version and a durable replayable receipt, and leaves the installation paused. The Shell caller explains the supported scope and active-work count. Gadget/schema/data migrations and broader update classes remain gated.
 
-Local evidence for `15a04f7e`: Spaces runtime/migration/Gadget/page suites **61/61**, Agents phone suite **7/7**, Spaces/Agents/Shell typechecks and `git diff --check`. `6fccacaa` connects full-archive export to the owner/admin Settings panel, with a stable session-stored request ID across ambiguous responses and visible scope, limits and exclusions. Shell focused suites **6/6**, Shell typecheck and Space archive suite **11/11** pass. These are local Worker mocks/SQLite/static checks only; no deployed DO, live Marketplace/provider, live call or recovery drill ran. P10/P24 remain PARTIAL for general update/migration/rollback, authority/dependency expansion, provider connection/price changes, compromised-key response, scanning, retention and live acceptance. Lease expiry is 30 minutes for crash cleanup; provider timing is not measured. Keep rollouts disabled.
+Local evidence for `c7412170`: Spaces update-review/SpaceDO/contract suites **45/45**, Spaces and Shell typechecks, and `git diff --check`. Earlier `15a04f7e` suites cover runtime admission/drain **61/61** plus Agents phone scope **7/7**; P04 `6fccacaa` has Shell **6/6** and archive suite **11/11**. All evidence is local Worker mocks/SQLite/static checks; no deployed DO, live Marketplace/provider, call or recovery drill ran. P10/P24 remain PARTIAL for migration preview/recovery, general rollback/version selection, authority/dependency/connection/price changes, compromised-key response, scanning, retention and live acceptance. Lease expiry is 30 minutes for crash cleanup; provider timing is not measured. Keep rollouts disabled.
 
 P06 migration `0239` pins each new Telnyx extension call to the exact active installation and handler hash with an insert-time assignment recheck; old calls remain unpinned. Owner status omits provider call IDs and Shell groups bounded provider-reported observations by pin. Release metadata covers `0238` and `0239`, requires `0239`, and probes the columns. Prior local evidence: Agents phone tests **41/41**, Agents/Shell typechecks, release migration runner **13/13**, release inventory/deployment-manifest validators. P06 remains PARTIAL for customer voice lifecycle, streaming, richer operations, cost/invoice reconciliation and carrier/region acceptance.
 
@@ -99,9 +99,9 @@ D1 baselines. Rollouts remain disabled.
 
 **§5 — PARTIAL.** Signed source/provenance, encrypted draft/resume, localized/conditional fields,
 expected usage, owner forms, installation settings/status and setup-only schema migration are local.
+Visual setup-schema authoring in Foundry Studio is not yet connected to the validated export path.
 Permission/price changes, general upgrade/rollback/uninstall, project/provider-resource/license
-lifecycle, verified rates, visual authoring and live acceptance remain uncoded or lack approved
-contracts.
+lifecycle, verified rates and live acceptance remain uncoded or lack approved contracts.
 
 **§9.5 — PARTIAL.** Per-installation settings with durable metadata-only actor audit, signed handler
 discovery, masked owner call history, non-persistent text simulation, generic installation of
@@ -767,7 +767,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. Code `9d5a0c23` adds owner-approved paused updates for same-publisher version-only static Canvas packages, with signed artifact recheck and durable receipt; `15a04f7e` adds runtime-work admission/drain. A project-scoped rollback picker exists in ChannelConnect. General update review/receipt, settings/data migration and recovery, broader rollback/version selection, authority/dependency expansion, connection/price change review, revocation/uninstall effects, scanning/retention and live acceptance remain. |
+| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused updates for same-publisher version-only static Canvas/channel-code packages, with signed artifact recheck, active-work drain and durable receipt; `15a04f7e` adds runtime-work admission/drain. Gadget/schema/data migration preview/recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, revocation/uninstall effects, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |
@@ -781,7 +781,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`), paused passive-Canvas update receipts (`9d5a0c23`) and runtime-work admission/drain (`15a04f7e`) are local. Schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`), paused static Canvas/channel-code update receipts (`c7412170`) and runtime-work admission/drain (`15a04f7e`) are local. Schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 
@@ -798,13 +798,12 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    refund/dispute/payout policies plus authenticated operator identity remain unresolved. The
    managed-services ledger reconciles S2–S9/U01–U12, including supported U11/U12 caller audits; do not
    repeat those without new evidence. §5's bounded setup schema, draft/resume, installation status and
-   per-installation extension settings schema migration are implemented locally; Marketplace Template
-   release migration, lifecycle/rates/authoring gaps are listed above. Continue at the current
-   checkpoint's P10 task: implement the next safely bounded owner-reviewed update intent/receipt beyond
-   version-only passive Canvas. Runtime-work admission/drain is closed locally in `15a04f7e`; the
-   static Canvas receipt path is in `9d5a0c23`, and the P04 export caller is in `6fccacaa`.
-   Keep permission, schema, dependency, connection and price changes gated until their own
-   review/migration/rollback paths exist. P22's
+   per-installation extension settings migration are implemented locally. Code `c7412170` closes the
+   current P10/P24 same-publisher version-only static Canvas/channel-code update receipt slice; runtime
+   work admission/drain is in `15a04f7e`, and P04's owner export caller is in `6fccacaa`. Keep Gadget/
+   data migration, authority, dependency, connection and price changes gated until their own
+   review/migration/recovery paths exist. The exact next platform code gap is §5 visual setup-field
+   authoring through Foundry Studio's validated export and conformance path. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
