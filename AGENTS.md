@@ -2,26 +2,28 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §9.5 voice-dashboard configuration code
-`ec6453f8` is pushed to `origin/Mcbt5s-Backup-2`. The existing Assistant Voice microapp now stores
-its host-validated configuration draft per extension installation using the revisioned settings API;
-applying that draft is a separate, explicitly confirmed write to Space Assistant preferences. Extension
-settings now support both versions of the shared declarative setup-field contract, including v2
-conditions/localization validation. The dashboard states it does not create a customer voice agent or
-start a call. Local/mock evidence: SDK setup/extension suites **40/40**, Spaces extension-settings and
-gadget-route suites **15/15**, SDK/Spaces/Shell typechecks and `git diff --check`. No deployed runtime,
-provider call, voice cloning or live acceptance was exercised. §9.5 remains PARTIAL for customer
-voice-agent runtime, provider-backed voice selection/preview, call test/publish/operations, provider
-receipts, rate estimates and the rest of its dashboard requirements.
+Current continuation checkpoint (2026-11-13): §10 coordination-audience code `9ec259ba` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration 119 preserves prior facts as schema v1 with their `space_members`
+audience; the v2 SDK, authenticated gateway, Router allowlist and Shell Settings support explicit
+`space_members` or narrower `space_admins` visibility. The SpaceDO filters rows in SQL before applying
+keyset limits and binds v2 cursors to the reader's audience class. Actor/approver IDs remain excluded
+from member results, and facts remain advisory only. Local evidence: SDK tests **4/4**, SpaceDO
+registry/migration/gateway tests **15/15**, Router route tests **45/45**, SDK/Spaces/Router/Shell
+typechecks and `git diff --check`. No deployed multi-user privacy test or live acceptance ran.
+§10 remains PARTIAL for broader configurable collaboration policy, project publication/request-to-use,
+ownership and lifecycle linkage, singleton reservations, concurrency and side-channel acceptance.
 
-The §5 install status checkpoint `5c7ba416` and its record `eaef6f90` are pushed. That read-only
-owner/admin view pins listing/schema/artifact provenance without exposing setup values. S2–S9/U01–U12
-status remains in the managed-services ledger; U05/U06 runtime contracts, product/policy decisions,
-absent external receipts and deployed/live acceptance remain distinct. Rollouts stay disabled. Exact
-next task: continue §10 with a privacy-preserving, explicitly owner-selected coordination-fact
-audience. Keep the existing all-member audience as its legacy/default behavior, support only a narrower
-owners/admins audience until broader collaboration policy is approved, and filter inside the paged
-host query so hidden facts do not affect member-visible results or cursors.
+The S2–S9/U01–U12 source/caller matrix is reconciled, not declared fully complete or accepted live.
+S2 is IMPLEMENTED_LOCAL for currently supported lanes; partial rows retain their named unsupported
+runtime/provider contracts, missing external feeds, product/legal decisions, external evidence or
+deployed/live acceptance. Keep U05/U06 live runtime disabled; their trusted allocation/observation
+producer and pinned writer-admission/drain/handoff contract are not credential blockers. Preserve the
+untracked `infra/scripts/__pycache__/`. Exact next task: resume platform §1 P01/P02 release and
+environment safety by comparing the current durable migration runner and rendered-resource preflight
+with the integrated plan; close an independent local code gap while retaining fail-closed gates for
+operator-attested D1 baselines, distinct real resources, ownership/existence receipts and deployed
+acceptance. Then continue commercial integrity/recovery before template, voice and Shared-Space gaps.
+Do not deploy, buy services, reset, clean, switch branches or force-push.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable
 receipts track that action. Owner/admin Settings lists archives/restore records and can resume partial
