@@ -2,9 +2,21 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P04 bounded object capture and restore code commit
-`937fbdd5` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
-`autonomous-managed-services-20261111` branch, based on P24 code `415ba199`.
+Current continuation checkpoint (2026-11-13): P03/P20 commercial-status code commit
+`41996f29` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
+`autonomous-managed-services-20261111` branch. Dashboard Settings now displays provider-reported
+subscription status and offers eligible owners/admins a validated HTTPS billing-portal action.
+Marketplace listing pages show audited, tenant-scoped buyer/creator refund status from the durable
+case journal without provider order IDs or license/earning mutations. Marketplace route tests pass
+**5/5**, Router proxy tests **4/4**, Marketplace Web, Dashboard, Marketplace Worker and Router
+typechecks pass, and `git diff --check` passes. These are local checks only. P03 remains PARTIAL for
+unapproved grace/restriction/escalation policy and live provider delivery. P20 remains PARTIAL for
+refund/dispute/author-accounting policy and a separately authenticated operator identity/UI; the
+existing dedicated-secret list API still accepts a caller-supplied operator ID. Preserve the
+unrelated `infra/scripts/__pycache__/`.
+
+P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
+`origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
 New full archives capture at most 2 MiB per workspace object and 4 MiB total inside the existing
 8 MiB encrypted archive. Restore verifies object checksums, conditionally recreates missing objects,
 never overwrites conflicting content, and records partial progress in migration 111. The focused
@@ -59,11 +71,10 @@ policy and live provider delivery. P23 remains partial on general channel exhaus
 and receipt coverage outside the Product auth outbox; see
 `docs/operations/notification-delivery-contract.md`. P24 local code `415ba199` is pushed; its
 remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
-in the two progress ledgers. Exact next task: continue P03/P20 commercial recovery by tracing
-current operator identity, refund triage and dunning callers and closing independent UI/authorization
-code gaps without choosing unapproved grace, refund, dispute or payout policy. P01/P02 already fail
-closed on the recorded resource and
-baseline evidence gates. P17 remains partial for the
+in the two progress ledgers. Exact next task: resume the managed-services audit at U11 by tracing
+settlement, provider-cost, threshold and notification outcomes to their reachable callers; close
+independent gaps, then audit U12 and reconcile S2–S9/U01–U12. P01/P02 already fail closed on the
+recorded resource and baseline evidence gates. P17 remains partial for the
 Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
 P01/P02
 remain fail-closed on actual

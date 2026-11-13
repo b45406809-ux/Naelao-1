@@ -2,6 +2,20 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after P03/P20 independent caller code commit `41996f29` was pushed to
+`origin/Mcbt5s-Backup-2`. Dashboard Settings presents the provider-reported subscription status and
+a validated provider portal action for eligible owners/admins. Marketplace listing pages show
+buyer/creator refund-case state from the existing durable review journal through the signed Router
+route; tenant/listing scope and audit are covered, and provider order identifiers are not returned.
+Local evidence: Marketplace routes **5/5**, Router proxy **4/4**, four affected TypeScript projects
+and `git diff --check`. These are local checks; no deployment, payment or provider delivery was
+exercised. P03 remains PARTIAL for grace/restriction/escalation policy and live delivery. P20 remains
+PARTIAL for refund/dispute/access and author-accounting policy and independently authenticated
+operator resolution; the existing list API uses a shared secret and caller-supplied ID, and no safe
+operator UI exists without an identity contract. Exact next task: resume the managed-services mission
+at U11, then U12 and the remaining S2–S9/U01–U12 reconciliation before continuing later platform
+requirements.
+
 Updated 2026-11-13 after P04 code commit `937fbdd5` was pushed to
 `origin/Mcbt5s-Backup-2`. New full archives place
 bounded workspace object bytes and SHA-256 checksums inside the existing encrypted archive; restore
@@ -170,6 +184,10 @@ owner/admin. Payment recovery and expiry are handled by provider subscription tr
 There is no approved grace-period length, activity restriction matrix, escalation policy, or manual
 intervention contract. Paid access remains until the provider reports expiry; this is current
 behavior, not a policy claim. Provider retries and actual Notifications delivery are not verified.
+The owner/admin Settings page now displays this provider-reported status, period end and cancellation
+state, and routes eligible users to the existing provider portal (code `41996f29`). This improves
+recovery visibility without selecting a grace/restriction policy; it does not claim that payment
+recovery or email delivery succeeded.
 
 ### P04 — encrypted archive object recovery: PARTIAL
 
@@ -292,7 +310,12 @@ matches them against observed purchases, validates currency/amount/tenant, recon
 purchase matches, and exposes scoped review listing. Exact refund/access reversal, author earnings
 clawback, payout recovery, dispute ingestion and case resolution are not implemented because the
 product/accounting policy is not decided. Local settlement/refund tests pass **6/6**. No provider
-sandbox or live transaction was used.
+sandbox or live transaction was used. Code `41996f29` adds a private, no-store buyer/creator case
+status view on the selected Marketplace listing, proxied through Router and audited by the Worker;
+the response omits provider order IDs and explicitly leaves access/earnings unchanged. The operator
+list route still authenticates only a shared secret and accepts a caller-supplied actor ID. No
+independent platform-operator identity issuer or safe first-party operator UI is present, so operator
+resolution remains an identity/product contract rather than a provider credential blocker.
 
 ### P17 — marketplace identity, freshness and installation: PARTIAL
 
@@ -359,11 +382,11 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
 3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
-   in pushed code `937fbdd5`; the focused SQLite/R2-mock suite passes **9/9**. Next, continue
-   P03/P20 commercial
-   recovery by tracing the existing dunning, operator identity, refund triage and author accounting
-   callers. Close independent UI/authorization code gaps using existing ledgers, while preserving
-   grace/restriction and refund/dispute/payout policies as unresolved product decisions. P22's
+   in pushed code `937fbdd5`; the focused SQLite/R2-mock suite passes **9/9**. P03/P20 independent
+   customer/creator status callers are implemented in pushed code `41996f29`. Grace/restriction and
+   refund/dispute/payout policies plus authenticated operator identity remain unresolved. Resume the
+   managed-services audit at U11, then audit U12 and reconcile S2–S9/U01–U12 before continuing the
+   remaining platform-plan requirements. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary

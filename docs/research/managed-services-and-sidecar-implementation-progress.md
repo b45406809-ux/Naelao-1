@@ -2,6 +2,28 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; P03/P20 caller status `41996f29` pushed)
+
+- Code `41996f29` is pushed to `origin/Mcbt5s-Backup-2`. Dashboard Settings now reads the current
+  subscription status and period/cancellation fields; eligible owners/admins can open the existing
+  billing portal after its URL passes HTTPS/provider-host validation. Marketplace listing pages call
+  the signed Router proxy for a no-store refund-status view. The Marketplace Worker scopes cases to
+  the buyer tenant or listing author tenant, returns normalized status and provider amount/currency,
+  and audits the view without exposing provider order IDs. Neither view changes access or accounting.
+- Local evidence: Marketplace route tests **5/5**, Router proxy tests **4/4**, Marketplace Web,
+  Dashboard, Marketplace Worker and Router typechecks, and `git diff --check`. These are local mocks
+  and typechecks; no live provider, deployment, inbox delivery or payment was exercised.
+- P03 remains PARTIAL for unapproved grace/restriction/escalation policy and provider delivery. P20
+  remains PARTIAL for refund/dispute/license policy, author earning and payout recovery, and an
+  independently authenticated operator identity/UI. The existing operator list route uses a shared
+  secret plus caller-supplied operator ID; do not expose the secret to a browser or present the
+  supplied ID as authenticated identity.
+- Exact next task: continue the managed-services mission at U11 by tracing settlement, provider-cost,
+  threshold and notification outcomes, owner controls and unsupported invoice/billed-idle feeds to
+  reachable callers. Close any independent code gap, then audit U12 and reconcile S2–S9/U01–U12.
+  After the managed-services audit, continue the platform requirements in dependency order. Preserve
+  `infra/scripts/__pycache__/`; keep rollouts disabled.
+
 ### Active continuation (2026-11-13; P04 object recovery `937fbdd5` pushed)
 
 - P24 code `415ba199` is pushed to `origin/Mcbt5s-Backup-2`. Publisher trust now fails closed when
