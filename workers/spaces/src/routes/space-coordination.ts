@@ -51,6 +51,7 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     if (raw instanceof Response) return raw;
     const parsed = validateSpaceCoordinationDraftV2(raw);
     if (!parsed.ok) return c.json({ error_code: parsed.error }, 400);
+    if (isExpired(parsed.value.expires_at)) return c.json({ error_code: "coordination_expiry_must_be_future" }, 400);
     return c.json({ schema_version: 2, draft: parsed.value, disclosure: spaceCoordinationDisclosureV2(parsed.value.audience), no_project_source: true });
   });
 
@@ -83,12 +84,14 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     if (raw instanceof Response) return raw;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return c.json({ error_code: "invalid_coordination_draft" }, 400);
     const input = raw as Record<string, unknown>;
-    if (Object.keys(input).some(key => !["schema_version", "capability_key", "label", "description", "audience", "confirm_disclosure"].includes(key)))
+    if (Object.keys(input).some(key => !["schema_version", "capability_key", "label", "description", "audience", "expires_at", "confirm_disclosure"].includes(key)))
       return c.json({ error_code: "invalid_coordination_draft" }, 400);
     const draftInput = { schema_version: input.schema_version, capability_key: input.capability_key, label: input.label,
-      ...(input.description === undefined ? {} : { description: input.description }), audience: input.audience };
+      ...(input.description === undefined ? {} : { description: input.description }), audience: input.audience,
+      ...(input.expires_at === undefined ? {} : { expires_at: input.expires_at }) };
     const parsed = validateSpaceCoordinationDraftV2(draftInput);
     if (!parsed.ok) return c.json({ error_code: parsed.error }, 400);
+    if (isExpired(parsed.value.expires_at)) return c.json({ error_code: "coordination_expiry_must_be_future" }, 400);
     const disclosure = spaceCoordinationDisclosureV2(parsed.value.audience);
     if (input.confirm_disclosure !== true) return c.json({ error_code: "coordination_disclosure_confirmation_required", disclosure }, 400);
     const entryId = crypto.randomUUID();
@@ -143,14 +146,16 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     const raw = await readJson(c.req.raw);
     if (raw instanceof Response) return raw;
     const input = raw as Record<string, unknown> | null;
-    if (!input || Object.keys(input).some(key => !["schema_version", "expected_version", "capability_key", "label", "description", "audience", "confirm_disclosure"].includes(key)))
+    if (!input || Object.keys(input).some(key => !["schema_version", "expected_version", "capability_key", "label", "description", "audience", "expires_at", "confirm_disclosure"].includes(key)))
       return c.json({ error_code: "invalid_coordination_draft" }, 400);
     if (input.schema_version !== 2 || !Number.isInteger(input.expected_version) || (input.expected_version as number) < 1)
       return c.json({ error_code: "invalid_expected_version" }, 400);
     const draft = { schema_version: input.schema_version, capability_key: input.capability_key, label: input.label,
-      ...(input.description === undefined ? {} : { description: input.description }), audience: input.audience };
+      ...(input.description === undefined ? {} : { description: input.description }), audience: input.audience,
+      ...(input.expires_at === undefined ? {} : { expires_at: input.expires_at }) };
     const parsed = validateSpaceCoordinationDraftV2(draft);
     if (!parsed.ok) return c.json({ error_code: parsed.error }, 400);
+    if (isExpired(parsed.value.expires_at)) return c.json({ error_code: "coordination_expiry_must_be_future" }, 400);
     const disclosure = spaceCoordinationDisclosureV2(parsed.value.audience);
     if (input.confirm_disclosure !== true) return c.json({ error_code: "coordination_disclosure_confirmation_required", disclosure }, 400);
     const response = await auth.stub.fetch(new Request(`http://space/space-coordination-registry/${encodeURIComponent(entryId)}`, {
@@ -197,4 +202,8 @@ function noStore(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("cache-control", "no-store");
   return new Response(response.body, { status: response.status, headers });
+}
+
+function isExpired(value: string | null | undefined): boolean {
+  return Boolean(value && Date.parse(value) <= Date.now());
 }

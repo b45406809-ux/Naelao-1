@@ -16,23 +16,35 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [audience, setAudience] = React.useState<SpaceCoordinationAudienceV2>("space_members");
+  const [expiresOn, setExpiresOn] = React.useState("");
   const [editingEntry, setEditingEntry] = React.useState<SpaceCoordinationEntryV2 | null>(null);
   const [preview, setPreview] = React.useState<{ draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string } } | null>(null);
   const [confirmed, setConfirmed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    const updateClock = () => setNowMs(Date.now());
+    const interval = window.setInterval(updateClock, 30_000);
+    window.addEventListener("focus", updateClock);
+    return () => { window.clearInterval(interval); window.removeEventListener("focus", updateClock); };
+  }, []);
+
+  const visibleEntries = entries.map(entry => entry.status === "active" && entry.expires_at && Date.parse(entry.expires_at) <= nowMs
+    ? { ...entry, status: "expired" as const } : entry).filter(entry => canManage || entry.status === "active");
 
   const refresh = React.useCallback(async () => {
     try {
       const page = await listSpaceCoordination(spaceId, { sessionToken: session.sessionToken, endUserId: session.endUserId });
-      setEntries(page.entries.filter(entry => entry.status === "active"));
+      setEntries(page.entries.filter(entry => canManage || entry.status === "active"));
       setNextAfter(page.next_after);
       setError(null);
     } catch {
       setError("Coordination facts could not be loaded. Try again.");
     }
-  }, [spaceId, session.sessionToken, session.endUserId]);
+  }, [spaceId, session.sessionToken, session.endUserId, canManage]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
@@ -41,7 +53,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     setBusy(true); setError(null);
     try {
       const page = await listSpaceCoordination(spaceId, { sessionToken: session.sessionToken, endUserId: session.endUserId }, nextAfter);
-      setEntries(current => [...current, ...page.entries.filter(entry => entry.status === "active")]);
+      setEntries(current => [...current, ...page.entries.filter(entry => canManage || entry.status === "active")]);
       setNextAfter(page.next_after);
     } catch {
       setError("More coordination facts could not be loaded. Try again.");
@@ -55,7 +67,8 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   }
 
   const draft = (): SpaceCoordinationDraftV2 => ({ schema_version: 2, capability_key: capabilityKey, label,
-    ...(description.trim() ? { description } : {}), audience });
+    ...(description.trim() ? { description } : {}), audience,
+    expires_at: expiresOn ? `${expiresOn}T23:59:59.999Z` : null });
 
   function beginEdit(entry: SpaceCoordinationEntryV2) {
     setEditingEntry(entry);
@@ -63,18 +76,27 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     setLabel(entry.label);
     setDescription(entry.description ?? "");
     setAudience(entry.audience);
+    setExpiresOn(entry.expires_at?.slice(0, 10) ?? "");
     changed();
   }
 
   function cancelEdit() {
     setEditingEntry(null);
-    setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members");
+    setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setExpiresOn("");
     changed();
   }
 
   function formatConfirmationTime(value: string) {
     const timestamp = new Date(value);
     return Number.isFinite(timestamp.getTime()) ? timestamp.toLocaleString() : value;
+  }
+
+  function formatExpiry(value: string | null) {
+    if (!value) return "No expiry selected";
+    const timestamp = new Date(value);
+    return Number.isFinite(timestamp.getTime())
+      ? `Expires ${timestamp.toLocaleString(undefined, { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" })} UTC`
+      : `Expiry: ${value}`;
   }
 
   async function makePreview() {
@@ -102,7 +124,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         setNotice(preview.draft.audience === "space_admins" ? "The approved advisory fact is visible to Space owners and administrators." : "The approved advisory fact is visible to Space members.");
       }
       if (updatedEntry) setEntries(current => current.map(entry => entry.entry_id === updatedEntry!.entry_id ? updatedEntry! : entry));
-      setEditingEntry(null); setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setPreview(null); setConfirmed(false);
+      setEditingEntry(null); setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setExpiresOn(""); setPreview(null); setConfirmed(false);
       if (!updatedEntry) await refresh();
     } catch {
       setError(editingEntry ? "The fact changed or could not be updated. Refresh the list and review it again." : "The fact was not published. Review your role and try again.");
@@ -129,16 +151,17 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         These are explicitly approved advisory notices. Each fact shows whether it is visible to all active Space members or only Space owners and administrators. A notice does not grant access to a project or service; private project details are never read to create one.
       </p>
     </div>
-    {entries.length ? <div style={{ display: "grid", gap: 0 }}>
-      {entries.map(entry => <article key={entry.entry_id} style={{ borderTop: "1px solid var(--border)", padding: "12px 16px", display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
+    {visibleEntries.length ? <div style={{ display: "grid", gap: 0 }}>
+      {visibleEntries.map(entry => <article key={entry.entry_id} style={{ borderTop: "1px solid var(--border)", padding: "12px 16px", display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
         <div style={{ minWidth: 0 }}>
           <div className="settings-row-label">{entry.label}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>{entry.capability_key}{entry.description ? ` · ${entry.description}` : ""}</div>
-          <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version}</div>
+          <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version} · {entry.status}</div>
+          <div className="settings-row-sub" style={{ marginTop: 3 }}>{formatExpiry(entry.expires_at)}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>Last confirmed {formatConfirmationTime(entry.last_confirmed_at)}</div>
         </div>
-        {canManage && <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>Edit</button>
+        {canManage && entry.status !== "revoked" && <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>{entry.status === "expired" ? "Renew or edit" : "Edit"}</button>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void revoke(entry)}>Unpublish</button>
         </div>}
       </article>)}
@@ -165,6 +188,11 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           <option value="space_admins">Space owners and administrators</option>
         </select>
       </label>
+      <label className="settings-row-sub">Expiry day (UTC, optional)
+        <input className="form-input" type="date" min={new Date().toISOString().slice(0, 10)} value={expiresOn} disabled={busy}
+          onChange={event => { setExpiresOn(event.target.value); changed(); }} />
+      </label>
+      <div className="settings-row-sub">Without an expiry, the fact stays available to its selected audience until an owner or administrator unpublishes it. Expiry hides it from that audience; it does not grant or remove access to the underlying project or service.</div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !capabilityKey.trim() || !label.trim()} onClick={() => void makePreview()}>Preview disclosure</button>
         {editingEntry && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={cancelEdit}>Cancel edit</button>}
@@ -173,6 +201,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         <div className="settings-row-label">Disclosure preview</div>
         <div className="settings-row-sub"><strong>{preview.draft.label}</strong>{preview.draft.description ? ` — ${preview.draft.description}` : ""}</div>
         <div className="settings-row-sub">Audience: {preview.disclosure.audience}.</div>
+        <div className="settings-row-sub">{preview.draft.expires_at ? formatExpiry(preview.draft.expires_at) : "No expiry selected; the fact remains until unpublished."}</div>
         <div className="settings-row-sub">Effect: {preview.disclosure.effect}.</div>
         <label className="settings-row-sub" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
           <input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />

@@ -35,7 +35,11 @@ describe("Space coordination registry v1 contract", () => {
 describe("Space coordination registry v2 audience contract", () => {
   it("requires a declared audience and rejects arbitrary authority fields", () => {
     expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins" }))
-      .toEqual({ ok: true, value: { schema_version: 2, audience: "space_admins", capability_key: "official.website", label: "Company site" } });
+      .toEqual({ ok: true, value: { schema_version: 2, audience: "space_admins", capability_key: "official.website", label: "Company site", expires_at: null } });
+    const expiresAt = "2026-12-01T23:59:59.999Z";
+    expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins", expires_at: expiresAt }))
+      .toMatchObject({ ok: true, value: { expires_at: expiresAt } });
+    expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins", expires_at: "tomorrow" }).ok).toBe(false);
     expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "website", label: "Site", audience: "private_project" }).ok).toBe(false);
     expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "website", label: "Site", audience: "space_members", project_id: "private" }).ok).toBe(false);
   });
@@ -49,7 +53,7 @@ describe("Space coordination registry v2 audience contract", () => {
         return {} as T;
       },
     });
-    const draft = { schema_version: 2 as const, capability_key: "official.website", label: "Company site", audience: "space_admins" as const };
+    const draft = { schema_version: 2 as const, capability_key: "official.website", label: "Company site", audience: "space_admins" as const, expires_at: null };
     await client.list("cursor/1");
     await client.preview(draft);
     await client.publish(draft, true);

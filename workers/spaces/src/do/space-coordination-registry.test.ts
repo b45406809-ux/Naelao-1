@@ -12,10 +12,10 @@ describe("Space-owned advisory coordination registry", () => {
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, actor_id: "owner", approved_role: "owner", confirmed: true,
         draft: { capability_key: "official.website", label, description: "Approved for all members" } }),
     }));
-    const publishV2 = (entryId: string, audience: "space_members" | "space_admins", label = entryId) => space.fetch(new Request(root, {
+    const publishV2 = (entryId: string, audience: "space_members" | "space_admins", label = entryId, expiresAt: string | null = null) => space.fetch(new Request(root, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, schema_version: 2, actor_id: "owner", approved_role: "owner", confirmed: true,
-        draft: { schema_version: 2, capability_key: "official.website", label, description: "Approved for selected audience", audience } }),
+        draft: { schema_version: 2, capability_key: "official.website", label, description: "Approved for selected audience", audience, expires_at: expiresAt } }),
     }));
     return { space, storage, root, publish, publishV2 };
   }
@@ -116,6 +116,29 @@ describe("Space-owned advisory coordination registry", () => {
     expect(legacyRevoke.status).toBe(404);
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries)
       .toMatchObject([{ entry_id: "admin-only", status: "active" }]);
+    expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`)).then(response => response.json())).entries).toEqual([]);
+  });
+
+  it("expires facts for their selected audience and lets administrators review and renew them", async () => {
+    const { space, storage, root, publishV2 } = setup();
+    const initialExpiry = new Date(Date.now() + 60_000).toISOString();
+    expect((await publishV2("expiring", "space_members", "Published service", initialExpiry)).status).toBe(201);
+    const memberRead = () => space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`));
+    const ownerRead = () => space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`));
+    expect(await (await memberRead()).json()).toMatchObject({ entries: [{ entry_id: "expiring", status: "active", expires_at: initialExpiry }] });
+
+    storage.sql.exec("UPDATE space_coordination_entries SET expires_at=? WHERE entry_id='expiring'", new Date(Date.now() - 1_000).toISOString());
+    expect(await (await memberRead()).json()).toMatchObject({ entries: [] });
+    expect(await (await ownerRead()).json()).toMatchObject({ entries: [{ entry_id: "expiring", status: "expired" }] });
+
+    const renewedExpiry = new Date(Date.now() + 86_400_000).toISOString();
+    const renewed = await space.fetch(new Request(`${root}/expiring`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1, confirmed: true,
+      draft: { schema_version: 2, capability_key: "official.website", label: "Published service", audience: "space_members", expires_at: renewedExpiry },
+    }) }));
+    expect(renewed.status).toBe(200);
+    expect(await renewed.json()).toMatchObject({ entry: { status: "active", version: 2, expires_at: renewedExpiry } });
+    expect(await (await memberRead()).json()).toMatchObject({ entries: [{ entry_id: "expiring", status: "active" }] });
   });
 
   it("amends a fact with explicit audience confirmation and expected-version fencing", async () => {

@@ -9,6 +9,8 @@ export type SpaceCoordinationAudienceV2 = "space_members" | "space_admins";
 export interface SpaceCoordinationDraftV2 extends SpaceCoordinationDraftV1 {
   schema_version: 2;
   audience: SpaceCoordinationAudienceV2;
+  /** Optional owner-selected expiration. Null keeps the fact active until revoked. */
+  expires_at?: string | null;
 }
 
 export interface SpaceCoordinationEntryV1 extends Omit<SpaceCoordinationDraftV1, "description"> {
@@ -30,12 +32,13 @@ export interface SpaceCoordinationEntryV2 extends Omit<SpaceCoordinationDraftV2,
   /** Legacy entries keep their original creation version when returned by the v2 audience API. */
   schema_version: 1 | 2;
   entry_id: string;
-  status: "active" | "revoked";
+  status: "active" | "expired" | "revoked";
   advisory_only: true;
   version: number;
   created_at: string;
   updated_at: string;
   last_confirmed_at: string;
+  expires_at: string | null;
   revoked_at: string | null;
 }
 
@@ -83,17 +86,25 @@ export function validateSpaceCoordinationDraft(input: unknown): SpaceCoordinatio
 
 export function validateSpaceCoordinationDraftV2(input: unknown):
   | { ok: true; value: SpaceCoordinationDraftV2 }
-  | { ok: false; error: "invalid_capability_key" | "invalid_label" | "invalid_description" | "invalid_audience" | "unsupported_schema_version" } {
+  | { ok: false; error: "invalid_capability_key" | "invalid_label" | "invalid_description" | "invalid_audience" | "unsupported_schema_version" | "invalid_expiry" } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "invalid_label" };
   const value = input as Record<string, unknown>;
-  if (Object.keys(value).some(key => !["schema_version", "capability_key", "label", "description", "audience"].includes(key)))
+  if (Object.keys(value).some(key => !["schema_version", "capability_key", "label", "description", "audience", "expires_at"].includes(key)))
     return { ok: false, error: "invalid_label" };
   if (value.schema_version !== 2) return { ok: false, error: "unsupported_schema_version" };
   if (value.audience !== "space_members" && value.audience !== "space_admins") return { ok: false, error: "invalid_audience" };
   const parsed = validateSpaceCoordinationDraft({ capability_key: value.capability_key, label: value.label,
     ...(value.description === undefined ? {} : { description: value.description }) });
   if (!parsed.ok) return parsed;
-  return { ok: true, value: { schema_version: 2, audience: value.audience, ...parsed.value } };
+  let expiresAt: string | null = null;
+  if (value.expires_at !== undefined && value.expires_at !== null && value.expires_at !== "") {
+    if (typeof value.expires_at !== "string") return { ok: false, error: "invalid_expiry" };
+    const timestamp = Date.parse(value.expires_at);
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value.expires_at)
+      return { ok: false, error: "invalid_expiry" };
+    expiresAt = value.expires_at;
+  }
+  return { ok: true, value: { schema_version: 2, audience: value.audience, ...parsed.value, expires_at: expiresAt } };
 }
 
 export interface SpaceCoordinationPageV1 {

@@ -85,9 +85,16 @@ describe("Space coordination registry gateway", () => {
     }), member.bindings);
     expect(await preview.json()).toMatchObject({ schema_version: 2, disclosure: { audience: "Space owners and administrators" }, no_project_source: true });
     expect(member.calls).toHaveLength(1); // previews do not write to the Durable Object
+    const expiredPreview = await app.fetch(await request("/spaces/space/coordination-registry/v2/preview", "product_end_user", "POST", {
+      schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins", expires_at: new Date(Date.now() - 1_000).toISOString(),
+    }), member.bindings);
+    expect(expiredPreview.status).toBe(400);
+    expect(await expiredPreview.json()).toMatchObject({ error_code: "coordination_expiry_must_be_future" });
+    expect(member.calls).toHaveLength(1);
 
     const owner = env("owner");
-    const draft = { schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins" };
+    const expiresAt = "2026-12-01T23:59:59.999Z";
+    const draft = { schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins", expires_at: expiresAt };
     const unconfirmed = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: false }), owner.bindings);
     expect(await unconfirmed.json()).toMatchObject({ error_code: "coordination_disclosure_confirmation_required", disclosure: { audience: "Space owners and administrators" } });
     const published = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: true }), owner.bindings);
