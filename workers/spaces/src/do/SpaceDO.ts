@@ -3640,15 +3640,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
       }
       if (url.pathname === "/channel-installations" && method === "GET") {
-        const projectId = url.searchParams.get("project_id") ?? "";
+        const projectId = url.searchParams.get("project_id");
         const statusFilter = url.searchParams.get("include_disabled") === "1" ? "i.status IN ('active','disabled')" : "i.status='active'";
-        if (!projectId || !queryOne(this.ctx.storage.sql as never,
+        if (projectId && !queryOne(this.ctx.storage.sql as never,
           "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, url.searchParams.get("space_id"))) {
           return Response.json({ error: "project_not_found" }, { status: 404 });
         }
-        const rows = queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
-          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
+        const rows = projectId
+          ? queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
+            url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId)
+          : queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED' AND ${statusFilter} ORDER BY i.installed_at`,
+            url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
         const installations = rows.flatMap(row => {
           let manifest: ExtensionManifest;
           try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return []; }

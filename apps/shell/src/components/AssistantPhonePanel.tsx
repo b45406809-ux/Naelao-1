@@ -35,6 +35,7 @@ type Row = {
   managed_reserved_credits?: number | null;
 };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
+type PhoneHandlerCandidate = { installation_id: string; extension_id: string; name: string; version: string; handler_sha256: string };
 export function AssistantPhonePanel({
   spaceId,
   projectId,
@@ -54,6 +55,7 @@ export function AssistantPhonePanel({
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
+      phone_handler_candidates?: PhoneHandlerCandidate[];
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
     [error, setError] = React.useState(""),
@@ -133,6 +135,7 @@ export function AssistantPhonePanel({
           handler_status: string | null;
           status: string;
         }>;
+        phone_handler_candidates?: PhoneHandlerCandidate[];
         legacy_numbers?: Array<{ id: string; phone_number: string; provider_number_sid: string; status: string }>;
       }>(
         "phone-status"
@@ -260,9 +263,26 @@ export function AssistantPhonePanel({
         return <fieldset key={line.id} disabled={busy}>
           <legend>Extension phone handler</legend>
           <p>{line.phone_number ?? "Phone number"} · {line.status} · {line.handler_status ?? "No handler assigned"}</p>
-          <label>Installation ID <input value={assignment.installation} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, installation: e.target.value } }))} /></label>
-          <label>Handler SHA-256 <input value={assignment.digest} maxLength={64} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, digest: e.target.value } }))} /></label>
-          <button type="button" onClick={() => void act("phone-handler", { binding_id: line.id, installation_id: assignment.installation, handler_sha256: assignment.digest, confirm: true })}>Assign or update extension</button>{" "}
+          {(state?.phone_handler_candidates?.length ?? 0) > 0 && <label>Installed phone handler <select value={state?.phone_handler_candidates?.some(candidate => candidate.installation_id === assignment.installation) ? assignment.installation : ""} onChange={(event) => {
+            const candidate = state?.phone_handler_candidates?.find(item => item.installation_id === event.target.value);
+            setExtensionAssignments((current) => ({ ...current, [line.id]: candidate
+              ? { installation: candidate.installation_id, digest: candidate.handler_sha256 }
+              : { installation: "", digest: "" } }));
+          }}>
+            <option value="">Choose an active signed installation</option>
+            {state?.phone_handler_candidates?.map(candidate => <option key={candidate.installation_id} value={candidate.installation_id}>{candidate.name} · v{candidate.version}</option>)}
+          </select></label>}
+          <details><summary>Installation reference</summary>
+            <p>Only active, signed phone handlers with matching installed package bytes appear in the list. The host checks the release again before assignment.</p>
+            <label>Installation ID <input value={assignment.installation} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, installation: e.target.value } }))} /></label>
+            <label>Handler SHA-256 <input value={assignment.digest} maxLength={64} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, digest: e.target.value } }))} /></label>
+          </details>
+          <button type="button" onClick={() => {
+            const candidate = state?.phone_handler_candidates?.find(item => item.installation_id === assignment.installation && item.handler_sha256 === assignment.digest);
+            const description = candidate ? `${candidate.name} v${candidate.version}` : assignment.installation;
+            if (window.confirm(`Assign ${description} as the handler for ${line.phone_number ?? "this phone line"}? The host will validate the signed release before activating it.`))
+              void act("phone-handler", { binding_id: line.id, installation_id: assignment.installation, handler_sha256: assignment.digest, confirm: true });
+          }}>Assign or update extension</button>{" "}
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
         </fieldset>;
       })}

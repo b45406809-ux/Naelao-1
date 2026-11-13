@@ -15,6 +15,27 @@ function manifest(binary = "ffmpeg") {
 }
 
 describe("runtime extension installation", () => {
+  it("lists space-shared channel installations separately from project channel installations", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "channel-list-secret" } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const channelManifest = (id: string) => ({ id, type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id, version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "channel", id: "phone", version: "1.0.0", provider: "phone", handlerScript: "./phone.ts", context: "channel_only",
+          permissions: [], capabilityRequirements: [], lifecycle: {}, inboundEvents: ["message.received"], outboundEvents: ["message.reply"] },
+      ] } });
+    const install = (id: string, scope: "SPACE_SHARED" | "PROJECT_BOUND") => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: channelManifest(id), installedBy: "owner", tenantId: "tenant", spaceId: "space", ...(scope === "PROJECT_BOUND" ? { projectId: "project-a" } : {}), scope, gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "a".repeat(64) }) }));
+    expect((await install("ext_space_phone", "SPACE_SHARED")).status).toBe(201);
+    expect((await install("ext_project_phone", "PROJECT_BOUND")).status).toBe(201);
+
+    const shared = await space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space"));
+    expect(await shared.json()).toMatchObject({ installations: [expect.objectContaining({ extension_id: "ext_space_phone", scope: "SPACE_SHARED" })] });
+    const project = await space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=project-a"));
+    expect(await project.json()).toMatchObject({ installations: [expect.objectContaining({ extension_id: "ext_project_phone", scope: "PROJECT_BOUND" })] });
+  });
+
   it("requires owner-approved per-installation grants and exposes only approved access to workers", async () => {
     const storage = createDOStorage(), secret = "filesystem-grant-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);

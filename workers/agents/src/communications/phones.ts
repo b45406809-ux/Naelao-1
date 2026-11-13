@@ -1,6 +1,7 @@
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
+import { verifyExtensionArtifactSet } from "../workflows/workflow-host.js";
 import {
   isE164,
   parseTwilioVoiceCredentials,
@@ -90,6 +91,87 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
     voicemail: p.voicemail,
     transferTo: p.transferTo,
   };
+}
+
+type PhoneHandlerCandidate = {
+  installation_id: string;
+  extension_id: string;
+  name: string;
+  version: string;
+  handler_sha256: string;
+};
+
+/** Return only active, signed phone handlers whose installed package bytes still match the
+ * release receipt. The owner assignment path performs its existing full admission check again. */
+async function listPhoneHandlerCandidates(env: AgentsEnv, scope: CommunicationScope): Promise<PhoneHandlerCandidate[]> {
+  const bucket = env.SCRIPTS_R2;
+  if (!env.SPACES_WORKER || !bucket || !/^[A-Za-z0-9._:-]{1,160}$/.test(scope.spaceId)
+    || (scope.projectId !== undefined && !/^[A-Za-z0-9._:-]{1,160}$/.test(scope.projectId))) return [];
+  try {
+    const headers = { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId) };
+    const query = new URLSearchParams(scope.projectId ? { project_id: scope.projectId } : {});
+    const queryString = query.toString();
+    const route = `http://spaces-worker/spaces/${encodeURIComponent(scope.spaceId)}/internal/channel-installations${queryString ? `?${queryString}` : ""}`;
+    const listed = await env.SPACES_WORKER.fetch(new Request(route, { headers }));
+    if (!listed.ok) return [];
+    const result = await readBoundedResponseJson<{ installations?: Array<{
+      instance_id?: string; extension_id?: string; name?: string; status?: string; scope?: string;
+      channels?: Array<{ provider?: string }>;
+    }> }>(listed, 1024 * 1024);
+    const candidates = (result.installations ?? []).filter(item => item.status === "active"
+      && typeof item.instance_id === "string" && typeof item.extension_id === "string"
+      && item.channels?.some(channel => channel.provider === "phone")).slice(0, 20);
+    const output: PhoneHandlerCandidate[] = [];
+    for (const candidate of candidates) {
+      const detailResponse = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(scope.spaceId)}/workflow-installations/${encodeURIComponent(candidate.instance_id!)}`,
+        { headers },
+      ));
+      if (!detailResponse.ok) continue;
+      const detail = await readBoundedResponseJson<{
+        instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
+        manifest?: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{
+          kind?: string; provider?: string; context?: string; handlerScript?: string;
+          inboundEvents?: string[]; outboundEvents?: string[]; permissions?: unknown[]; capabilityRequirements?: unknown[];
+          knowledgeCollections?: string[];
+        }> };
+        release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+      }>(detailResponse, 1024 * 1024);
+      const instance = detail.instance, manifest = detail.manifest, release = detail.release;
+      const expectedProject = scope.projectId ?? null;
+      if (!instance || !manifest || instance.instance_id !== candidate.instance_id || instance.tenant_id !== scope.tenantId
+        || instance.space_id !== scope.spaceId || (instance.project_id ?? null) !== expectedProject || instance.status !== "active"
+        || (expectedProject ? !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "") : instance.scope !== "SPACE_SHARED")) continue;
+      const bundle = manifest.bundle;
+      const extensionId = manifest.id;
+      const version = bundle?.version;
+      const artifactSha256 = release?.artifactSha256;
+      const phoneChannels = manifest.channels?.filter(channel => channel.kind === "channel" && channel.provider === "phone" && channel.context === "channel_only") ?? [];
+      if (phoneChannels.length !== 1 || !extensionId || extensionId !== candidate.extension_id || bundle?.id !== extensionId || !version
+        || release?.version !== version || release.signatureValid !== true || !artifactSha256
+        || !/^[a-f0-9]{64}$/.test(artifactSha256)) continue;
+      const declaration = phoneChannels[0]!;
+      const path = declaration.handlerScript?.match(/^\.\/([A-Za-z0-9._-]{1,128}\.(?:ts|js))$/);
+      if (!path || !declaration.inboundEvents?.includes("message.received") || !declaration.outboundEvents?.includes("message.reply")
+        || (declaration.permissions?.length ?? 0) !== 0 || (declaration.capabilityRequirements?.length ?? 0) !== 0
+        || (declaration.knowledgeCollections?.length ?? 0) !== 0) continue;
+      if (!await verifyExtensionArtifactSet(bucket, { spaceId: scope.spaceId, extensionId, version, expectedSha256: artifactSha256 })) continue;
+      const artifactKey = `spaces/${scope.spaceId}/extensions/${extensionId}/${version}/${path[1]}`;
+      const artifact = await bucket.get(artifactKey);
+      if (!artifact || artifact.size > 262_144) continue;
+      const bytes = await artifact.arrayBuffer();
+      if (bytes.byteLength !== artifact.size || bytes.byteLength > 262_144) continue;
+      let source: string;
+      try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes); } catch { continue; }
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+      const handlerSha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+      output.push({ installation_id: candidate.instance_id!, extension_id: extensionId, name: candidate.name || extensionId, version, handler_sha256: handlerSha256 });
+    }
+    return output;
+  } catch {
+    // The status view stays available when the extension registry or artifact store is not.
+    return [];
+  }
 }
 export interface AssistantPhoneBinding {
   provider?: "twilio" | "telnyx";
@@ -487,6 +569,7 @@ export async function handlePhoneAction(
       .bind(identity.id).first<{ id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null }>();
     const telnyxRelease = await env.PLATFORM_DB.prepare("SELECT id,status,phone_number,next_reconcile_at,last_error FROM assistant_telnyx_number_release_operations WHERE identity_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
       .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
+    const phoneHandlerCandidates = manager ? await listPhoneHandlerCandidates(env, scope) : [];
     const agentPortShare = currentPhone?.provider === "telnyx" ? await env.PLATFORM_DB.prepare(`SELECT m.agentport_link_status,
         (SELECT o.operation_name FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
           ORDER BY o.updated_at DESC LIMIT 1) AS operation_name,
@@ -523,6 +606,7 @@ export async function handlePhoneAction(
               .all()
           ).results
         : [],
+      phone_handler_candidates: phoneHandlerCandidates,
       legacy_numbers: manager
         ? (
             await env.PLATFORM_DB.prepare(

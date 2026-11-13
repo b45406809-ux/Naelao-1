@@ -2003,12 +2003,12 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const spaceId = c.req.param("spaceId");
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
-  const projectId = c.req.query("project_id") ?? "";
-  if (!projectId) return c.json({ error_code: "project_id_required" }, 400);
+  const projectId = c.req.query("project_id");
+  if (projectId !== undefined && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_id_invalid" }, 400);
   const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
   if (!space) throw notFound("Space");
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId, ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
+  const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}), tenant_id: tenantId, space_id: spaceId, ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
   const result = await response.json<{ installations?: Array<{ publisher_key_id?: string; publisher_attestation_valid?: boolean }> }>();
   const installations = result.installations ?? [];

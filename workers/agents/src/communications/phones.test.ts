@@ -968,6 +968,38 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
  });
 
+ it("offers only active signed phone handlers with matching package and source bytes", async () => {
+  const f = await phoneFixture();
+  const source = "export default async function handle() { return { reply: 'ok' }; }";
+  const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, "0")).join("");
+  let releaseArtifactSha256 = await sha256(JSON.stringify([["./handler.ts", source]]));
+  f.env.SPACES_WORKER = { fetch: vi.fn(async (request: Request) => {
+    const pathname = new URL(request.url).pathname;
+    if (pathname.endsWith("/internal/channel-installations")) return Response.json({ installations: [
+      { instance_id: "phone-install", extension_id: "ext_phone", name: "Phone assistant", status: "active", scope: "SPACE_SHARED", channels: [{ provider: "phone" }] },
+    ] });
+    if (pathname.endsWith("/workflow-installations/phone-install")) return Response.json({
+      instance: { instance_id: "phone-install", tenant_id: "tenant", space_id: "space", project_id: null, scope: "SPACE_SHARED", status: "active" },
+      manifest: { id: "ext_phone", bundle: { id: "ext_phone", version: "1.0.0" }, channels: [{ kind: "channel", provider: "phone", context: "channel_only",
+        handlerScript: "./handler.ts", inboundEvents: ["message.received", "call.received"], outboundEvents: ["message.reply", "voice.reply"], permissions: [], capabilityRequirements: [], knowledgeCollections: [] }] },
+      release: { version: "1.0.0", artifactSha256: releaseArtifactSha256, signatureValid: true },
+    });
+    return Response.json({ preferences: { enabled: { email: true, phone: true } } });
+  }) } as unknown as Fetcher;
+  const prefix = "spaces/space/extensions/ext_phone/1.0.0/";
+  f.env.SCRIPTS_R2 = {
+    list: vi.fn(async () => ({ objects: [{ key: prefix + "handler.ts", size: new TextEncoder().encode(source).byteLength }], truncated: false })),
+    get: vi.fn(async key => key === prefix + "handler.ts" ? { size: new TextEncoder().encode(source).byteLength,
+      text: async () => source, arrayBuffer: async () => new TextEncoder().encode(source).buffer } : null),
+  } as unknown as R2Bucket;
+
+  const available = await f.act("phone-status") as { phone_handler_candidates: Array<{ installation_id: string; handler_sha256: string }> };
+  expect(available.phone_handler_candidates).toEqual([{ installation_id: "phone-install", extension_id: "ext_phone", name: "Phone assistant", version: "1.0.0", handler_sha256: await sha256(source) }]);
+  releaseArtifactSha256 = "f".repeat(64);
+  const tampered = await f.act("phone-status") as { phone_handler_candidates: unknown[] };
+  expect(tampered.phone_handler_candidates).toEqual([]);
+ });
+
  it("keeps owner extension assignment available when Space Assistant phone is disabled", async () => {
   const f = await phoneFixture();
   f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")
