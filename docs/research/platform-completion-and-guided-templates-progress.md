@@ -20,10 +20,21 @@ Worker/R2 mocks and typechecks; no browser, deployed DB/DO, Marketplace or live 
 ran. P24 activation import/reload resume is IMPLEMENTED_LOCAL; P24 remains PARTIAL for cross-tenant
 rights, broad schema/data migration and rollback, compromise notice, scanning, retention and live
 acceptance. P05 remains PARTIAL for supported customer/provider journeys, general update/uninstall
-effects, verified rates and live acceptance. Exact next action: trace every reachable §9.5 voice-pipeline
-caller for the documented MeloTTS deprecation, migrate only reachable unsupported use to a host-approved
-supported model, and keep the current OpenRouter owner-call path unchanged. Then continue Shared-Space
-coordination. Rollouts remain disabled.
+effects, verified rates and live acceptance. The §9.5 voice caller audit found the deprecated MeloTTS
+constant only in an unused `VoiceSession` path; production callers use Whisper for transcription and
+OpenRouter for owner calls, so no model change is warranted. §10 expiry code `f0d38035` is pushed to
+`origin/Mcbt5s-Backup-2`: migration 128 stores an optional owner-selected expiry on v2 coordination
+facts; the host rejects past expiry selections, audience reads omit expired facts, and owner/admin v2
+reads expose expired and revoked lifecycle state. The owner Settings caller previews, sets, edits and
+renews expiry and shows revocation state. No default expiry or singleton behavior was added.
+Verification: SDK coordination **4/4**, Spaces coordination/route/migration **17/17**, SDK/Spaces/Shell
+typechecks, and `git diff --check`. These are local SDK, SQLite and Worker checks; no deployed
+multi-user or live acceptance ran. §10 remains PARTIAL for configurable posture, private-project
+publication/request authority, extension ownership/dependencies, reservations, concurrency, audit
+history and broad non-disclosure acceptance. Exact next action: expose persisted creator, approver,
+provenance and revocation actor metadata only to owner/admin lifecycle reads and the Settings view,
+with member responses still omitting those fields. Continue the remaining §10 requirements and the
+uncoded S2–S9/U01–U12 and platform-plan code gaps. Rollouts remain disabled.
 
 Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.
@@ -152,14 +163,15 @@ composition remain. Streaming is unavailable; bounded keypad behavior remains. N
 acceptance is claimed.
 
 **§10 — PARTIAL.** Audience-filtered facts, disclosure previews, owner/admin publication, expected-
-version-fenced audience-confirmed amendments, revocation receipts, published cards/proposals and
-access rechecks have local code. Configurable posture/defaults, private publication/request authority,
-extension/dependency ownership, reservations, expiry/concurrency policy and broad non-disclosure
-acceptance remain.
+version-fenced audience-confirmed amendments, optional owner-selected v2 expiry, audience read
+filtering, owner/admin expiry/revocation review, published cards/proposals and access rechecks have
+local code. Configurable posture/defaults, private-project publication/request authority, delegated
+extension ownership, reservations/singleton enforcement, concurrency, historical actor audit and
+broad non-disclosure/deployed acceptance remain. No expiry default or singleton policy is active.
 
-Exact next action: trace signed extension installation and phone-handler callers against the bounded
-Telnyx `say`/DTMF contract. Implement a customer-facing package workflow only for behavior supported
-by that contract, with local caller tests. Keep public streaming and live acceptance gated. After
+Exact next action: expose persisted creator, approver, provenance and revocation actor metadata only to
+owner/admin lifecycle reads and Settings; keep those fields absent from member responses. Continue
+§10.1–§10.6 caller checks and the remaining uncoded S2–S9/U01–U12 and platform requirements. After
 compaction, interruption or a new session, read both plans, both progress records and AGENTS.md; inspect
 the actual worktree and branch; resume from this action.
 

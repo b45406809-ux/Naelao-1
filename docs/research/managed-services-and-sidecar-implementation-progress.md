@@ -26,10 +26,23 @@
   update/uninstall effects, verified rates and live acceptance. P01/P02 still require
   operator-attested resource/baseline evidence; P03/P20 policy
   remains undecided. These are not credential-only code claims.
-- Exact next action: trace every reachable §9.5 voice-pipeline caller for the documented MeloTTS
-  deprecation, migrate only reachable unsupported use to a host-approved supported model, and keep the
-  current OpenRouter owner-call path unchanged. Record whether a code change is required before
-  proceeding to Shared-Space coordination.
+- The §9.5 voice caller audit is complete: the deprecated MeloTTS constant is confined to an unused
+  `VoiceSession` module path; no production source constructs that class. Reachable transcription uses
+  Cloudflare Whisper and owner calls use OpenRouter. No model migration is warranted; no deployed or
+  provider acceptance is claimed.
+- Code `f0d38035` is pushed to `origin/Mcbt5s-Backup-2`: SpaceDO migration 128 persists an optional,
+  owner-selected expiry on v2 coordination facts. Host validation rejects past timestamps; selected
+  audience reads omit expired records, while v2 owner/admin reads can review expired and revoked
+  records. Shell previews, sets and edits expiry; expired facts can be renewed through the confirmed,
+  expected-version amendment. No expiry default or singleton behavior was added. Local evidence:
+  SDK coordination **4/4**, Spaces coordination/route/migration **17/17**, SDK/Spaces/Shell typechecks,
+  and `git diff --check`. No deployed multi-user or live acceptance ran. §10 remains PARTIAL for
+  configurable posture, private-project publication/request authority, extension ownership and
+  dependencies, reservation/concurrency policy, actor history and broad non-disclosure acceptance.
+- Exact next action: expose already persisted creator, approver, provenance and revocation actor fields
+  only in the authorized owner/admin lifecycle view, retaining their omission from member responses.
+  Then continue §10.1–§10.6 caller checks and remaining independent S2–S9/U01–U12 and platform-plan
+  code gaps. Preserve `infra/scripts/__pycache__/`; keep rollout disabled.
 
 ### Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded)
 

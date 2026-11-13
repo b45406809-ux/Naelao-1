@@ -32,12 +32,21 @@ after review, partial and post-success retry. These are local Worker/R2 mocks an
 browser, deployed DO, Marketplace, provider or live acceptance ran. P24 remains PARTIAL for
 cross-tenant artifact rights, general migration/rollback, compromise notice, scanning, retention and
 deployed/live acceptance. P05 remains PARTIAL for supported customer channels/provider journeys,
-broader update/uninstall effects, rates and live acceptance. Exact next action: make the activation
-trace every reachable §9.5 voice-pipeline caller for the documented MeloTTS deprecation, migrate only
-reachable unsupported use to a host-approved supported model, and keep the current OpenRouter owner-call
-path unchanged. Record whether an independent code change is required before proceeding to Shared-Space
-coordination. Keep cross-tenant seller artifacts gated, rollouts disabled, and preserve
-`infra/scripts/__pycache__/`.
+broader update/uninstall effects, rates and live acceptance. §9.5 caller audit is complete: the
+deprecated MeloTTS constant is confined to an unused `VoiceSession` module path; no production source
+constructs that class. Reachable transcription uses the separate Cloudflare Whisper adapter, and owner
+calls use OpenRouter. No model migration is warranted. Coordination lifecycle code `f0d38035` is now
+pushed: v2 facts have owner-selected optional expiry in SpaceDO migration 128; expired facts are
+filtered from audience reads, owners/admins can review expired/revoked records, and Settings can renew
+an expired fact through the confirmed expected-version edit. No default expiry or singleton policy was
+introduced. Local verification: SDK coordination **4/4**, Spaces coordination/route/migration
+**17/17**, SDK/Spaces/Shell typechecks, and `git diff --check`. These are local SQLite/Worker checks;
+no deployed multi-user or live acceptance ran. §10 remains PARTIAL. Exact next action: expose the
+already persisted creator, approver, provenance and revocation actor fields only in the authorized
+owner/admin lifecycle view, keep them absent from member responses, and verify the route/DO/UI boundary.
+Then continue §10.1–§10.6 against actual callers and resume remaining S2–S9/U01–U12 code gaps. Keep
+cross-tenant seller
+artifacts gated, rollouts disabled, and preserve `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
