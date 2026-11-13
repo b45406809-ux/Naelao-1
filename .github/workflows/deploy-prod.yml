@@ -212,6 +212,7 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.API_URL_PROD }}
           NEXT_PUBLIC_DASHBOARD_URL: ${{ vars.DASHBOARD_URL_PROD }}
+          NEXT_PUBLIC_PRODUCT_SHELL_URL: https://app.naelao.com
 
       - name: Deploy to CF Pages (production)
         env:

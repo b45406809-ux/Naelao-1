@@ -266,6 +266,7 @@ jobs:
         run: pnpm --filter @naelao/portal exec next-on-pages
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
+          NEXT_PUBLIC_PRODUCT_SHELL_URL: https://staging-app.naelao.com
 
       - name: Deploy to CF Pages (portal)
         env:

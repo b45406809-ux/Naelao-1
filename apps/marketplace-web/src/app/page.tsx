@@ -46,6 +46,11 @@ function ListingCard({ listing }: { listing: SpaceTypeListing }) {
         <span className="text-xs text-gray-400">{listing.install_count.toLocaleString()} uses</span>
       </div>
       <p className="text-xs text-gray-400 mt-2">by {listing.author_name}</p>
+      <p className="text-xs font-medium text-gray-600 mt-1">
+        {listing.pricing_model === "fixed_license" && listing.price_cents > 0
+          ? `$${(listing.price_cents / 100).toFixed(2)} USD · one-time license`
+          : "Free to install · feature access may depend on plan"}
+      </p>
     </Link>
   );
 }

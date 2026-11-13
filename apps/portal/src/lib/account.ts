@@ -74,12 +74,6 @@ export async function register(email: string, password: string): Promise<Account
   return body.data.user;
 }
 
-// ── Catalog ───────────────────────────────────────────────────────────────────
-export interface CatalogNiche { id: string; name: string; description: string; status: "live" | "coming_soon" }
-export async function productCatalog(): Promise<{ niches: CatalogNiche[]; live_count: number; coming_soon_count: number }> {
-  return call("/v1/catalog/product");
-}
-
 // The BusinessDO-backed "one business per user" functions that used to live here
 // (onboardBusiness/businessStatus/runContentCycle/setPaused, calling /v1/business/:userId/*)
 // were removed along with BusinessDO's retirement (legacy Whop-niche runtime).

@@ -23,16 +23,17 @@ service = "naelao-billing"
 
 [vars]
 ENVIRONMENT = "development"
+MARKETPLACE_WEB_URL = "https://naelao-marketplace.pages.dev"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+vars = { ENVIRONMENT = "staging", MARKETPLACE_WEB_URL = "https://naelao-marketplace-staging.pages.dev" }
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing-staging"
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+vars = { ENVIRONMENT = "production", MARKETPLACE_WEB_URL = "https://naelao-marketplace.pages.dev" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"

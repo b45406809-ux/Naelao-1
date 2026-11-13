@@ -2409,8 +2409,24 @@ export interface SpaceTemplateListing {
 
 /** Published, FDE-authored Space Templates from the Naelao marketplace. */
 export async function listSpaceTemplates(session: SessionCredentials): Promise<SpaceTemplateListing[]> {
-  const result = await apiFetch<{ data: SpaceTemplateListing[] }>("/v1/marketplace?category=vertical-saas&per_page=100", { session });
-  return result.data ?? [];
+  const pageSize = 100;
+  const templates = new Map<string, SpaceTemplateListing>();
+  for (let page = 1; page <= 1_001; page++) {
+    const query = new URLSearchParams({ per_page: String(pageSize), page: String(page), sort: "newest" });
+    const result = await apiFetch<{ data?: SpaceTemplateListing[]; meta?: { total?: number } }>(`/v1/marketplace?${query}`, {
+      session, cache: "no-store",
+    });
+    const rows = Array.isArray(result.data) ? result.data : [];
+    for (const template of rows) templates.set(template.id, template);
+    const total = result.meta?.total;
+    if (rows.length < pageSize || (Number.isSafeInteger(total) && templates.size >= (total as number))) {
+      return [...templates.values()];
+    }
+    // The Marketplace API bounds offsets at 100,000. Fail visibly if the catalog grows
+    // past that bound instead of presenting an incomplete list as the complete catalog.
+    if (page === 1_001) throw new Error("Marketplace template catalog exceeds the supported paging range.");
+  }
+  return [...templates.values()];
 }
 
 export async function forkSpaceTemplate(rootSpaceId: string, listingId: string, session: SessionCredentials): Promise<{ space_type_id: string }> {

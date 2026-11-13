@@ -8,6 +8,8 @@ interface Env {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   BILLING_WORKER?: Fetcher;
+  /** Explicitly configured public Marketplace origin used for licensed-checkout return URLs. */
+  MARKETPLACE_WEB_URL?: string;
 }
 interface Listing {
   id: string; space_type_id: string; tenant_id: string; author_name: string;
@@ -148,6 +150,23 @@ app.get("/v1/marketplace/:id", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare("SELECT * FROM marketplace_listings WHERE id = ? AND status = 'published'").bind(c.req.param("id")).first<Listing>();
   return row ? c.json(publicListing(row)) : c.json({ error_code: "not_found" }, 404);
 });
+app.get("/v1/marketplace/:id/license-status", async c => {
+  const { tenantId, userId } = identity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const listingId = c.req.param("id");
+  const listing = await c.env.PLATFORM_DB.prepare("SELECT id, pricing_model, price_cents FROM marketplace_listings WHERE id = ? AND status = 'published'")
+    .bind(listingId).first<{ id: string; pricing_model: string; price_cents: number }>();
+  if (!listing) return c.json({ error_code: "not_found" }, 404);
+  const [purchase, fork] = await Promise.all([
+    c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ? LIMIT 1")
+      .bind(tenantId, listingId).first<{ id: string }>(),
+    c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_forks WHERE tenant_id = ? AND listing_id = ? LIMIT 1")
+      .bind(tenantId, listingId).first<{ id: string }>(),
+  ]);
+  const licensed = listing.pricing_model !== "fixed_license" || listing.price_cents <= 0 || !!purchase;
+  return c.json({ listing_id: listingId, licensed, forked: !!fork,
+    status: fork ? "forked" : licensed ? "available" : "license_required" }, { headers: { "cache-control": "private, no-store" } });
+});
 app.post("/v1/marketplace", async (c) => {
   const { tenantId } = identity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
@@ -230,6 +249,14 @@ app.post("/v1/marketplace/:id/license-checkout", async c => {
   const { tenantId, userId } = identity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
   if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
+  let marketplaceOrigin: URL;
+  try {
+    marketplaceOrigin = new URL(c.env.MARKETPLACE_WEB_URL ?? "");
+    if (marketplaceOrigin.protocol !== "https:" || marketplaceOrigin.username || marketplaceOrigin.password ||
+        marketplaceOrigin.pathname !== "/" || marketplaceOrigin.search || marketplaceOrigin.hash) throw new Error("invalid_origin");
+  } catch {
+    return c.json({ error_code: "marketplace_checkout_return_url_unconfigured" }, 503);
+  }
   const listing = await c.env.PLATFORM_DB.prepare("SELECT * FROM marketplace_listings WHERE id = ? AND status = 'published'")
     .bind(c.req.param("id")).first<Listing>();
   if (!listing) return c.json({ error_code: "not_found" }, 404);
@@ -239,7 +266,8 @@ app.post("/v1/marketplace/:id/license-checkout", async c => {
   const response = await c.env.BILLING_WORKER.fetch(new Request("http://billing/internal/marketplace/license-checkout", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
-    body: JSON.stringify({ listing_id: listing.id, buyer_tenant_id: tenantId }),
+    body: JSON.stringify({ listing_id: listing.id, buyer_tenant_id: tenantId,
+      success_url: new URL(`/listing/${encodeURIComponent(listing.id)}?license=complete`, marketplaceOrigin).toString() }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
 });

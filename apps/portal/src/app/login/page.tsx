@@ -34,7 +34,7 @@ export default function LoginPage() {
           {mode === "login" ? "Sign in" : "Create account"}
         </h1>
         <p className="text-sm text-gray-500 text-center mb-6">
-          Run an AI micro-tool + community on Whop.
+          Sign in to manage your Naelao account.
         </p>
 
         <form onSubmit={submit} className="space-y-3 bg-white border border-gray-200 rounded-xl p-5">

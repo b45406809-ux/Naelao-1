@@ -183,8 +183,15 @@ export function registerMarketplaceLicenseRoutes(app: Hono<{ Bindings: BillingEn
   });
   app.post("/internal/marketplace/license-checkout", async c => {
     const buyerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
-    const body = await c.req.json<{ listing_id?: string; buyer_tenant_id?: string }>();
-    if (!buyerTenantId || body.buyer_tenant_id !== buyerTenantId || !body.listing_id) return c.json({ error_code: "bad_request" }, 400);
+    const body = await c.req.json<{ listing_id?: string; buyer_tenant_id?: string; success_url?: string }>();
+    if (!buyerTenantId || body.buyer_tenant_id !== buyerTenantId || !body.listing_id || !body.success_url) return c.json({ error_code: "bad_request" }, 400);
+    let successUrl: URL;
+    try {
+      successUrl = new URL(body.success_url);
+      if (successUrl.protocol !== "https:" || successUrl.username || successUrl.password || body.success_url.length > 2_048) throw new Error("invalid_success_url");
+    } catch {
+      return c.json({ error_code: "invalid_success_url" }, 400);
+    }
     const listing = await c.env.PLATFORM_DB.prepare("SELECT id, tenant_id, developer_user_id, name, description, status, pricing_model, price_cents, ls_license_variant_id FROM marketplace_listings WHERE id = ?")
       .bind(body.listing_id).first<LicenseListing>();
     if (!listing || listing.status !== "published") return c.json({ error_code: "not_found" }, 404);
@@ -230,6 +237,7 @@ export function registerMarketplaceLicenseRoutes(app: Hono<{ Bindings: BillingEn
     const { url } = await provider.createCheckout({
       spaceId: buyerTenantId,
       variantOrPriceId: variantId,
+      successUrl: successUrl.toString(),
       metadata: { kind: "marketplace_license", listing_id: listing.id, buyer_tenant_id: buyerTenantId },
     });
     return c.json({ checkout_url: url, listing_id: listing.id, price_cents: listing.price_cents, currency: "USD", provider: "lemon_squeezy" });

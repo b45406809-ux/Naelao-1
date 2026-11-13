@@ -60,7 +60,7 @@
     },
     {
       "path": "workers/marketplace/wrangler.toml",
-      "sha256": "114bf8ec896accba31ffb195f09b1b3562d3f5bc436bc56cb5f879c9b8b74050"
+      "sha256": "c02ed498b2a2808e87a8fa0b1da2555475ff730248001fc2872baa0dcf39edc1"
     },
     {
       "path": "workers/mcp-hub/wrangler.toml",
@@ -80,7 +80,7 @@
     },
     {
       "path": "workers/router/wrangler.toml",
-      "sha256": "0748e2be36a3b7c6b73f297927d20dec65e03d24053c6f40e6d8e95c7a5341e2"
+      "sha256": "ceefbf54fb8f997ae5df73f65bb5ac0f9a7ee85151e89cb9c7429bcf47409b89"
     },
     {
       "path": "workers/sandboxes/wrangler.toml",

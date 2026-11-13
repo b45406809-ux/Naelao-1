@@ -7,10 +7,9 @@ export const runtime = "edge";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getListing, getReviews, forkListing, CATEGORY_LABELS, type ListingDetail, type Review, type Category } from "@/lib/api";
+import { getListing, getReviews, getLicenseStatus, startLicenseCheckout, forkListing, CATEGORY_LABELS, type ListingDetail, type Review, type Category } from "@/lib/api";
 
-const DASHBOARD_URL = process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "https://app.naelao.com";
-const AUTH_TOKEN_KEY = "naelao_builder_token";
+const AUTH_TOKEN_KEY = "naelao_token";
 
 function getStoredToken(): string | null {
   try { return localStorage.getItem(AUTH_TOKEN_KEY); } catch { return null; }
@@ -36,6 +35,9 @@ export default function ListingPage() {
   const [forking, setForking] = useState(false);
   const [forked, setForked] = useState(false);
   const [forkError, setForkError] = useState("");
+  const [licenseChecked, setLicenseChecked] = useState(false);
+  const [licensed, setLicensed] = useState(false);
+  const [checkoutStarting, setCheckoutStarting] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
 
   useEffect(() => {
@@ -46,21 +48,54 @@ export default function ListingPage() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) { setLicenseChecked(true); return; }
+    let active = true;
+    setLicenseChecked(false);
+    getLicenseStatus(id, token)
+      .then(status => { if (active) { setLicensed(status.licensed); setForked(status.forked); } })
+      .catch(() => { if (active) { setLicensed(false); setForked(false); } })
+      .finally(() => { if (active) setLicenseChecked(true); });
+    return () => { active = false; };
+  }, [id]);
+
   async function handleFork() {
     const token = getStoredToken();
     if (!token) {
-      window.location.href = `${DASHBOARD_URL}/login?return_to=${encodeURIComponent(window.location.href)}`;
+      window.location.href = `/login?return_to=${encodeURIComponent(window.location.href)}`;
       return;
     }
     setForking(true);
     setForkError("");
     try {
+      if (listing?.pricing_model === "fixed_license" && listing.price_cents > 0 && !licensed) {
+        throw new Error(licenseChecked ? "A settled marketplace license is required before adding this template." : "License status could not be verified. Reload and try again.");
+      }
       await forkListing(id, token);
       setForked(true);
     } catch (err) {
       setForkError(err instanceof Error ? err.message : "Failed to fork template.");
     } finally {
       setForking(false);
+    }
+  }
+
+  async function handleLicenseCheckout() {
+    const token = getStoredToken();
+    if (!token) {
+      window.location.href = `/login?return_to=${encodeURIComponent(window.location.href)}`;
+      return;
+    }
+    setCheckoutStarting(true);
+    setForkError("");
+    try {
+      const checkout = await startLicenseCheckout(id, token);
+      window.location.assign(checkout.checkout_url);
+    } catch (err) {
+      setForkError(err instanceof Error ? err.message : "Marketplace checkout is unavailable.");
+    } finally {
+      setCheckoutStarting(false);
     }
   }
 
@@ -185,26 +220,35 @@ export default function ListingPage() {
               <p className="text-3xl font-bold text-gray-900">{listing.install_count.toLocaleString()}</p>
               <p className="text-sm text-gray-500">total uses</p>
             </div>
-            <div className="text-xs text-gray-400 text-center mb-4 uppercase tracking-wide">
-              {listing.pricing === "free" ? "Free template" : "Paid template"}
+            <div className="text-center mb-4">
+              {listing.pricing_model === "fixed_license" && listing.price_cents > 0
+                ? <><p className="text-2xl font-bold text-gray-900">${(listing.price_cents / 100).toFixed(2)} USD</p><p className="text-xs text-gray-500">One-time template license</p></>
+                : <><p className="text-sm font-semibold text-gray-700">Free to install</p><p className="text-xs text-gray-500">Feature access may depend on your plan.</p></>}
             </div>
 
             {forked ? (
               <div className="text-center">
-                <p className="text-green-700 text-sm font-medium mb-3">Template added to your workspace!</p>
-                <a href={`${DASHBOARD_URL}/dashboard/spacetypes`}
-                  className="block w-full py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 text-center transition-colors">
-                  Open Dashboard →
-                </a>
+                <p className="text-green-700 text-sm font-medium mb-3">This template is already in your library.</p>
+                <p className="text-xs text-gray-500">Continue installation from a Space Template setup flow.</p>
               </div>
             ) : (
               <>
                 {forkError && <p className="text-xs text-red-600 mb-3 text-center">{forkError}</p>}
-                <button onClick={() => void handleFork()} disabled={forking}
-                  className="w-full py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors">
-                  {forking ? "Adding to workspace…" : "Use this template"}
-                </button>
+                {listing.pricing_model === "fixed_license" && listing.price_cents > 0 && !licensed ? (
+                  <button onClick={() => void handleLicenseCheckout()} disabled={checkoutStarting || !licenseChecked}
+                    className="w-full py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors">
+                    {checkoutStarting ? "Opening checkout…" : !licenseChecked ? "Checking license…" : `Buy license · $${(listing.price_cents / 100).toFixed(2)} USD`}
+                  </button>
+                ) : (
+                  <button onClick={() => void handleFork()} disabled={forking || !licenseChecked}
+                    className="w-full py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors">
+                    {forking ? "Adding to library…" : !licenseChecked ? "Checking availability…" : "Add to template library"}
+                  </button>
+                )}
                 <p className="text-xs text-gray-400 text-center mt-2">Requires a Naelao account</p>
+                {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("license") === "complete" && (
+                  <p role="status" className="text-xs text-green-700 text-center mt-3">Payment returned successfully. License access appears here after the signed provider event is recorded.</p>
+                )}
               </>
             )}
 
