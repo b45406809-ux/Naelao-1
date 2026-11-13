@@ -2,32 +2,32 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P24 publisher revocation and receipt readback pushed)
+### Active continuation (2026-11-13; P24 template import connected and revocation rechecked)
 
-- Code `f5b3c1dd` added revocation/drain handling and `0ba70840` added authenticated owner/admin
-  receipt readback; both are pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks.
-  SpaceDO migration 127 persists a publisher-key revocation fence and drain receipt. The
-  owner/admin route sends an internal-token-authenticated revoke to the exact SpaceDO; the transaction
-  revokes matching releases, disables active installations, blocks new runtime leases and prevents
-  re-enable/install/import under the fenced key. The receipt reports disabled installs and active
-  work; admitted work is allowed to finish and retries refresh draining/drained state. Shell displays
-  the immediate result without claiming termination.
-- Local evidence for readback: SpaceDO runtime/install, migration and owner/admin gateway suites
-  **37/37**, Spaces/Shell typechecks and `git diff --check`. Tests cover unauthorized/internal-token
-  and member/non-member denial, new install/lease/re-enable denial, retries, and receipt/lease
-  survival across a DO restart. No deployed DO or live package/provider test ran. Rollouts remain
-  disabled; preserve `infra/scripts/__pycache__/`.
-- P24 publisher revocation, durable draining/drained receipt and owner/admin readback are
-  IMPLEMENTED_LOCAL. Remaining code gap: template activation does not invoke the existing explicit
-  same-tenant, source-and-destination-admin signed package-closure import. Also open: end-to-end
-  Worker/R2 lost-response evidence, migration/rollback breadth, supply-chain scanning, retention
-  policy and key-custody/compromise notice. P01/P02 evidence and P03/P20 decisions remain open; no
-  credential-only gap is claimed.
-- Exact next action: make the existing owner-reviewed signed package-closure import reachable from
-  blueprint activation using an explicitly selected same-tenant source Space and exact required
-  extension pins. Reuse the import ledger, preserve its preview/confirmation and retry semantics,
-  and test source/destination authorization, digest mismatch, revoke, and lost response. Keep
-  cross-tenant seller artifact transfer gated where the listing does not authorize the package.
+- Code `536853b9` connects Template activation setup to the existing owner-reviewed same-tenant
+  signed dependency-closure import. The owner selects an active source Space, reviews signer, version,
+  manifest/artifact digests and package closure, imports immutable bytes, then reviews destination
+  permissions/capabilities and explicitly installs the exact required pin without shared-folder
+  grants. The Shell refreshes activation readiness and can reconcile an ambiguous install result from
+  the persisted exact pin. Code `b646ec16` corrects revoked-key status and rechecks destination trust
+  between review and copy; revoked packages return 403 without destination writes. Both commits are
+  pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry checks.
+- Local evidence: signed Space package/import suite **17/17**, Spaces and Shell typechecks, and
+  `git diff --check`. Tests cover source/destination authorization, manifest-digest mismatch,
+  publisher revocation after review, interrupted partial closure retry, and retry after completed
+  import when its response may have been lost. These are local Worker/R2 mocks; no browser, deployed
+  DO, Marketplace, provider or live acceptance ran. Rollouts remain disabled; preserve
+  `infra/scripts/__pycache__/`.
+- The P24 activation-import code gap is IMPLEMENTED_LOCAL. P24 remains PARTIAL for cross-tenant
+  seller transfer rights, general migration/rollback, key-compromise notice, scanning, retention and
+  deployed/live acceptance. P05 remains PARTIAL for reload recovery of an imported-but-not-installed
+  package, supported customer provider journeys, broad update/uninstall effects, verified rates and
+  live acceptance. P01/P02 still require operator-attested resource/baseline evidence; P03/P20 policy
+  remains undecided. These are not credential-only code claims.
+- Exact next action: let activation setup resume a package already imported into its destination after
+  page reload by checking the destination signed-install review before requiring another source import;
+  preserve exact pin, publisher revocation and owner approval checks. Keep cross-tenant seller artifacts
+  gated where the listing does not authorize transfer.
 
 ### Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded)
 

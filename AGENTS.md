@@ -12,17 +12,28 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P24 publisher revocation/drain `f5b3c1dd` and receipt readback
-`0ba70840` are pushed to `origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`.
-SpaceDO migration 127 stores a per-key fence/receipt; the owner/admin gateway disables active
-installs, blocks new leases and re-enable/install/import, returns live drain counts, and supports
-no-store readback after reload. Admitted work may finish. Local evidence: SpaceDO runtime/install,
-migration and gateway suites **37/37**, Spaces/Shell typechecks and `git diff --check`; no deployed
-DO or live package acceptance ran. Exact next action: connect the existing owner-reviewed signed
-package-closure import to blueprint activation using an explicitly selected same-tenant source Space
-and exact required pins; test both Space admin checks, digest mismatch, revocation and lost-response
-retry. Keep cross-tenant seller artifacts gated without an authorization contract, keep rollouts
-disabled, and preserve `infra/scripts/__pycache__/`.
+Current checkpoint (2026-11-13): P24 template dependency import is pushed to
+`origin/Mcbt5s-Backup-2` as `536853b9`; revocation recheck/status correction is pushed as
+`b646ec16`. The owner-facing Template setup UI now selects an active same-tenant source Space,
+reviews the signed dependency closure against the exact required version and optional manifest
+digest, imports immutable artifacts with retry, reviews destination permissions/capabilities, and
+installs the exact pin with no shared-folder grants. It refreshes activation readiness and reconciles
+an ambiguous install response from the exact active pin. Both import review and copy recheck the
+manifest digest; both source/destination admin authorization and publisher trust are rechecked. A key
+revoked after review blocks copy with 403 and no destination writes. Cross-tenant seller packages
+remain behind existing listing entitlement checks.
+
+Local evidence: signed Space package/import suite **17/17**, Spaces and Shell typechecks, and
+`git diff --check`. The test covers source/destination authorization, exact-digest mismatch, revoked
+key after review, partial and post-success retry. These are local Worker/R2 mocks and typechecks; no
+browser, deployed DO, Marketplace, provider or live acceptance ran. P24 remains PARTIAL for
+cross-tenant artifact rights, general migration/rollback, compromise notice, scanning, retention and
+deployed/live acceptance. P05 remains PARTIAL for supported customer channels/provider journeys,
+broader update/uninstall effects, rates and live acceptance. Exact next action: make the activation
+setup flow resume a package already imported into the destination after page reload by checking the
+destination signed-install review before requiring another source import; preserve exact pin, publisher
+revocation and owner approval checks. Keep cross-tenant seller artifacts gated, rollouts disabled, and
+preserve `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
