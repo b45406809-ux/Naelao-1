@@ -2,28 +2,26 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §5 setup conditions and usage assumptions code
-`b9ad2c83` is pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. SDK
-setup schema v2 adds one equality condition referencing an earlier field and bounded localized
-labels/help/options; schema and locale inputs are host-validated, credential-like copy remains
-rejected, and total schema size is capped at 64 KiB. The owner UI hides conditional fields, resolves
-locale fallbacks, and accepts monthly conversation/interaction assumptions. The server reports
-projected volume while dollar totals remain unknown because no verified usage-rate table exists.
-Local/mock evidence: Agent SDK tests **8/8**, Spaces activation/cost tests **22/22**, SDK/Spaces/Shell
-typechecks and `git diff --check`. No deployed database, marketplace payment or live provider was
-exercised. §5 remains PARTIAL for complete provider/runtime rates, installation update/migration,
-permission/pricing review, revocation/uninstall lifecycle and end-to-end acceptance.
+Current continuation checkpoint (2026-11-13): §5 installed-template provenance and owner status
+code `5c7ba416` is pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`.
+Migration 118 persists the selected Marketplace listing and setup schema version with new install
+receipts; activation carries the exact selected listing into SpaceDO. A no-store owner/admin route
+and Shell modal show status, artifact digest, listing, schema revision, required extensions, project
+IDs and failure code while excluding setup values. Legacy receipts with no listing remain explicitly
+unknown. Local/mock evidence: Spaces activation/runtime/migration suites **25/25**, Router product
+path **42/42**, Spaces/Shell typechecks, and `git diff --check`. No deployed DO, Marketplace payment
+or live provider was exercised. §5 remains PARTIAL for update/schema migration, permission/pricing
+review, rollback, revocation/uninstall, complete rates and end-to-end acceptance; no safe update or
+uninstall contract exists for generated project data or retained provider resources.
 
-`f5050258` adds encrypted, listing/artifact/schema-bound per-Space setup drafts, owner/admin host
-authorization, revision checks and Shell resume; activation clears drafts. Its local/mock tests and
-limits remain in the progress ledgers. S2–S9/U01–U12 classifications are unchanged: unsupported
-U05/U06 runtime contracts, product/policy decisions, absent external receipts and deployed/live
-acceptance remain distinct open gaps. Rollouts stay disabled. Exact next task: trace current template
-and extension install/update/uninstall callers, identify a concrete independently implementable
-lifecycle gap, then implement owner-visible safe update/uninstall state without inventing provider
-reconnection or pricing rules. Continue with §9.5 voice package dashboards and §10 coordination only
-after the template lifecycle review; keep S2–S9/U01–U12 ledger authoritative.
-
+Earlier guided-template checkpoints `f5050258` and `b9ad2c83` add encrypted setup drafts, resume,
+conditional/localized fields and usage assumptions; dollar totals remain unknown without verified
+rates. S2–S9/U01–U12 classifications remain in the managed-services ledger. Keep unsupported U05/U06
+runtime contracts, product/policy decisions, absent external receipts and deployed/live acceptance
+distinct. Rollouts stay disabled. Exact next task: reconcile §9.5's package-owned voice dashboard
+against current signed microapp, settings and host APIs. Implement only a source-proven scoped,
+versioned configuration gap; label voice runtime/provider actions unavailable unless their host
+contract and callers exist. Then continue §10 and remaining S2–S9/U01–U12 code gaps.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable
 receipts track that action. Owner/admin Settings lists archives/restore records and can resume partial

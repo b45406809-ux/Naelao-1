@@ -2,6 +2,15 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §5 installation receipt/status `5c7ba416` pushed)
+
+- Migration 118 adds `listing_id` and `setup_schema_version` to `space_blueprint_installations`. The activation caller passes the exact Marketplace listing ID; new receipts pin the artifact SHA-256, listing and declared setup schema version. Existing legacy listing attribution remains null rather than being guessed.
+- A signed internal SpaceDO read projects only installation status, artifact/listing/schema provenance, revision, required extension IDs, generated project IDs, timestamps and failure code. The Spaces route verifies the tenant token and owner/admin role. Router has one exact product-session path; the Shell presents the no-store receipt in an owner/admin status modal and explicitly says latest release/update availability was not checked. Setup values and schemas are excluded.
+- Local/mock evidence: Spaces activation/runtime/migration tests **25/25**, Router product-path tests **42/42**, Spaces/Shell typechecks, and `git diff --check`. No deployed Durable Object, Marketplace payment, provider or live acceptance was exercised.
+- This closes installed-state visibility and provenance only. §5 remains PARTIAL for updates/schema migration, changed permissions/prices, rollback, revocation/uninstall, complete rates and full acceptance. Source records do not define generated-project deletion, retained-provider cleanup or safe compensation, so no update/uninstall action was added.
+- S2–S9/U01–U12 status is unchanged. U05/U06 remain unsupported runtime contracts; external receipts, policy and live-provider/deployment acceptance remain distinct. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+- Exact next task: reconcile §9.5 voice package dashboards against current signed microapp and settings APIs. Implement a source-proven per-installation configuration gap using the existing declarative validator, while keeping customer voice runtime, provider voice catalogs and test calls unavailable unless supported callers exist.
+
 ### Active continuation (2026-11-13; §5 setup conditions and usage assumptions `b9ad2c83` pushed)
 
 - Code `b9ad2c83` is pushed to `origin/Mcbt5s-Backup-2`. Signed setup schema v2 adds one equality

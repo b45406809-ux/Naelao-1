@@ -2,6 +2,21 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after §5 installation receipt/status code `5c7ba416` was pushed to
+`origin/Mcbt5s-Backup-2`. Migration 118 pins selected Marketplace listing and setup schema version
+for new installs; activation forwards the exact listing ID. Owner/admin-only status reads show pinned
+artifact hash, listing, schema revision, extension dependencies, generated projects and terminal
+failure code without returning setup values. The Shell marks unknown legacy listing provenance and
+states that latest update availability was not checked. Local/mock evidence: Spaces activation,
+setup-runtime and migration suites **25/25**, Router product-path suite **42/42**, Spaces/Shell
+typechecks and `git diff --check`. No deployed DO, Marketplace payment or provider was exercised.
+§5 remains PARTIAL for update/schema migration, changed permission/pricing review, rollback,
+revocation/uninstall, full provider/runtime rates, visual authoring and live acceptance. No update or
+uninstall policy for generated projects or retained provider resources is encoded. Next task: inspect
+§9.5's signed voice-dashboard and extension-settings source against the shared declarative contract;
+implement per-installation configuration only where the current host API can validate and persist it,
+and keep unsupported voice-runtime/provider actions unavailable.
+
 Updated 2026-11-13 after §5 setup conditions and usage assumptions code `b9ad2c83` was pushed to
 `origin/Mcbt5s-Backup-2`. Setup schema v2 now supports one equality condition bound to an earlier
 field and bounded localized labels, help and select labels. The host validator enforces schema
