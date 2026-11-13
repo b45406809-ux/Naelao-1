@@ -18,7 +18,7 @@ import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -955,7 +955,7 @@ export function ChannelConnect({
             <strong style={{ fontSize: 11.5 }}>{item.manifest.id ?? item.instance.extension_id} · {item.instance.instance_key ?? "default"}</strong>
             <ExtensionSettingsForm spaceId={spaceId} appId={item.manifest.id ?? item.instance.extension_id} schema={schema} session={session}
               canConfigure={capabilities.has("extension.settings.configure") && permissions.has("extension.settings.configure")}
-              projectScope={{ projectId, installationId: instanceId }} />
+              projectScope={{ projectId, installationId: instanceId }} loadAudit={() => callProjectExtensionSettingsAudit(spaceId, projectId, instanceId, session)} />
           </div>;
         })}
       </details>}

@@ -29,6 +29,7 @@ function setup(canManage: boolean, canRead = canManage) {
   };
   const env = {
     PLATFORM_SECRET: secret,
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ name: "Space A", spacetype_id: "general", config_json: null }) }) }) },
     SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
   } as never;
   return { env, forwarded, stub };
@@ -63,6 +64,20 @@ async function projectSettings(env: unknown, role: string, method: "GET" | "PATC
     { method, headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
       "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": `${role}-a`, "x-naelao-role": role },
       ...(method === "PATCH" ? { body: JSON.stringify({ settings: { greeting: "Hello" }, revision: 0 }) } : {}) }), env as never);
+}
+
+async function projectSettingsAudit(env: unknown, role: string) {
+  return spacesWorker.fetch(new Request(
+    "https://spaces.test/spaces/space-a/projects/project-a/extension-installations/installation-a/settings-audit",
+    { headers: { "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"), "x-naelao-tenant-id": "tenant-a",
+      "x-naelao-user-id": `${role}-a`, "x-naelao-role": role } }), env as never);
+}
+
+async function spaceSettingsAudit(env: unknown, role: string) {
+  return spacesWorker.fetch(new Request(
+    "https://spaces.test/spaces/space-a/extension-installations/instance-a/settings-audit",
+    { headers: { "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"), "x-naelao-tenant-id": "tenant-a",
+      "x-naelao-user-id": `${role}-a`, "x-naelao-role": role } }), env as never);
 }
 
 describe("project extension lifecycle route", () => {
@@ -153,5 +168,30 @@ describe("project extension lifecycle route", () => {
     expect(forwarded && new URL(forwarded.url).pathname).toBe("/extension-settings");
     expect(forwarded?.headers.get("x-naelao-project-manage")).toBe("1");
     await expect(forwarded?.json()).resolves.toMatchObject({ settings: { greeting: "Hello" }, revision: 0 });
+  });
+
+  it("limits project settings history to readable project managers", async () => {
+    const viewer = setup(false, false);
+    expect((await projectSettingsAudit(viewer.env, "viewer")).status).toBe(403);
+    expect(viewer.forwarded.map(request => new URL(request.url).pathname)).toEqual(["/projects/project-a/automation-access"]);
+
+    const manager = setup(true);
+    expect((await projectSettingsAudit(manager.env, "editor")).status).toBe(200);
+    expect(manager.forwarded.map(request => new URL(request.url).pathname)).toEqual([
+      "/projects/project-a/automation-access", "/projects/project-a/automation-access", "/extension-settings-audit",
+    ]);
+    expect(manager.forwarded.at(-1)?.headers.get("x-naelao-project-manage")).toBe("1");
+    expect(manager.forwarded.at(-1)?.headers.get("x-naelao-project-read")).toBe("1");
+  });
+
+  it("limits Space-shared settings history to owner and admin roles", async () => {
+    const member = setup(false);
+    expect((await spaceSettingsAudit(member.env, "member")).status).toBe(403);
+    expect(member.forwarded).toHaveLength(0);
+
+    const admin = setup(true);
+    expect((await spaceSettingsAudit(admin.env, "admin")).status).toBe(200);
+    expect(admin.forwarded.map(request => new URL(request.url).pathname)).toEqual(["/extension-settings-audit"]);
+    expect(admin.forwarded[0]?.headers.get("x-naelao-role")).toBe("admin");
   });
 });

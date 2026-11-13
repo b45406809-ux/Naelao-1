@@ -1773,6 +1773,24 @@ app.delete("/spaces/:spaceId/shared-extension-installations/:instanceId", async 
   return stub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({ instance_id: instanceId, tenant_id: owned.tenantId, space_id: spaceId })}`, { method: "DELETE" }));
 });
 
+const sharedExtensionSettingsAuditPath = "/spaces/:spaceId/extension-installations/:instanceId/settings-audit";
+app.use(sharedExtensionSettingsAuditPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionSettingsAuditPath, requireSpaceMembership({ GET: "admin" }));
+app.get(sharedExtensionSettingsAuditPath, async c => {
+  const identity = getCallerIdentity(c), spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId))
+    return c.json({ error_code: "extension_settings_scope_required" }, 400);
+  const actorRole = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, identity.tenantId)
+    : identity.role;
+  if (actorRole !== "owner" && actorRole !== "admin") return c.json({ error_code: "forbidden" }, 403);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  return stub.fetch(new Request(`http://space-do/extension-settings-audit?${new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId, instance_id: instanceId })}`,
+    { headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId), "x-naelao-user-id": identity.userId, "x-naelao-role": actorRole } }));
+});
+
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────
 app.patch("/spaces/:id", async (c) => {
   const { tenantId, role } = getCallerIdentity(c);
@@ -3781,6 +3799,24 @@ async function forwardProjectExtensionSettings(c: any) {
 }
 app.get(projectExtensionSettingsPath, forwardProjectExtensionSettings);
 app.patch(projectExtensionSettingsPath, forwardProjectExtensionSettings);
+
+const projectExtensionSettingsAuditPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings-audit";
+app.use(projectExtensionSettingsAuditPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.get(projectExtensionSettingsAuditPath, async c => {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_settings_scope_required" }, 400);
+  const deniedRead = await requireReadableAutomationProject(c, spaceId, projectId);
+  if (deniedRead) return deniedRead;
+  const manageable = !(await requireManageableAutomationProject(c, spaceId, projectId));
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  return stub.fetch(new Request(`http://space-do/extension-settings-audit?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+      "x-naelao-user-id": identity.userId, "x-naelao-role": identity.role, "x-naelao-project-read": "1",
+      ...(manageable ? { "x-naelao-project-manage": "1" } : {}) },
+  }));
+});
 
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {

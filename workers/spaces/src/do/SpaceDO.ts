@@ -2563,6 +2563,28 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_space_template_setup_updates_recent
       ON space_template_setup_update_events(space_id,blueprint_id,created_at DESC);`,
   },
+  {
+    version: 123,
+    description: "audit extension settings changes without retaining setting values",
+    up: `CREATE TABLE extension_settings_audit_events (
+      event_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      project_id TEXT,
+      instance_id TEXT NOT NULL,
+      extension_id TEXT NOT NULL,
+      instance_scope TEXT NOT NULL CHECK(instance_scope IN ('PROJECT_BOUND','PROJECT_SHARED','PROJECT_USER','SPACE_SHARED')),
+      actor_id TEXT NOT NULL,
+      actor_role TEXT NOT NULL CHECK(length(actor_role) BETWEEN 1 AND 32),
+      prior_revision INTEGER NOT NULL CHECK(prior_revision >= 0),
+      new_revision INTEGER NOT NULL CHECK(new_revision = prior_revision + 1),
+      schema_version INTEGER NOT NULL CHECK(schema_version IN (1,2)),
+      changed_field_ids_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_extension_settings_audit_recent
+      ON extension_settings_audit_events(tenant_id,space_id,instance_id,created_at DESC,event_id DESC);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3777,6 +3799,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
+      if (url.pathname === "/extension-settings-audit" && method === "GET") return this.extensionSettingsAudit(request, url);
       if (url.pathname === "/phone-extension-settings" && method === "GET") return this.phoneExtensionSettings(request, url);
       if (url.pathname === "/extension-template-setup" && (method === "GET" || method === "PATCH")) return this.extensionTemplateSetup(request, url);
       if (url.pathname === "/template-setup-draft" && (method === "GET" || method === "PUT")) return this.templateSetupDraft(request, url);
@@ -12317,8 +12340,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
     const role = request.headers.get("x-naelao-role") ?? "";
+    const actorId = request.headers.get("x-naelao-user-id") ?? "";
     if (projectScoped && request.headers.get("x-naelao-project-read") !== "1") return Response.json({ error_code: "forbidden" }, { status: 403 });
     if (request.method === "PATCH" && !projectScoped && role !== "owner" && role !== "admin") return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (request.method === "PATCH" && (!/^[A-Za-z0-9._:-]{1,160}$/.test(actorId) || !/^[a-z][a-z0-9_]{0,31}$/.test(role)))
+      return Response.json({ error_code: "extension_settings_actor_required" }, { status: 403, headers: { "cache-control": "private, no-store" } });
     const rows = projectScoped
       ? queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; scope: string; status: string; user_id: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
         `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.user_id,i.manifest_json
@@ -12417,12 +12443,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         activeSchema = activeManifest.settingsSchema;
       } catch { return "schema_changed"; }
       if (!activeSchema || JSON.stringify(activeSchema) !== JSON.stringify(schema)) return "schema_changed";
-      const latest = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
-        "SELECT revision FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
+      const latest = queryOne<{ revision: number; settings_json: string }>(this.ctx.storage.sql as never,
+        "SELECT revision,settings_json FROM extension_installation_settings WHERE instance_id=?", row.instance_id);
       if ((latest?.revision ?? 0) !== body.revision) return "revision_conflict";
+      let priorSettings: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = latest ? JSON.parse(latest.settings_json) : {};
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorSettings = parsed as Record<string, unknown>;
+      } catch { /* A valid new write can repair malformed legacy data. The audit stores field IDs only. */ }
+      const changedFieldIds = activeSchema.fields
+        .filter(field => {
+          const priorValue = Object.prototype.hasOwnProperty.call(priorSettings, field.id) ? priorSettings[field.id] : field.defaultValue;
+          return JSON.stringify(priorValue) !== JSON.stringify(settings[field.id]);
+        })
+        .map(field => field.id);
+      const priorRevision = body.revision!;
+      const newRevision = priorRevision + 1;
       this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at,schema_version) VALUES(?,?,?,?,?)
         ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at,schema_version=excluded.schema_version`,
-      row.instance_id, JSON.stringify(settings), body.revision! + 1, updatedAt, schema.schemaVersion);
+      row.instance_id, JSON.stringify(settings), newRevision, updatedAt, schema.schemaVersion);
+      this.ctx.storage.sql.exec(`INSERT INTO extension_settings_audit_events(
+        event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
+        prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      crypto.randomUUID(), tenantId, spaceId, projectScoped ? projectId : null, row.instance_id, row.extension_id, row.scope,
+      actorId, role, priorRevision, newRevision, schema.schemaVersion, JSON.stringify(changedFieldIds), updatedAt);
       return "ok";
     });
     if (outcome === "installation_unavailable") return Response.json({ error_code: "extension_settings_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
@@ -12431,6 +12476,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (outcome === "schema_changed") return Response.json({ error_code: "extension_settings_schema_changed" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json({ schema, settings, revision: body.revision! + 1, migration_required: false, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async extensionSettingsAudit(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
+    const projectId = url.searchParams.get("project_id") ?? "", instanceId = url.searchParams.get("instance_id") ?? "";
+    const projectScoped = Boolean(projectId);
+    const actorId = request.headers.get("x-naelao-user-id") ?? "", role = request.headers.get("x-naelao-role") ?? "";
+    if (!tenantId || !spaceId || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || projectScoped && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(actorId)
+      || !/^[a-z][a-z0-9_]{0,31}$/.test(role)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    if (!projectScoped && role !== "owner" && role !== "admin")
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    if (projectScoped && request.headers.get("x-naelao-project-read") !== "1")
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+
+    const installation = queryOne<{ scope: string; user_id: string | null }>(this.ctx.storage.sql as never,
+      `SELECT scope,user_id FROM extension_installation_manifests
+       WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS ?`,
+      instanceId, tenantId, spaceId, projectScoped ? projectId : null);
+    if (!installation) return Response.json({ error_code: "extension_settings_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
+    const projectUserOwner = projectScoped && installation.scope === "PROJECT_USER" && installation.user_id === actorId;
+    if (projectScoped && request.headers.get("x-naelao-project-manage") !== "1" && !projectUserOwner)
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+
+    const rows = queryAll<{ event_id: string; extension_id: string; instance_scope: string; actor_id: string; actor_role: string;
+      prior_revision: number; new_revision: number; schema_version: number; changed_field_ids_json: string; created_at: string }>(this.ctx.storage.sql as never,
+      `SELECT event_id,extension_id,instance_scope,actor_id,actor_role,prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
+       FROM extension_settings_audit_events
+       WHERE tenant_id=? AND space_id=? AND instance_id=? AND project_id IS ?
+       ORDER BY created_at DESC,event_id DESC LIMIT 51`, tenantId, spaceId, instanceId, projectScoped ? projectId : null);
+    const events = rows.slice(0, 50).map(row => {
+      let changedFieldIds: string[] = [];
+      try {
+        const parsed: unknown = JSON.parse(row.changed_field_ids_json);
+        if (Array.isArray(parsed)) changedFieldIds = parsed.filter((value): value is string => typeof value === "string").slice(0, 128);
+      } catch { /* Corrupt legacy event metadata is omitted from the field list. */ }
+      return { event_id: row.event_id, extension_id: row.extension_id, scope: row.instance_scope, actor_id: row.actor_id,
+        actor_role: row.actor_role, prior_revision: row.prior_revision, new_revision: row.new_revision,
+        schema_version: row.schema_version, changed_field_ids: changedFieldIds, created_at: row.created_at };
+    });
+    return Response.json({ events, truncated: rows.length > 50 }, { headers: { "cache-control": "private, no-store" } });
   }
 
   /** Read the validated configuration for one active, signed phone extension installation. */

@@ -1681,6 +1681,27 @@ export function callProjectExtensionSettings(spaceId: string, projectId: string,
     method: request.method, session, cache: "no-store", ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
   });
 }
+export interface ExtensionSettingsAuditEvent {
+  event_id: string;
+  extension_id: string;
+  scope: "PROJECT_BOUND" | "PROJECT_SHARED" | "PROJECT_USER" | "SPACE_SHARED";
+  actor_id: string;
+  actor_role: string;
+  prior_revision: number;
+  new_revision: number;
+  schema_version: number;
+  changed_field_ids: string[];
+  created_at: string;
+}
+export interface ExtensionSettingsAuditResponse { events: ExtensionSettingsAuditEvent[]; truncated: boolean }
+export function callSpaceExtensionSettingsAudit(spaceId: string, installationId: string, session: SessionCredentials) {
+  return apiFetch<ExtensionSettingsAuditResponse>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-installations/${encodeURIComponent(installationId)}/settings-audit`,
+    { session, cache: "no-store" });
+}
+export function callProjectExtensionSettingsAudit(spaceId: string, projectId: string, installationId: string, session: SessionCredentials) {
+  return apiFetch<ExtensionSettingsAuditResponse>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(installationId)}/settings-audit`,
+    { session, cache: "no-store" });
+}
 
 export function callProjectExtensionCanvasGadgetRead(spaceId: string, projectId: string, installationId: string, canvasId: string, gadgetId: string, session: SessionCredentials, request: { operation: "list" | "get"; table: string; id?: string; limit?: number }) {
   const query = new URLSearchParams({ operation: request.operation, table: request.table });

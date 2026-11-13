@@ -57,6 +57,11 @@ describe("SpaceDO owner data operations", () => {
       method: "POST", headers, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", action, request_id: "erasure-archive" }),
     }));
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec(`INSERT INTO extension_settings_audit_events(
+      event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
+      prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "audit-a", "tenant-a", "space-a", "project-a", "installation-a", "extension-a", "PROJECT_BOUND",
+      "owner-a", "owner", 0, 1, 1, JSON.stringify(["greeting"]), "2026-01-01T00:00:00.000Z");
     storage.sql.exec("INSERT INTO sessions (id,space_id,tenant_id) VALUES (?,?,?)", "session-a", "space-a", "tenant-a");
     storage.sql.exec("INSERT INTO messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)", "message-a", "session-a", "user", "personal content", "2026-01-01T00:00:00.000Z");
     const archived = await dataOps("export");
@@ -73,6 +78,7 @@ describe("SpaceDO owner data operations", () => {
     expect(await response.json()).toMatchObject({ erased: true, tenant_id: "tenant-a", space_id: "space-a", request_id: "erase-request-a", replayed: false });
     expect(storage.sql.exec("SELECT id FROM messages").toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT id FROM sessions").toArray()).toHaveLength(0);
+    expect(storage.sql.exec("SELECT event_id FROM extension_settings_audit_events").toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT archive_id FROM space_archive_records").toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT tenant_id,space_id,request_id FROM space_erasure_tombstones").toArray()).toEqual([
       { tenant_id: "tenant-a", space_id: "space-a", request_id: "erase-request-a" },

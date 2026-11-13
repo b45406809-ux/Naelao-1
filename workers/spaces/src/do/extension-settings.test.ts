@@ -21,12 +21,13 @@ describe("Space-shared extension settings", () => {
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: [...manifest.capabilityRequirements] }) }));
     expect(install.status).toBe(201);
+    const { installationId: spaceInstallationId } = await install.json() as { installationId: string };
     expect(await (await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))).json()).toMatchObject({
       apps: [expect.objectContaining({ app_id: "voice_dashboard", settings_schema: manifest.settingsSchema })],
     });
     const token = await mintInternalToken(secret, "tenant");
-    const request = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard") => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {
-      method, headers: { "x-naelao-internal-token": token, "x-naelao-role": role, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    const request = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard", userId = "owner_a") => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {
+      method, headers: { "x-naelao-internal-token": token, ...(userId ? { "x-naelao-user-id": userId } : {}), "x-naelao-role": role, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }));
     const initial = await request("GET");
     expect(initial.headers.get("cache-control")).toContain("no-store");
@@ -38,6 +39,18 @@ describe("Space-shared extension settings", () => {
     expect((await request("PATCH", "admin", { settings: { enabled: true, greeting: "Changed" }, revision: 0 })).status).toBe(409);
     expect(await (await request("GET")).json()).toMatchObject({ revision: 1, settings: { language: "en", enabled: true, greeting: "Hello" } });
     expect((await request("GET", "admin", undefined, "wrong_app")).status).toBe(404);
+    expect((await request("PATCH", "admin", { settings: { enabled: false }, revision: 1 }, "voice_dashboard", "")).status).toBe(403);
+    const audit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", instance_id: spaceInstallationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "admin" } }));
+    expect(audit.status).toBe(200);
+    const auditBody = await audit.json() as { events: Array<Record<string, unknown>> };
+    expect(auditBody.events).toHaveLength(1);
+    expect(auditBody.events[0]).toMatchObject({ extension_id: manifest.id, scope: "SPACE_SHARED", actor_id: "owner_a", actor_role: "admin",
+      prior_revision: 0, new_revision: 1, schema_version: 2, changed_field_ids: ["enabled", "greeting"] });
+    expect(JSON.stringify(auditBody)).not.toContain("Hello");
+    const deniedAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", instance_id: spaceInstallationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "member_a", "x-naelao-role": "member" } }));
+    expect(deniedAudit.status).toBe(403);
 
     const voiceRequest = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard") => space.fetch(new Request(`http://space/extension-assistant-voice?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {
       method, headers: { "x-naelao-internal-token": token, "x-naelao-role": role, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -64,7 +77,7 @@ describe("Space-shared extension settings", () => {
     const request = (method: "GET" | "PATCH", manage = false, projectId = "project-a", body?: unknown, read = true) => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({
       tenant_id: "tenant", space_id: "space", project_id: projectId, instance_id: installationId,
     })}`, {
-      method, headers: { "x-naelao-internal-token": token, ...(read ? { "x-naelao-project-read": "1" } : {}), ...(manage ? { "x-naelao-project-manage": "1" } : {}), "content-type": "application/json" },
+      method, headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "manager_a", "x-naelao-role": "editor", ...(read ? { "x-naelao-project-read": "1" } : {}), ...(manage ? { "x-naelao-project-manage": "1" } : {}), "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }));
     expect((await request("GET", false, "project-a", undefined, false)).status).toBe(403);
@@ -74,6 +87,9 @@ describe("Space-shared extension settings", () => {
     expect((await request("GET", true, "project-b")).status).toBe(404);
     const saved = await request("PATCH", true, "project-a", { settings: { greeting: "Hello" }, revision: 0 });
     expect(await saved.json()).toMatchObject({ revision: 1, settings: { greeting: "Hello" } });
+    const managerOnlyAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "reader_a", "x-naelao-role": "member", "x-naelao-project-read": "1" } }));
+    expect(managerOnlyAudit.status).toBe(403);
     expect(await (await request("GET", false)).json()).toMatchObject({ revision: 1, can_configure: false, settings: { greeting: "Hello" } });
 
     storage.sql.exec("UPDATE extension_installation_settings SET settings_json=? WHERE instance_id=?",
@@ -98,11 +114,17 @@ describe("Space-shared extension settings", () => {
     const { installationId: userInstallationId } = await userInstall.json() as { installationId: string };
     const userRequest = (method: "GET" | "PATCH", userId: string, body?: unknown) => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({
       tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: userInstallationId,
-    })}`, { method, headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-user-id": userId,
+    })}`, { method, headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-user-id": userId, "x-naelao-role": "member",
       "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
     expect(await (await userRequest("GET", "user-a")).json()).toMatchObject({ revision: 0, can_configure: true });
     expect((await userRequest("PATCH", "user-a", { settings: { greeting: "Mine" }, revision: 0 })).status).toBe(200);
     expect((await userRequest("GET", "user-b")).status).toBe(404);
+    const ownAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: userInstallationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "user-a", "x-naelao-role": "member", "x-naelao-project-read": "1" } }));
+    expect(await ownAudit.json()).toMatchObject({ events: [expect.objectContaining({ actor_id: "user-a", scope: "PROJECT_USER", changed_field_ids: ["greeting"] })] });
+    const otherAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: userInstallationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "user-b", "x-naelao-role": "member", "x-naelao-project-read": "1" } }));
+    expect(otherAudit.status).toBe(403);
 
     let releaseBody!: () => void;
     let markBodyRead!: () => void;
@@ -117,7 +139,7 @@ describe("Space-shared extension settings", () => {
     });
     const pendingWrite = space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({
       tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId,
-    })}`, { method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "content-type": "application/json" },
+    })}`, { method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "x-naelao-user-id": "manager_a", "x-naelao-role": "editor", "content-type": "application/json" },
       body: bodyStream, duplex: "half" } as RequestInit));
     await bodyRead;
     const removed = await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({
@@ -127,6 +149,11 @@ describe("Space-shared extension settings", () => {
     releaseBody();
     expect((await pendingWrite).status).toBe(404);
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_settings_audit_events WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(2);
+    const audit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", instance_id: installationId })}`,
+      { headers: { "x-naelao-internal-token": token, "x-naelao-project-read": "1", "x-naelao-project-manage": "1", "x-naelao-user-id": "manager_a", "x-naelao-role": "editor" } }));
+    expect(await audit.json()).toMatchObject({ events: [expect.objectContaining({ prior_revision: 1, new_revision: 2, actor_id: "manager_a", scope: "PROJECT_BOUND" }),
+      expect.objectContaining({ prior_revision: 0, new_revision: 1, actor_id: "manager_a", scope: "PROJECT_BOUND" })] });
     expect((await request("GET")).status).toBe(404);
   });
 
@@ -167,7 +194,7 @@ describe("Space-shared extension settings", () => {
     expect(await (await readRuntimeSettings()).json()).toMatchObject({ error_code: "phone_extension_settings_invalid" });
 
     const ownerSettings = (body: unknown) => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
-      method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-role": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
+      method: "PATCH", headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
     }));
     expect((await ownerSettings({ settings: { enabled: true, greeting: "Welcome" }, revision: 0 })).status).toBe(200);
     const runtimeSettings = await readRuntimeSettings();

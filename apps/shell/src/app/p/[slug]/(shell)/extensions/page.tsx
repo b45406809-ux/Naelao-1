@@ -6,7 +6,7 @@ import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
+import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -106,7 +106,8 @@ export default function ExtensionsPage() {
         <Button variant="secondary" onClick={() => setActive(null)}>All extensions</Button><strong>{active.name}</strong>
         <span style={{ color: "var(--text3)", fontSize: 12 }}>{active.extension_id} · Space shared</span>
       </div>
-      {active.settings_schema && active.capabilities.includes("extension.settings.read") && <ExtensionSettingsForm spaceId={activeSpaceId} appId={active.app_id} schema={active.settings_schema} session={credentials} canConfigure={active.capabilities.includes("extension.settings.configure")} />}
+      {active.settings_schema && active.capabilities.includes("extension.settings.read") && <ExtensionSettingsForm spaceId={activeSpaceId} appId={active.app_id} schema={active.settings_schema} session={credentials} canConfigure={active.capabilities.includes("extension.settings.configure")}
+        loadAudit={() => callSpaceExtensionSettingsAudit(activeSpaceId, active.installation_id, credentials)} />}
       <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials} capabilities={active.capabilities} onAction={() => {}} />
     </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
