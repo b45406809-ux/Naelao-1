@@ -34,6 +34,7 @@ type Row = {
   managed_price_version?: string | null;
   managed_reserved_credits?: number | null;
 };
+type PhoneHistoryPage = { data: Row[]; next_cursor: string | null };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 type PhoneHandlerCandidate = { installation_id: string; extension_id: string; name: string; version: string; handler_sha256: string };
 export function AssistantPhonePanel({
@@ -76,6 +77,9 @@ export function AssistantPhonePanel({
     [kind, setKind] = React.useState("sms");
   const [actions, setActions] = React.useState<Row[]>([]),
     [events, setEvents] = React.useState<Row[]>([]),
+    [actionsCursor, setActionsCursor] = React.useState<string | null>(null),
+    [eventsCursor, setEventsCursor] = React.useState<string | null>(null),
+    [historyLoading, setHistoryLoading] = React.useState<"actions" | "events" | null>(null),
     [content, setContent] = React.useState(""),
     [transfer, setTransfer] = React.useState("");
   const [receipt, setReceipt] = React.useState("");
@@ -103,6 +107,7 @@ export function AssistantPhonePanel({
     string | undefined
   >();
   const generation = React.useRef(0);
+  const historyLoadingRef = React.useRef<"actions" | "events" | null>(null);
   const call = React.useCallback(
     <T,>(action: string, args: Record<string, unknown> = {}, write = false) =>
       assistantMailApi<T>(
@@ -115,6 +120,8 @@ export function AssistantPhonePanel({
   );
   const refresh = React.useCallback(async () => {
     const g = ++generation.current;
+    historyLoadingRef.current = null;
+    setHistoryLoading(null);
     try {
       const result = await call<{
         phone: Phone | null;
@@ -146,18 +153,51 @@ export function AssistantPhonePanel({
       setTransfer(result.phone?.policy.transferTo ?? "");
       if (result.phone) {
         const [a, e] = await Promise.all([
-          call<{ data: Row[] }>("phone-actions"),
-          call<{ data: Row[] }>("phone-events"),
+          call<PhoneHistoryPage>("phone-actions"),
+          call<PhoneHistoryPage>("phone-events"),
         ]);
         if (g !== generation.current) return;
         setActions(a.data);
         setEvents(e.data);
+        setActionsCursor(a.next_cursor);
+        setEventsCursor(e.next_cursor);
+      } else {
+        setActions([]);
+        setEvents([]);
+        setActionsCursor(null);
+        setEventsCursor(null);
       }
     } catch (e) {
       if (g === generation.current)
         setError(e instanceof Error ? e.message : "Phone unavailable");
     }
   }, [call]);
+  async function loadOlderHistory(kind: "actions" | "events") {
+    const cursor = kind === "actions" ? actionsCursor : eventsCursor;
+    if (!cursor || historyLoadingRef.current) return;
+    const g = generation.current;
+    historyLoadingRef.current = kind;
+    setHistoryLoading(kind);
+    setError("");
+    try {
+      const page = await call<PhoneHistoryPage>(kind === "actions" ? "phone-actions" : "phone-events", { before: cursor });
+      if (g !== generation.current) return;
+      if (kind === "actions") {
+        setActions(current => [...current, ...page.data]);
+        setActionsCursor(page.next_cursor);
+      } else {
+        setEvents(current => [...current, ...page.data]);
+        setEventsCursor(page.next_cursor);
+      }
+    } catch (e) {
+      if (g === generation.current) setError(e instanceof Error ? e.message : "Could not load older phone activity");
+    } finally {
+      if (g === generation.current) {
+        historyLoadingRef.current = null;
+        setHistoryLoading(null);
+      }
+    }
+  }
   React.useEffect(() => {
     setState(null);
     setQuote(null);
@@ -179,6 +219,10 @@ export function AssistantPhonePanel({
     setContent("");
     setActions([]);
     setEvents([]);
+    setActionsCursor(null);
+    setEventsCursor(null);
+    historyLoadingRef.current = null;
+    setHistoryLoading(null);
     setError("");
     void refresh();
     return () => {
@@ -867,6 +911,9 @@ export function AssistantPhonePanel({
               </li>
             ))}
           </ul>
+          {actionsCursor && <button type="button" disabled={busy || historyLoading !== null} onClick={() => void loadOlderHistory("actions")}>
+            {historyLoading === "actions" ? "Loading older actions…" : "Load older actions"}
+          </button>}
           <h5>Incoming calls, messages and receipts</h5>
           <ul>
             {events.map((e) => (
@@ -881,6 +928,9 @@ export function AssistantPhonePanel({
               </li>
             ))}
           </ul>
+          {eventsCursor && <button type="button" disabled={busy || historyLoading !== null} onClick={() => void loadOlderHistory("events")}>
+            {historyLoading === "events" ? "Loading older events…" : "Load older events"}
+          </button>}
           {content && <pre style={{ whiteSpace: "pre-wrap" }}>{content}</pre>}
         </>
       )}
