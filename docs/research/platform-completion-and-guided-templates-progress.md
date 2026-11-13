@@ -3,6 +3,21 @@
 
 ## Active checkpoint — 2026-11-13
 
+P05/P10/P23 code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0240 adds a durable,
+tenant/Space/project/installation/connection-scoped cleanup ledger. Both provider disconnect and
+channel-package uninstall revoke local bindings first, record bounded outcome codes, retain
+credentials for retry, and return owner-visible pending/manual-cleanup states. SpaceDO removal is
+safe to retry after an ambiguous response. The Shell includes a retry control and the Router admits
+the exact owner/admin receipt path. Agents tests **14/14**, Spaces uninstall **3/3**, Router **53/53**,
+four affected typechecks, release validators, release migration tests **13/13**, and `git diff --check`
+pass. Tests mock provider calls; migration/deployment/live acceptance were not run. Slack
+token revoke is confirmed separately; Telegram webhook deletion and WhatsApp app unsubscription do
+not invalidate provider tokens and require manual token revocation. P05/P10/P23 remain PARTIAL for
+provider setup recovery, wider lifecycle effects, approved retention/replay policy and live
+acceptance. Exact next action: persist and reconcile Telegram/WhatsApp setup operations around their
+external side effects so a success/timeout before connection commit cannot leave an untracked remote
+webhook/subscription. Keep all rollouts disabled.
+
 Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
 events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry
 (`f0d38035`) and owner/admin actor metadata (`e8f77f7f`) remain implemented. Local checks: SDK
@@ -27,10 +42,8 @@ the setting off and rollouts disabled.
 §10 remains PARTIAL for collaboration posture/private-project authority, delegated maintenance
 proposals, singleton reservations/concurrency and broad non-disclosure acceptance. Project
 settings/lifecycle changes are manager-authorized; assistant proposal authority and allowable
-delegated actions need a product contract and remain unchanged. Exact next action: make the existing
-project channel-extension uninstall sequence durable and retryable across pause/drain, Agents state
-cleanup, SpaceDO removal and ambiguous responses; keep provider-resource disconnection and broader
-package deletion outside this implementation slice. Do not enable rollout.
+delegated actions need a product contract and remain unchanged. Continue without inventing those
+policies; keep rollouts disabled.
 
 ## Previous checkpoint details
 
@@ -859,12 +872,12 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed; 158 receipts, actual separation and `naelao-calls` ownership are absent. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin, same-tenant signed dependency import and installation with digest/revocation checks and retry; `edf08814` resumes destination install review after reload. Binary/image/audio reads, broader customer/provider journeys, general update/uninstall effects, verified rates and deployed/live acceptance remain. |
+| P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable, owner-retryable provider cleanup on direct disconnect and channel-package uninstall. Binary/image/audio extension reads, provider setup recovery, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused updates for same-publisher version-only static Canvas/channel-code packages, with signed artifact recheck, active-work drain and durable receipt; `15a04f7e` adds runtime-work admission/drain. Gadget/schema/data migration preview/recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, revocation/uninstall effects, scanning/retention and live acceptance remain. |
+| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, broader rollback/version selection, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated; purchased price snapshots and live provider-to-entitlement acceptance remain. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations and alerts persist; true depth/age/DLQ inspection lacks a supported live source. |

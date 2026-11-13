@@ -3,6 +3,18 @@
 
 ## Current checkpoint — 2026-11-13
 
+P05/P10/P23 code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0240 records direct
+provider disconnect and project channel-extension uninstall outcomes; local routes are revoked
+before external calls, retryable outcomes retain credentials, and the owner panel distinguishes
+Slack token revocation from Telegram webhook deletion and WhatsApp subscription removal. Full
+uninstall is idempotent across pause/drain, Agents cleanup, SpaceDO removal and a lost removal
+response; Router now admits the owner/admin cleanup receipt path. Local evidence: Agents **14/14**,
+Spaces uninstall **3/3**, Router **53/53**, Agents/Spaces/Router/Shell typechecks, release validators,
+release migration tests **13/13**, `git diff --check`. Provider tests are mocked; no deployed schema,
+DO, provider or live acceptance was used. Telegram/Meta token invalidation is unsupported by these
+actions and requires owner cleanup at the provider. Keep rollout disabled and preserve the Python
+cache.
+
 Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
 `origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
 with fixed frame/time limits and shared daily AI-call quota. Verification and live-evidence limits are
@@ -22,10 +34,11 @@ Space-shared page shows runtime and dependency metadata, and the assistant inven
 active project packages after actor/project-grant checks. Local verification is recorded above.
 
 Platform §10 remains PARTIAL. Maintenance proposals/delegation are uncoded because approver authority
-and allowed actions need a product contract. Exact next action: make the existing project
-channel-extension uninstall sequence durable and retryable across pause/drain, Agents state cleanup,
-SpaceDO removal and ambiguous responses; do not disconnect external provider resources or broaden
-deletion. Keep rollouts disabled and preserve the Python cache.
+and allowed actions need a product contract. Exact next action: make Telegram and WhatsApp provider
+setup side effects recoverable when `setWebhook`/`subscribed_apps` succeeds or becomes ambiguous
+before the local active connection is durably committed; preserve credentials until provider cleanup
+or active connection state is confirmed. Then continue the remaining managed-services and platform
+requirements. Keep rollouts disabled and preserve the Python cache.
 
 ## Prior checkpoint details
 

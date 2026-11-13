@@ -14,6 +14,19 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-13
 
+Code `a75c0862` is pushed to `origin/Mcbt5s-Backup-2`. It adds migration 0240 for durable
+project-channel provider-cleanup outcomes and routes both direct connection disconnect and full
+channel-extension uninstall through exact-scope cleanup/retry receipts. Local route deletion is
+authoritative first; the owner UI can retry pending provider work, and SpaceDO removal retries
+reconcile an exact already-removed installation. Slack's token revoke is distinguished from
+Telegram webhook deletion and WhatsApp app unsubscription; those actions do not invalidate Telegram
+or Meta tokens, so manual token revocation remains required. Unsupported provider effects stay
+visible as `not_supported`; vault deletion must be confirmed before an outcome completes. Local
+evidence: Agents **14/14**, Spaces uninstall **3/3**, Router **53/53**, Agents/Spaces/Router/Shell
+typechecks, release manifest/deployment validators, release migration tests **13/13**, and
+`git diff --check`. Provider calls in tests are mocked; no migration was applied, deployment or live
+provider acceptance occurred. Preserve `infra/scripts/__pycache__/` and keep rollouts disabled.
+
 P08's bounded video-frame code is pushed to `origin/Mcbt5s-Backup-2` as
 `87374fc2da4ae44a4c361ea145109308782571e5`. It adds a separate default-off owner setting, task-owned
 video question operation, scoped MediaSandbox extraction at 0/10/20 seconds, 6 MiB input, 1 MiB and
@@ -26,12 +39,14 @@ P08 remains PARTIAL for deployed/provider acceptance. Keep rollouts disabled and
 `infra/scripts/__pycache__/`.
 
 S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 keep their ledgered partial code,
-runtime, policy/feed and acceptance gaps. §10 maintenance proposals/delegation remain uncoded because
-approver authority and allowed actions need a product contract. Exact next action: make the current
-project channel-extension uninstall sequence durable and retryable across pause/drain, Agents state
-cleanup, SpaceDO removal and ambiguous responses; keep external provider-resource disconnect and
-broad package deletion outside this slice. This closes only a local P05/P10/P23 lifecycle gap. Keep
-rollouts disabled and preserve the Python cache.
+runtime, policy/feed and acceptance gaps. P05/P10/P23 remain partial for broader setup/update and
+uninstall effects, provider-specific token revocation, retention/replay policy and deployed/live
+acceptance. §10 maintenance proposals/delegation remain uncoded because approver authority and
+allowed actions need a product contract. Exact next action: make the Telegram and WhatsApp provider
+setup side effects recoverable when `setWebhook`/`subscribed_apps` succeeds or becomes ambiguous
+before the local active connection is durably committed; preserve credentials until a confirmed
+provider cleanup or active connection state exists. Then continue S3–S9/U01–U12 and the platform plan
+without repeating completed audits. Keep rollouts disabled and preserve the Python cache.
 
 ## Recent completed-work record
 
