@@ -988,11 +988,36 @@ describe("assistant telephone safety and lifecycle", () => {
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "Where is order 42?" }))
    .resolves.toEqual({ simulation: true, response: { actions: [{ type: "say", text: "Simulated answer" }] } });
   expect(dispatch).toHaveBeenCalledTimes(1);
-  expect(requests).toMatchObject([{ bindingId: f.binding.id, spaceId: "space", input: "Where is order 42?" }]);
+  expect(requests).toMatchObject([{ bindingId: f.binding.id, spaceId: "space", eventType: "call.speech", input: "Where is order 42?" }]);
   expect(f.provider).not.toHaveBeenCalled();
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "simulate" }, false, false)).rejects.toThrow("human_control_required");
   await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "x".repeat(2_001) })).rejects.toThrow("phone_simulation_input_invalid");
   expect(dispatch).toHaveBeenCalledTimes(1);
+ });
+
+ it("validates owner keypad simulations and forwards only normalized DTMF test events", async () => {
+  const f = await phoneFixture();
+  const dispatch = vi.fn(async (request: Request) => new URL(request.url).pathname === "/internal/phone-extension-test"
+    ? Response.json({ simulation: true, event: await request.json() })
+    : Response.json({ valid: true }));
+  f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
+  await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
+  dispatch.mockClear();
+  f.provider.mockClear();
+
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.received" }))
+    .resolves.toMatchObject({ simulation: true, event: { eventType: "call.received" } });
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.digits", digits: "1" }))
+    .resolves.toMatchObject({ simulation: true, event: { eventType: "call.digits", digits: "1" } });
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  expect(f.provider).not.toHaveBeenCalled();
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.digits", digits: "1#" }))
+    .rejects.toThrow("phone_simulation_input_invalid");
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.received", input: "unexpected" }))
+    .rejects.toThrow("phone_simulation_input_invalid");
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, event_type: "call.speech", input: "hello" }, false, false))
+    .rejects.toThrow("human_control_required");
+  expect(dispatch).toHaveBeenCalledTimes(2);
  });
 
  it("shows owner-scoped Telnyx call-cost summaries without exposing provider call IDs",async()=>{

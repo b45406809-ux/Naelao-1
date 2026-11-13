@@ -3,7 +3,7 @@ import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
 const secret = "phone-extension-secret";
-function setup(project: string | null) {
+function setup(project: string | null, provider = "twilio") {
   const runChannel = vi.fn(async (_input: Record<string, unknown>) => ({
     ok: true,
     channel_replies: [
@@ -25,7 +25,7 @@ function setup(project: string | null) {
               status: "active",
               project_id: project,
               owner_user_id: "owner",
-              provider: "twilio",
+              provider,
               policy_json: JSON.stringify({ allowSpeechInput: true }),
             }),
           }),
@@ -73,7 +73,10 @@ async function invoke(agent: NaelaoAgentDO, valid = true) {
     })
   );
 }
-async function invokeSimulation(agent: NaelaoAgentDO, input = "Can you help with order 42?", valid = true) {
+async function invokeSimulation(agent: NaelaoAgentDO, input = "Can you help with order 42?", valid = true,
+  eventType: "call.received" | "call.digits" | "call.speech" = "call.speech", digits?: string) {
+  const body = { spaceId: "space", bindingId: "binding", simulation: true, eventType,
+    ...(eventType === "call.speech" && input ? { input } : {}), ...(eventType === "call.digits" && digits ? { digits } : {}) };
   return agent.fetch(
     new Request("http://agent/phone-extension", {
       method: "POST",
@@ -82,7 +85,7 @@ async function invokeSimulation(agent: NaelaoAgentDO, input = "Can you help with
         "x-naelao-tenant-id": "tenant",
         "x-naelao-internal-token": valid ? await mintInternalToken(secret, "tenant") : "bad",
       },
-      body: JSON.stringify({ spaceId: "space", bindingId: "binding", simulation: true, input }),
+      body: JSON.stringify(body),
     })
   );
 }
@@ -154,5 +157,27 @@ describe("phone extension scope dispatch", () => {
     }));
     expect((await invokeSimulation(f.agent)).status).toBe(409);
     expect(f.runChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it("simulates call start and validated DTMF events through the same isolated handler", async () => {
+    const start = setup(null);
+    expect((await invokeSimulation(start.agent, "", true, "call.received")).status).toBe(200);
+    const startCall = start.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(startCall).toMatchObject({ channel: { event: { payload: { voice_event: "call.received", caller: "simulation" } } } });
+
+    const digit = setup(null);
+    expect((await invokeSimulation(digit.agent, "", true, "call.digits", "1")).status).toBe(200);
+    const digitCall = digit.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(digitCall).toMatchObject({ channel: { event: { payload: { voice_event: "call.digits", digits: "1", caller: "simulation" } } } });
+    expect(digit.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='phone_extension_events'").toArray()).toEqual([]);
+
+    expect((await invokeSimulation(setup(null).agent, "", true, "call.digits")).status).toBe(400);
+    const telnyx = setup(null, "telnyx");
+    expect((await invokeSimulation(telnyx.agent, "speech", true, "call.speech")).status).toBe(400);
+    telnyx.runChannel.mockImplementationOnce(async () => ({
+      ok: true,
+      channel_replies: [JSON.stringify({ schema_version: 1, actions: [{ type: "gather", input: "speech", text: "Speak now" }] })],
+    }));
+    expect((await invokeSimulation(telnyx.agent, "", true, "call.received")).status).toBe(409);
   });
 });

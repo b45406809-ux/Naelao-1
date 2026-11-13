@@ -678,10 +678,10 @@ export async function handlePhoneAction(
       extension_lines: manager
         ? (
             await env.PLATFORM_DB.prepare(
-              "SELECT b.id,b.phone_number,b.provider_number_sid,b.status,h.installation_id,h.handler_sha256,h.status AS handler_status FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
+              "SELECT b.id,b.provider,b.phone_number,b.provider_number_sid,b.status,h.installation_id,h.handler_sha256,h.status AS handler_status FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
             )
               .bind(identity.id)
-              .all()
+              .all<{ id: string; provider: "twilio" | "telnyx"; phone_number: string | null; provider_number_sid: string | null; status: string; installation_id: string | null; handler_sha256: string | null; handler_status: string | null }>()
           ).results
         : [],
       phone_handler_candidates: phoneHandlerCandidates,
@@ -1663,8 +1663,16 @@ export async function handlePhoneAction(
   if (action === "phone-handler-test") {
     if (!manager || agent || !binding || binding.status !== "active")
       throw new Error("phone_handler_owner_confirmation_required");
+    const eventType = body.event_type === undefined ? "call.speech" : body.event_type;
+    if (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech")
+      throw new Error("phone_simulation_event_invalid");
     const input = typeof body.input === "string" ? body.input.trim() : "";
-    if (!input || new TextEncoder().encode(input).byteLength > 2_000)
+    const digits = typeof body.digits === "string" ? body.digits : "";
+    if (eventType === "call.speech" && (!input || new TextEncoder().encode(input).byteLength > 2_000)
+      || eventType === "call.digits" && !/^[0-9]{1,8}$/.test(digits)
+      || eventType === "call.received" && (body.input !== undefined || body.digits !== undefined)
+      || eventType === "call.digits" && body.input !== undefined
+      || eventType === "call.speech" && body.digits !== undefined)
       throw new Error("phone_simulation_input_invalid");
     const r = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-test", {
       method: "POST",
@@ -1673,7 +1681,8 @@ export async function handlePhoneAction(
         "x-naelao-tenant-id": scope.tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId),
       },
-      body: JSON.stringify({ bindingId: binding.id, spaceId: scope.spaceId, input }),
+      body: JSON.stringify({ bindingId: binding.id, spaceId: scope.spaceId, eventType,
+        ...(eventType === "call.speech" ? { input } : {}), ...(eventType === "call.digits" ? { digits } : {}) }),
     }));
     if (!r.ok) {
       const result = await r.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));

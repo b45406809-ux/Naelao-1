@@ -1126,11 +1126,19 @@ app.post('/internal/phone-extension-dispatch',async c=>{
 app.post('/internal/phone-extension-test',async c=>{
  const tenant=c.req.header('x-naelao-tenant-id')??'';
  if(!tenant||!await verifyInternalToken(c.req.header('x-naelao-internal-token'),tenant,c.env.PLATFORM_SECRET))return c.json({error_code:'forbidden'},403);
- const body=JSON.parse(await readBoundedRequestText(c.req.raw,8192)) as {spaceId?:unknown;bindingId?:unknown;input?:unknown};
- if(typeof body.spaceId!=='string'||typeof body.bindingId!=='string'||typeof body.input!=='string'
-   ||!body.input.trim()||new TextEncoder().encode(body.input).byteLength>2_000)return c.json({error_code:'phone_simulation_input_invalid'},400);
+ const body=JSON.parse(await readBoundedRequestText(c.req.raw,8192)) as Record<string,unknown>;
+ const eventType=body.eventType===undefined?'call.speech':body.eventType;
+ const input=typeof body.input==='string'?body.input.trim():'';
+ const digits=typeof body.digits==='string'?body.digits:'';
+ if(typeof body.spaceId!=='string'||typeof body.bindingId!=='string'
+   ||Object.keys(body).some(key=>!['spaceId','bindingId','eventType','input','digits'].includes(key))
+   ||eventType!=='call.received'&&eventType!=='call.digits'&&eventType!=='call.speech'
+   ||eventType==='call.speech'&&(!input||new TextEncoder().encode(input).byteLength>2_000||body.digits!==undefined)
+   ||eventType==='call.digits'&&(!/^[0-9]{1,8}$/.test(digits)||body.input!==undefined)
+   ||eventType==='call.received'&&(body.input!==undefined||body.digits!==undefined))return c.json({error_code:'phone_simulation_input_invalid'},400);
  const stub=await getAgentDOForSpace(c.env,tenant,body.spaceId,'naelao-agent');
- return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify({...body,simulation:true})}));
+ const testBody={spaceId:body.spaceId,bindingId:body.bindingId,eventType,...(eventType==='call.speech'?{input}:{}),...(eventType==='call.digits'?{digits}:{})};
+ return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify({...testBody,simulation:true})}));
 });
 
 registerPhoneWebhooks(app);

@@ -68,7 +68,7 @@ export function AssistantPhonePanel({
       telnyx_webhook_url?: string | null;
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
-      extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
+      extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
       recent_telnyx_extension_calls?: RecentExtensionCall[];
       phone_handler_candidates?: PhoneHandlerCandidate[];
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
@@ -109,6 +109,7 @@ export function AssistantPhonePanel({
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
   const [simulationInputs, setSimulationInputs] = React.useState<Record<string, string>>({});
+  const [simulationTypes, setSimulationTypes] = React.useState<Record<string, "call.received" | "call.digits" | "call.speech">>({});
   const [simulationResults, setSimulationResults] = React.useState<Record<string, string>>({});
   const [liveCall, setLiveCall] = React.useState<{
     code: string;
@@ -151,6 +152,7 @@ export function AssistantPhonePanel({
         telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
         extension_lines?: Array<{
           id: string;
+          provider: "twilio" | "telnyx";
           phone_number: string | null;
           provider_number_sid: string | null;
           installation_id: string | null;
@@ -271,7 +273,8 @@ export function AssistantPhonePanel({
         const spoken = response?.actions?.map(item => item.type === "hangup" ? "Call would end." : item.text)
           .filter((item): item is string => typeof item === "string" && item.length > 0) ?? [];
         const bindingId = String(args.binding_id ?? "");
-        setSimulationResults(current => ({ ...current, [bindingId]: spoken.join("\n") || "The handler returned no spoken text." }));
+        const eventType = String(args.event_type ?? "call.speech");
+        setSimulationResults(current => ({ ...current, [bindingId]: `${eventType}: ${spoken.join("\n") || "The handler returned no spoken text."}` }));
       }
       if (action === "phone-live") {
         setLiveCall(
@@ -328,6 +331,8 @@ export function AssistantPhonePanel({
       ))}
       {state?.extension_lines?.map((line) => {
         const assignment = extensionAssignments[line.id] ?? { installation: "", digest: "" };
+        const simulationType = simulationTypes[line.id] ?? (line.provider === "telnyx" ? "call.received" : "call.speech");
+        const simulationInput = simulationInputs[line.id] ?? "";
         return <fieldset key={line.id} disabled={busy}>
           <legend>Extension phone handler</legend>
           <p>{line.phone_number ?? "Phone number"} · {line.status} · {line.handler_status ?? "No handler assigned"}</p>
@@ -353,14 +358,23 @@ export function AssistantPhonePanel({
           }}>Assign or update extension</button>{" "}
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
           {line.status === "active" && line.handler_status === "active" && <div>
-            <label>Try caller speech <textarea value={simulationInputs[line.id] ?? ""} maxLength={2_000}
+            <label>Test event <select value={simulationType} onChange={event => setSimulationTypes(current => ({ ...current, [line.id]: event.target.value as "call.received" | "call.digits" | "call.speech" }))}>
+              <option value="call.received">Start call greeting</option>
+              <option value="call.digits">Keypad digits</option>
+              {line.provider === "twilio" && <option value="call.speech">Synthetic caller speech</option>}
+            </select></label>
+            {simulationType === "call.digits" && <label>Keypad digits <input inputMode="numeric" pattern="[0-9]{1,8}" maxLength={8} value={simulationInput}
               onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
-              placeholder="Enter a synthetic caller message" /></label>
-            <button type="button" disabled={!(simulationInputs[line.id] ?? "").trim()}
-              onClick={() => void act("phone-handler-test", { binding_id: line.id, input: simulationInputs[line.id] ?? "" })}>
-              Run text simulation
+              placeholder="For example, 1" /></label>}
+            {simulationType === "call.speech" && <label>Try caller speech <textarea value={simulationInput} maxLength={2_000}
+              onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
+              placeholder="Enter a synthetic caller message" /></label>}
+            <button type="button" disabled={simulationType === "call.digits" ? !/^[0-9]{1,8}$/.test(simulationInput) : simulationType === "call.speech" && !simulationInput.trim()}
+              onClick={() => void act("phone-handler-test", { binding_id: line.id, event_type: simulationType,
+                ...(simulationType === "call.digits" ? { digits: simulationInput } : simulationType === "call.speech" ? { input: simulationInput } : {}) })}>
+              Run local simulation
             </button>
-            <p>This runs the active signed handler with synthetic speech. It does not call the carrier or save a call or conversation session.</p>
+            <p>This runs the active signed handler with a synthetic {line.provider === "telnyx" ? "call or DTMF" : "call, DTMF, or speech"} event. It does not contact the carrier or save a call or conversation session.</p>
             {simulationResults[line.id] && <pre aria-label="Simulated phone response" role="status" style={{ whiteSpace: "pre-wrap" }}>{simulationResults[line.id]}</pre>}
           </div>}
         </fieldset>;

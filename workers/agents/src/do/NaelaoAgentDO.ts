@@ -18,7 +18,7 @@ import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
-import { DOCUMENT_MODELS, summarizeDocumentInChunks, type DocumentProcessingGateway } from "@naelao/agent-sdk";
+import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 
 type AssistantApprovalPolicySnapshot = {
@@ -9817,7 +9817,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!tenant || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenant, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await readBoundedResponseJson<{
-      bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string;
+      bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string; digits?: string;
+      eventType?: "call.received" | "call.digits" | "call.speech";
       event?: { id: string; type: string; payload: Record<string, unknown> };
     }>(new Response(request.body), 16_384);
     if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
@@ -9830,10 +9831,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
     const simulation = body.simulation === true;
     const input = typeof body.input === "string" ? body.input.trim() : "";
-    if (simulation && (!input || new TextEncoder().encode(input).byteLength > 2_000))
+    const eventType = body.eventType ?? "call.speech";
+    const digits = typeof body.digits === "string" ? body.digits : "";
+    if (simulation && (eventType !== "call.received" && eventType !== "call.digits" && eventType !== "call.speech"
+      || eventType === "call.speech" && (!input || new TextEncoder().encode(input).byteLength > 2_000 || body.digits !== undefined)
+      || eventType === "call.digits" && (!/^[0-9]{1,8}$/.test(digits) || body.input !== undefined)
+      || eventType === "call.received" && (body.input !== undefined || body.digits !== undefined)
+      || row.provider === "telnyx" && eventType === "call.speech"))
       return Response.json({ error_code: "phone_simulation_input_invalid" }, { status: 400 });
     const event = simulation
-      ? { id: `simulation-${crypto.randomUUID()}`, type: "call.speech", payload: { caller: "simulation", speech: input } }
+      ? { id: `simulation-${crypto.randomUUID()}`, type: eventType, payload: {
+        caller: "simulation", ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
+      } }
       : body.event;
     if (!body.validateOnly && (row.status !== "active" || !event ||
       (!simulation && !validPhoneExtensionEvent(row.provider, event.type, event.id))))
@@ -9869,9 +9878,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
       let response: unknown;
       try {
-        response = JSON.parse(raw);
+        const validatedResponse = validateVoiceChannelResponse(JSON.parse(raw));
+        if (!validatedResponse) throw new Error("invalid_phone_simulation_response");
+        response = validatedResponse;
         const policy = JSON.parse(row.policy_json) as { allowSpeechInput?: boolean };
-        renderExtensionVoiceResponse(response, "/simulation", policy.allowSpeechInput === true);
+        const allowSpeechInput = row.provider === "twilio" && policy.allowSpeechInput === true;
+        if (row.provider === "telnyx" && validatedResponse.actions.some(action => action.type === "gather" && action.input !== undefined && action.input !== "dtmf"))
+          throw new Error("unsupported_phone_simulation_response");
+        renderExtensionVoiceResponse(validatedResponse, "/simulation", allowSpeechInput);
       } catch {
         return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
       }
