@@ -2353,7 +2353,7 @@ app.post(sharedExtensionImportReviewPath, async c => {
     return c.json({ error_code: "extension_package_import_pin_mismatch", extension_id: extensionId, version,
       expected_manifest_sha256: body.expected_manifest_sha256, observed_manifest_sha256: root.package.manifestSha256 }, 409);
   const closure = await inspectSpacePackageDependencyClosure(c.env, destination.tenantId, sourceSpaceId, root.package, trustedSpaces);
-  if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, 409);
+  if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, closure.error.includes("publisher_key_untrusted") ? 403 : 409);
   const packages = [...closure.packages, root.package];
   if (packages.some(pkg => !pkg.installable)) return c.json({ error_code: "extension_space_shared_package_contract_unsupported" }, 422);
   const expiresAt = Date.now() + 5 * 60_000;
@@ -2390,13 +2390,14 @@ app.post(sharedExtensionImportPath, async c => {
     return c.json({ error_code: "source_and_destination_space_admin_required" }, 403);
   const root = await inspectSignedSpacePackageRelease(c.env, destination.tenantId, sourceSpaceId, extensionId, version,
     [sourceSpaceId, destinationSpaceId]);
-  if (!root.ok) return c.json({ error_code: `extension_package_${root.error}` }, root.error === "release_not_found" ? 404 : 409);
+  if (!root.ok) return c.json({ error_code: `extension_package_${root.error}` }, root.error === "release_not_found" ? 404
+    : root.error.includes("publisher_key_untrusted") ? 403 : 409);
   if (typeof body.expected_manifest_sha256 === "string" && root.package.manifestSha256 !== body.expected_manifest_sha256)
     return c.json({ error_code: "extension_package_import_pin_mismatch", extension_id: extensionId, version,
       expected_manifest_sha256: body.expected_manifest_sha256, observed_manifest_sha256: root.package.manifestSha256 }, 409);
   const closure = await inspectSpacePackageDependencyClosure(c.env, destination.tenantId, sourceSpaceId, root.package,
     [sourceSpaceId, destinationSpaceId]);
-  if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, 409);
+  if (!closure.ok) return c.json({ error_code: `extension_package_${closure.error}` }, closure.error.includes("publisher_key_untrusted") ? 403 : 409);
   const packages = [...closure.packages, root.package];
   const decoded = decodeSpacePackageReviewToken(body.review_token);
   if (!decoded || !await verifyHmac(decoded.payload, decoded.signature, c.env.PLATFORM_SECRET))

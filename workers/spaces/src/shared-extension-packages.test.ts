@@ -328,7 +328,8 @@ async function crossSpaceImportHarness(options: { destinationTrust?: boolean; so
   const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
     SPACE_DO: { idFromName: (name: string) => name, get: (id: string) => id.endsWith(":space:source") ? sourceStub : destinationStub },
     SCRIPTS_R2: bucket } as never;
-  return { env, objects, destinationReleases, spaceRequests, rootManifest, dependencyManifest, rootRelease, dependencyRelease };
+  return { env, objects, destinationReleases, spaceRequests, rootManifest, dependencyManifest, rootRelease, dependencyRelease,
+    revokeDestinationPublisher: () => trusted.delete("destination") };
 }
 
 describe("signed Space-shared extension packages", () => {
@@ -678,6 +679,24 @@ describe("owner-authorized cross-Space package import", () => {
     expect(keyResponse.status).toBe(403);
     expect(await keyResponse.json()).toMatchObject({ error_code: "extension_package_publisher_key_untrusted_or_revoked" });
     expect(untrusted.destinationReleases.size).toBe(0);
+  });
+
+  it("rechecks destination publisher revocation after review and before copying artifacts", async () => {
+    const h = await crossSpaceImportHarness();
+    const expectedManifestSha256 = await digestExtensionManifest(h.rootRelease.manifest);
+    const reviewed = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", {
+      ...body, expected_manifest_sha256: expectedManifestSha256,
+    }), h.env);
+    expect(reviewed.status).toBe(200);
+    const review = await reviewed.json() as { review_token: string };
+    h.revokeDestinationPublisher();
+    const revoked = await spacesWorker.fetch(await signedRequest(importPath, "POST", {
+      ...body, review_token: review.review_token, expected_manifest_sha256: expectedManifestSha256,
+    }), h.env);
+    expect(revoked.status).toBe(403);
+    expect(await revoked.json()).toMatchObject({ error_code: "extension_package_publisher_key_untrusted_or_revoked" });
+    expect(h.destinationReleases.size).toBe(0);
+    expect([...h.objects.keys()].every(key => key.startsWith("spaces/source/"))).toBe(true);
   });
 
   it("does not expose another tenant's source Space", async () => {
