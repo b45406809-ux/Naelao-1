@@ -219,6 +219,8 @@ export interface BlueprintStarterFile {
 
 export interface BlueprintProject {
   runtimeRequirements?: readonly import("./execution-environments.js").TemplateRuntimeRequirement[];
+  /** Stable, data-only installer fields. Provider credentials are not accepted here. */
+  setupFields?: BlueprintSetupField[];
   id?: string;
   name: string;
   kind: ProjectKind;
@@ -234,7 +236,16 @@ export interface BlueprintProject {
   executionTier?: number;
 }
 
+/** Version 1 supports only bounded primitive values; it has no executable visibility logic. */
+export type BlueprintSetupField =
+  | { id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number }
+  | { id: string; type: "number"; label: string; helpText?: string; required?: boolean; defaultValue?: number; minimum?: number; maximum?: number; integer?: boolean }
+  | { id: string; type: "boolean"; label: string; helpText?: string; required?: boolean; defaultValue?: boolean }
+  | { id: string; type: "select"; label: string; helpText?: string; required?: boolean; defaultValue?: string; options: Array<{ value: string; label: string }> };
+
 export interface SpaceBlueprint {
+  /** Required when any project declares setupFields. */
+  setupSchemaVersion?: 1;
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
   id: string;
   schemaVersion: "2.0";

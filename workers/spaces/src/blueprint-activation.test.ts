@@ -206,20 +206,24 @@ describe("Space Template activation preview", () => {
         permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }], capabilityRequirements: ["native-execution"], lifecycle: {},
         image, resources: { memoryMb: 4096, cpuCores: 0.5, timeoutSeconds: 60 }, exportedBinaries: ["ffmpeg"], networkPolicy: "none" }] };
     const project = { id: "media-project", name: "Media Project", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
-      configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [
+      configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [],
+      setupFields: [{ id: "locale", type: "select", label: "Language", options: [{ value: "en", label: "English" }, { value: "es", label: "Spanish" }], defaultValue: "en" }],
+      runtimeRequirements: [
         { id: "ffmpeg", capabilities: ["ffmpeg"], required: true, priority: 0, dependencies: [] },
       ] };
-    const artifact = blueprint({ id: "tpl_runtime_project", projects: [project], requiredExtensions: [], requiredCredentials: [] });
+    const artifact = blueprint({ id: "tpl_runtime_project", setupSchemaVersion: 1, projects: [project], requiredExtensions: [], requiredCredentials: [] });
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `runtime-install-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-runtime-install");
     if (!certificate) throw new Error("test_certificate_not_issued");
     const stored = new Map([[`blueprints/tenant-runtime-install/${artifact.id}.json`, { blueprint: artifact, conformanceCertificate: certificate }]]);
     const installs: Array<Record<string, unknown>> = [];
     let activationRequests = 0, createdProjects = 0;
+    const setupValuesSeen: unknown[] = [];
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/extension-installations") return Response.json({ installations: [] });
       if (url.pathname === "/blueprints/instantiate") {
+        setupValuesSeen.push((await request.clone().json() as { setup_values?: unknown }).setup_values);
         activationRequests++; if (activationRequests === 1) createdProjects++;
         return Response.json({ projectIds: ["created-project"], taskCount: 0, fileCount: 0 }, { status: activationRequests === 1 ? 201 : 200 });
       }
@@ -237,15 +241,21 @@ describe("Space Template activation preview", () => {
       SPACE_DO: { idFromName: () => "runtime-install-do", get: () => stub } } as never;
     const headers = { "x-naelao-tenant-id": "tenant-runtime-install", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-runtime-install") };
     const preview = await worker.fetch(new Request(`https://spaces/spaces/space-runtime-install/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
-    expect(await preview.json()).toMatchObject({ ready: true, runtime_requirements: [{ status: "installable", reason: "owner_approval_required" }], installs_or_grants_applied: false });
+    expect(await preview.json()).toMatchObject({ ready: true, setup_schema_version: 1, setup_fields: [{ project_id: "media-project", fields: [{ id: "locale", type: "select" }] }], runtime_requirements: [{ status: "installable", reason: "owner_approval_required" }], installs_or_grants_applied: false });
     const activationUrl = `https://spaces/spaces/space-runtime-install/blueprints/${artifact.id}/activate`;
-    const interrupted = await worker.fetch(new Request(activationUrl, { method: "POST", headers }), env, {} as ExecutionContext);
+    const invalid = await worker.fetch(new Request(activationUrl, { method: "POST", headers, body: JSON.stringify({ setup_values: { "media-project": { locale: "de" } } }) }), env, {} as ExecutionContext);
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error_code: "template_setup_values_invalid" });
+    expect(activationRequests).toBe(0);
+    const activationBody = JSON.stringify({ setup_values: { "media-project": { locale: "es" } } });
+    const interrupted = await worker.fetch(new Request(activationUrl, { method: "POST", headers, body: activationBody }), env, {} as ExecutionContext);
     expect(interrupted.status).toBe(503);
-    const response = await worker.fetch(new Request(activationUrl, { method: "POST", headers }), env, {} as ExecutionContext);
+    const response = await worker.fetch(new Request(activationUrl, { method: "POST", headers, body: activationBody }), env, {} as ExecutionContext);
     expect(response.status).toBe(200);
     expect(createdProjects).toBe(1);
     expect(installs).toHaveLength(2);
     expect(installs[0]).toMatchObject({ installedBy: "owner", scope: "PROJECT_SHARED", projectId: "created-project", manifest: { id: "ext_runtime_ffmpeg" } });
+    expect(setupValuesSeen).toEqual([{ "media-project": { locale: "es" } }, { "media-project": { locale: "es" } }]);
   });
 
   it("rejects a fork whose tenant license points at different certified bytes", async () => {

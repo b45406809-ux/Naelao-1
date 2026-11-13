@@ -5,8 +5,9 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, type SpaceTemplateActivationPreview, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, type SpaceTemplateActivationPreview, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
+import type { BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
@@ -22,6 +23,46 @@ interface SpaceActivity {
   credits: number;
   successRate: number | null;
   failed: boolean;
+}
+
+function defaultSetupValues(preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
+  const values: SpaceTemplateSetupValues = {};
+  for (const group of preview.setup_fields) {
+    const fields = Object.fromEntries(group.fields.flatMap(field => field.defaultValue === undefined ? [] : [[field.id, field.defaultValue]]));
+    if (Object.keys(fields).length) values[group.project_id] = fields;
+  }
+  return values;
+}
+
+function rebaseSetupValues(current: SpaceTemplateSetupValues, preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
+  const values = defaultSetupValues(preview);
+  for (const group of preview.setup_fields) for (const field of group.fields) {
+    const existing = current[group.project_id]?.[field.id];
+    if (existing === undefined) continue;
+    if ((field.type === "text" && typeof existing === "string") || (field.type === "number" && typeof existing === "number")
+      || (field.type === "boolean" && typeof existing === "boolean") || (field.type === "select" && typeof existing === "string")) {
+      values[group.project_id] = { ...values[group.project_id], [field.id]: existing };
+    }
+  }
+  return values;
+}
+
+function TemplateSetupInput({ projectId, field, value, onChange }: {
+  projectId: string; field: BlueprintSetupField; value: SpaceTemplateSetupValue | undefined;
+  onChange: (value: SpaceTemplateSetupValue | undefined) => void;
+}) {
+  const inputId = `template-${projectId}-${field.id}`;
+  return <label htmlFor={inputId} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(180px,1fr)", alignItems: "center", gap: 8, marginTop: 8 }}>
+    <span>{field.label}{field.required ? " *" : ""}{field.helpText && <small style={{ display: "block", color: "var(--text3)" }}>{field.helpText}</small>}</span>
+    {field.type === "boolean" ? <select id={inputId} required={field.required} value={typeof value === "boolean" ? String(value) : ""} onChange={event => onChange(event.target.value === "" ? undefined : event.target.value === "true")}>
+        <option value="">Choose…</option><option value="true">Yes</option><option value="false">No</option>
+      </select>
+      : field.type === "select" ? <select id={inputId} required={field.required} value={typeof value === "string" ? value : ""} onChange={event => onChange(event.target.value || undefined)}>
+        <option value="">Choose…</option>{field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      : field.type === "number" ? <input id={inputId} type="number" required={field.required} min={field.minimum} max={field.maximum} step={field.integer ? 1 : "any"} value={typeof value === "number" ? value : ""} onChange={event => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
+      : <input id={inputId} type="text" required={field.required} minLength={field.minLength} maxLength={field.maxLength} value={typeof value === "string" ? value : ""} onChange={event => onChange(event.target.value)} />}
+  </label>;
 }
 
 export default function SpacesPage() {
@@ -44,6 +85,7 @@ export default function SpacesPage() {
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const [openingPendingTemplate, setOpeningPendingTemplate] = React.useState<string | null>(null);
@@ -94,6 +136,7 @@ export default function SpacesPage() {
       if (fork && created.status === "active") {
         try {
           const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
+          setSetupValues(defaultSetupValues(preview));
           setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview });
           setCreatedSpaceId(created.id);
           setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -141,7 +184,7 @@ export default function SpacesPage() {
         });
         return [[extensionId, grants]];
       }));
-      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem);
+      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues);
       setCreateOpen(false);
       window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
@@ -153,6 +196,7 @@ export default function SpacesPage() {
     setRefreshingPreview(true); setCreateError(null);
     try {
       const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
+      setSetupValues(current => rebaseSetupValues(current, preview));
       setActivationReview({ ...activationReview, preview });
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
     } catch (error) { setCreateError(`Could not refresh dependency status: ${error instanceof Error ? error.message : "preview failed"}`); }
@@ -164,6 +208,7 @@ export default function SpacesPage() {
     setOpeningPendingTemplate(space.id);
     try {
       const preview = await previewSpaceTemplateActivation(space.id, space.pending_blueprint_id, creds);
+      setSetupValues(defaultSetupValues(preview));
       setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview });
       setCreatedSpaceId(space.id);
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -186,6 +231,7 @@ export default function SpacesPage() {
     if (pendingPreviewed.current.has(key)) return;
     pendingPreviewed.current.add(key);
     void previewSpaceTemplateActivation(pending.id, pending.pending_blueprint_id, creds).then(preview => {
+      setSetupValues(defaultSetupValues(preview));
       setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
       setCreatedSpaceId(pending.id);
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -410,6 +456,21 @@ export default function SpacesPage() {
             {activationReview.preview.runtime_requirements.length ? <ul>{activationReview.preview.runtime_requirements.map(item => <li key={`${item.project_id}:${item.runtime_id}`}>{item.project_id} · {item.runtime_id}: {item.status === "installable" ? "will install after approval" : item.status} ({item.reason}){item.required ? item.status === "installable" ? " · required" : " · required; install is blocked" : " · optional; omitted from this install"}{item.project_slots_required !== undefined && item.project_slots_limit !== undefined ? ` · ${item.project_slots_required} of ${item.project_slots_limit} project container slots planned` : ""}{item.resources ? ` · ${item.resources.cpu_cores} CPU cores / ${item.resources.memory_mb} MiB combined declared resources` : ""}</li>)}</ul> : <p>None declared</p>}
             <strong>Connections to set up</strong>
             {activationReview.preview.setup_credentials.length ? <ul>{activationReview.preview.setup_credentials.map(item => <li key={item.name}>{item.name}{item.required ? " (required)" : " (optional)"}: {item.description}</li>)}</ul> : <p>None required</p>}
+            {activationReview.preview.setup_fields.length > 0 && <section style={{ borderTop: "1px solid var(--border)", marginTop: 10, paddingTop: 10 }}>
+              <strong>Template setup · schema v{activationReview.preview.setup_schema_version}</strong>
+              <p style={{ color: "var(--text3)" }}>These values are saved with this Space Template installation. Do not enter passwords, API keys, tokens, or provider credentials here; use the host connection setup instead.</p>
+              {activationReview.preview.setup_fields.map(group => <fieldset key={group.project_id} style={{ border: 0, padding: 0, margin: "10px 0" }}>
+                <legend style={{ fontWeight: 600 }}>{group.project_name}</legend>
+                {group.fields.map(field => <TemplateSetupInput key={`${group.project_id}:${field.id}`} projectId={group.project_id} field={field}
+                  value={setupValues[group.project_id]?.[field.id]} onChange={value => setSetupValues(current => {
+                    const projectValues = { ...current[group.project_id] };
+                    if (value === undefined) delete projectValues[field.id]; else projectValues[field.id] = value;
+                    const next = { ...current };
+                    if (Object.keys(projectValues).length) next[group.project_id] = projectValues; else delete next[group.project_id];
+                    return next;
+                  })} />)}
+              </fieldset>)}
+            </section>}
             <strong>Extension provider connections</strong>
             {activationReview.preview.extension_connections.length ? <ul>{activationReview.preview.extension_connections.map(connection => <li key={`${connection.extension_id}:${connection.connection_id}`}>
               {connection.extension_id} · {connection.provider}/{connection.connection_id}: {connection.required ? "required" : "optional"} · {connection.required ? "Space-wide provider connection is not supported yet" : "optional provider connection is also unsupported for Space-wide extensions"} — {connection.purpose}

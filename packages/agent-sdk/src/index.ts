@@ -185,6 +185,7 @@ export * from "./subagent-context.js";
 export * from "./receipt-card.js";
 export * from "./customer-bot-context.js";
 export * from "./blueprint.js";
+export * from "./blueprint-setup-fields.js";
 export * from "./recipes.js";
 export * from "./no-code-subagent.js";
 export * from "./project-kinds.js";

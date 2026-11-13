@@ -1,4 +1,4 @@
-import type { SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateBlueprintSetupSchema, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export interface BlueprintActivationDependency {
   extension_id: string;
@@ -28,6 +28,8 @@ export interface BlueprintActivationPreview {
     description: string;
     required: boolean;
   }>;
+  setup_schema_version: 1 | null;
+  setup_fields: ReturnType<typeof validateBlueprintSetupSchema>;
   blockers: string[];
   requires_human_activation: true;
   installs_or_grants_applied: false;
@@ -149,6 +151,8 @@ export function previewBlueprintActivation(
     setup_credentials: (blueprint.requiredCredentials ?? []).map(
       ({ name, description, required }) => ({ name, description, required })
     ),
+    setup_schema_version: blueprint.setupSchemaVersion ?? null,
+    setup_fields: validateBlueprintSetupSchema(blueprint),
     blockers,
     requires_human_activation: true,
     installs_or_grants_applied: false,

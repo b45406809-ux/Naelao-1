@@ -122,4 +122,29 @@ describe("reference Space Templates on fresh Space scopes", () => {
     const installed = await firstResult.json();
     expect(await retry.json()).toMatchObject({ ...installed, alreadyInstalled: true });
   });
+
+  it("validates and persists approved setup values with the idempotent installation claim", async () => {
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=template-test&user_id=owner&project_id="));
+    const blueprint = structuredClone(PERSONAL_ASSISTANT_SPACE_TEMPLATE);
+    blueprint.setupSchemaVersion = 1;
+    blueprint.projects[0]!.id = "assistant";
+    blueprint.projects[0]!.setupFields = [
+      { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+      { id: "language", type: "select", label: "Language", options: [{ value: "en", label: "English" }, { value: "es", label: "Spanish" }], defaultValue: "en" },
+    ];
+    const install = (setup_values: unknown) => space.fetch(new Request("http://space/blueprints/instantiate", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ blueprint, target_space_id: "setup-space", activation_key: blueprint.id, setup_values }),
+    }));
+
+    expect((await install({ assistant: {} })).status).toBe(400);
+    expect(storage.sql.exec("SELECT COUNT(*) AS total FROM space_blueprint_installations WHERE space_id='setup-space'").toArray()[0]?.total).toBe(0);
+    const first = await install({ assistant: { greeting: "Welcome" } });
+    expect(first.status).toBe(201);
+    expect(storage.sql.exec("SELECT setup_values_json FROM space_blueprint_installations WHERE space_id='setup-space'").toArray()[0]?.setup_values_json)
+      .toBe(JSON.stringify({ assistant: { greeting: "Welcome", language: "en" } }));
+    expect((await install({ assistant: { greeting: "Changed" } })).status).toBe(409);
+    expect((await install({ assistant: { greeting: "Welcome" } })).status).toBe(200);
+  });
 });

@@ -42,7 +42,7 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
-  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
+  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupValues, validateExtensionManifest, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
@@ -797,7 +797,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown }));
   const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
   if (!storedValue) throw notFound("Blueprint");
   const certifiedBlueprint = storedValue.blueprint;
@@ -810,6 +810,9 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     "state-delta",
   )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const blueprint = certifiedBlueprint!;
+  let setupValues: BlueprintSetupValues;
+  try { setupValues = validateBlueprintSetupValues(blueprint, requestBody.setup_values ?? {}); }
+  catch (error) { return c.json({ error_code: "template_setup_values_invalid", message: (error as Error).message.slice(0, 240) }, 400); }
   const approvedFilesystem = new Map<string, Array<{ path: string; access: "READ" | "READ_WRITE" }>>();
   if (requestBody.approved_shared_filesystem !== undefined) {
     const raw = requestBody.approved_shared_filesystem;
@@ -895,7 +898,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, setup_values: setupValues }),
   }));
   if (!response.ok) {
     const rollbackFailures = await rollbackNewDependencies();

@@ -2441,15 +2441,19 @@ export async function forkSpaceTemplate(rootSpaceId: string, listingId: string, 
 }
 
 export type SpaceTemplateFilesystemGrant = { path: string; access: "READ" | "READ_WRITE" };
+export type SpaceTemplateSetupValue = string | number | boolean;
+export type SpaceTemplateSetupValues = Record<string, Record<string, SpaceTemplateSetupValue>>;
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
-  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}): Promise<unknown> {
+  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}): Promise<unknown> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
-    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem }),
+    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues }),
   });
 }
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
+  setup_schema_version: 1 | null;
+  setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
   dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
     primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
     capabilities: string[]; permissions: string[];

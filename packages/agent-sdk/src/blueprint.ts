@@ -2,6 +2,7 @@ import { validateTemplateRuntimes } from "./execution-environments.js";
 import type { SpaceBlueprint } from "./types.js";
 import { validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning } from "./assistant-channels.js";
 import { PROJECT_KINDS } from "./canvas-runtime.js";
+import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
 
 /** Validate and detach a blueprint before it crosses a trust boundary. */
 export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string): SpaceBlueprint {
@@ -9,6 +10,7 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (blueprint.schemaVersion !== "2.0") throw new Error("Unsupported blueprint schemaVersion");
   if (!blueprint.id || !Array.isArray(blueprint.projects)) throw new Error("Invalid blueprint");
   const copy = structuredClone(blueprint);
+  validateBlueprintSetupSchema(copy);
   if (copy.requiredExtensionVersions !== undefined) {
     if (!copy.requiredExtensionVersions || typeof copy.requiredExtensionVersions !== "object" || Array.isArray(copy.requiredExtensionVersions)) throw new Error("Invalid required extension versions");
     const dependencies = new Set(copy.requiredExtensions ?? []);
