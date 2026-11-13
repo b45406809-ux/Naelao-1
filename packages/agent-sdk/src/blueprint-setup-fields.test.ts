@@ -43,6 +43,14 @@ describe("versioned Space Template setup fields", () => {
     expect(() => validateBlueprintSetupValues(blueprint, { support: { greeting: "OK" }, other: { field: true } })).toThrow("Unknown setup project");
   });
 
+  it("validates incomplete setup drafts without requiring fields the owner has not filled yet", () => {
+    const groups = validateBlueprintSetupGroups(validateBlueprintSetupSchema(blueprint));
+    expect(validateBlueprintSetupValuesForSchema(groups, { support: {} }, { allowIncomplete: true })).toEqual({
+      support: { hours: 8, enabled: false },
+    });
+    expect(() => validateBlueprintSetupValuesForSchema(groups, { support: { greeting: "x" } }, { allowIncomplete: true })).toThrow("Invalid setup value");
+  });
+
   it("revalidates persisted schema groups and updates one project without dropping others", () => {
     const groups = validateBlueprintSetupGroups(validateBlueprintSetupSchema(blueprint));
     expect(validateBlueprintSetupValuesForSchema(groups, { support: { greeting: "Hello", language: "fr" } })).toMatchObject({

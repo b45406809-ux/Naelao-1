@@ -77,6 +77,7 @@ describe("Space coordination registry routing", () => {
 describe("Space Template activation and shared-extension lifecycle routing", () => {
   it.each([
     "/spaces/s/blueprints/tpl_demo/activation-preview",
+    "/spaces/s/blueprints/tpl_demo/setup-draft",
     "/spaces/s/shared-extension-installations/instance-a",
     "/spaces/s/shared-extension-installations/instance-a/filesystem-grants",
     "/spaces/s/shared-extension-installations/instance-a/lifecycle",

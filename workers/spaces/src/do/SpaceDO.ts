@@ -61,6 +61,38 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
+function draftBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  return btoa(binary);
+}
+function draftBytes(value: string): Uint8Array { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
+async function templateDraftKey(secret: string, tenantId: string, spaceId: string): Promise<CryptoKey> {
+  if (secret.length < 32) throw new Error("template_setup_draft_encryption_unavailable");
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256",
+    salt: new TextEncoder().encode(`naelao-template-setup-draft-v1:${tenantId}:${spaceId}`),
+    info: new TextEncoder().encode("space-template-setup-draft/aes-gcm/v1") }, material,
+  { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function encryptTemplateDraft(secret: string, scope: { tenantId: string; spaceId: string; blueprintId: string; listingId: string; artifactSha256: string; schemaSha256: string }, plaintext: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const additionalData = new TextEncoder().encode(JSON.stringify([scope.tenantId, scope.spaceId, scope.blueprintId, scope.listingId, scope.artifactSha256, scope.schemaSha256]));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData, tagLength: 128 },
+    await templateDraftKey(secret, scope.tenantId, scope.spaceId), new TextEncoder().encode(plaintext));
+  return `v1.${draftBase64(iv)}.${draftBase64(new Uint8Array(ciphertext))}`;
+}
+async function decryptTemplateDraft(secret: string, scope: { tenantId: string; spaceId: string; blueprintId: string; listingId: string; artifactSha256: string; schemaSha256: string }, envelope: string): Promise<string> {
+  const [version, ivPart, ciphertextPart, extra] = envelope.split(".");
+  if (version !== "v1" || !ivPart || !ciphertextPart || extra !== undefined) throw new Error("template_setup_draft_envelope_invalid");
+  const iv = draftBytes(ivPart);
+  if (iv.byteLength !== 12) throw new Error("template_setup_draft_envelope_invalid");
+  const additionalData = new TextEncoder().encode(JSON.stringify([scope.tenantId, scope.spaceId, scope.blueprintId, scope.listingId, scope.artifactSha256, scope.schemaSha256]));
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData, tagLength: 128 },
+    await templateDraftKey(secret, scope.tenantId, scope.spaceId), draftBytes(ciphertextPart));
+  return new TextDecoder().decode(plaintext);
+}
+
 export interface WebhookEventIdentity { spaceId: string; provider: string; eventType: string; eventId: string; }
 export async function claimProcessedWebhookEvent(
   sql: { exec(query: string, ...bindings: unknown[]): { rowsWritten: number } },
@@ -2439,6 +2471,26 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE event_triggers ADD COLUMN updated_by TEXT;
       ALTER TABLE space_archive_restores ADD COLUMN safety_actions_json TEXT NOT NULL DEFAULT '{}';`,
   },
+  {
+    version: 117,
+    description: "persist owner-reviewed Space Template setup drafts bound to listing and schema",
+    up: `CREATE TABLE space_template_setup_drafts (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      blueprint_id TEXT NOT NULL,
+      listing_id TEXT NOT NULL,
+      artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64),
+      setup_schema_version INTEGER,
+      setup_schema_sha256 TEXT NOT NULL CHECK(length(setup_schema_sha256)=64),
+      setup_values_ciphertext TEXT NOT NULL,
+      draft_revision INTEGER NOT NULL CHECK(draft_revision >= 1),
+      updated_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,blueprint_id)
+    );
+      CREATE INDEX idx_space_template_setup_drafts_recent ON space_template_setup_drafts(tenant_id,space_id,updated_at DESC);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3584,6 +3636,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
       if (url.pathname === "/extension-template-setup" && (method === "GET" || method === "PATCH")) return this.extensionTemplateSetup(request, url);
+      if (url.pathname === "/template-setup-draft" && (method === "GET" || method === "PUT")) return this.templateSetupDraft(request, url);
       if (url.pathname === "/extension-assistant-voice" && (method === "GET" || method === "PATCH")) return this.extensionAssistantVoiceSettings(request, url);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
@@ -4734,6 +4787,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const setupValues = validateBlueprintSetupValues(blueprint, rawSetupValues);
     const setupValuesJson = JSON.stringify(setupValues);
     const artifactHash = await sha256Hex(JSON.stringify(blueprint));
+    const clearSetupDraft = () => {
+      if (tenantId) this.ctx.storage.sql.exec("DELETE FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=? AND blueprint_id=?", tenantId, targetSpaceId, blueprint.id);
+    };
     const ensureExistingSchema = (record: { artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string }): void => {
       if (record.setup_schema_json === setupSchemaJson) return;
       if (record.setup_schema_json !== null) throw new Error("blueprint_setup_schema_changed");
@@ -4748,7 +4804,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (existing.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (JSON.stringify(JSON.parse(existing.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
       ensureExistingSchema(existing);
-      if (existing.status === "installed" && existing.result_json) return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      if (existing.status === "installed" && existing.result_json) {
+        clearSetupDraft();
+        return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      }
       if (existing.status === "failed") throw new Error(existing.error_code ?? "blueprint_install_previous_attempt_failed");
       throw new Error("blueprint_install_in_progress");
     }
@@ -4765,7 +4824,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (concurrent?.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (JSON.stringify(JSON.parse(concurrent.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
       ensureExistingSchema(concurrent);
-      if (concurrent?.status === "installed" && concurrent.result_json) return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      if (concurrent?.status === "installed" && concurrent.result_json) {
+        clearSetupDraft();
+        return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      }
       throw new Error("blueprint_install_in_progress");
     }
     const claim = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
@@ -4774,7 +4836,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (JSON.stringify(JSON.parse(claim.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
     ensureExistingSchema(claim);
     if (claim.status !== "installing" || claim.result_json) {
-      if (claim.status === "installed" && claim.result_json) return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      if (claim.status === "installed" && claim.result_json) {
+        clearSetupDraft();
+        return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      }
       throw new Error("blueprint_install_in_progress");
     }
     // The insert winner owns the activation. Competing requests return above without writing.
@@ -4783,6 +4848,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.transactionSync(() => execute(this.ctx.storage.sql as never,
         "UPDATE space_blueprint_installations SET status='installed',result_json=?,error_code=NULL,updated_at=? WHERE space_id=? AND blueprint_id=? AND status='installing' AND artifact_sha256=?",
         JSON.stringify(result), new Date().toISOString(), targetSpaceId, blueprint.id, artifactHash));
+      clearSetupDraft();
       return result;
     } catch (error) {
       const code = (error instanceof Error ? error.message : "blueprint_install_failed").slice(0, 120);
@@ -12102,6 +12168,98 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json({ schema, settings, revision: body.revision! + 1, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  /** Persist incomplete owner-reviewed setup values against the exact signed Template context. */
+  private async templateSetupDraft(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
+    const blueprintId = url.searchParams.get("blueprint_id") ?? "", listingId = url.searchParams.get("listing_id") ?? "";
+    const artifactSha256 = url.searchParams.get("artifact_sha256") ?? "";
+    const schemaHash = url.searchParams.get("setup_schema_sha256") ?? "";
+    const rawVersion = url.searchParams.get("setup_schema_version");
+    const schemaVersion = rawVersion === "" || rawVersion === "null" ? null : Number(rawVersion);
+    const headers = { "cache-control": "private, no-store" };
+    const json = (value: unknown, status = 200) => Response.json(value, { status, headers });
+    if (!tenantId || !spaceId || !/^[A-Za-z0-9._:-]{1,160}$/.test(blueprintId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(listingId) || !/^[a-f0-9]{64}$/.test(artifactSha256)
+      || !/^[a-f0-9]{64}$/.test(schemaHash) || !(schemaVersion === null || schemaVersion === 1)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return json({ error_code: "forbidden" }, 403);
+    const role = request.headers.get("x-naelao-role") ?? "";
+    const userId = request.headers.get("x-naelao-user-id") ?? "";
+    if (!userId || !["owner", "admin"].includes(role)) return json({ error_code: "owner_or_admin_required" }, 403);
+
+    const readDraft = () => queryOne<{
+      listing_id: string; artifact_sha256: string; setup_schema_version: number | null; setup_schema_sha256: string;
+      setup_values_ciphertext: string; draft_revision: number; updated_by: string; updated_at: string;
+    }>(this.ctx.storage.sql as never,
+    `SELECT listing_id,artifact_sha256,setup_schema_version,setup_schema_sha256,setup_values_ciphertext,draft_revision,updated_by,updated_at
+       FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=? AND blueprint_id=?`,
+    tenantId, spaceId, blueprintId);
+    const bindingMatches = (draft: NonNullable<ReturnType<typeof readDraft>>) => draft.listing_id === listingId && draft.artifact_sha256 === artifactSha256
+      && draft.setup_schema_version === schemaVersion && draft.setup_schema_sha256 === schemaHash;
+    if (request.method === "GET") {
+      const draft = readDraft();
+      const matches = !!draft && bindingMatches(draft);
+      let values: unknown = null;
+      if (matches) {
+        try {
+          const scope = { tenantId, spaceId, blueprintId, listingId, artifactSha256, schemaSha256: schemaHash };
+          values = JSON.parse(await decryptTemplateDraft(this.env.PLATFORM_SECRET, scope, draft!.setup_values_ciphertext));
+        }
+        catch { return json({ error_code: "template_setup_draft_corrupt" }, 409); }
+      }
+      return json({ exists: !!draft, binding_matches: matches, revision: draft?.draft_revision ?? 0,
+        ...(matches ? { values, updated_at: draft!.updated_at } : {}) });
+    }
+
+    let body: { schema?: unknown; values?: unknown; expected_revision?: number; replace_context?: boolean };
+    try {
+      const bytes = await readBoundedRequestBytes(request, 64 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+      if (!body || Object.keys(body).some(key => !["schema", "values", "expected_revision", "replace_context"].includes(key))
+        || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0
+        || Number(body.expected_revision) >= Number.MAX_SAFE_INTEGER || (body.replace_context !== undefined && typeof body.replace_context !== "boolean"))
+        throw new Error("invalid_template_draft_request");
+    } catch { return json({ error_code: "template_setup_draft_invalid" }, 400); }
+
+    let groups: ReturnType<typeof validateBlueprintSetupGroups>, values: unknown;
+    try {
+      groups = validateBlueprintSetupGroups(body.schema);
+      if (!groups.length || (schemaVersion !== 1)) throw new Error("Template setup schema is unavailable");
+      const canonicalSchemaHash = await sha256Hex(JSON.stringify(groups));
+      if (canonicalSchemaHash !== schemaHash) throw new Error("Template setup schema binding changed");
+      values = validateBlueprintSetupValuesForSchema(groups, body.values, { allowIncomplete: true });
+      if (new TextEncoder().encode(JSON.stringify(values)).byteLength > 16 * 1024) throw new Error("Template setup draft exceeds the value limit");
+    } catch (error) { return json({ error_code: "template_setup_draft_invalid", message: (error as Error).message.slice(0, 200) }, 400); }
+    if (typeof this.ctx.storage.transactionSync !== "function") return json({ error_code: "template_setup_draft_storage_unavailable" }, 503);
+    let encryptedValues: string;
+    try {
+      encryptedValues = await encryptTemplateDraft(this.env.PLATFORM_SECRET,
+        { tenantId, spaceId, blueprintId, listingId, artifactSha256, schemaSha256: schemaHash }, JSON.stringify(values));
+    } catch { return json({ error_code: "template_setup_draft_encryption_unavailable" }, 503); }
+    const now = new Date().toISOString();
+    const outcome = this.ctx.storage.transactionSync(() => {
+      const current = readDraft();
+      if ((current?.draft_revision ?? 0) !== body.expected_revision) return "revision_conflict";
+      const sameContext = !!current && bindingMatches(current);
+      if (current && !sameContext && body.replace_context !== true) return "context_conflict";
+      const nextRevision = (current?.draft_revision ?? 0) + 1;
+      this.ctx.storage.sql.exec(`INSERT INTO space_template_setup_drafts(
+        tenant_id,space_id,blueprint_id,listing_id,artifact_sha256,setup_schema_version,setup_schema_sha256,
+        setup_values_ciphertext,draft_revision,updated_by,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(tenant_id,space_id,blueprint_id) DO UPDATE SET listing_id=excluded.listing_id,
+          artifact_sha256=excluded.artifact_sha256,setup_schema_version=excluded.setup_schema_version,
+          setup_schema_sha256=excluded.setup_schema_sha256,setup_values_ciphertext=excluded.setup_values_ciphertext,
+          draft_revision=excluded.draft_revision,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+      tenantId, spaceId, blueprintId, listingId, artifactSha256, schemaVersion, schemaHash, encryptedValues, nextRevision,
+      userId, current?.updated_at ?? now, now);
+      return nextRevision;
+    });
+    if (outcome === "revision_conflict") return json({ error_code: "template_setup_draft_revision_conflict" }, 409);
+    if (outcome === "context_conflict") return json({ error_code: "template_setup_draft_context_conflict" }, 409);
+    return json({ exists: true, binding_matches: true, values, revision: outcome, updated_at: now });
   }
 
   /** Expose one approved Template project group only to its active, required extension installation. */

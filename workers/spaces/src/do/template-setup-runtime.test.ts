@@ -25,10 +25,15 @@ describe("Space Template setup runtime API", () => {
     const project = blueprint.projects[0]!;
     project.id = "support";
     project.setupFields = [{ id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 }];
+    storage.sql.exec(`INSERT INTO space_template_setup_drafts(tenant_id,space_id,blueprint_id,listing_id,artifact_sha256,
+      setup_schema_version,setup_schema_sha256,setup_values_ciphertext,draft_revision,updated_by,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, "tenant", targetSpaceId, blueprint.id, "listing-a", "a".repeat(64), 1,
+      "b".repeat(64), "encrypted-test-envelope", 1, "owner", "now", "now");
     const activated = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
       body: JSON.stringify({ blueprint, target_space_id: targetSpaceId, activation_key: blueprint.id, setup_values: { support: { greeting: "Welcome" } } }) }));
     expect(activated.status).toBe(201);
+    expect(storage.sql.exec("SELECT blueprint_id FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=?", "tenant", targetSpaceId).toArray()).toEqual([]);
     expect(storage.sql.exec("SELECT setup_schema_json,setup_revision FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id).toArray()[0])
       .toMatchObject({ setup_schema_json: expect.stringContaining("support"), setup_revision: 1 });
 

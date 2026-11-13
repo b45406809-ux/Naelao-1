@@ -43,7 +43,7 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
-  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupValues, validateExtensionManifest, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
+  DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
@@ -784,6 +784,74 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     cost_estimate: costEstimate,
   }, { headers: { "cache-control": "private, no-store" } });
 });
+
+async function handleTemplateSetupDraft(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId ?? "", userId = identity.userId ?? "";
+  const spaceId = c.req.param("spaceId") ?? "", blueprintId = c.req.param("blueprintId") ?? "";
+  if (!tenantId || !spaceId || !blueprintId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id,config_json FROM spaces WHERE id=? AND tenant_id=? AND status='active'")
+    .bind(spaceId, tenantId).first<{ id: string; config_json: string | null }>();
+  if (!owned) throw notFound("Space");
+  let config: unknown;
+  try { config = JSON.parse(owned.config_json ?? "{}"); } catch { return c.json({ error_code: "template_selection_invalid" }, 409); }
+  if (!config || typeof config !== "object" || Array.isArray(config)
+    || (config as { pending_blueprint_id?: unknown }).pending_blueprint_id !== blueprintId)
+    return c.json({ error_code: "template_setup_not_pending" }, 409);
+  const selected = selectedTemplateListingId(owned.config_json);
+  if (selected.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
+  if (selected.kind !== "selected") return c.json({ error_code: "template_listing_selection_required" }, 409);
+
+  const value = await loadCertifiedBlueprint(c.env, tenantId, blueprintId);
+  if (!value) throw notFound("Blueprint");
+  const blueprint = value.blueprint, artifact = { ...blueprint } as SpaceBlueprint & { securityRating?: unknown };
+  delete artifact.securityRating;
+  if (!await verifyArtifactCertificate(artifact, value.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta"))
+    return c.json({ error_code: "conformance_certificate_invalid" }, 422);
+  const fork = await c.env.PLATFORM_DB.prepare(`SELECT f.certificate_json,f.artifact_json FROM marketplace_forks f
+    JOIN marketplace_listings l ON l.id=f.listing_id WHERE f.tenant_id=? AND f.blueprint_id=? AND f.listing_id=? AND l.status='published' LIMIT 1`)
+    .bind(tenantId, blueprintId, selected.listingId).first<{ certificate_json: string; artifact_json: string }>();
+  if (!fork) return c.json({ error_code: "template_license_required" }, 402);
+  try {
+    const forkCertificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;
+    if (forkCertificate.signature !== value.conformanceCertificate.signature || JSON.stringify(JSON.parse(fork.artifact_json)) !== JSON.stringify(blueprint))
+      return c.json({ error_code: "template_license_mismatch" }, 403);
+  } catch { return c.json({ error_code: "template_license_mismatch" }, 403); }
+  if (!evaluateBlueprintSecurity(blueprint).publishable) return c.json({ error_code: "blueprint_rejected" }, 422);
+  let setupSchema: ReturnType<typeof validateBlueprintSetupSchema>;
+  try { instantiateBlueprint(blueprint, spaceId); setupSchema = validateBlueprintSetupSchema(blueprint); }
+  catch (error) { return c.json({ error_code: "blueprint_invalid", message: (error as Error).message.slice(0, 240) }, 422); }
+  const digest = async (input: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const artifactSha256 = await digest(JSON.stringify(blueprint));
+  const setupSchemaSha256 = await digest(JSON.stringify(setupSchema));
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, blueprint_id: blueprintId,
+    listing_id: selected.listingId, artifact_sha256: artifactSha256,
+    setup_schema_version: blueprint.setupSchemaVersion === undefined ? "null" : String(blueprint.setupSchemaVersion),
+    setup_schema_sha256: setupSchemaSha256 });
+  let body: string | undefined;
+  if (c.req.method === "PUT") {
+    try {
+      const bytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
+      const submitted = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+      if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)
+        || Object.keys(submitted).some(key => !["values", "expected_revision", "replace_context"].includes(key))) throw new Error("invalid_draft_body");
+      body = JSON.stringify({ ...submitted, schema: setupSchema });
+    } catch { return c.json({ error_code: "template_setup_draft_invalid" }, 400); }
+  }
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space-do/template-setup-draft?${query}`, {
+    method: c.req.method,
+    headers: { "content-type": "application/json", "x-naelao-user-id": userId, "x-naelao-role": role,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    ...(body ? { body } : {}),
+  }));
+}
+
+app.get("/spaces/:spaceId/blueprints/:blueprintId/setup-draft", handleTemplateSetupDraft);
+app.put("/spaces/:spaceId/blueprints/:blueprintId/setup-draft", handleTemplateSetupDraft);
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const identity = getCallerIdentity(c);

@@ -2513,6 +2513,22 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
     method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues }),
   });
 }
+export interface SpaceTemplateSetupDraftSnapshot {
+  exists: boolean;
+  binding_matches: boolean;
+  revision: number;
+  values?: SpaceTemplateSetupValues;
+  updated_at?: string;
+}
+export function getSpaceTemplateSetupDraft(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<SpaceTemplateSetupDraftSnapshot> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/setup-draft`, { session, cache: "no-store" });
+}
+export function saveSpaceTemplateSetupDraft(spaceId: string, blueprintId: string, session: SessionCredentials,
+  values: SpaceTemplateSetupValues, expectedRevision: number, replaceContext = false): Promise<SpaceTemplateSetupDraftSnapshot> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/setup-draft`, {
+    method: "PUT", session, body: JSON.stringify({ values, expected_revision: expectedRevision, replace_context: replaceContext }),
+  });
+}
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;

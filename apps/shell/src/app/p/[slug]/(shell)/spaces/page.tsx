@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, type SpaceTemplateActivationPreview, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, type SpaceTemplateActivationPreview, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import type { BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
@@ -86,12 +86,50 @@ export default function SpacesPage() {
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
+  const [setupDraftRevision, setSetupDraftRevision] = React.useState(0);
+  const [setupDraftNeedsReplacement, setSetupDraftNeedsReplacement] = React.useState(false);
+  const [setupDraftStatus, setSetupDraftStatus] = React.useState("");
+  const [savingSetupDraft, setSavingSetupDraft] = React.useState(false);
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const [openingPendingTemplate, setOpeningPendingTemplate] = React.useState<string | null>(null);
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
+
+  async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
+    if (!creds) return;
+    setSetupDraftRevision(0);
+    setSetupDraftNeedsReplacement(false);
+    try {
+      const draft = await getSpaceTemplateSetupDraft(spaceId, blueprintId, creds);
+      setSetupDraftRevision(draft.revision);
+      setSetupDraftNeedsReplacement(draft.exists && !draft.binding_matches);
+      if (restoreValues) setSetupValues(draft.binding_matches && draft.values ? rebaseSetupValues(draft.values, preview) : defaultSetupValues(preview));
+      setSetupDraftStatus(draft.exists
+        ? draft.binding_matches ? "Saved setup draft resumed." : "The saved draft belongs to a different signed template or setup schema. Review these fields before replacing it."
+        : "");
+    } catch {
+      setSetupDraftRevision(0);
+      setSetupDraftNeedsReplacement(false);
+      if (restoreValues) setSetupValues(defaultSetupValues(preview));
+      setSetupDraftStatus("Saved setup could not be checked. Review the fields and retry before relying on a saved draft.");
+    }
+  }
+
+  async function saveCurrentTemplateDraft() {
+    if (!creds || !activationReview || savingSetupDraft || activationReview.preview.setup_fields.length === 0) return;
+    setSavingSetupDraft(true);
+    try {
+      const saved = await saveSpaceTemplateSetupDraft(activationReview.spaceId, activationReview.blueprintId, creds,
+        setupValues, setupDraftRevision, setupDraftNeedsReplacement);
+      setSetupDraftRevision(saved.revision);
+      setSetupDraftNeedsReplacement(false);
+      setSetupDraftStatus("Setup draft saved securely for this Space and signed template.");
+    } catch (error) {
+      setSetupDraftStatus(`Setup draft was not saved: ${error instanceof Error ? error.message : "save failed"}`);
+    } finally { setSavingSetupDraft(false); }
+  }
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -136,7 +174,7 @@ export default function SpacesPage() {
       if (fork && created.status === "active") {
         try {
           const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
-          setSetupValues(defaultSetupValues(preview));
+          await loadTemplateSetupDraft(created.id, fork.space_type_id, preview, true);
           setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview });
           setCreatedSpaceId(created.id);
           setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -197,6 +235,7 @@ export default function SpacesPage() {
     try {
       const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
       setSetupValues(current => rebaseSetupValues(current, preview));
+      await loadTemplateSetupDraft(activationReview.spaceId, activationReview.blueprintId, preview, false);
       setActivationReview({ ...activationReview, preview });
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
     } catch (error) { setCreateError(`Could not refresh dependency status: ${error instanceof Error ? error.message : "preview failed"}`); }
@@ -208,7 +247,7 @@ export default function SpacesPage() {
     setOpeningPendingTemplate(space.id);
     try {
       const preview = await previewSpaceTemplateActivation(space.id, space.pending_blueprint_id, creds);
-      setSetupValues(defaultSetupValues(preview));
+      await loadTemplateSetupDraft(space.id, space.pending_blueprint_id, preview, true);
       setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview });
       setCreatedSpaceId(space.id);
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
@@ -231,11 +270,12 @@ export default function SpacesPage() {
     if (pendingPreviewed.current.has(key)) return;
     pendingPreviewed.current.add(key);
     void previewSpaceTemplateActivation(pending.id, pending.pending_blueprint_id, creds).then(preview => {
-      setSetupValues(defaultSetupValues(preview));
-      setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
-      setCreatedSpaceId(pending.id);
-      setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
-      setCreateOpen(true);
+      void loadTemplateSetupDraft(pending.id, pending.pending_blueprint_id!, preview, true).then(() => {
+        setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
+        setCreatedSpaceId(pending.id);
+        setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+        setCreateOpen(true);
+      });
     }).catch(error => {
       setCreateError(`Template preview is unavailable: ${error instanceof Error ? error.message : "retry the preview"}`);
       show("A Space Template is waiting for review. Refresh this page to retry its preview.");
@@ -382,7 +422,13 @@ export default function SpacesPage() {
       </div>
       {!showAllModels && listModelBenchmarks().length > 6 && <Button variant="secondary" onClick={() => setShowAllModels(true)} style={{ marginTop: 10 }}>Show all {listModelBenchmarks().length} models</Button>}
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title={activationReview ? "Review Space Template" : "Create a Space"} footer={activationReview ? <><Button variant="secondary" onClick={() => { setCreateOpen(false); setActivationReview(null); }}>Later</Button><Button onClick={() => void confirmTemplateActivation()} disabled={!activationReview.preview.ready || activatingTemplate}>{activatingTemplate ? "Installing…" : "Approve and install"}</Button></> : createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title={activationReview ? "Review Space Template" : "Create a Space"} footer={activationReview ? <>
+        <Button variant="secondary" onClick={() => { setCreateOpen(false); setActivationReview(null); }}>Later</Button>
+        {activationReview.preview.setup_fields.length > 0 && <Button variant="secondary" onClick={() => void saveCurrentTemplateDraft()} disabled={savingSetupDraft}>
+          {savingSetupDraft ? "Saving draft…" : setupDraftNeedsReplacement ? "Replace saved draft" : "Save setup for later"}
+        </Button>}
+        <Button onClick={() => void confirmTemplateActivation()} disabled={!activationReview.preview.ready || activatingTemplate}>{activatingTemplate ? "Installing…" : "Approve and install"}</Button>
+      </> : createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12 }}>Name<FormInput autoFocus maxLength={100} placeholder="What is this Space for?" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} required /></label>
           {templates.some((template) => template.price_cents === 0) && (
@@ -459,6 +505,7 @@ export default function SpacesPage() {
             {activationReview.preview.setup_fields.length > 0 && <section style={{ borderTop: "1px solid var(--border)", marginTop: 10, paddingTop: 10 }}>
               <strong>Template setup · schema v{activationReview.preview.setup_schema_version}</strong>
               <p style={{ color: "var(--text3)" }}>These values are saved with this Space Template installation. Do not enter passwords, API keys, tokens, or provider credentials here; use the host connection setup instead.</p>
+              {setupDraftStatus && <p role="status" style={{ color: setupDraftNeedsReplacement ? "#b45309" : "var(--text3)" }}>{setupDraftStatus}</p>}
               {activationReview.preview.setup_fields.map(group => <fieldset key={group.project_id} style={{ border: 0, padding: 0, margin: "10px 0" }}>
                 <legend style={{ fontWeight: 600 }}>{group.project_name}</legend>
                 {group.fields.map(field => <TemplateSetupInput key={`${group.project_id}:${field.id}`} projectId={group.project_id} field={field}

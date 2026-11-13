@@ -180,7 +180,7 @@ export function validateBlueprintSetupGroups(raw: unknown): BlueprintSetupFieldG
 }
 
 /** Validates values against an already validated setup schema and supplies declared defaults. */
-export function validateBlueprintSetupValuesForSchema(groups: readonly BlueprintSetupFieldGroup[], raw: unknown): BlueprintSetupValues {
+export function validateBlueprintSetupValuesForSchema(groups: readonly BlueprintSetupFieldGroup[], raw: unknown, options: { allowIncomplete?: boolean } = {}): BlueprintSetupValues {
   const checkedGroups = validateBlueprintSetupGroups(groups);
   if (!isRecord(raw)) throw new Error("Setup values must be an object");
   const byProject = new Map(checkedGroups.map(group => [group.project_id, group]));
@@ -189,7 +189,7 @@ export function validateBlueprintSetupValuesForSchema(groups: readonly Blueprint
   for (const group of checkedGroups) {
     const submitted = raw[group.project_id];
     if (submitted !== undefined && !isRecord(submitted)) throw new Error(`Setup values for ${group.project_id} must be an object`);
-    const values = validateSetupFieldValues(group.fields, submitted ?? {});
+    const values = validateSetupFieldValues(group.fields, submitted ?? {}, options);
     if (Object.keys(values).length) normalized[group.project_id] = values;
   }
   if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > MAX_VALUE_BYTES) throw new Error("Setup values exceed the byte limit");

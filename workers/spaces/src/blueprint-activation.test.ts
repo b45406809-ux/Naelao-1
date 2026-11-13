@@ -68,6 +68,49 @@ describe("Space Template activation preview", () => {
     expect(await serviceOnly.json()).toMatchObject({ error_code: "human_activation_required" });
   });
 
+  it("binds setup draft reads and writes to the pending signed listing and schema", async () => {
+    const secret = "template-setup-draft-route-secret";
+    const artifact = blueprint({ id: "tpl_draft", setupSchemaVersion: 1, projects: [{ id: "support", name: "Support", kind: "DualPane", templateMode: "cowork_studio",
+      viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], setupFields: [{ id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 }] }],
+      requiredExtensions: [], requiredCredentials: [] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `draft-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-a");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const seen: Array<{ method: string; url: URL; body?: Record<string, unknown> }> = [];
+    const stub = { fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname !== "/template-setup-draft") return new Response("not found", { status: 404 });
+      const item: { method: string; url: URL; body?: Record<string, unknown> } = { method: request.method, url };
+      if (request.method === "PUT") {
+        expect(await verifyInternalToken(request.headers.get("x-naelao-internal-token"), "tenant-a", secret)).toBe(true);
+        expect(request.headers.get("x-naelao-role")).toBe("owner");
+        item.body = await request.json() as Record<string, unknown>;
+      }
+      seen.push(item);
+      return Response.json(request.method === "GET" ? { exists: false, binding_matches: false, revision: 0 }
+        : { exists: true, binding_matches: true, revision: 1, values: { support: { greeting: "Hello" } } });
+    } };
+    let pendingId = artifact.id;
+    const db = { prepare: (sql: string) => ({ bind: (...args: unknown[]) => ({ first: async () => sql.includes("FROM spaces")
+      ? { id: "space-draft", config_json: JSON.stringify({ pending_blueprint_id: pendingId, template_listing_id: "listing-a" }) }
+      : sql.includes("marketplace_forks") ? { certificate_json: JSON.stringify(certificate), artifact_json: JSON.stringify(artifact) } : null }) }) };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
+      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/tenant-a/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
+      SPACE_DO: { idFromName: () => "space-draft-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const path = `https://spaces/spaces/space-draft/blueprints/${artifact.id}/setup-draft`;
+    const initial = await worker.fetch(new Request(path, { headers }), env, {} as ExecutionContext);
+    expect(initial.status).toBe(200);
+    expect(seen[0]?.url.searchParams.get("listing_id")).toBe("listing-a");
+    expect(seen[0]?.url.searchParams.get("setup_schema_version")).toBe("1");
+    const save = await worker.fetch(new Request(path, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ expected_revision: 0, values: { support: { greeting: "Hello" } } }) }), env, {} as ExecutionContext);
+    expect(save.status).toBe(200);
+    expect(seen[1]?.body).toMatchObject({ expected_revision: 0, values: { support: { greeting: "Hello" } }, schema: [{ project_id: "support" }] });
+    pendingId = "another-template";
+    expect((await worker.fetch(new Request(path, { headers }), env, {} as ExecutionContext)).status).toBe(409);
+    expect(seen).toHaveLength(2);
+  });
+
   it("checks the target Space's active shared dependencies before activation and keeps preview read-only", async () => {
     const secret = "route-activation-secret";
     const artifact = blueprint({ projects: [], requiredExtensions: ["ext_required"], requiredCredentials: [] });
