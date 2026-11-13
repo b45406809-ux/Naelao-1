@@ -2,15 +2,25 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P16 code commit `1056a322` is pushed to
+Current continuation checkpoint (2026-11-13): P17 code commit `91f17842` is pushed to
 `origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. One shared versioned capability definition supplies the
-Discord attachment bounds and 30-day retention; the verified no-store Agents route, Router
+`/workspace/Naelao-1-managed-services`. The stale Portal Whop catalog now reports its retired state;
+Marketplace cards show actual fixed-license pricing, use a same-origin Naelao sign-in, report the
+buyer's no-store license/fork state, and send checkout returns to the selected listing. Shell's
+template picker now reads all Marketplace categories with fresh pagination and passes the selected
+listing ID through fork and Space creation. The existing purchase, fork and refund journals are
+reused. Local evidence: Marketplace/Billing tests **12/12**, Router license/product-path tests
+**38/38**, Shell catalog test **1/1**, Marketplace web/Portal/Shell/Marketplace Worker/Router/Billing
+typechecks, environment/deployment/Wrangler validators **19/19**, regenerated source inventory,
+and `git diff --check`. No provider acceptance or deployment was exercised. P17 remains PARTIAL:
+cross-product Marketplace-to-Shell identity/install handoff, refund/license reversal and author
+payout policy remain open. Preserve the unrelated `infra/scripts/__pycache__/`.
+
+P16 code commit `1056a322` remains pushed. One shared versioned capability definition supplies
+Discord's attachment bounds and 30-day retention; the verified no-store Agents route, Router
 product-session allowlist and Shell setup UI consume it. Ordinary non-ephemeral attachments remain
-unsupported, and extensions still receive no media handles. Local evidence: focused Agents tests
-**10/10**, Router path tests **35/35**, Agents/Shell/Router typechecks and `git diff --check`. No
-provider acceptance or deployment was exercised; P16 remains PARTIAL. Preserve the unrelated
-`infra/scripts/__pycache__/`.
+unsupported, and extensions still receive no media handles. P16 remains PARTIAL for scoped media
+handles and live acceptance.
 
 P15 code commit `1f0a428e` is also pushed to `origin/Mcbt5s-Backup-2`. Space Blackboard discovery now uses an indexed, 90-ID
 keyset page inside SpaceDO; project ACLs are reevaluated for every page, subspace-bound projects
@@ -45,11 +55,13 @@ probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legac
 attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
 policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
 and receipt coverage outside the Product auth outbox; see
-`docs/operations/notification-delivery-contract.md`. Exact next task: continue at P17 by tracing
-current catalog, template, license, purchase, refund and onboarding callers against the older
-finding, implementing independent identity/freshness/selection gaps while reusing settlement and
-refund ledgers. Then audit P24 installed-package provenance and revocation before guided
-installation, voice-extension dashboards, and Shared-Space coordination. P01/P02
+`docs/operations/notification-delivery-contract.md`. Exact next task: audit P24 from publication
+through signature verification, dependency installation, execution, restore, upgrade and
+revocation. Reuse current package signatures, publisher revocation, installation receipts and
+rollback controls; implement independent provenance/revocation gaps before continuing guided
+template authoring, voice-extension dashboards and Shared-Space coordination. P17 remains partial
+for the Marketplace-to-Shell identity/install handoff, refund/license policy and live provider
+acceptance. P01/P02
 remain fail-closed on actual
 resource separation, ownership/receipts, and operator-attested D1 baselines; these are evidence and
 configuration gates. Keep all rollouts disabled. Fetch before every push and safely integrate remote

@@ -2,6 +2,25 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after P17 code commit `91f17842` was pushed to
+`origin/Mcbt5s-Backup-2`. The Portal no longer renders retired Whop entries as live. Marketplace
+listing cards show the actual fixed-license price; a same-origin Naelao sign-in stores the current
+session key, the listing page reads buyer-scoped license/fork state with `no-store`, and checkout
+returns to that exact listing. Shell's actual template categories are read with fresh pagination;
+selected listing IDs continue through the existing fork, Space-create, activation-preview and
+activation callers. Existing settlement and refund journals were reused. Local evidence:
+Marketplace/Billing tests **12/12**, Router license/product-path tests **38/38**, Shell listing test
+**1/1**, six affected TypeScript projects typechecked, environment/deployment/Wrangler checks
+**19/19**, source resource inventory regenerated, and `git diff --check`. No live checkout, provider
+acceptance or deployment was exercised. P17 remains PARTIAL for a cross-origin Marketplace-to-Shell
+identity and selected-product handoff, refund/license reversal and author payout policy, and live
+acceptance. Exact next task: audit P24 installed-package trust across signed publication, dependency
+closure, install receipts, runtime execution, restore, upgrades, permissions and revocation; reuse
+existing controls and implement independent code gaps. Then continue guided templates, voice-extension
+dashboards and Shared-Space coordination.
+
+## Prior checkpoints
+
 Updated 2026-11-13 after P16 code commit `1056a322` was pushed to
 `origin/Mcbt5s-Backup-2`. `channel-media-capabilities.ts` is the shared versioned source for
 Discord's ephemeral-reference-only ingress, five-file, 5 MiB/file and 15 MiB aggregate Naelao
@@ -14,7 +33,7 @@ live acceptance or deployment was exercised. P16 remains PARTIAL: scoped media h
 ordinary non-ephemeral retrieval remains unsupported pending a permitted isolated design, and
 provider acceptance has not run.
 
-Exact next action: P17, trace catalog selection, listing identity/freshness, license and purchase/
+At that checkpoint, the next action was P17: trace catalog selection, listing identity/freshness, license and purchase/
 refund settlement, and onboarding against current callers; implement remaining independent
 identity/availability gaps using the existing durable license and refund ledgers. Then audit P24
 installed-package provenance/revocation before guided installation, voice-extension dashboards and
@@ -241,9 +260,35 @@ clawback, payout recovery, dispute ingestion and case resolution are not impleme
 product/accounting policy is not decided. Local settlement/refund tests pass **6/6**. No provider
 sandbox or live transaction was used.
 
+### P17 — marketplace identity, freshness and installation: PARTIAL
+
+The stale Portal Whop fallback is removed and the page identifies the retired catalog. Marketplace
+listing responses carry the listing/template identity and current pricing; public cards show the
+actual fixed-license price. A same-origin Naelao login/register entry stores the session used by the
+Marketplace API, and the selected listing page reads a private, no-store license/fork status. The
+Worker rechecks published listing state and certification on checkout/fork, and returns payment to
+that exact listing. Billing validates and forwards only the trusted HTTPS return URL. The Shell
+template picker previously queried the nonexistent `vertical-saas` category; it now lists actual
+Marketplace categories using fresh pagination, then carries `listing_id` through its existing
+fork, Space creation, dependency preview and activation flow. The durable purchase, fork, earning
+and refund-case ledgers remain authoritative; no duplicate settlement journal was added.
+
+Local evidence for code `91f17842`: Marketplace/Billing focused tests **12/12**, Router license and
+product path tests **38/38**, Shell catalog test **1/1**, Marketplace web/Portal/Shell/Marketplace
+Worker/Router/Billing typechecks, environment resource tests **6/6**, deployment manifest tests
+**7/7**, Wrangler isolation tests **6/6**, regenerated source inventory and `git diff --check`.
+These checks use local mocks/static config. No provider checkout, live account, deployment or user
+journey acceptance was exercised.
+
+P17 remains PARTIAL. Marketplace and Shell use different origins and the current session has no
+verified one-time handoff into a selected customer's product/Space; library state alone does not
+complete installation. Refund-to-license revocation, author earning/payout recovery and dispute
+policy remain unresolved under P20, and provider/live acceptance remains separate. Do not represent
+the listing as installed merely because checkout returned or a fork row exists.
+
 ## Requirement queue
 
-The platform plan's P01–P03, P11–P13, P18/P20/P21 and P23 have now been reconciled against current source.
+The platform plan's P01–P03, P11–P13, P17, P18/P20/P21 and P23 have now been reconciled against current source.
 P02 remains fail-closed as recorded above. Continue in dependency order:
 
 1. Preserve the P01/P02 preflight gates until distinct Cloudflare resources, service ownership,
@@ -253,14 +298,16 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 3. P04 remains partial on backup completeness and isolated recovery drills. P22's independent local
    cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`; retain the exact
    provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
-4. Continue at P16: expose Discord's current ephemeral-only attachment contract and count/byte
-   limits through a shared capability source used by channel discovery and setup. Keep ordinary
-   attachments unsupported until retrieval can honor provider authorization, signed URL expiry,
-   byte/content checks, abuse controls, retention and cost. Then audit P17/P24 before guided
-   templates, voice dashboards and Shared-Space coordination. P15's indexed path is implemented;
-   realistic private-member density and task-quality evidence remain open. Reuse the S/U ledgers for
-   overlapping requirements and do not repeat completed P01/P02, P03, P18/P20/P21, P23 or P22 audits
-   without a new source change or specific evidence need.
+4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
+   non-ephemeral retrieval and live provider acceptance remain partial. P17's direct catalog, license
+   status, return URL and Shell category-selection gaps are committed; preserve its cross-origin
+   identity/install handoff and P20 accounting policy as open. Continue at P24: verify installed
+   release, dependencies, artifacts and image against trusted provenance at execution and after
+   restore; trace publisher revocation, rollback, update and permission expansion; implement
+   independent gaps before guided templates, voice dashboards and Shared-Space coordination. P15's
+   indexed path is implemented; realistic private-member density and task-quality evidence remain
+   open. Reuse the S/U ledgers for overlapping requirements and do not repeat completed audits
+   without a source change or specific evidence need.
 
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and

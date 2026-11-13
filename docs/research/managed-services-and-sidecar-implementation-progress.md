@@ -2,6 +2,33 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; P17 code `91f17842` pushed)
+
+- P17 code `91f17842` is pushed to `origin/Mcbt5s-Backup-2`. The stale Portal Whop fallback was
+  removed; the Marketplace shows the actual fixed-license price, supports a same-origin account
+  entry path, reads buyer-specific license/fork status without caching and returns checkout to the
+  selected listing. The Shell template picker now queries the actual Marketplace categories with
+  fresh pagination and retains the selected listing identity through its existing fork/create/preview/
+  activation sequence. No purchase/fork/refund journal was duplicated.
+- Local evidence: Marketplace/Billing tests **12/12**, Router license/product path tests **38/38**,
+  Shell template catalog test **1/1**, Marketplace web/Portal/Shell/Marketplace Worker/Router/Billing
+  typechecks, environment resource tests **6/6**, deployment manifest tests **7/7**, Wrangler
+  isolation tests **6/6**, source inventory regenerated and `git diff --check`. These are local
+  mocks/static checks. No Lemon Squeezy transaction, deployed Worker, live identity session or
+  provider acceptance was exercised.
+- P17 remains PARTIAL. The separate Marketplace and Shell origins have no verified one-time
+  identity/install handoff; a listing may be added to the tenant library but this route does not
+  select the customer's product/Space context. P20 refund/license reversal and author payout policy
+  remain undecided; live checkout and listing availability were not exercised. Do not claim
+  end-to-end install acceptance.
+- Exact next task: audit P24 from signed publication through exact installed release/dependency
+  provenance, runtime execution, restore, update and publisher revocation. Inspect existing
+  signature verification, install receipts, rollback and package removal callers first; close any
+  independent executable code gap and record contracts that are genuinely unavailable. Then
+  continue guided templates, voice-extension dashboards and Shared-Space coordination.
+- Preserve `infra/scripts/__pycache__/`; keep rollouts disabled; fetch before the next push and
+  safely integrate any remote change.
+
 ### Active continuation (2026-11-13; P16 capability discovery `1056a322` pushed)
 
 - P16 code `1056a322` is pushed to `origin/Mcbt5s-Backup-2`. One versioned capability source drives
