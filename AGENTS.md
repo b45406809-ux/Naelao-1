@@ -2,37 +2,48 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `34093b6b` is pushed to
-`origin/Mcbt5s-Backup-2`, following the documentation reconciliation `84e6a213` and notification
-outcome implementation `e967eaa3`. The Connectors page now has a source-aware combined inbox search
-for the selected Assistant mailbox and one explicitly selected active AgentMail connection. It keeps
-separate source cursors, source/scope-tagged IDs and results only in React memory. Message and
-attachment reads go through the existing Assistant communications and owner-authorized AgentMail
-operations; no provider data or credentials were added to storage.
+Both plans are active and jointly govern this mission:
 
-Local/mock evidence for `34093b6b`: Shell tests **25/25** across ten files, including unified-inbox
-source/cursor cases; Shell typecheck and `git diff --check` pass. No provider, deployed API or live
-acceptance ran. MS07's combined view is IMPLEMENTED_LOCAL; Cloudflare Email remains disabled and
-live delivery/provider acceptance remains unverified. P01/P02 local controls are implemented, but
-release remains fail-closed without operator-attested D1 baselines, and environment preflight remains
-blocked on one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership and **158** missing
-resource receipts. No rollout is enabled.
+- [Managed services and sidecar runtime plan](docs/research/managed-services-and-sidecar-runtime-plan.md), including S1–S9 and inherited U01–U12.
+- [Platform completion and guided templates plan](docs/research/platform-completion-and-guided-templates-plan.md), including release/environment safety, commercial integrity and recovery, guided templates and microapp setup, voice, and shared-Space coordination.
 
-S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10
-retain named code, runtime-contract, policy and live-acceptance gaps in their ledgers. P01/P02 were
-rechecked after migration 0234: release migration tests **12/12**, environment-resource tests **10/10**,
-Wrangler isolation **6/6**, release-manifest tests **5/5**, and deployment-manifest tests **8/8** pass.
-Both manifest validators pass and confirm 234 migrations with required schema
-`0234_notification_delivery_outcomes`. The environment preflight correctly remains blocked by one
-shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, malformed/missing account
-observation fields and **158** missing resource receipts. No independent P01/P02 code gap was found in
-the current release runner or source map.
+Reuse the existing requirement IDs and progress ledgers when plans overlap. Do not restart completed
+work or claim a requirement complete from historical notes alone. After compaction, interruption, or
+a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
+worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Exact next action: close P23 synchronous `/internal/notify` outcome recording by reusing migration 0234,
-preserving caller-stable IDs where available, returning the outcome/ID to callers, and recording
-non-PII `not_sent`, rejected, accepted or ambiguous state. Audit reachable callers for a durable ID
-before considering retries safe. Then continue P03/P12/P20 and P04. Keep rollout disabled, preserve
-`infra/scripts/__pycache__/`, and do not deploy or purchase services.
+Current checkpoint (2026-11-13): P23 synchronous notification outcomes are committed and pushed as
+`27683db1` to `origin/Mcbt5s-Backup-2`, following remote tip `e3d58399`. The Notifications route now
+claims stable operation IDs before provider egress, records non-PII `not_sent`, rejected, accepted or
+ambiguous outcomes, returns outcome and ID, and never automatically repeats an ambiguous operation.
+Reachable callers pass stable IDs where their event or operation identity supports it. Migrations
+0235 and 0236 widen channel storage and add terminal ambiguous cost-alert delivery; release inventory
+is 236 migrations and requires schema `0236_cost_alert_ambiguous_delivery_status`.
+
+Local/mock evidence for `27683db1`: Notifications **44/44**; Agents **1,481 passed, 7 skipped** across
+270 files; Auth **34/34**; Auth, Agents, Billing, Shell and Dashboard typechecks pass; migration and
+release tests **18/18**; release and deployment manifest validators pass; `git diff --check` passes.
+No provider, deployed database, deployment, or live acceptance was exercised. P23 remains PARTIAL for
+approved retention, audited operator replay and live acceptance. `infra/scripts/__pycache__/` remains
+untracked and preserved.
+
+S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10 retain
+their specific statuses and gaps in the ledgers. P01/P02 code controls pass locally and fail closed on
+one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, 158 missing read-only resource receipts,
+and absent operator-attested migration baselines. No rollout is enabled.
+
+Exact next action: continue in dependency order after the already reconciled release/environment,
+commercial-recovery and P04 work. The first current uncoded implementation item is §5's signed,
+owner-reviewed template setup schema migration/update flow. Inspect its package and installation
+contracts, then implement a bounded, declarative per-installation migration preview and persistence
+with provenance/revision checks. Keep package, permission, price, provider-resource and generated-
+project effects behind explicit review; do not invent unresolved lifecycle policy. Update both
+progress records at the next meaningful checkpoint.
+
+Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
+reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing
+`infra/scripts/__pycache__/`. The user has authorized normal commits and pushes to `Mcbt5s-Backup-2`:
+fetch before every push, safely integrate remote advances, and never rewrite remote history.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete

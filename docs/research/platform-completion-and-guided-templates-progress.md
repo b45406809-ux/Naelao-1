@@ -2,45 +2,49 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after source-aware inbox code `34093b6b` was pushed, following notification outcome code `e967eaa3`. Migration 0234
-adds a tenant-scoped, non-PII outcome ledger for Notifications queue work, including provider
-accepted/rejected/ambiguous, not-sent, in-app persisted and terminal dead-letter outcomes. Dunning
-provider attempts remain on their existing table; the new ledger records only terminal dunning DLQ
-state. Owner/admin outcome reads are tenant-scoped and no-store through Billing and Router, with a
-Dashboard settings caller. Production's notifications DLQ has a distinct configured name and
-consumer, and the redacted environment map was regenerated.
+Updated 2026-11-13 after P23 synchronous notification outcomes `27683db1` were pushed to
+`origin/Mcbt5s-Backup-2`. The route claims caller-stable IDs before provider egress, persists
+non-PII not-sent/rejected/accepted/ambiguous outcomes, returns outcome/ID, and refuses automatic
+resend after ambiguous attempts. Migrations 0235/0236 widen channels and add terminal ambiguous
+cost-alert delivery. Existing asynchronous ledger/status paths remain in migration 0234.
 
-Local/mock evidence: Notifications **40/40**, Billing **4/4**, Router **2/2**, migration/release/
-environment suites **25/25**, affected typechecks, release/deployment manifest validators, and staging/
-production Wrangler dry runs. No remote D1, provider delivery, deployment or live acceptance ran.
-P23 remains PARTIAL for synchronous general outcomes, retention policy, audited operator replay and
-live acceptance. Release/environment preflight still fails closed on one shared D1, eleven shared KV
-IDs, unresolved `naelao-calls`, and **158** absent read-only resource receipts. P01's operator-attested
-legacy D1 baselines and isolated/deployed acceptance remain absent.
+Local/mock evidence: Notifications **44/44**, Agents **1,481 passed / 7 skipped** across 270 files,
+Auth **34/34**, affected Auth/Agents/Billing/Shell/Dashboard typechecks, migration/release tests
+**18/18**, release/deployment manifest validators and `git diff --check`. Release inventory: 236
+migrations, required schema `0236_cost_alert_ambiguous_delivery_status`. No provider, deployed
+database, deployment or live acceptance ran. P23 remains PARTIAL for approved retention, audited
+operator replay and live acceptance. Provider acceptance is not inbox delivery.
 
-The Connectors page now combines the selected Assistant mailbox and explicitly selected active AgentMail search results in memory. Code `34093b6b` is pushed; Shell passes **25/25** across ten files and typecheck. Source/scope IDs and independent cursors remain; message and attachment reads use existing authorization APIs. This closes the local combined-search gap, not Cloudflare Email ingress, live provider acceptance or the remaining managed-services ledger. No rollout is enabled.
+P01/P02 controls pass locally but block on real/operator evidence: one shared D1, eleven shared KV
+IDs, unresolved `naelao-calls`, **158** missing read-only resource receipts and absent operator-
+attested D1 baselines. No independent code gap is currently recorded in the release runner/map.
+P03/P12/P20 and P04 implementation paths are present; remaining grace/restriction, refund/dispute/
+accounting, archive/key/jurisdiction policy and deployed/live recovery drills remain policy or
+acceptance gaps. These are not credential blockers. No rollout is enabled.
 
 **§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
-localized setup declarations, expected-usage inputs, install status, owner host forms and per-extension
-settings migration exist. The Marketplace Template release schema migration/update flow remains
-uncoded. Permission/pricing review, rollback/uninstall effects for generated projects, extensions,
-provider resources, licenses and retained receipts, complete verified rates, visual authoring and
-end-to-end live acceptance remain uncoded or unresolved. No credential blocker is claimed for these
-code gaps.
+localized declarations, expected-usage inputs, install status, owner host forms and per-installation
+settings migration exist. A Marketplace Template setup-schema migration/update flow is uncoded.
+Permission/pricing review, rollback/uninstall effects, generated-project/provider-resource lifecycle,
+complete verified rates, visual authoring and live acceptance also remain gaps; ordinary unwritten code
+is not labeled credential-blocked.
 
-**§9.5 — PARTIAL.** Per-installation host settings and non-Canvas fallback are local. The phone history
+**§9.5 — PARTIAL.** Per-installation settings and non-Canvas fallback are local. The phone history
 feed is Space Assistant phone operations, not customer voice-agent call history. Customer agent
 runtime, verified catalogs/rates, browser test/publish, customer call receipts, package composition and
-live acceptance remain uncoded without a supported runtime producer; provider/account acceptance is a
-separate gate.
+live acceptance remain. Provider/account acceptance is a separate gate.
 
-**§10 — PARTIAL.** The advisory registry, audience-filtered reads, confirmation receipts, versioned
-amendments/revocation, public project cards/proposals and project access rechecks have local code and
-coverage. Owner-configurable posture/defaults, private publication and request-to-use authority,
-extension/dependency linkage, reservation/cardinality, expiry/concurrency policy and broad
-non-disclosure acceptance remain. Product/policy choices are unresolved, not credential blocks.
+**§10 — PARTIAL.** Advisory registry, audience-filtered reads, confirmation receipts, versioned
+amendments/revocation, public cards/proposals and project access rechecks have local code/coverage.
+Owner-configurable posture/defaults, private publication/request-to-use authority, extension/dependency
+linkage, reservation/cardinality, expiry/concurrency policy and broad non-disclosure acceptance remain.
+Unresolved product/policy choices are not credential blocks.
 
-P01/P02 current validators pass locally and their preflight blocks only on recorded external D1/resource evidence; no independent code gap was found in the current runner/map. Exact next task: close P23 synchronous `/internal/notify` outcomes by reusing migration 0234, carrying stable IDs from reachable callers where available, returning status/ID, and persisting non-PII not-sent/rejected/accepted/ambiguous outcomes. Verify retry semantics per caller; do not infer inbox delivery. Then continue P03/P12/P20 and P04 before §5 guided-template gaps.
+Exact next task: implement the §5 signed, owner-reviewed setup-schema migration/update slice. Trace
+the installed/source schema and setup-value callers, then add bounded declarative migration preview
+and per-installation persistence with provenance/revision fences. Keep permissions, price, dependency,
+provider-resource and generated-project effects behind explicit review; do not invent unresolved
+lifecycle policy. Resume the managed-services source/caller matrix after this slice.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting

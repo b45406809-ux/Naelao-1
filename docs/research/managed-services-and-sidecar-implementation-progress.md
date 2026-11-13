@@ -2,44 +2,32 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; source-aware unified inbox `34093b6b` pushed)
+### Active continuation (2026-11-13; P23 synchronous outcomes `27683db1` pushed)
 
-- Code `34093b6b` is pushed to `origin/Mcbt5s-Backup-2`, following docs reconciliation `84e6a213`
-  and notification outcomes `e967eaa3`. The Connectors page combines search results from the selected
-  Space/Project Assistant mailbox and one explicitly selected active AgentMail connection. It keeps
-  each source cursor independently, tags IDs by source and scope, and merges/sorts results in memory.
-  Message and attachment reads use the existing Assistant communications API or owner-authorized
-  `agentmail-operation` route. No message body, provider credential or new backend record is stored.
-- Local evidence: Shell suite **25/25** across ten files, including unified inbox source, nested
-  AgentMail response, cursor and active-account cases; Shell typecheck and `git diff --check` pass.
-  No provider, deployed API or live acceptance was exercised. MS07's cross-source search view is
-  IMPLEMENTED_LOCAL; MS07 remains PARTIAL for disabled Cloudflare Email live ingress, broader
-  provider/session contracts and provider/deployed acceptance.
-- P23 remains PARTIAL after `e967eaa3`: migration 0234 records non-PII async notification queue
-  outcomes, and Billing/Router/Dashboard expose tenant-scoped owner/admin status. General synchronous
-  outcome receipts, approved retention and audited replay remain open. P01/P02 remain fail-closed on
-  missing operator-attested migration baselines, one shared D1, eleven shared KV IDs, unresolved
-  `naelao-calls` ownership and **158** missing read-only resource receipts.
-- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 retain the specific gates in their
-  source/caller matrix; no rollout is enabled.
-- P01/P02 were rechecked after migration 0234. Local suites pass: release migration **12/12**,
-  environment resource validator **10/10**, Wrangler isolation **6/6**, release manifest **5/5**,
-  deployment manifest **8/8**. Both manifest validators pass; release inventory reports 234 files and
-  required schema `0234_notification_delivery_outcomes`. The live source preflight correctly fails on
-  one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, absent valid account/time
-  observation fields and **158** resource existence receipts. No resource/account was queried or
-  changed; no additional P01/P02 code gap was found in this check.
-- The recorded latest AgentPort account/thread code is `804656cd` (route/index **21/21**, SDK **15/15**
-  and both typechecks recorded locally). AgentPort health changes in `2d4bde5a` are covered by the P01
-  worker health suite **15/15 across 13 Workers**. The interrupted project-main
-  `workers/agents/src/do/DynamicSandboxDO.test.ts` registry suite was already rerun after its last
-  source change and passed **28/28**; there is no newer registry or AgentPort source change to justify
-  repeating it.
-- Exact next task: close the independent P23 synchronous `/internal/notify` outcome gap using
-  migration 0234. Preserve caller-stable IDs where available, return outcome/ID to callers, and persist
-  non-PII not-sent/rejected/accepted/ambiguous states. Audit reachable callers for stable operation IDs
-  before describing retries as safe. Then continue P03/P12/P20 commercial recovery and P04. Preserve
-  `infra/scripts/__pycache__/`.
+- `27683db1` is pushed to `origin/Mcbt5s-Backup-2`. Notifications claims a stable operation ID before
+  provider egress, stores non-PII not-sent/rejected/accepted/ambiguous results, returns the ID and
+  outcome, and does not automatically resend an ambiguous operation. Reachable Agent, Auth, Space,
+  Billing and script callers were checked; IDs derive from event/operation identity where available.
+  Migrations 0235 and 0236 expand delivery channels and add terminal ambiguous cost-alert status.
+- Local/mock evidence: Notifications **44/44**; Agents **1,481 passed, 7 skipped** across 270 files;
+  Auth **34/34**; Auth/Agents/Billing/Shell/Dashboard typechecks; migration/release tests **18/18**;
+  release inventory and deployment manifest validators; `git diff --check`. Inventory is 236
+  migrations and requires `0236_cost_alert_ambiguous_delivery_status`. No provider, deployed database,
+  deployment or live acceptance ran. P23 remains PARTIAL for approved retention, audited replay and
+  live acceptance; provider acceptance is not inbox delivery.
+- P01/P02 controls pass locally and remain fail-closed on one shared D1, eleven shared KV IDs,
+  unresolved `naelao-calls`, **158** missing read-only resource receipts and absent operator-attested
+  D1 baselines. No independent release/environment code gap is recorded. P03/P12/P20 and P04 code
+  paths are present; remaining grace/restriction, refund/dispute/accounting, archive/key/jurisdiction
+  policy and deployed/live recovery acceptance are not credential blockers. Keep rollouts disabled.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain governed by their source/
+  caller matrix and are not declared complete. Preserve the untracked `infra/scripts/__pycache__/`.
+- Exact next task: implement §5's currently uncoded signed, owner-reviewed template setup-schema
+  migration/update flow. Trace the installed/source schema and setup-value callers, then add bounded
+  declarative migration preview and per-installation persistence with provenance/revision fences.
+  Keep permission, price, dependency, provider-resource and generated-project effects explicitly
+  reviewed; do not invent unresolved lifecycle policy. Then continue the remaining managed-services
+  rows from their exact matrix actions.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
