@@ -750,7 +750,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // The Memory/Channels/Sub-agents/Files panels — additionally gated by
 // requireEndUserSpaceMembership on the agents worker (same floor, different worker since
   // these routes live there).
-  /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files|capabilities)$/,
+  /^\/spaces\/([^/]+)\/assistant\/(memory|channels|channel-capabilities|sub-agents|files|capabilities)$/,
   // The same panels' per-item routes. These were unreachable because the pattern above is anchored
   // with `$`: the Files panel could LIST files but opening one 401'd, and the Artifacts panel was
   // never reachable at all. `files` takes an arbitrary nested path; `artifacts` takes an id (and

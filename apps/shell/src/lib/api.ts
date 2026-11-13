@@ -1840,6 +1840,34 @@ export interface ChannelLink {
   extension_instance_id?: string | null;
 }
 
+export interface ChannelMediaCapabilities {
+  schema_version: 1;
+  channels: {
+    discord?: {
+      inbound_attachments: {
+        supported: boolean;
+        retrieval: string;
+        ordinary_server_attachments_supported: boolean;
+        max_files: number;
+        max_file_bytes: number;
+        max_total_bytes: number;
+        retained_up_to_days: number;
+        content_type_behavior: string;
+        extension_file_handles: boolean;
+      };
+    };
+  };
+}
+
+export async function getChannelMediaCapabilities(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<ChannelMediaCapabilities> {
+  return apiFetch<ChannelMediaCapabilities>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/assistant/channel-capabilities`, { session, cache: "no-store" }
+  );
+}
+
 /** Same scoping convention as listScheduledJobs. */
 export async function listAssistantChannels(
   spaceId: string,

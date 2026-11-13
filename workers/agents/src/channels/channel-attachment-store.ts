@@ -1,5 +1,6 @@
 import type { DownloadedChannelAttachment } from "../launchpad/whatsapp-media.js";
 import { inferWorkspaceContentType } from "@naelao/types";
+import { CHANNEL_ATTACHMENT_RETENTION_DAYS } from "../launchpad/channel-media-capabilities.js";
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -56,7 +57,7 @@ export async function storeChannelAttachments(input: {
   const taskSegment = input.taskId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
   const now = input.now ?? Date.now();
   const createdAt = new Date(now).toISOString();
-  const expiresAt = new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(now + CHANNEL_ATTACHMENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const stored: StoredChannelAttachment[] = [];
 
   for (let index = 0; index < input.files.length; index++) {

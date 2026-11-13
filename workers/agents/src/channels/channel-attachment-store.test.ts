@@ -32,6 +32,9 @@ describe("scoped channel attachment storage", () => {
     expect(state.bucket.put).toHaveBeenCalledOnce();
     expect(state.bucket.put.mock.calls[0]?.[0]).toContain("spaces/space-a/channel-inbound/event_1/");
     expect(state.queries[0]?.values.slice(1, 4)).toEqual(["tenant-a", "space-a", "event/1"]);
+    const insert = state.queries.find(query => query.sql.includes("INSERT OR IGNORE INTO channel_attachments"));
+    expect(insert?.values[9]).toBe(new Date(input.now).toISOString());
+    expect(insert?.values[10]).toBe(new Date(input.now + 30 * 24 * 60 * 60 * 1000).toISOString());
   });
 
   it("infers a known filename extension for generic provider MIME while preserving explicit MIME", async () => {

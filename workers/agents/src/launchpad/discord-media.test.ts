@@ -1,14 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { getAdapter } from "./channels.js";
+import { DISCORD_ATTACHMENT_LIMITS } from "./channel-media-capabilities.js";
 import { downloadDiscordAttachments, hasDiscordAttachments } from "./discord-media.js";
 
 const raw = { id: "M123", author: { id: "U123" }, attachments: [{ id: "A123", filename: "../scan.pdf", content_type: "application/pdf", size: 3, ephemeral: true, url: "https://cdn.discordapp.com/attachments/1/2/scan.pdf?ex=123&hm=abc" }] };
 
 describe("Discord attachment ingress", () => {
   it("rejects more than five attachments before requesting any CDN file", async () => {
+    expect(DISCORD_ATTACHMENT_LIMITS).toEqual({ maxFiles: 5, maxFileBytes: 5 * 1024 * 1024,
+      maxTotalBytes: 15 * 1024 * 1024, retentionDays: 30 });
     const tooMany = { attachments: Array.from({ length: 6 }, (_, index) => ({ ...raw.attachments[0], id: `A${index}` })) };
     const fetcher = vi.fn<typeof fetch>();
     await expect(downloadDiscordAttachments(tooMany, { fetcher })).rejects.toThrow("discord_media_rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("validates all privacy and declared-size limits before downloading any file", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const mixed = { attachments: [raw.attachments[0], { ...raw.attachments[0], id: "private", ephemeral: false }] };
+    await expect(downloadDiscordAttachments(mixed, { fetcher })).rejects.toThrow("discord_non_ephemeral_media_unavailable_from_workers");
+    const overAggregate = { attachments: Array.from({ length: 4 }, (_, index) => ({ ...raw.attachments[0],
+      id: `large-${index}`, size: DISCORD_ATTACHMENT_LIMITS.maxFileBytes })) };
+    await expect(downloadDiscordAttachments(overAggregate, { fetcher })).rejects.toThrow("discord_media_rejected");
     expect(fetcher).not.toHaveBeenCalled();
   });
 

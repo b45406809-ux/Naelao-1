@@ -16,8 +16,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -466,6 +466,8 @@ export function ChannelConnect({
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState<string | null>(null);
   const [installingRuntime, setInstallingRuntime] = React.useState<string | null>(null);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
+  const [mediaCapabilities, setMediaCapabilities] = React.useState<ChannelMediaCapabilities | null>(null);
+  const [mediaCapabilitiesError, setMediaCapabilitiesError] = React.useState(false);
   const [extensionNotice, setExtensionNotice] = React.useState<string | null>(null);
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
   const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
@@ -540,6 +542,16 @@ export function ChannelConnect({
   }, [spaceId, projectId, session, canManage]);
 
   const byId = new Map(channels.map((c) => [c.channel, c]));
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setMediaCapabilities(null);
+    setMediaCapabilitiesError(false);
+    getChannelMediaCapabilities(spaceId, session)
+      .then(value => { if (!cancelled) setMediaCapabilities(value); })
+      .catch(() => { if (!cancelled) setMediaCapabilitiesError(true); });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
 
   async function startPair(channel: ChannelId) {
     setBusy(true);
@@ -928,6 +940,21 @@ export function ChannelConnect({
                 <span style={{ fontSize: 12, color: "var(--text3)" }}>{on ? "On" : connected ? "Off" : "—"}</span>
               )}
             </div>
+            {ch.id === "discord" && (() => {
+              const attachments = mediaCapabilities?.channels.discord?.inbound_attachments;
+              if (!attachments) return <p role="status" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--text3)" }}>
+                {mediaCapabilitiesError ? "Discord attachment support details are unavailable." : "Loading Discord attachment limits…"}
+              </p>;
+              const mib = (bytes: number) => `${bytes / (1024 * 1024)} MiB`;
+              return <p aria-label="Discord attachment support" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--text3)", lineHeight: 1.5 }}>
+                {attachments.supported
+                  ? `Attachments: ephemeral uploads only · Naelao limit ${attachments.max_files} files, ${mib(attachments.max_file_bytes)} each and ${mib(attachments.max_total_bytes)} total · private storage for up to ${attachments.retained_up_to_days} days.`
+                  : "Inbound attachments are not supported."}
+                {!attachments.ordinary_server_attachments_supported && " Ordinary server attachments are unavailable."}
+                {!attachments.extension_file_handles && " Channel extensions do not receive file handles."}
+                {` ${attachments.content_type_behavior}`}
+              </p>;
+            })()}
             {connected && canManage && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 9 }}>
               <label htmlFor={`channel-model-${ch.id}`} style={{ fontSize: 11.5, color: "var(--text3)" }}>Reply model</label>
               <select id={`channel-model-${ch.id}`} aria-label={`${ch.name} reply model`} disabled={busy} value={link?.model_override ?? ""} onChange={(event) => void setChannelModel(ch.id, event.target.value)} style={{ maxWidth: 360, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px", fontSize: 12 }}>

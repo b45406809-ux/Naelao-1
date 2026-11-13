@@ -102,6 +102,7 @@ import { downloadTwilioWhatsAppAttachments, downloadWhatsAppAttachments, hasWhat
 import { downloadTelegramAttachments, hasTelegramMedia } from "./launchpad/telegram-media.js";
 import { downloadSlackAttachments, hasSlackFiles } from "./launchpad/slack-media.js";
 import { downloadDiscordAttachments, hasDiscordAttachments } from "./launchpad/discord-media.js";
+import { CHANNEL_MEDIA_CAPABILITIES, DISCORD_ATTACHMENT_LIMITS } from "./launchpad/channel-media-capabilities.js";
 import { readBoundedProviderJson } from "./launchpad/bounded-provider-json.js";
 import { storeChannelAttachments } from "./channels/channel-attachment-store.js";
 import { indexChatUploads } from "./channels/chat-upload-attachments.js";
@@ -6630,7 +6631,9 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
       }
       if (!files.length) return c.json({ error_code: "channel_media_missing" }, 422);
       await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
-        tenantId: paired.tenantId, spaceId: paired.spaceId, taskId: mediaInbound.external_id, channel, files });
+        tenantId: paired.tenantId, spaceId: paired.spaceId, taskId: mediaInbound.external_id, channel, files,
+        ...(channel === "discord" ? { limits: { maxFiles: DISCORD_ATTACHMENT_LIMITS.maxFiles,
+          maxFileBytes: DISCORD_ATTACHMENT_LIMITS.maxFileBytes, maxTotalBytes: DISCORD_ATTACHMENT_LIMITS.maxTotalBytes } } : {}) });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "channel_media_unavailable";
       const rejected = /(?:media|slack)_?(?:rejected|url_rejected|size_mismatch|too_large)/.test(reason) || reason.includes("size_limit") || reason.includes("count_limit");
@@ -8068,6 +8071,13 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
         "SELECT channel, enabled, created_at, project_id, model_override, extension_instance_id FROM channel_links WHERE space_id = ? ORDER BY channel"
       ).bind(spaceId).all();
   return c.json({ data: results });
+});
+
+app.get("/spaces/:spaceId/assistant/channel-capabilities", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
+  return c.json(CHANNEL_MEDIA_CAPABILITIES, { headers: { "cache-control": "private, no-store" } });
 });
 
 app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {
