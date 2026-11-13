@@ -2,8 +2,9 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P04 bounded object capture and restore code is in the
-preserved `autonomous-managed-services-20261111` worktree, based on pushed P24 code `415ba199`.
+Current continuation checkpoint (2026-11-13): P04 bounded object capture and restore code commit
+`937fbdd5` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
+`autonomous-managed-services-20261111` branch, based on P24 code `415ba199`.
 New full archives capture at most 2 MiB per workspace object and 4 MiB total inside the existing
 8 MiB encrypted archive. Restore verifies object checksums, conditionally recreates missing objects,
 never overwrites conflicting content, and records partial progress in migration 111. The focused
@@ -58,10 +59,10 @@ policy and live provider delivery. P23 remains partial on general channel exhaus
 and receipt coverage outside the Product auth outbox; see
 `docs/operations/notification-delivery-contract.md`. P24 local code `415ba199` is pushed; its
 remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
-in the two progress ledgers. Exact next task: finish the P04 docs/checkpoint, fetch and safely push
-it, then continue P03/P20 commercial recovery by tracing current operator identity, refund triage
-and dunning callers and closing independent UI/authorization code gaps without choosing unapproved
-grace, refund, dispute or payout policy. P01/P02 already fail closed on the recorded resource and
+in the two progress ledgers. Exact next task: continue P03/P20 commercial recovery by tracing
+current operator identity, refund triage and dunning callers and closing independent UI/authorization
+code gaps without choosing unapproved grace, refund, dispute or payout policy. P01/P02 already fail
+closed on the recorded resource and
 baseline evidence gates. P17 remains partial for the
 Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
 P01/P02

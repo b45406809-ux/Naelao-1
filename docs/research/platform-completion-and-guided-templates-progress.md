@@ -2,7 +2,8 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P04 bounded object capture/restore implementation. New full archives place
+Updated 2026-11-13 after P04 code commit `937fbdd5` was pushed to
+`origin/Mcbt5s-Backup-2`. New full archives place
 bounded workspace object bytes and SHA-256 checksums inside the existing encrypted archive; restore
 can conditionally recreate missing objects, verifies read-back checksums, and records partial
 progress in migration 111 so a retry can complete after R2 or SQLite failure. Per-object capture is
@@ -358,7 +359,8 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
 3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
-   locally; the focused SQLite/R2-mock suite passes **9/9**. Next, continue P03/P20 commercial
+   in pushed code `937fbdd5`; the focused SQLite/R2-mock suite passes **9/9**. Next, continue
+   P03/P20 commercial
    recovery by tracing the existing dunning, operator identity, refund triage and author accounting
    callers. Close independent UI/authorization code gaps using existing ledgers, while preserving
    grace/restriction and refund/dispute/payout policies as unresolved product decisions. P22's

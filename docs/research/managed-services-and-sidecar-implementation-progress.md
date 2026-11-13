@@ -2,7 +2,7 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P24 scoped rollback `415ba199` pushed)
+### Active continuation (2026-11-13; P04 object recovery `937fbdd5` pushed)
 
 - P24 code `415ba199` is pushed to `origin/Mcbt5s-Backup-2`. Publisher trust now fails closed when
   publisher metadata is partial and applies the active D1 publisher-key registry to installation
@@ -21,13 +21,20 @@
   no drain/termination receipt on publisher revocation. Blueprint activation checks installed exact
   pins but does not transfer an extension package and its artifacts into a new Space. These are
   implementation/product/runtime gaps, not credential blockers.
+- P04 code `937fbdd5` is pushed to `origin/Mcbt5s-Backup-2`. New full archives capture bounded
+  workspace object bytes and metadata; restore verifies checksums, preserves metadata, refuses to
+  overwrite different content, and records retryable partial progress in migration 111. Local
+  evidence: `space-data-ops.test.ts` **9/9**, Spaces typecheck and `git diff --check`. No live R2,
+  isolated restore or RPO/RTO evidence exists; captured objects are limited to 2 MiB each/4 MiB
+  total and relational restore remains merge-only.
 - P01/P02 release and isolation validators remain fail-closed on shared configured IDs, missing
   ownership/receipts and operator-attested D1 baselines. Their code is already recorded; don't repeat
   that audit absent a source/configuration change. P03/P20 recovery policies remain decision gates.
-- Exact next task: continue the ordered platform work at P04. Trace Space archive object references
-  through current export and restore calls, and add bounded object-byte capture plus checksum-
-  verified restore using the existing archive/R2 contracts. Then continue commercial recovery/UI,
-  guided templates, voice extension dashboards and Shared-Space coordination in the plan's order.
+- Exact next task: continue P03/P20 commercial recovery by tracing current dunning, operator identity,
+  refund triage and author accounting callers; close independent UI/authorization gaps using current
+  ledgers without inventing grace, restriction, refund, dispute or payout policy. Then return to
+  remaining managed-services S2–S9/U01–U12 code gaps before guided templates, voice extension
+  dashboards and Shared-Space coordination.
   Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
 ### Prior checkpoint (2026-11-13; P17 code `91f17842` pushed)
@@ -107,7 +114,7 @@
   and deployment validators, and `git diff --check`. These are local mocks/SQLite/static checks;
   no deployed D1, KV, Vectorize, AutoRAG provider index or live acceptance was exercised. AutoRAG
   provider-index deletion remains unverified and retrieval remains disabled.
-- P04's next code slice is implemented in the current worktree: full archives capture workspace
+- P04 code `937fbdd5` is pushed: full archives capture workspace
   object bytes with per-object 2 MiB/aggregate 4 MiB caps, and restore verifies checksums, avoids
   overwriting conflicting objects, and records retryable partial progress in migration 111.
   `space-data-ops.test.ts` passes **9/9**, Spaces typecheck and `git diff --check` pass. These are
@@ -118,9 +125,8 @@
 - The S2–S9/U01–U12 source/caller audit is reconciled. Its remaining PARTIAL rows name specific
   product decisions, unsupported platform/provider contracts, or live evidence; no live acceptance
   is claimed. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
-- Exact next task: finish and safely push the P04 code/docs checkpoint, then continue P03/P20
-  commercial recovery by tracing current dunning, operator identity, refund triage and author
-  accounting callers and closing independent UI/authorization gaps without inventing grace,
+- Exact next task: continue P03/P20 commercial recovery by tracing current dunning, operator identity,
+  refund triage and author accounting callers and closing independent UI/authorization gaps without inventing grace,
   restriction, refund, dispute or payout policy. Then return to the remaining managed-services
   S2–S9/U01–U12 code gaps before advancing through guided templates, voice dashboards and Shared-Space
   coordination.
