@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0237_telnyx_voice_call_cost_control_hash",
+  "requiredSchemaVersion": "0239_telnyx_extension_call_installation_pin",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -951,6 +951,14 @@
     {
       "filename": "0237_telnyx_voice_call_cost_control_hash.sql",
       "sha256": "1e0e85df3860b2a63848e4c161204ef3ac0b43e2ffd969d431f125e201edb22a"
+    },
+    {
+      "filename": "0238_channel_attachment_extension_scope.sql",
+      "sha256": "7ceeef4bf6a7cdc32d3b5b18e755aa62a54e110f6a2574be504fd754df026f40"
+    },
+    {
+      "filename": "0239_telnyx_extension_call_installation_pin.sql",
+      "sha256": "68ed999450fc260483f6fbaeb9ed8d686d621b0f427d510187d8592fca1fd46d"
     }
   ]
 }

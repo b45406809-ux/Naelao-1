@@ -37,6 +37,7 @@ class MemoryD1:
             "cache_generation_next", "cache_cleanup_ids_json", "cache_cleanup_status",
         )
         self.gdpr_request_columns = ("id", "tenant_id", "request_type", "cache_cleanup_status")
+        self.extension_call_columns = ("extension_installation_id", "handler_sha256")
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -66,6 +67,8 @@ class MemoryD1:
             return [{"name": name} for name in self.knowledge_deletion_columns]
         if sql.startswith("PRAGMA table_info('gdpr_requests')"):
             return [{"name": name} for name in self.gdpr_request_columns]
+        if sql.startswith("PRAGMA table_info('assistant_telnyx_extension_calls')"):
+            return [{"name": name} for name in self.extension_call_columns]
         return []
 
     def execute_file(self, sql):
@@ -231,6 +234,14 @@ class ReleaseMigrationTests(unittest.TestCase):
         incomplete = MemoryD1()
         incomplete.gdpr_request_columns = ("id", "status")
         with self.assertRaisesRegex(release.ReleaseError, "gdpr_requests"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_phone_extension_installation_attribution(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        incomplete = MemoryD1()
+        incomplete.extension_call_columns = ("id", "binding_id")
+        with self.assertRaisesRegex(release.ReleaseError, "assistant_telnyx_extension_calls"):
             release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_interrupted_run_resumes_from_next_atomic_migration(self):

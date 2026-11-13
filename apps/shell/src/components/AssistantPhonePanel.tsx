@@ -38,6 +38,8 @@ type PhoneHistoryPage = { data: Row[]; next_cursor: string | null };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 type PhoneHandlerCandidate = { installation_id: string; extension_id: string; name: string; version: string; handler_sha256: string };
 type RecentExtensionCall = {
+  installation_id: string | null;
+  handler_sha256: string | null;
   state: string;
   turn_count: number;
   started_at: number;
@@ -382,19 +384,43 @@ export function AssistantPhonePanel({
       {((state?.extension_lines?.length ?? 0) > 0 || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
         <summary>Recent customer extension calls · Telnyx</summary>
         <p>The latest 50 call records from the last 7 days. Caller IDs are masked. Costs appear only when a signed Telnyx report is linked. No linked report means the amount is unknown, not zero. These provider-reported amounts are not invoices or customer charges.</p>
-        {state?.recent_telnyx_extension_calls?.length ? <ol>
-          {state.recent_telnyx_extension_calls.map((call, index) => {
-            const cost = call.cost_report;
-            const costLabel = cost.status === "reported" && cost.provider_cost_micros !== null && cost.currency
-              ? `Telnyx reported ${cost.currency} ${(cost.provider_cost_micros / 1_000_000).toFixed(6)}${cost.leg_count ? ` across ${cost.leg_count} cost legs` : ""}`
-              : cost.status === "unavailable"
-                ? "Provider cost report unavailable"
-                : "No linked provider report · amount unknown, not zero";
-            return <li key={`${call.started_at}:${index}`}>
-              {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {costLabel}
-            </li>;
-          })}
-        </ol> : <p>No recent Telnyx extension calls are recorded.</p>}
+        {state?.recent_telnyx_extension_calls?.length ? (() => {
+          const groups = new Map<string, RecentExtensionCall[]>();
+          for (const call of state.recent_telnyx_extension_calls) {
+            const key = call.installation_id && call.handler_sha256 ? JSON.stringify([call.installation_id, call.handler_sha256]) : "legacy-unpinned";
+            groups.set(key, [...(groups.get(key) ?? []), call]);
+          }
+          return [...groups.entries()].map(([key, calls]) => {
+            const first = calls[0]!;
+            const candidate = first.installation_id ? state.phone_handler_candidates?.find(item => item.installation_id === first.installation_id
+              && item.handler_sha256 === first.handler_sha256) : undefined;
+            const reportedByCurrency = new Map<string, bigint>();
+            for (const call of calls) if (call.cost_report.status === "reported" && call.cost_report.currency
+              && Number.isSafeInteger(call.cost_report.provider_cost_micros) && call.cost_report.provider_cost_micros !== null) {
+              reportedByCurrency.set(call.cost_report.currency, (reportedByCurrency.get(call.cost_report.currency) ?? 0n) + BigInt(call.cost_report.provider_cost_micros));
+            }
+            const reportedTotal = (micros: bigint) => `${micros / 1_000_000n}.${(micros % 1_000_000n).toString().padStart(6, "0")}`;
+            const reportedCalls = calls.filter(call => call.cost_report.status === "reported").length;
+            const unavailableCalls = calls.filter(call => call.cost_report.status === "unavailable").length;
+            const unlinkedCalls = calls.filter(call => call.cost_report.status === "not_linked").length;
+            return <section key={key} style={{ margin: "12px 0", padding: 10, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
+              <h4 style={{ margin: "0 0 6px" }}>{candidate ? `${candidate.name} · v${candidate.version}` : first.installation_id ? `Installation ${first.installation_id}` : "Legacy calls · installation not recorded"}</h4>
+              {first.handler_sha256 && <p>Handler SHA-256: <code>{first.handler_sha256}</code></p>}
+              <p>{calls.length} calls · {reportedCalls} with provider reports · {unavailableCalls} unavailable · {unlinkedCalls} without a linked report. Telnyx reported totals: {[...reportedByCurrency].map(([currency, amount]) => `${currency} ${reportedTotal(amount)}`).join(" · ") || "unknown"}. These are provider observations, not invoices or customer charges.</p>
+              <ol>{calls.map((call, index) => {
+                const cost = call.cost_report;
+                const costLabel = cost.status === "reported" && cost.provider_cost_micros !== null && cost.currency
+                  ? `Telnyx reported ${cost.currency} ${(cost.provider_cost_micros / 1_000_000).toFixed(6)}${cost.leg_count ? ` across ${cost.leg_count} cost legs` : ""}`
+                  : cost.status === "unavailable"
+                    ? "Provider cost report unavailable"
+                    : "No linked provider report · amount unknown, not zero";
+                return <li key={`${call.started_at}:${index}`}>
+                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {costLabel}
+                </li>;
+              })}</ol>
+            </section>;
+          });
+        })() : <p>No recent Telnyx extension calls are recorded.</p>}
       </details>}
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}

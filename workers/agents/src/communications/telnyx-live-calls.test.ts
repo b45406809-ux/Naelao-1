@@ -104,8 +104,12 @@ describe("Telnyx live call command contract", () => {
     expect(firstCall.event.payload).not.toHaveProperty("call_control_id");
     const secondCall = extensionEvents[1]!;
     expect(secondCall.event).toMatchObject({ type: "call.digits", payload: { digits: "1" } });
-    expect(await f.db.prepare("SELECT state FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
-      .toEqual({ state: "ended" });
+    expect(await f.db.prepare("SELECT state,extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
+      .toEqual({ state: "ended", extension_installation_id: "ext-1", handler_sha256: "a".repeat(64) });
+    await f.db.prepare("UPDATE assistant_phone_extension_handlers SET installation_id='ext-2',handler_sha256=? WHERE binding_id='public-extension'")
+      .bind("b".repeat(64)).run();
+    expect(await f.db.prepare("SELECT extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
+      .toEqual({ extension_installation_id: "ext-1", handler_sha256: "a".repeat(64) });
     expect(await f.db.prepare("SELECT call_control_id FROM assistant_telnyx_live_calls").first()).toBeNull();
     expect(await f.db.prepare("SELECT id FROM assistant_live_calls").first()).toBeNull();
   });

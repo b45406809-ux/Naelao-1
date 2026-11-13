@@ -214,12 +214,13 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     if (payload.direction !== "incoming" && payload.direction !== "inbound") throw new Error("telnyx_inbound_call_required");
     const caller = e164(payload.from);
     if (e164(payload.to) !== binding.phone_number || !caller) throw new Error("telnyx_call_address_mismatch");
-    const handler = await env.PLATFORM_DB.prepare("SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=? AND status='active'")
-      .bind(binding.id).first();
+    const handler = await env.PLATFORM_DB.prepare("SELECT binding_id,installation_id,handler_sha256 FROM assistant_phone_extension_handlers WHERE binding_id=? AND status='active'")
+      .bind(binding.id).first<{ binding_id: string; installation_id: string; handler_sha256: string }>();
     const scope = scopeFor(identity);
     const policy = validatePhonePolicy(JSON.parse(binding.policy_json));
     if (!Number.isSafeInteger(now + policy.maxCallSeconds)) throw new Error("telnyx_extension_duration_invalid");
-    if (!handler || !await scopeAccess(env, scope, true) || !(await channelPreferences(env, scope)).enabled.phone
+    if (!handler || !handler.installation_id || !/^[a-f0-9]{64}$/.test(handler.handler_sha256)
+      || !await scopeAccess(env, scope, true) || !(await channelPreferences(env, scope)).enabled.phone
       || await isSpaceNetworkEgressDenied(env.PLATFORM_DB, identity.space_id)) {
       await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_unavailable"));
       return { accepted: true, rejected: "extension_unavailable" };
@@ -232,12 +233,22 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       if (existingAdmission.binding_id !== binding.id || existingAdmission.caller !== caller) throw new Error("telnyx_extension_call_binding_conflict");
       return { accepted: true, duplicate: true };
     }
-    const inserted = await env.PLATFORM_DB.prepare("INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at) VALUES(?,?,?,'answering',0,?,?,?,?)")
-      .bind(callControlId, binding.id, caller, now, now + policy.maxCallSeconds, now, now).run();
-    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
-      .bind(callControlId).first<{ binding_id: string; caller: string; state: string }>();
-    if (!row || row.binding_id !== binding.id || row.caller !== caller) throw new Error(`telnyx_extension_call_binding_conflict:${JSON.stringify({ row, bindingId: binding.id, caller, inserted: inserted.meta })}`);
-    if (!inserted.meta.changes) return { accepted: true, duplicate: true };
+    const inserted = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_extension_calls(
+        call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256)
+      SELECT ?,?,?,'answering',0,?,?,?,?,?,?
+      FROM assistant_phone_extension_handlers h
+      WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?`)
+      .bind(callControlId, binding.id, caller, now, now + policy.maxCallSeconds, now, now, handler.installation_id,
+        handler.handler_sha256, binding.id, handler.installation_id, handler.handler_sha256).run();
+    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
+      .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null }>();
+    if (!inserted.meta.changes) {
+      if (row?.binding_id === binding.id && row.caller === caller) return { accepted: true, duplicate: true };
+      await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_handler_changed"));
+      return { accepted: true, rejected: "extension_handler_changed_during_admission" };
+    }
+    if (!row || row.binding_id !== binding.id || row.caller !== caller || row.extension_installation_id !== handler.installation_id
+      || row.handler_sha256 !== handler.handler_sha256) throw new Error("telnyx_extension_call_binding_conflict");
     const quota = await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?")
       .bind(binding.id, policy.maxDailyInboundCalls).run();
     if (!quota.meta.changes) {

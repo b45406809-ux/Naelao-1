@@ -386,6 +386,14 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if "cache_cleanup_status" not in erasure_columns:
         raise ReleaseError("required schema check failed for gdpr_requests")
+    extension_call_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('assistant_telnyx_extension_calls')")
+        if isinstance(row.get("name"), str)
+    }
+    extension_call_expected = {"extension_installation_id", "handler_sha256"}
+    if not extension_call_expected.issubset(extension_call_columns):
+        raise ReleaseError("required schema check failed for assistant_telnyx_extension_calls")
     d1.execute_file(
         f"INSERT INTO {META_TABLE}(key,value) VALUES('current_schema_version',{sql_quote(manifest['requiredSchemaVersion'])}) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value;\n"

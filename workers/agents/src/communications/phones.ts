@@ -633,17 +633,21 @@ export async function handlePhoneAction(
       .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
     const phoneHandlerCandidates = manager ? await listPhoneHandlerCandidates(env, scope) : [];
     const recentExtensionCallRows = manager
-      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds
+      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.extension_installation_id,c.handler_sha256,
+          c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds
           FROM assistant_telnyx_extension_calls c JOIN assistant_phone_bindings b ON b.id=c.binding_id
           WHERE b.identity_id=? AND b.purpose='extension' AND c.started_at>=?
           ORDER BY c.started_at DESC,c.call_control_id DESC LIMIT 50`)
           .bind(identity.id, Math.floor(Date.now() / 1000) - 7 * 86_400)
-          .all<{ call_control_id:string;binding_id:string;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
+          .all<{ call_control_id:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;
+            caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
           .results
       : [];
     const extensionCallCosts = await extensionCallCostSummaries(env, recentExtensionCallRows);
     const recentExtensionCalls = recentExtensionCallRows.map(row => ({
       binding_id: row.binding_id,
+      installation_id: row.extension_installation_id,
+      handler_sha256: row.handler_sha256,
       state: row.state, turn_count: row.turn_count, started_at: row.started_at,
       duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller),
       cost_report: extensionCallCosts.get(`${row.binding_id}\0${row.call_control_id}`)
