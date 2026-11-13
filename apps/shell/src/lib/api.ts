@@ -2467,7 +2467,21 @@ export interface SpaceTemplateActivationPreview {
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
   security: { publishable: boolean; blockers?: string[] };
   evaluation: { passed: number; total: number; evidence: "literal-lint" | "state-delta"; issued_at: string };
-  cost_estimate: { available: false; reason: string };
+  cost_estimate: {
+    status: "partial" | "unavailable";
+    currency: "USD";
+    as_of: string;
+    known_one_time_costs: Array<{
+      component: "marketplace_template_license";
+      amount_cents: number;
+      basis: "recorded_purchase" | "current_zero_price_listing";
+      already_paid: boolean;
+      paid_at?: string;
+    }>;
+    not_estimated: string[];
+    total_estimate_cents: null;
+    reason?: "selected_listing_not_recorded" | "listing_price_unavailable";
+  };
 }
 export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<SpaceTemplateActivationPreview> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview`, { session, cache: "no-store" });

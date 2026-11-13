@@ -53,6 +53,7 @@ import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseSpaceDomainProviders } from "./space-domain-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
+import { loadTemplateCostEstimate, selectedTemplateListingId } from "./template-cost-estimate.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
 import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
@@ -622,6 +623,7 @@ app.post("/spaces/:spaceId/spaces", async (c) => {
       name: body.name,
       spacetypeId: owner.root.spacetype_id,
       ...(typeof body.blueprint_id === "string" ? { blueprintId: body.blueprint_id } : {}),
+      ...(typeof body.template_listing_id === "string" ? { templateListingId: body.template_listing_id } : {}),
       ...(typeof body.assistant_email_mode==="string"?{configOverrides:{assistantEmailProvisioning:{provider:"agentmail",defaultMode:body.assistant_email_mode,provisionOnCreate:body.assistant_email_mode==="naelao_managed"}}}:{}),
       initialMembership: { productSpaceId: owner.root.id, endUserId: owner.userId, role: "owner" },
     });
@@ -742,14 +744,18 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   if (!identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
-  if (!await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first()) throw notFound("Space");
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id,config_json FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first<{ id: string; config_json: string | null }>();
+  if (!owned) throw notFound("Space");
+  const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
+  if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
+  const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
   const value = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
   if (!value) throw notFound("Blueprint");
   const blueprint = value.blueprint, artifact = { ...blueprint } as SpaceBlueprint & { securityRating?: unknown };
   delete artifact.securityRating;
   if (!await verifyArtifactCertificate(artifact, value.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta")) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   if (value.conformanceCertificate.issuerTenantId !== tenantId) {
-    const fork = await c.env.PLATFORM_DB.prepare(`SELECT f.certificate_json,f.artifact_json FROM marketplace_forks f JOIN marketplace_listings l ON l.id=f.listing_id WHERE f.tenant_id=? AND f.blueprint_id=? AND l.status='published' LIMIT 1`).bind(tenantId, blueprint.id).first<{ certificate_json: string; artifact_json: string }>();
+    const fork = await c.env.PLATFORM_DB.prepare(`SELECT f.certificate_json,f.artifact_json FROM marketplace_forks f JOIN marketplace_listings l ON l.id=f.listing_id WHERE f.tenant_id=? AND f.blueprint_id=? AND (? IS NULL OR f.listing_id=?) AND l.status='published' LIMIT 1`).bind(tenantId, blueprint.id, listingId, listingId).first<{ certificate_json: string; artifact_json: string }>();
     if (!fork) return c.json({ error_code: "template_license_required" }, 402);
     try {
       const certificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;
@@ -769,11 +775,12 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const rows = await result.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; publisher_key_id?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
   const trustedInstallations = await trustedExtensionInstallations(c.env, tenantId, spaceId, rows.installations ?? []);
   const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedInstallations), await installableSpaceExtensionPins(), runtimeReadiness);
+  const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId);
   return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
-    cost_estimate: { available: false as const, reason: "provider_and_runtime_costs_are_not_calculated_by_template_preview" },
-  });
+    cost_estimate: costEstimate,
+  }, { headers: { "cache-control": "private, no-store" } });
 });
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
@@ -785,8 +792,11 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   }
   if (!identity.userId) return c.json({ error_code: "human_activation_required" }, 403);
   if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
-  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id,config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first<{ id: string; config_json: string | null }>();
   if (!owned) throw notFound("Space");
+  const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
+  if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
+  const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
   const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown }));
   const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
   if (!storedValue) throw notFound("Blueprint");
@@ -822,8 +832,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     const fork = await c.env.PLATFORM_DB.prepare(
       `SELECT f.certificate_json, f.artifact_json
        FROM marketplace_forks f JOIN marketplace_listings l ON l.id = f.listing_id
-       WHERE f.tenant_id = ? AND f.blueprint_id = ? AND l.status = 'published' LIMIT 1`
-    ).bind(tenantId, c.req.param("blueprintId")).first<{ certificate_json: string; artifact_json: string }>();
+       WHERE f.tenant_id = ? AND f.blueprint_id = ? AND (? IS NULL OR f.listing_id = ?) AND l.status = 'published' LIMIT 1`
+    ).bind(tenantId, c.req.param("blueprintId"), listingId, listingId).first<{ certificate_json: string; artifact_json: string }>();
     if (!fork) return c.json({ error_code: "template_license_required" }, 402);
     try {
       const forkCertificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;

@@ -112,6 +112,40 @@ describe("Space Template activation preview", () => {
     expect(instantiateCalls).toBe(0);
   });
 
+  it("matches guided-install pricing to the exact selected listing and reports paid costs without inventing a total", async () => {
+    const secret = "template-cost-preview-secret";
+    const artifact = blueprint({ id: "tpl_cost", projects: [], requiredExtensions: [], requiredCredentials: [] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `cost-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "publisher-tenant");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const queries: Array<{ sql: string; values: unknown[] }> = [];
+    const db = { prepare(sql: string) { return { bind(...values: unknown[]) { queries.push({ sql, values }); return { first: async () => {
+      if (sql.includes("marketplace_license_purchases")) return { pricing_model: "fixed_license", price_cents: 2500,
+        amount_cents: 2500, created_at: "2026-11-01T00:00:00.000Z" };
+      if (sql.includes("marketplace_forks")) return { certificate_json: JSON.stringify(certificate), artifact_json: JSON.stringify(artifact) };
+      if (sql.includes("config_json")) return { id: "space-cost", config_json: JSON.stringify({ template_listing_id: "listing-selected" }) };
+      return { id: "space-cost" };
+    } }; } }; } };
+    const stub = { fetch: async (request: Request) => new URL(request.url).pathname === "/extension-installations"
+      ? Response.json({ installations: [] }) : new Response("not found", { status: 404 }) };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
+      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/publisher-tenant/${artifact.id}.json`
+        ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
+      SPACE_DO: { idFromName: () => "space-cost-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-buyer", "x-naelao-user-id": "owner", "x-naelao-role": "owner",
+      "x-naelao-internal-token": await mintInternalToken(secret, "tenant-buyer") };
+    const response = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ cost_estimate: {
+      status: "partial", currency: "USD", total_estimate_cents: null,
+      known_one_time_costs: [{ amount_cents: 2500, basis: "recorded_purchase", already_paid: true,
+        paid_at: "2026-11-01T00:00:00.000Z" }],
+    } });
+    expect(queries.find(query => query.sql.includes("marketplace_license_purchases"))?.values)
+      .toEqual(["tenant-buyer", artifact.id, "listing-selected"]);
+  });
+
   it("activates a certified template through the host for a fresh Space", async () => {
     const secret = "fresh-space-activation-secret";
     const artifact = blueprint({ id: "tpl_fresh_target", projects: [], requiredExtensions: [], requiredCredentials: [] });

@@ -118,6 +118,16 @@ describe("createSpaceRecord — bounded inputs and tenant quota serialization", 
     expect(row?.count).toBe(0);
   });
 
+  it("retains the exact Marketplace listing with the pending blueprint for resumable setup", async () => {
+    const fakeDb = makeDb();
+    const created = await createSpaceRecord({ PLATFORM_DB: fakeDb }, {
+      tenantId: "tenant-a", name: "Template Space", spacetypeId: "launchpad",
+      blueprintId: "blueprint-a", templateListingId: "listing-a",
+    });
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id=?").bind(created.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ pending_blueprint_id: "blueprint-a", template_listing_id: "listing-a" });
+  });
+
   it("does not insert when the tenant creation lock is held", async () => {
     const fakeDb = makeDb();
     const lockFetch = vi.fn(async () => Response.json({ acquired: false }));

@@ -416,8 +416,13 @@ export default function SpacesPage() {
             </li>)}</ul> : <p>None declared</p>}
             <strong>Template evaluation</strong>
             <p>{activationReview.preview.evaluation.passed}/{activationReview.preview.evaluation.total} checks passed · {activationReview.preview.evaluation.evidence} · issued {new Date(activationReview.preview.evaluation.issued_at).toLocaleDateString()}</p>
-            <strong>Cost estimate</strong>
-            <p>Not available in this preview. Provider charges and runtime usage are not calculated here.</p>
+            <strong>Cost review · {activationReview.preview.cost_estimate.status === "partial" ? "partial" : "unavailable"}</strong>
+            {activationReview.preview.cost_estimate.known_one_time_costs.length > 0 ? <ul>{activationReview.preview.cost_estimate.known_one_time_costs.map((cost, index) => <li key={`${cost.component}:${index}`}>
+              Template license: {new Intl.NumberFormat(undefined, { style: "currency", currency: activationReview.preview.cost_estimate.currency }).format(cost.amount_cents / 100)}
+              {cost.already_paid && cost.paid_at ? ` · recorded as paid ${new Date(cost.paid_at).toLocaleDateString()}` : cost.basis === "current_zero_price_listing" ? ` · current listing price as of ${new Date(activationReview.preview.cost_estimate.as_of).toLocaleDateString()}` : ""}
+            </li>)}</ul> : <p>{activationReview.preview.cost_estimate.reason === "selected_listing_not_recorded" ? "This older Space has no saved Marketplace listing ID, so its template license price cannot be matched." : "No exact template license price is available for this installation."}</p>}
+            <p>A total operating-cost estimate is not available. These costs are not estimated: {activationReview.preview.cost_estimate.not_estimated.join("; ")}.</p>
+            <p>Any listed license amount is an already recorded payment or the current zero-price listing base; it is not a quote for future provider usage. Optional managed services still require their own current quote and owner confirmation.</p>
             {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}
           </div>}
         </form>

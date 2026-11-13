@@ -152,6 +152,8 @@ export interface CreateSpaceParams {
   templateId?: string;
   /** Certified FDE marketplace blueprint to activate after this Space is provisioned. */
   blueprintId?: string;
+  /** Exact Marketplace listing selected for this blueprint, retained for review and price disclosure. */
+  templateListingId?: string;
   /** Three-Tier Platform Model: the platform-subdomain identity (migration 0044, unique). */
   productSlug?: string;
   configOverrides?: Record<string, unknown>;
@@ -188,6 +190,9 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
   if (params.templateId !== undefined && (typeof params.templateId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.templateId))) {
     throw new SpaceCreationError(400, "bad_request", "Invalid template_id");
+  }
+  if (params.templateListingId !== undefined && (typeof params.templateListingId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.templateListingId))) {
+    throw new SpaceCreationError(400, "bad_request", "Invalid template listing identifier");
   }
   if (params.configOverrides !== undefined) {
     if (!params.configOverrides || typeof params.configOverrides !== "object" || Array.isArray(params.configOverrides)) {
@@ -276,6 +281,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     ...mergedConfigOverrides,
     ...(params.templateId ? { template_id: params.templateId } : {}),
     ...(params.blueprintId ? { pending_blueprint_id: params.blueprintId } : {}),
+    ...(params.templateListingId ? { template_listing_id: params.templateListingId } : {}),
   });
   // Independent Wrangler dev processes do not share the local queue persistence directory,
   // so a local producer would leave products permanently stuck in `provisioning`. The local
