@@ -1479,7 +1479,7 @@ const SPACE_SHARED_PACKAGE_CAPABILITIES = new Set([
 const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set(["events.subscribe", "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"]);
 
 type SpaceExtensionDependencyInstallRow = {
-  instance_id?: string; extension_id: string; project_id: string | null; scope: string; status: string;
+  instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string;
   release_version?: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean;
   manifest_sha256?: string | null; manifest?: unknown;
 };
@@ -1508,9 +1508,153 @@ async function resolveSpaceExtensionDependencies(env: Env, tenantId: string, spa
   return resolveExtensionDependencyClosure(manifest, pins);
 }
 
+type SpacePackageInstallReviewNode = {
+  extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
+  permissions: string[]; capabilities: string[]; shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+  connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+  dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+  is_requested: boolean; installed_state: "installed_exact" | "installed_disabled" | "install_required" | "pin_conflict";
+  installable: boolean; publisher_signature_verified: true;
+};
+type VerifiedSpacePackageRelease = {
+  manifest: ReturnType<typeof validateExtensionManifest>; manifestSha256: string; publisherId: string; publisherKeyId: string;
+  permissions: string[]; capabilities: string[]; sharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+  connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+  dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+  installable: boolean;
+};
+
+function normalizeSpacePackageReviewGrants(manifest: ReturnType<typeof validateExtensionManifest>, raw: unknown) {
+  if (!Array.isArray(raw) || raw.length > 64) return null;
+  const requested = manifest.shared_filesystem ?? [];
+  const grants: Array<{ path: string; access: "READ" | "READ_WRITE" }> = [];
+  for (const value of raw) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const grant = value as Record<string, unknown>;
+    if (typeof grant.path !== "string" || !(grant.access === "READ" || grant.access === "READ_WRITE")
+      || !requested.some(item => item.path === grant.path && (item.access === grant.access || item.access === "READ_WRITE" && grant.access === "READ"))) return null;
+    grants.push({ path: grant.path, access: grant.access });
+  }
+  if (new Set(grants.map(grant => grant.path)).size !== grants.length) return null;
+  return grants.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function inspectSignedSpacePackageRelease(env: Env, tenantId: string, spaceId: string, extensionId: string,
+  version: string): Promise<{ ok: true; package: VerifiedSpacePackageRelease } | { ok: false; error: string }> {
+  const stub = await spaceDoStub(env, spaceId, tenantId);
+  const response = await stub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({ extension_id: extensionId, version })}`));
+  if (response.status === 404) return { ok: false, error: "release_not_found" };
+  if (!response.ok) return { ok: false, error: "release_untrusted" };
+  const payload = await readBoundedResponseJson<{ release?: { extension_id: string; version: string; manifest: unknown; manifest_json: string;
+    artifact_sha256: string; publisher?: { id?: string; key_id?: string; signature?: string; payload_sha256?: string } } }>(response, 2 * 1024 * 1024).catch(() => null);
+  const release = payload?.release;
+  if (!release || release.extension_id !== extensionId || release.version !== version || !/^[a-f0-9]{64}$/.test(release.artifact_sha256)
+    || typeof release.manifest_json !== "string" || typeof release.publisher?.id !== "string" || typeof release.publisher.key_id !== "string"
+    || typeof release.publisher.signature !== "string" || typeof release.publisher.payload_sha256 !== "string")
+    return { ok: false, error: "release_identity_invalid" };
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try { manifest = validateExtensionManifest(JSON.parse(release.manifest_json), { gatekeeperCapabilities: [...SPACE_SHARED_PACKAGE_CAPABILITIES] }); }
+  catch { return { ok: false, error: "manifest_invalid" }; }
+  if (JSON.stringify(manifest) !== release.manifest_json || manifest.id !== extensionId || manifest.bundle?.version !== version)
+    return { ok: false, error: "manifest_pin_mismatch" };
+  const publisher = await env.PLATFORM_DB.prepare(`SELECT publisher_id,public_key_b64url FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, release.publisher.key_id)
+    .first<{ publisher_id: string; public_key_b64url: string }>();
+  if (!publisher || publisher.publisher_id !== release.publisher.id) return { ok: false, error: "publisher_key_untrusted_or_revoked" };
+  let publicKey: ArrayBuffer;
+  try { publicKey = decodeExtensionPublisherPublicKey(publisher.public_key_b64url); }
+  catch { return { ok: false, error: "publisher_key_invalid" }; }
+  if (await extensionPublisherKeyId(publicKey) !== release.publisher.key_id) return { ok: false, error: "publisher_key_id_mismatch" };
+  if (!env.SCRIPTS_R2) return { ok: false, error: "artifact_storage_unavailable" };
+  const primitives = manifest.bundle?.primitives ?? [];
+  const canvases = primitives.filter(part => part.kind === "canvas");
+  const gadgets = primitives.filter(part => part.kind === "gadget");
+  const channels = primitives.filter(part => part.kind === "channel");
+  const connections = manifest.bundle?.connections ?? [];
+  const pathCandidates = [
+    ...canvases.map(part => part.component),
+    ...channels.map(part => part.handlerScript),
+  ];
+  if (canvases.some(part => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(part.component))
+    || channels.some(part => !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(part.handlerScript)))
+    return { ok: false, error: "artifact_path_unsupported" };
+  const paths = [...new Set(pathCandidates)].sort();
+  if (paths.length !== pathCandidates.length) return { ok: false, error: "artifact_path_conflict" };
+  const artifacts: Record<string, string> = {};
+  const entries: Array<[string, string]> = [];
+  let totalBytes = 0;
+  for (const path of paths) {
+    const object = await env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${extensionId}/${version}/${path.slice(2)}`);
+    const maxBytes = /\.(?:ts|js)$/.test(path) ? 262_144 : 512_000;
+    if (!object || object.size < 1 || object.size > maxBytes) return { ok: false, error: "artifact_missing_or_invalid" };
+    const bytes = await object.arrayBuffer();
+    if (bytes.byteLength !== object.size) return { ok: false, error: "artifact_size_mismatch" };
+    totalBytes += bytes.byteLength;
+    if (totalBytes > 2_000_000) return { ok: false, error: "artifact_size_limit" };
+    let source: string;
+    try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes); }
+    catch { return { ok: false, error: "artifact_encoding_invalid" }; }
+    artifacts[path] = source;
+    entries.push([path, source]);
+  }
+  const artifactSha256 = await spacePackageReviewDigest(JSON.stringify(entries));
+  if (artifactSha256 !== release.artifact_sha256) return { ok: false, error: "artifact_digest_mismatch" };
+  let publisherPayload: string;
+  try { publisherPayload = extensionPublisherSigningPayload(release.manifest_json, artifacts); }
+  catch { return { ok: false, error: "publisher_payload_invalid" }; }
+  if (await spacePackageReviewDigest(publisherPayload) !== release.publisher.payload_sha256
+    || !await verifyExtensionPublisherRelease({ publicKeyRaw: publicKey, signature: release.publisher.signature,
+      manifestJson: release.manifest_json, artifacts })) return { ok: false, error: "publisher_signature_invalid" };
+  const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
+  const installable = manifest.bundle?.id === extensionId && manifest.bundle.version === version
+    && canvases.length > 0 && primitives.length <= 32
+    && primitives.every(part => ["canvas", "gadget", "channel"].includes(part.kind))
+    && !(manifest.containers?.length || manifest.daemons?.length || manifest.commands?.length || manifest.widgetSubscriptions?.length)
+    && !(manifest.bundle?.workerRoles?.length)
+    && !(manifest.gadgets ?? []).some(gadget => gadget.scope !== "SPACE_SHARED" || gadget.gadgetTier !== 3)
+    && !manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
+    && !manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
+    && canvases.every(part => part.layout === "CanvasMount" && !part.dynamicPage && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
+    && gadgets.every(part => part.scope === "SPACE_SHARED" && part.permissions.length === 0 && part.capabilityRequirements.length === 0)
+    && channels.every(part => part.context === "channel_only"
+      && (part.provider === "phone" || Boolean(part.connectionId && connections.some(connection => connection.id === part.connectionId
+        && connection.provider === part.provider && connection.required))))
+    && channels.every(part => providerAllowlist.has(part.provider))
+    && connections.every(connection => providerAllowlist.has(connection.provider)
+      && channels.some(part => part.connectionId === connection.id && part.provider === connection.provider));
+  return { ok: true, package: { manifest, manifestSha256: await digestExtensionManifest(manifest), publisherId: release.publisher.id,
+    publisherKeyId: release.publisher.key_id, permissions: [...new Set(manifest.declaredPermissions)].sort(),
+    capabilities: [...new Set(manifest.capabilityRequirements)].sort(), sharedFilesystem: [...(manifest.shared_filesystem ?? [])],
+    connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "",
+      purpose: connection.purpose ?? "", required: connection.required === true })), dependencies: manifest.dependencies ?? [], installable } };
+}
+
+function spacePackageInstallReviewClaims(input: { tenantId: string; spaceId: string; actorId: string; extensionId: string; version: string;
+  instanceKey: string; manifestSha256: string; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+  approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>; expiresAt: number }) {
+  return { version: 1, tenantId: input.tenantId, spaceId: input.spaceId, actorId: input.actorId, extensionId: input.extensionId,
+    releaseVersion: input.version, instanceKey: input.instanceKey, manifestSha256: input.manifestSha256,
+    dependencies: [...input.dependencies].sort((left, right) => left.extensionId.localeCompare(right.extensionId)),
+    approvedSharedFilesystem: [...input.approvedSharedFilesystem].sort((left, right) => left.path.localeCompare(right.path)), expiresAt: input.expiresAt };
+}
+
+function encodeSpacePackageReviewToken(payload: string, signature: string): string {
+  return `${btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${signature}`;
+}
+function decodeSpacePackageReviewToken(token: string): { payload: string; signature: string } | null {
+  const split = token.lastIndexOf(".");
+  if (split <= 0) return null;
+  const encoded = token.slice(0, split), signature = token.slice(split + 1);
+  if (!/^[a-f0-9]{64}$/.test(signature) || !/^[A-Za-z0-9_-]+$/.test(encoded)) return null;
+  try {
+    const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    return { payload: atob(base64 + "=".repeat((4 - base64.length % 4) % 4)), signature };
+  } catch { return null; }
+}
+
 async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
   extensionId: string, version: string, instanceKey: string,
-  approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
+  approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>, reviewToken?: string): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
   if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
     || !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return { ok: false, error: "extension_package_identity_invalid" };
   if (!env.SCRIPTS_R2) return { ok: false, error: "extension_artifact_storage_unavailable" };
@@ -1594,6 +1738,19 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     activation_summary?: { approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } }> }>(collisions, 2 * 1024 * 1024);
   const dependencyClosure = await resolveSpaceExtensionDependencies(env, tenantId, spaceId, manifest, "SPACE_SHARED", undefined, installed.installations ?? []);
   if (!dependencyClosure.resolved) return { ok: false, error: `extension_package_${dependencyClosure.error}` };
+  if (manifest.dependencies?.length) {
+    const decoded = reviewToken && reviewToken.length <= 16_384 ? decodeSpacePackageReviewToken(reviewToken) : null;
+    if (!decoded || !await verifyHmac(decoded.payload, decoded.signature, env.PLATFORM_SECRET))
+      return { ok: false, error: "extension_package_dependency_review_required" };
+    let claims: ReturnType<typeof spacePackageInstallReviewClaims> | null = null;
+    try { claims = JSON.parse(decoded.payload) as ReturnType<typeof spacePackageInstallReviewClaims>; } catch { /* invalid review token */ }
+    const expiresAt = claims?.expiresAt ?? 0;
+    const expected = spacePackageInstallReviewClaims({ tenantId, spaceId, actorId: installedBy, extensionId, version, instanceKey,
+      manifestSha256: await digestExtensionManifest(manifest), dependencies: dependencyClosure.dependencies,
+      approvedSharedFilesystem, expiresAt });
+    if (!claims || expiresAt <= Date.now() || expiresAt > Date.now() + 5 * 60_000 || JSON.stringify(claims) !== JSON.stringify(expected))
+      return { ok: false, error: "extension_package_dependency_review_stale" };
+  }
   const prior = installed.installations?.find(row => row.extension_id === extensionId && row.instance_key === instanceKey
     && row.scope === "SPACE_SHARED" && ["active", "disabled", "staging"].includes(row.status ?? ""));
   let approvedGrants = approvedSharedFilesystem;
@@ -1696,28 +1853,142 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
   return { ok: true, installationId: installedResult.installationId };
 }
 
+async function inspectSpacePackageDependencyClosure(env: Env, tenantId: string, spaceId: string,
+  root: VerifiedSpacePackageRelease): Promise<{ ok: true; packages: VerifiedSpacePackageRelease[];
+    pins: Array<{ extensionId: string; releaseVersion: string; manifestSha256: string; manifest: unknown }>;
+    dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }> } | { ok: false; error: string }> {
+  const requested = new Map<string, { version: string; manifestSha256: string }>();
+  const visiting = new Set<string>([root.manifest.id]), visited = new Set<string>();
+  const packages: VerifiedSpacePackageRelease[] = [], pins: Array<{ extensionId: string; releaseVersion: string; manifestSha256: string; manifest: unknown }> = [];
+  let failure: string | null = null;
+  const walk = async (manifest: ReturnType<typeof validateExtensionManifest>, depth: number): Promise<void> => {
+    if (depth > 16 || visited.size > 32) { failure = "dependency_closure_limit_exceeded"; return; }
+    for (const dependency of manifest.dependencies ?? []) {
+      if (failure) return;
+      const prior = requested.get(dependency.extensionId);
+      if (prior && (prior.version !== dependency.version || prior.manifestSha256 !== dependency.manifestSha256)) {
+        failure = "dependency_pin_conflict"; return;
+      }
+      requested.set(dependency.extensionId, { version: dependency.version, manifestSha256: dependency.manifestSha256 });
+      if (visiting.has(dependency.extensionId)) { failure = "dependency_cycle"; return; }
+      const key = `${dependency.extensionId}@${dependency.version}:${dependency.manifestSha256}`;
+      if (visited.has(key)) continue;
+      if (visited.size >= 32) { failure = "dependency_closure_limit_exceeded"; return; }
+      const inspected = await inspectSignedSpacePackageRelease(env, tenantId, spaceId, dependency.extensionId, dependency.version);
+      if (!inspected.ok) { failure = `dependency_${inspected.error}`; return; }
+      if (inspected.package.manifestSha256 !== dependency.manifestSha256) { failure = "dependency_manifest_pin_mismatch"; return; }
+      pins.push({ extensionId: dependency.extensionId, releaseVersion: dependency.version,
+        manifestSha256: inspected.package.manifestSha256, manifest: inspected.package.manifest });
+      visiting.add(dependency.extensionId);
+      await walk(inspected.package.manifest, depth + 1);
+      visiting.delete(dependency.extensionId);
+      visited.add(key);
+      packages.push(inspected.package);
+    }
+  };
+  await walk(root.manifest, 0);
+  if (failure) return { ok: false, error: failure };
+  const resolved = await resolveExtensionDependencyClosure(root.manifest, pins);
+  return resolved.resolved ? { ok: true, packages, pins, dependencies: resolved.dependencies } : { ok: false, error: resolved.error };
+}
+
+async function installReviewedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,
+  version: string, instanceKey: string, approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>, reviewToken?: string):
+  Promise<{ ok: true; installationId: string; dependencyInstallations: Array<{ extensionId: string; version: string; installationId: string }> }
+    | { ok: false; error: string; dependencyInstallations?: Array<{ extensionId: string; version: string; installationId: string }> }> {
+  const directInstall = async () => ({ ...(await installSignedSpaceExtension(env, tenantId, spaceId, installedBy,
+    extensionId, version, instanceKey, approvedSharedFilesystem, reviewToken)), dependencyInstallations: [] });
+  if (!reviewToken) return directInstall();
+  const releaseStub = await spaceDoStub(env, spaceId, tenantId);
+  const releaseResponse = await releaseStub.fetch(new Request(`http://space-do/extension-package-release?${new URLSearchParams({ extension_id: extensionId, version })}`));
+  if (!releaseResponse.ok) return directInstall();
+  const releasePayload = await readBoundedResponseJson<{ release?: { manifest_json?: string } }>(releaseResponse, 2 * 1024 * 1024).catch(() => null);
+  let reviewedManifest: ReturnType<typeof validateExtensionManifest> | null = null;
+  try { reviewedManifest = validateExtensionManifest(JSON.parse(releasePayload?.release?.manifest_json ?? "null")); } catch { /* delegate the precise failure to installer */ }
+  if (!reviewedManifest?.dependencies?.length) return directInstall();
+  const root = await inspectSignedSpacePackageRelease(env, tenantId, spaceId, extensionId, version);
+  if (!root.ok) return { ok: false, error: `extension_package_${root.error}` };
+  const grants = normalizeSpacePackageReviewGrants(root.package.manifest, approvedSharedFilesystem);
+  if (!grants) return { ok: false, error: "extension_package_shared_filesystem_approval_invalid" };
+
+  const closure = await inspectSpacePackageDependencyClosure(env, tenantId, spaceId, root.package);
+  if (!closure.ok) return { ok: false, error: `extension_package_${closure.error}` };
+  const decoded = reviewToken && reviewToken.length <= 16_384 ? decodeSpacePackageReviewToken(reviewToken) : null;
+  if (!decoded || !await verifyHmac(decoded.payload, decoded.signature, env.PLATFORM_SECRET))
+    return { ok: false, error: "extension_package_dependency_review_required" };
+  let claims: ReturnType<typeof spacePackageInstallReviewClaims> | null = null;
+  try { claims = JSON.parse(decoded.payload) as ReturnType<typeof spacePackageInstallReviewClaims>; } catch { /* invalid review receipt */ }
+  const expiresAt = claims?.expiresAt ?? 0;
+  const expected = spacePackageInstallReviewClaims({ tenantId, spaceId, actorId: installedBy, extensionId, version, instanceKey,
+    manifestSha256: root.package.manifestSha256, dependencies: closure.dependencies, approvedSharedFilesystem: grants, expiresAt });
+  if (!claims || expiresAt <= Date.now() || expiresAt > Date.now() + 5 * 60_000 || JSON.stringify(claims) !== JSON.stringify(expected))
+    return { ok: false, error: "extension_package_dependency_review_stale" };
+  if (!root.package.installable || closure.packages.some(pkg => !pkg.installable))
+    return { ok: false, error: "extension_space_shared_package_contract_unsupported" };
+
+  const spaceStub = await spaceDoStub(env, spaceId, tenantId);
+  const dependencyInstallations: Array<{ extensionId: string; version: string; installationId: string }> = [];
+  for (const pkg of closure.packages) {
+    const rowsResponse = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId,
+      space_id: spaceId, extension_id: "__all__", include_manifest: "1" })}`));
+    if (!rowsResponse.ok) return { ok: false, error: "extension_installation_lookup_unavailable", dependencyInstallations };
+    const stored = await readBoundedResponseJson<{ installations?: SpaceExtensionDependencyInstallRow[] }>(rowsResponse, 2 * 1024 * 1024).catch(() => null);
+    if (!stored?.installations) return { ok: false, error: "extension_installation_lookup_unavailable", dependencyInstallations };
+    const trusted = await trustedExtensionInstallations(env, tenantId, spaceId, stored.installations);
+    const existing = trusted.find(row => row.scope === "SPACE_SHARED" && row.project_id === null && row.status === "active"
+      && row.extension_id === pkg.manifest.id && row.release_version === pkg.manifest.bundle?.version
+      && row.manifest_sha256 === pkg.manifestSha256 && row.instance_id);
+    if (existing?.instance_id) {
+      dependencyInstallations.push({ extensionId: pkg.manifest.id, version: pkg.manifest.bundle?.version ?? "", installationId: existing.instance_id });
+      continue;
+    }
+    let dependencyToken: string | undefined;
+    if (pkg.manifest.dependencies?.length) {
+      const packageClosure = await resolveExtensionDependencyClosure(pkg.manifest, closure.pins);
+      if (!packageClosure.resolved) return { ok: false, error: `extension_package_${packageClosure.error}`, dependencyInstallations };
+      const dependencyClaims = spacePackageInstallReviewClaims({ tenantId, spaceId, actorId: installedBy, extensionId: pkg.manifest.id,
+        version: pkg.manifest.bundle?.version ?? "", instanceKey: "default", manifestSha256: pkg.manifestSha256,
+        dependencies: packageClosure.dependencies, approvedSharedFilesystem: [], expiresAt });
+      const payload = JSON.stringify(dependencyClaims);
+      dependencyToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, env.PLATFORM_SECRET));
+    }
+    const installed = await installSignedSpaceExtension(env, tenantId, spaceId, installedBy, pkg.manifest.id,
+      pkg.manifest.bundle?.version ?? "", "default", [], dependencyToken);
+    if (!installed.ok) return { ok: false, error: installed.error, dependencyInstallations };
+    dependencyInstallations.push({ extensionId: pkg.manifest.id, version: pkg.manifest.bundle?.version ?? "", installationId: installed.installationId });
+  }
+  const installedRoot = await installSignedSpaceExtension(env, tenantId, spaceId, installedBy, extensionId, version, instanceKey, grants, reviewToken);
+  return installedRoot.ok ? { ok: true, installationId: installedRoot.installationId, dependencyInstallations }
+    : { ok: false, error: installedRoot.error, dependencyInstallations };
+}
+
 app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   const spaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const body = await c.req.json<{ version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>()
-    .catch((): { version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } => ({}));
+  const body = await c.req.json<{ version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+    dependency_review_token?: unknown }>()
+    .catch((): { version?: unknown; instance_key?: unknown; approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+      dependency_review_token?: unknown } => ({}));
   if (body.version !== undefined && typeof body.version !== "string") return c.json({ error_code: "extension_package_version_invalid" }, 400);
   const grants = body.approved_shared_filesystem ?? [];
   const result = typeof body.version === "string"
-    ? await installSignedSpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"),
-      body.version, typeof body.instance_key === "string" ? body.instance_key : "default", grants)
+    ? await installReviewedSpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"),
+      body.version, typeof body.instance_key === "string" ? body.instance_key : "default", grants,
+      typeof body.dependency_review_token === "string" ? body.dependency_review_token : undefined)
     : await installFirstPartySpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"), grants);
-  if (result.ok) return c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId, scope: "SPACE_SHARED" }, 201);
+  if (result.ok) return c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId,
+    dependency_installations: "dependencyInstallations" in result ? result.dependencyInstallations : [], scope: "SPACE_SHARED" }, 201);
   const status = result.error === "first_party_extension_not_found" || result.error === "extension_package_release_unavailable" ? 404
-    : result.error === "extension_publisher_key_untrusted_or_revoked" ? 403
+    : result.error.includes("publisher_key_untrusted") ? 403
     : result.error.includes("dependency_registry_unavailable") ? 503
-    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted") || result.error.includes("dependency") ? 409
+    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted")
+      || result.error.includes("dependency") || result.error.includes("requires_review") ? 409
     : result.error.includes("unsupported") ? 422
     : result.error.includes("invalid") ? 400 : 503;
-  return c.json({ error_code: result.error }, status);
+  return c.json({ error_code: result.error, dependency_installations: "dependencyInstallations" in result ? result.dependencyInstallations : [] }, status);
 });
 
 /** Load a Space owned by the caller's tenant (ownership gate only). */
@@ -1775,6 +2046,109 @@ app.get("/spaces/:spaceId/shared-extension-catalog", async c => {
       publisher_id: release.publisher?.id ?? "", requested_shared_filesystem: release.requested_shared_filesystem ?? [], dependencies: release.dependencies ?? [] }];
   });
   return c.json({ extensions: [...firstParty, ...signed] }, 200, { "cache-control": "private, no-store" });
+});
+
+const sharedExtensionInstallReviewPath = "/spaces/:spaceId/shared-extensions/:extensionId/install-review";
+app.use(sharedExtensionInstallReviewPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionInstallReviewPath, requireSpaceMembership({ POST: "admin" }));
+app.post(sharedExtensionInstallReviewPath, async c => {
+  const spaceId = c.req.param("spaceId"), extensionId = c.req.param("extensionId"), identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const body = await c.req.json<{ version?: unknown; instance_key?: unknown; approved_shared_filesystem?: unknown }>()
+    .catch(() => ({} as { version?: unknown; instance_key?: unknown; approved_shared_filesystem?: unknown }));
+  const version = typeof body.version === "string" ? body.version : "";
+  const instanceKey = typeof body.instance_key === "string" ? body.instance_key : "default";
+  if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+    || !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_package_identity_invalid" }, 400);
+  const rootRelease = await inspectSignedSpacePackageRelease(c.env, owned.tenantId, spaceId, extensionId, version);
+  if (!rootRelease.ok) {
+    const status = rootRelease.error === "release_not_found" ? 404 : rootRelease.error.includes("publisher_key_untrusted") ? 403 : 409;
+    return c.json({ error_code: `extension_package_${rootRelease.error}` }, status);
+  }
+  const grants = normalizeSpacePackageReviewGrants(rootRelease.package.manifest, body.approved_shared_filesystem ?? []);
+  if (!grants) return c.json({ error_code: "extension_package_shared_filesystem_approval_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const installationsResponse = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: owned.tenantId,
+    space_id: spaceId, extension_id: "__all__", include_manifest: "1" })}`));
+  if (!installationsResponse.ok) return c.json({ error_code: "extension_package_installation_lookup_unavailable" }, 503);
+  const stored = await readBoundedResponseJson<{ installations?: SpaceExtensionDependencyInstallRow[] }>(installationsResponse, 2 * 1024 * 1024).catch(() => null);
+  if (!stored?.installations) return c.json({ error_code: "extension_package_installation_lookup_unavailable" }, 503);
+  const trustedInstallations = await trustedExtensionInstallations(c.env, owned.tenantId, spaceId, stored.installations);
+  const scopedInstallations = trustedInstallations.filter(row => row.scope === "SPACE_SHARED" && row.project_id === null);
+  const installedState = (pkg: VerifiedSpacePackageRelease, isRoot: boolean): SpacePackageInstallReviewNode["installed_state"] => {
+    const candidates = scopedInstallations.filter(row => row.extension_id === pkg.manifest.id
+      && (isRoot ? row.instance_key === instanceKey : true));
+    if (candidates.some(row => row.status === "active" && row.release_version === pkg.manifest.bundle?.version && row.manifest_sha256 === pkg.manifestSha256)) return "installed_exact";
+    if (candidates.some(row => row.status === "disabled" && row.release_version === pkg.manifest.bundle?.version && row.manifest_sha256 === pkg.manifestSha256)) return "installed_disabled";
+    return candidates.length ? "pin_conflict" : "install_required";
+  };
+  const toNode = (pkg: VerifiedSpacePackageRelease, isRoot: boolean): SpacePackageInstallReviewNode => ({
+    extension_id: pkg.manifest.id, version: pkg.manifest.bundle?.version ?? "", manifest_sha256: pkg.manifestSha256,
+    publisher_id: pkg.publisherId, publisher_key_id: pkg.publisherKeyId, permissions: pkg.permissions, capabilities: pkg.capabilities,
+    shared_filesystem: pkg.sharedFilesystem, connections: pkg.connections, dependencies: pkg.dependencies, is_requested: isRoot,
+    installed_state: installedState(pkg, isRoot), installable: pkg.installable, publisher_signature_verified: true,
+  });
+  const requested = new Map<string, { version: string; manifestSha256: string }>();
+  const candidatePins: Array<{ extensionId: string; releaseVersion: string; manifestSha256: string; manifest: unknown }> = [];
+  const dependencyPackages = new Map<string, VerifiedSpacePackageRelease>();
+  const unavailable: Array<{ extension_id: string; version: string; manifest_sha256: string; error: string }> = [];
+  const visiting = new Set<string>([extensionId]);
+  const visited = new Set<string>();
+  let closureError: string | null = null;
+  const walk = async (manifest: ReturnType<typeof validateExtensionManifest>, depth: number): Promise<void> => {
+    if (depth > 16 || dependencyPackages.size > 32) { closureError = "dependency_closure_limit_exceeded"; return; }
+    for (const dependency of manifest.dependencies ?? []) {
+      if (closureError) return;
+      const prior = requested.get(dependency.extensionId);
+      if (prior && (prior.version !== dependency.version || prior.manifestSha256 !== dependency.manifestSha256)) { closureError = "dependency_pin_conflict"; return; }
+      requested.set(dependency.extensionId, { version: dependency.version, manifestSha256: dependency.manifestSha256 });
+      if (visiting.has(dependency.extensionId)) { closureError = "dependency_cycle"; return; }
+      const key = `${dependency.extensionId}@${dependency.version}:${dependency.manifestSha256}`;
+      if (visited.has(key)) continue;
+      const inspected = await inspectSignedSpacePackageRelease(c.env, owned.tenantId, spaceId, dependency.extensionId, dependency.version);
+      if (!inspected.ok) {
+        unavailable.push({ extension_id: dependency.extensionId, version: dependency.version, manifest_sha256: dependency.manifestSha256, error: inspected.error });
+        closureError = `dependency_${inspected.error}`;
+        return;
+      }
+      if (inspected.package.manifestSha256 !== dependency.manifestSha256) {
+        unavailable.push({ extension_id: dependency.extensionId, version: dependency.version, manifest_sha256: dependency.manifestSha256, error: "manifest_pin_mismatch" });
+        closureError = "dependency_manifest_pin_mismatch";
+        return;
+      }
+      dependencyPackages.set(dependency.extensionId, inspected.package);
+      candidatePins.push({ extensionId: dependency.extensionId, releaseVersion: dependency.version,
+        manifestSha256: inspected.package.manifestSha256, manifest: inspected.package.manifest });
+      visiting.add(dependency.extensionId);
+      await walk(inspected.package.manifest, depth + 1);
+      visiting.delete(dependency.extensionId);
+      visited.add(key);
+    }
+  };
+  await walk(rootRelease.package.manifest, 0);
+  const resolved = closureError ? { resolved: false as const, error: closureError }
+    : await resolveExtensionDependencyClosure(rootRelease.package.manifest, candidatePins);
+  const rootNode = toNode(rootRelease.package, true);
+  const dependencyNodes = [...dependencyPackages.values()].map(pkg => toNode(pkg, false)).sort((left, right) => left.extension_id.localeCompare(right.extension_id));
+  const dependenciesInstallable = resolved.resolved && dependencyNodes.every(node => node.installable
+    && (node.installed_state === "installed_exact" || node.installed_state === "install_required"));
+  const readyToInstall = rootRelease.package.installable && dependenciesInstallable;
+  let reviewToken: string | undefined;
+  let reviewExpiresAt: number | undefined;
+  if (readyToInstall && identity.userId) {
+    const expiresAt = Date.now() + 5 * 60_000;
+    reviewExpiresAt = expiresAt;
+    const claims = spacePackageInstallReviewClaims({ tenantId: owned.tenantId, spaceId, actorId: identity.userId, extensionId, version,
+      instanceKey, manifestSha256: rootRelease.package.manifestSha256, dependencies: resolved.resolved ? resolved.dependencies : [],
+      approvedSharedFilesystem: grants, expiresAt });
+    const payload = JSON.stringify(claims);
+    reviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
+  }
+  return c.json({ extension_id: extensionId, version, space_id: spaceId, requested_package: rootNode, dependency_packages: dependencyNodes,
+    unavailable_dependencies: unavailable, dependency_resolution: resolved, ready_to_install: readyToInstall,
+    ...(reviewToken ? { review_token: reviewToken, review_expires_at: reviewExpiresAt } : {}), mutates_installation: false }, 200,
+    { "cache-control": "private, no-store" });
 });
 
 type SpacePackageReviewManifest = ReturnType<typeof validateExtensionManifest>;

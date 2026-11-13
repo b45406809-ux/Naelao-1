@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
-import { exportExtensionPublisherPublicKey, extensionPublisherSigningPayload, generateExtensionPublisherKeyPair,
+import { digestExtensionManifest, exportExtensionPublisherPublicKey, extensionPublisherSigningPayload, generateExtensionPublisherKeyPair,
   signExtensionPublisherRelease, validateExtensionManifest } from "@naelao/agent-sdk";
 import spacesWorker from "./index.js";
 
@@ -155,7 +155,139 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   return { env, spaceRequests, microAppRequests, candidateRelease };
 }
 
+async function installReviewHarness(options: { failNextRootInitialization?: boolean } = {}) {
+  const dependencyManifest = validateExtensionManifest({ ...manifest, id: "ext_calendar", channels: undefined, bundle: { ...manifest.bundle!, id: "ext_calendar", version: "1.0.0",
+    primitives: manifest.bundle!.primitives.map((primitive, index) => ({ ...primitive, id: index === 0 ? "calendar_dashboard" : "calendar_handler", version: "1.0.0" })) } });
+  const dependencyDigest = await digestExtensionManifest(dependencyManifest);
+  const rootManifest = validateExtensionManifest({ ...manifest, dependencies: [{ extensionId: "ext_calendar", version: "1.0.0", manifestSha256: dependencyDigest }] });
+  const keyPair = await generateExtensionPublisherKeyPair();
+  const publicKey = await exportExtensionPublisherPublicKey(keyPair.publicKey);
+  const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
+  const makeRelease = async (packageManifest: typeof manifest) => {
+    const manifestJson = JSON.stringify(packageManifest);
+    const entries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const signature = await signExtensionPublisherRelease({ privateKey: keyPair.privateKey, publicKey: keyPair.publicKey, manifestJson, artifacts });
+    return { extension_id: packageManifest.id, version: packageManifest.bundle!.version, manifest: packageManifest, manifest_json: manifestJson,
+      artifact_sha256: await digest(JSON.stringify(entries)), publisher: { id: "pub_voice", key_id: signature.keyId, signature: signature.signature,
+        payload_sha256: await digest(extensionPublisherSigningPayload(manifestJson, artifacts)) } };
+  };
+  const releases = new Map<string, Awaited<ReturnType<typeof makeRelease>>>();
+  const rootRelease = await makeRelease(rootManifest), dependencyRelease = await makeRelease(dependencyManifest);
+  releases.set(`${rootRelease.extension_id}@${rootRelease.version}`, rootRelease);
+  releases.set(`${dependencyRelease.extension_id}@${dependencyRelease.version}`, dependencyRelease);
+  const objects = new Map<string, string>();
+  for (const release of releases.values()) for (const [path, source] of Object.entries(artifacts))
+    objects.set(`spaces/space-a/extensions/${release.extension_id}/${release.version}/${path.slice(2)}`, source);
+  const spaceRequests: Request[] = [], microAppRequests: Request[] = [];
+  const installedRows: Array<Record<string, unknown>> = [];
+  const spaceStub = { fetch: vi.fn(async (request: Request) => {
+    spaceRequests.push(request);
+    const url = new URL(request.url), path = url.pathname;
+    if (path === "/extension-package-release") {
+      const release = releases.get(`${url.searchParams.get("extension_id")}@${url.searchParams.get("version")}`);
+      return release ? Response.json({ release }) : Response.json({ error_code: "not_found" }, { status: 404 });
+    }
+    if (path === "/extension-installations") return Response.json({ installations: installedRows.filter(row => row.status !== "removed") });
+    if (path === "/extensions") {
+      const body = await request.clone().json() as { manifest: typeof manifest; instanceKey: string; scope: string };
+      const release = releases.get(`${body.manifest.id}@${body.manifest.bundle?.version}`)!;
+      const instanceId = body.manifest.id === "ext_customer_voice" ? "install-root" : "install-calendar";
+      const row = installedRows.find(item => item.instance_id === instanceId);
+      const staged = { instance_id: instanceId, extension_id: body.manifest.id, instance_key: body.instanceKey, project_id: null,
+        scope: body.scope, status: "staging", release_version: release.version, manifest_sha256: await digestExtensionManifest(body.manifest),
+        publisher_key_id: release.publisher.key_id, publisher_attestation_valid: true, manifest: body.manifest,
+        activation_summary: { approved_shared_filesystem: [] } };
+      if (row) Object.assign(row, staged); else installedRows.push(staged);
+      return Response.json({ installationId: instanceId, release: { version: release.version, artifactSha256: release.artifact_sha256,
+        hostSignature: await signHmac(JSON.stringify([release.extension_id, release.version, release.manifest_json, release.artifact_sha256]), secret) } }, { status: 201 });
+    }
+    if (path === "/extension-installation/activate" || path === "/extension-installation/abort") {
+      const body = await request.clone().json() as { installationId: string };
+      const row = installedRows.find(item => item.instance_id === body.installationId);
+      if (row) row.status = path.endsWith("/activate") ? "active" : "removed";
+      return Response.json({ activated: path.endsWith("/activate"), aborted: path.endsWith("/abort") });
+    }
+    return Response.json({ error_code: "unexpected_space_do_route" }, { status: 404 });
+  }) };
+  let failNextRootInitialization = options.failNextRootInitialization === true;
+  const microAppStub = { fetch: vi.fn(async (request: Request) => {
+    microAppRequests.push(request);
+    const body = await request.clone().json() as { appId?: string };
+    if (failNextRootInitialization && body.appId === "voice_dashboard") { failNextRootInitialization = false; return Response.json({ initialized: false }, { status: 500 }); }
+    return Response.json({ initialized: true });
+  }) };
+  const env = {
+    PLATFORM_SECRET: secret,
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: (..._params: unknown[]) => ({
+      first: async () => sql.includes("FROM spaces WHERE id") ? { name: "Workspace", spacetype_id: "space", config_json: "{}" }
+        : sql.includes("FROM extension_publisher_keys") ? { publisher_id: "pub_voice", public_key_b64url: publicKey, key_id: rootRelease.publisher.key_id } : null,
+      all: async () => ({ results: [{ key_id: rootRelease.publisher.key_id, publisher_id: "pub_voice" }] }),
+    }) }) },
+    SPACE_DO: { idFromName: () => "space-do-id", get: () => spaceStub },
+    MICRO_APP_DO: { idFromName: () => "micro-app-id", get: () => microAppStub },
+    SCRIPTS_R2: { get: async (key: string) => { const source = objects.get(key); if (source === undefined) return null; const bytes = new TextEncoder().encode(source);
+      return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer }; } },
+  } as never;
+  return { env, spaceRequests, microAppRequests, installedRows, rootRelease, dependencyRelease, dependencyManifest, dependencyDigest, rootManifest };
+}
+
 describe("signed Space-shared extension packages", () => {
+  it("reviews every exact dependency and requires a fresh owner receipt before installation", async () => {
+    const h = await installReviewHarness({ failNextRootInitialization: true });
+    const reviewPath = "/spaces/space-a/shared-extensions/ext_customer_voice/install-review";
+    const review = async () => spacesWorker.fetch(await signedRequest(reviewPath, "POST", { version: "1.2.0", approved_shared_filesystem: [] }), h.env);
+    const missing = await review();
+    expect(missing.status).toBe(200);
+    const missingBody = await missing.json() as { review_token?: string };
+    expect(missingBody).toMatchObject({ mutates_installation: false, ready_to_install: true,
+      requested_package: { publisher_signature_verified: true, dependencies: [{ extensionId: "ext_calendar", version: "1.0.0" }] },
+      dependency_packages: [{ extension_id: "ext_calendar", version: "1.0.0", publisher_id: "pub_voice", publisher_signature_verified: true,
+        publisher_key_id: h.dependencyRelease.publisher.key_id, manifest_sha256: h.dependencyDigest,
+        installed_state: "install_required", installable: true, permissions: ["assistant.phone.read", "assistant.phone.simulate"] }] });
+    expect(missingBody.review_token).toBeTruthy();
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extensions")).toBe(false);
+    expect(h.microAppRequests).toHaveLength(0);
+    const invalidReceipt = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", dependency_review_token: "invalid" }), h.env);
+    expect(invalidReceipt.status).toBe(409);
+    expect(await invalidReceipt.json()).toMatchObject({ error_code: "extension_package_dependency_review_required" });
+    expect(h.microAppRequests).toHaveLength(0);
+
+    const interrupted = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", dependency_review_token: missingBody.review_token }), h.env);
+    expect(interrupted.status).toBe(503);
+    expect(await interrupted.json()).toMatchObject({ error_code: "extension_package_canvas_initialization_failed",
+      dependency_installations: [{ extensionId: "ext_calendar", installationId: "install-calendar" }] });
+    expect(h.installedRows.find(row => row.instance_id === "install-calendar")?.status).toBe("active");
+    expect(h.installedRows.find(row => row.instance_id === "install-root")?.status).toBe("removed");
+    expect(h.microAppRequests).toHaveLength(2);
+
+    const installed = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", dependency_review_token: missingBody.review_token }), h.env);
+    expect(installed.status, JSON.stringify(await installed.clone().json())).toBe(201);
+    expect(await installed.json()).toMatchObject({ installation_id: "install-root",
+      dependency_installations: [{ extensionId: "ext_calendar", version: "1.0.0", installationId: "install-calendar" }] });
+    expect(h.microAppRequests).toHaveLength(3);
+    expect(h.installedRows.find(row => row.instance_id === "install-root")?.status).toBe("active");
+    expect(h.installedRows.find(row => row.instance_id === "install-calendar")?.status).toBe("active");
+
+    const retried = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", dependency_review_token: missingBody.review_token }), h.env);
+    expect(retried.status).toBe(201);
+    expect(await retried.json()).toMatchObject({ installation_id: "install-root" });
+    expect(h.microAppRequests).toHaveLength(3);
+
+    h.installedRows.find(row => row.instance_id === "install-calendar")!.status = "disabled";
+    const pausedReview = await review();
+    expect(pausedReview.status).toBe(200);
+    expect(await pausedReview.json()).toMatchObject({ ready_to_install: false,
+      dependency_packages: [{ installed_state: "installed_disabled" }] });
+    const pausedInstall = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST",
+      { version: "1.2.0", dependency_review_token: missingBody.review_token }), h.env);
+    expect(pausedInstall.status).toBe(409);
+    expect(h.microAppRequests).toHaveLength(3);
+  });
+
   it("lists a trusted package, stages its exact artifact and activates its signed shared dashboard", async () => {
     const h = harness();
     h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));

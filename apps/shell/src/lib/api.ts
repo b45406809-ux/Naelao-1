@@ -1641,6 +1641,23 @@ export interface SpaceSharedExtensionUpdateReview {
     candidate: { resolved: true } | { resolved: false; error: string } };
   review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: false; apply_block_reason: string };
 }
+export interface SpaceSharedExtensionInstallReviewPackage {
+  extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
+  permissions: string[]; capabilities: string[]; shared_filesystem: SharedFilesystemGrant[];
+  connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+  dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+  is_requested: boolean; installed_state: "installed_exact" | "installed_disabled" | "install_required" | "pin_conflict";
+  installable: boolean; publisher_signature_verified: true;
+}
+export interface SpaceSharedExtensionInstallReview {
+  extension_id: string; version: string; space_id: string;
+  requested_package: SpaceSharedExtensionInstallReviewPackage;
+  dependency_packages: SpaceSharedExtensionInstallReviewPackage[];
+  unavailable_dependencies: Array<{ extension_id: string; version: string; manifest_sha256: string; error: string }>;
+  dependency_resolution: { resolved: true; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }> }
+    | { resolved: false; error: string };
+  ready_to_install: boolean; review_token?: string; review_expires_at?: number; mutates_installation: false;
+}
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
 }
@@ -1653,8 +1670,14 @@ export function previewSpaceSharedExtensionUpdate(spaceId: string, installationI
     method: "POST", session, body: JSON.stringify({ expected_current_version: expectedCurrentVersion, candidate_version: candidateVersion }),
   });
 }
-export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = [], version?: string) {
-  return apiFetch<{ extension_id: string; installation_id: string; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, ...(version ? { version } : {}) }) });
+export function previewSpaceSharedExtensionInstall(spaceId: string, extensionId: string, session: SessionCredentials, version: string,
+  approvedSharedFilesystem: SharedFilesystemGrant[] = [], instanceKey = "default") {
+  return apiFetch<SpaceSharedExtensionInstallReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install-review`, {
+    method: "POST", session, body: JSON.stringify({ version, approved_shared_filesystem: approvedSharedFilesystem, instance_key: instanceKey }),
+  });
+}
+export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = [], version?: string, reviewToken?: string) {
+  return apiFetch<{ extension_id: string; installation_id: string; dependency_installations: Array<{ extensionId: string; version: string; installationId: string }>; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, ...(version ? { version } : {}), ...(reviewToken ? { dependency_review_token: reviewToken } : {}) }) });
 }
 export function updateSpaceSharedExtensionFilesystemGrants(spaceId: string, installationId: string, session: SessionCredentials, grants: SharedFilesystemGrant[]) {
   return apiFetch<{ instance_id: string; approved_shared_filesystem: SharedFilesystemGrant[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/filesystem-grants`, { method: "PATCH", session, body: JSON.stringify({ grants }) });

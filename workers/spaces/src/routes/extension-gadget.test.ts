@@ -26,6 +26,7 @@ describe("extension workflow Gadget bridge", () => {
     let auditActor: string | null = null;
     const spaceStub = { fetch: vi.fn(async () => new Response(JSON.stringify({
       instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_key: "mentor2", status: "active", scope: "PROJECT_BOUND" },
+      release: { signatureValid: true, dependenciesResolved: true, publisher: { keyId: "publisher-key" } },
       manifest: { id: "ext_mentor", bundle: { id: "ext_mentor", version: "1.0.0", primitives: [
         { id: "journal", kind: "gadget" }, { id: "record_order", kind: "workflow", entry: "./record-order.ts", toolNames: ["extension.gadget.insert", "extension.gadget.update"] },
       ], workerRoles: [{ principal: "project_member", execution: "worker", invocation: "workflow_step", entry: "./record-order.ts", primitiveIds: ["record_order"], gadgetActions: [{ gadgetId: "journal", operations: ["extension.gadget.insert", "extension.gadget.update"], tables: ["orders"] }] }] } },

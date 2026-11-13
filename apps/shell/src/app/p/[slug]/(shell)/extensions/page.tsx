@@ -6,7 +6,10 @@ import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, previewSpaceSharedExtensionUpdate, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry, type SpaceSharedExtensionUpdateReview } from "@/lib/api";
+import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, previewSpaceSharedExtensionInstall,
+  previewSpaceSharedExtensionUpdate, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants,
+  type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry, type SpaceSharedExtensionInstallReview,
+  type SpaceSharedExtensionInstallReviewPackage, type SpaceSharedExtensionUpdateReview } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -19,12 +22,14 @@ export default function ExtensionsPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const credentials = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
+  const [installReviews, setInstallReviews] = React.useState<Record<string, SpaceSharedExtensionInstallReview>>({});
+  const [reviewingInstall, setReviewingInstall] = React.useState<string | null>(null);
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
     setLoading(true); setError(null);
     try {
       const [result, available] = await Promise.all([listSpaceSharedExtensionApps(activeSpaceId, credentials), listSpaceSharedExtensionCatalog(activeSpaceId, credentials)]);
-      setApps(result.apps); setCatalog(available.extensions);
+      setApps(result.apps); setCatalog(available.extensions); setInstallReviews({});
       setActive(current => current && result.apps.some(app => app.app_id === current.app_id) ? current : null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load Space extensions.");
@@ -52,12 +57,26 @@ export default function ExtensionsPage() {
       if (access) grants.push({ path: requested.path, access });
       return { ...current, [key]: grants };
     });
+    setInstallReviews(current => { const next = { ...current }; delete next[key]; return next; });
+  }
+  async function reviewInstall(entry: SpaceSharedExtensionCatalogEntry) {
+    if (!credentials || !entry.version) return;
+    setReviewingInstall(entry.id); setError(null);
+    try {
+      const review = await previewSpaceSharedExtensionInstall(activeSpaceId, entry.id, credentials, entry.version, selectedGrants[entry.id] ?? []);
+      setInstallReviews(current => ({ ...current, [entry.id]: review }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not verify this package and its dependencies."); }
+    finally { setReviewingInstall(null); }
   }
   async function install(entry: SpaceSharedExtensionCatalogEntry) {
     if (!credentials) return;
     setInstalling(entry.id); setError(null);
-    try { await installSpaceSharedExtension(activeSpaceId, entry.id, credentials, selectedGrants[entry.id] ?? [], entry.version); await refresh(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not install extension."); }
+    const review = entry.version ? installReviews[entry.id] : undefined;
+    if (entry.version && (!review?.ready_to_install || !review.review_token)) {
+      setInstalling(null); setError("Review the exact package and install its required dependencies first."); return;
+    }
+    try { await installSpaceSharedExtension(activeSpaceId, entry.id, credentials, selectedGrants[entry.id] ?? [], entry.version, review?.review_token); await refresh(); }
+    catch (cause) { await refresh(); setError(cause instanceof Error ? cause.message : "Could not install extension; completed dependencies remain installed and can be resumed after review."); }
     finally { setInstalling(null); }
   }
   async function saveGrants(app: SpaceSharedExtensionApp) {
@@ -154,12 +173,51 @@ export default function ExtensionsPage() {
       <Button variant="secondary" disabled={removing !== null} onClick={() => void remove(app)}>{removing === app.installation_id ? "Removing…" : "Remove extension"}</Button>
       <Button disabled={app.status !== "active"} onClick={() => setActive(app)}>Open extension</Button>
       </Card>)}</div> : null}
-    {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => <Card key={entry.id}>
-      <CardTitle>{entry.name}</CardTitle><CardDesc>{entry.version ? `Signed release ${entry.version} from ${entry.publisher_id ?? "a trusted publisher"}. Its app and storage are isolated to the active Space.` : "Install this first-party Space-shared extension. Its app and storage are isolated to the active Space."}</CardDesc>
-      {entry.dependencies?.length ? <p style={{ color: "var(--text3)", fontSize: 12 }}>Requires exact installed releases: {entry.dependencies.map(item => `${item.extensionId}@${item.version}`).join(", ")}.</p> : null}
-      {grantsEditor(entry.id, entry.requested_shared_filesystem, [])}
-      <Button disabled={installing !== null} onClick={() => void install(entry)}>{installing === entry.id ? "Installing…" : "Install extension"}</Button>
-    </Card>)}</div></section> : null}
+    {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => {
+      const review = installReviews[entry.id];
+      const reviewedPackages = review ? [review.requested_package, ...review.dependency_packages] : [];
+      const installStateLabel = (state: SpaceSharedExtensionInstallReviewPackage["installed_state"]) => state === "installed_exact" ? "Installed at exact pin"
+        : state === "installed_disabled" ? "Installed but paused" : state === "pin_conflict" ? "Conflicting version is installed" : "Must be installed first";
+      return <Card key={entry.id}>
+        <CardTitle>{entry.name}</CardTitle><CardDesc>{entry.version ? `Signed release ${entry.version} from ${entry.publisher_id ?? "a trusted publisher"}. Its app and storage are isolated to the active Space.` : "Install this first-party Space-shared extension. Its app and storage are isolated to the active Space."}</CardDesc>
+        {entry.dependencies?.length ? <p style={{ color: "var(--text3)", fontSize: 12 }}>Requires exact installed releases: {entry.dependencies.map(item => `${item.extensionId}@${item.version}`).join(", ")}.</p> : null}
+        {grantsEditor(entry.id, entry.requested_shared_filesystem, [])}
+        {entry.version ? <Button variant="secondary" disabled={reviewingInstall !== null || installing !== null} onClick={() => void reviewInstall(entry)}>
+          {reviewingInstall === entry.id ? "Verifying package…" : review ? "Refresh package review" : "Review package"}
+        </Button> : <Button disabled={installing !== null} onClick={() => void install(entry)}>{installing === entry.id ? "Installing…" : "Install extension"}</Button>}
+        {review && <div role="status" style={{ marginTop: 12, padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8, fontSize: 12 }}>
+          <strong>Signed package review · {review.version}</strong>
+          <p>Review is read-only. Publisher artifact signatures are verified for the requested package and each exact dependency. No package is installed by this review.</p>
+          {reviewedPackages.map(pkg => {
+            const dependencyEntry = !pkg.is_requested ? catalog.find(candidate => candidate.id === pkg.extension_id && candidate.version === pkg.version) : undefined;
+            return <section key={`${pkg.extension_id}@${pkg.version}`} style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border, #ddd)" }}>
+              <strong>{pkg.is_requested ? "Requested package" : "Dependency"}: {pkg.extension_id}@{pkg.version}</strong>
+              <p>Publisher: {pkg.publisher_id} · signing key: {pkg.publisher_key_id} · manifest SHA-256: {pkg.manifest_sha256} · signature and artifact digest verified · {installStateLabel(pkg.installed_state)}</p>
+              <p>Permissions: {pkg.permissions.join(", ") || "none"}. Capabilities: {pkg.capabilities.join(", ") || "none"}.</p>
+              <p>Shared folders: {pkg.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ") || "none"}.</p>
+              <p>Provider connections: {pkg.connections.map(connection => `${connection.id} (${connection.provider}${connection.required ? ", required" : ""})`).join(", ") || "none"}.</p>
+              {!pkg.is_requested && pkg.installed_state === "install_required" && (dependencyEntry
+                ? <Button variant="secondary" disabled={reviewingInstall !== null || installing !== null} onClick={() => void reviewInstall(dependencyEntry)}>
+                  {reviewingInstall === dependencyEntry.id ? "Verifying dependency…" : `Review ${pkg.extension_id}@${pkg.version}`}
+                </Button>
+                : <p role="alert">This exact release is not available in the Space catalog, so it cannot be installed from this screen.</p>)}
+              {!pkg.is_requested && pkg.installed_state === "pin_conflict" && <p role="alert">Remove or resolve the conflicting installation before this package can be enabled.</p>}
+              {!pkg.is_requested && pkg.installed_state === "installed_disabled" && <p role="status">Resume this exact release from its installed extension card, then refresh this package review.</p>}
+              {!pkg.installable && <p role="alert">This package does not match the supported Space package installation contract.</p>}
+            </section>;
+          })}
+          {review.unavailable_dependencies.map(item => <p key={`${item.extension_id}@${item.version}`} role="alert">{item.extension_id}@{item.version}: {item.error}</p>)}
+          {!review.dependency_resolution.resolved && <p role="alert">Dependency closure cannot be verified: {review.dependency_resolution.error}.</p>}
+          <p>Package price terms: not declared by the current contract.</p>
+          {review.dependency_packages.some(pkg => pkg.installed_state === "install_required") && <p>Installing will add the exact missing dependencies listed above before the requested package. Dependencies receive no shared-folder grants; the requested package receives only the folders you selected.</p>}
+          {review.ready_to_install && review.review_token
+            ? <Button disabled={installing !== null || review.review_expires_at !== undefined && review.review_expires_at <= Date.now()} onClick={() => void install(entry)}>
+              {installing === entry.id ? "Installing…" : "Install reviewed package"}
+            </Button>
+            : <p>Resolve paused or conflicting dependency installations, then refresh this review.</p>}
+        </div>}
+      </Card>;
+    })}</div></section> : null}
     {!active && !loading && !error && !apps.length && !catalog.length ? <Card><CardTitle>No Space extensions available</CardTitle><CardDesc>Extensions included by an installed Space Template appear here. Each extension runs in its own scoped storage and receives only the host APIs it declares.</CardDesc></Card> : null}
   </div>;
 }
