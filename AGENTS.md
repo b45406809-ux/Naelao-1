@@ -12,7 +12,25 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
+Current checkpoint (2026-11-13): code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
+untracked `infra/scripts/__pycache__/`. The owner Assistant Phone simulator now supports explicit
+synthetic call-start, DTMF, and supported Twilio speech inputs. The owner API and internal route
+validate event-specific fields; the SpaceDO rechecks the active signed handler, provider and scope,
+validates the versioned response, and uses the host renderer. Telnyx previews allow keypad behavior
+only. The local path sends no carrier commands and persists no call/session state. Local evidence:
+Agents phone/route/Telnyx/renderer/SpaceDO suites **50/50**, Agents/Shell typechecks and
+`git diff --check`. No deployed or live provider behavior was exercised.
+
+P05 remains PARTIAL: signed inbound media is already stored under bounded private attachment rows,
+but restricted extension handlers cannot retrieve message-scoped media through opaque, authorized
+handles. Exact next action: trace the attachment row's message/tenant/Space/project linkage against
+the channel dispatch record, then implement a host-mediated bounded read handle only where the exact
+message and installed extension scope can be revalidated. Do not expose provider URLs or credentials;
+test expiry, deletion, tenant/project/install mismatch, MIME and byte limits. Continue other uncoded
+requirements after this slice.
+
+Prior keypad-package checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
 untracked `infra/scripts/__pycache__/`. The new signed-extension example
 `packages/agent-sdk/examples/bounded-phone-menu/` defines a two-choice keypad menu, per-installation
@@ -25,10 +43,8 @@ and no live call was made. §9.5 remains PARTIAL: this bounded keypad IVR is not
 voice-agent product; provider provisioning, speech/streaming, full lifecycle, invoice reconciliation
 and live acceptance remain open.
 
-Exact next action: trace the owner `phone-handler-test` API and Shell caller. Extend its local-only
-simulation contract to represent `call.received` and `call.digits` explicitly, then route the test
-response through the existing host validator/renderer without sending carrier commands. Add scoped
-authorization and DTMF preview tests. Continue with other uncoded requirements after that slice.
+At that checkpoint, the exact next action was to trace and extend the owner `phone-handler-test` API
+and Shell caller for call-start and DTMF simulation. That work is closed in `c31a8640`.
 
 Prior voice-catalog checkpoint (2026-11-13): code `2ef44afaeeb1100fb2a7e992b7ef297cd9ecb033` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the only

@@ -2,6 +2,20 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` was pushed to
+`origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. The owner Assistant Phone
+simulator now tests call start, DTMF digits and supported Twilio speech through the exact active
+signed handler. Event fields are normalized and bounded; SpaceDO validates the versioned response and
+host renderer. Telnyx previews remain DTMF-only. The simulator makes no provider calls and persists no
+call/session state. Local evidence: Agents phone/route/Telnyx/renderer/SpaceDO suites **50/50**,
+Agents/Shell typechecks and `git diff --check`. No deployed or live acceptance was run.
+
+§9.5 remains PARTIAL; call preview now covers the supported keypad path. The example is an IVR, not a
+conversational voice-agent product. Exact next action: continue P05 by linking already-stored inbound
+media to exact signed channel dispatches and implement host-mediated, opaque, bounded attachment reads
+only where scope, expiry and deletion can be revalidated. Keep provider URLs/credentials out of the
+extension, then verify cross-tenant/project/installation denial and MIME/size bounds.
+
 Updated 2026-11-13 after code `b4c0100f1d5c898ddde137ebf88fea294f99d386` was pushed to
 `origin/Mcbt5s-Backup-2` after fetch confirmed the remote was an ancestor. Added the signed-extension
 example `packages/agent-sdk/examples/bounded-phone-menu/`: a bounded two-choice keypad IVR with a

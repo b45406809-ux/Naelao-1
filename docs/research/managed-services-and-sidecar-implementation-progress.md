@@ -2,6 +2,27 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; bounded owner phone simulation `c31a8640` pushed)
+
+- Code `c31a86409ac8009c59d61f0ab965119f21bd1cc1` is pushed to `origin/Mcbt5s-Backup-2` after
+  fetch confirmed the remote was an ancestor. Preserve `infra/scripts/__pycache__/`.
+- The owner Assistant Phone simulator now accepts synthetic call-start, DTMF and supported Twilio
+  speech events. Shell shows the provider-appropriate choices. Owner authorization and active
+  binding checks remain; the internal route accepts only event-specific bounded fields. SpaceDO
+  dispatch rechecks the signed installation/scope, validates v1 response data and runs the existing
+  host renderer. Telnyx speech is rejected. This path sends no carrier command and writes no call or
+  session receipt.
+- Local evidence: five Agents phone/route/Telnyx/response/SpaceDO files **50/50**, Agents and Shell
+  typechecks, and `git diff --check`. No deployed DB or live provider test occurred.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain the ledger's specific
+  partials. §9.5 remains PARTIAL; this closes the keypad sample's local preview, not a full customer
+  voice agent. Rollouts remain disabled.
+- Exact next action: continue P05/MS05 from the recorded unsupported media-handle gap. Trace the
+  existing `channel_attachments` rows and channel dispatch IDs; then add a host-mediated, bounded,
+  opaque media read only if tenant, Space, project, installation and exact message can all be checked.
+  Never pass provider URLs/credentials to the extension. Verify expiry/deletion, cross-scope denial,
+  MIME/byte limits and preserve the existing independent storage lifecycle.
+
 ### Active continuation (2026-11-13; bounded keypad phone menu `b4c0100f` pushed)
 
 - Code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to `origin/Mcbt5s-Backup-2` after
