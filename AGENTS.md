@@ -2,33 +2,36 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code commits `07af44c2` and `9919963e` are pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Extension manifests use the
-shared bounded schema-v1 contract; SpaceDO stores per-install settings with optimistic revisions,
-and Shell provides a basic schema-rendered form. A reference Assistant Voice microapp and SDK adapter
-now call the existing revisioned `/assistant-voice` service. Its host checks the active installed
-manifest, declared voice capability and permission, Space membership, owner/admin write role and
-existing preference validation. Focused local evidence: SDK contract/canvas/dashboard tests **40/40**,
-Spaces settings/voice-route/migration tests **20/20**, SDK/Spaces/Shell typechecks and
-`git diff --check`; SDK dist was rebuilt locally. This is local/mock evidence, not deployed or live
-acceptance. The dashboard edits Space Assistant preferences only; customer-agent packages, call
-preview, custom voices, streaming, provider tests and deployed behavior remain open. The earlier
-Space Template setup values still lack a runtime consumer, save/resume drafts, conditional/localized
-fields, expected-usage estimates and full rate coverage.
+Current continuation checkpoint (2026-11-13): code commit `36ff9179` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It adds a separate, versioned
+Space coordination registry alongside the project-permission-filtered Blackboard. Owners/admins
+publish bounded explicit facts only after previewing disclosure to every active Space member;
+members read bounded keyset pages; publication/revocation is versioned and auditable. Facts are
+advisory and grant no authority. The registry does not read private project data, link projects,
+enforce singleton rules or expose actor IDs in member responses. Local evidence: SDK tests **2/2**,
+Spaces gateway/DO/migration tests **11/11**, Router allowlist tests **39/39**, SDK build, Spaces,
+Shell and Router typechecks, and `git diff --check`. These are local/mocked checks, not deployed,
+multi-user non-disclosure or live acceptance.
+
+Earlier code commits `07af44c2` and `9919963e` add per-install extension settings and a reference
+Assistant Voice preferences microapp. The dashboard edits Space Assistant preferences only; a
+customer-agent package, call preview, custom voices, streaming, provider tests and deployed behavior
+remain open. Space Template setup values still lack a runtime consumer, browser draft/resume,
+conditional/localized fields, expected-usage estimates and complete rate coverage.
 
 Managed-services S2–S9/U01–U12 remains reconciled in the progress ledger, with named policy,
 unsupported runtime/platform contract, external evidence and live acceptance gaps kept distinct.
 P01/P02 remain fail-closed on environment-resource separation, ownership receipts and
 operator-attested migration baselines. P03/P20 still need approved grace/restriction and
 refund/dispute/author-accounting policies plus an independently authenticated operator identity.
-Exact next task: continue platform plan §10 by reconciling current Blackboard sharing, project privacy,
-extension grants and owner approvals with the proposed Space coordination registry. Implement a
-minimal registry for explicitly approved Space-owned facts, with a disclosure preview, member-read
-scope and advisory-only semantics; do not infer facts from private projects or enforce singleton
-resource rules without a policy decision. Then continue the remaining §9 customer voice package and
-§10 lifecycle/concurrency gaps. Preserve the public phone-extension streaming rejection and current
-rollout flags. Keep implementation, mock, deployed and provider-live evidence separate. Preserve
-`infra/scripts/__pycache__/`; keep rollout disabled, and do not deploy, buy services, or force-push.
+Exact next task: continue platform plan §9.5 from the current checkout. Trace customer voice package
+configuration from the retired `/customer-voice/*` routes through phone-extension installation,
+line assignment, existing Shell controls, settings persistence and SDK callers. Reuse supported
+extension lifecycle and cost ledgers; implement only caller-reachable controls against supported
+contracts. Keep the retired route fail-closed and preserve public phone-extension streaming rejection.
+Then continue §10 policy, lifecycle, concurrency and non-disclosure gaps. Preserve current rollout
+flags, keep local/mock/deployed/live evidence separate, preserve `infra/scripts/__pycache__/`, and do
+not deploy, buy services, or force-push.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.

@@ -2,17 +2,32 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code commits `07af44c2` and `9919963e` were pushed to
-`origin/Mcbt5s-Backup-2`. Extension manifests now use the same bounded schema-v1 field vocabulary as
-Space Templates. Per-install settings have optimistic revisions, a host-rendered Shell form and a
-restricted microapp RPC; requests revalidate the active installation, signed schema, declared
-capabilities/permissions, Space membership, administrator role, value shape and revision. The
-reference Assistant Voice dashboard and SDK adapter call the existing `/assistant-voice` preferences
-service and its approved voice catalog; the SpaceDO rechecks the installed manifest grants, Space
-scope and administrator role before forwarding to the same revisioned store. Focused local evidence:
-SDK schema/canvas/dashboard tests **40/40**, Spaces settings/voice-route/migration tests **20/20**,
-SDK/Spaces/Shell typechecks, local SDK build and `git diff --check`. No deployed Durable Object,
-package runtime, customer install or provider was exercised.
+Updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
+coordination-registry code is IMPLEMENTED_LOCAL: migration 114 persists bounded Space-owned facts,
+approval actor/role, fixed `space_members` audience, advisory-only status, timestamps and revocation
+version. A Spaces gateway checks active tenant-owned Space and current membership on each read;
+owner/admin writes require an explicit disclosure confirmation. The list is capped at 50 per page
+with stable keyset continuation; revocation compares the expected version. Member responses omit
+author/approver IDs. SDK contracts and Shell Settings now list facts, preview their exact label,
+description, audience/effect, require explicit confirmation, and allow administrators to unpublish.
+The registry is separate from project Blackboard and does not query or link private projects.
+Focused local evidence: SDK tests **2/2**, Spaces gateway/DO/migration tests **11/11**, Router
+product-session route tests **39/39**, SDK build, Spaces/Shell/Router typechecks and `git diff
+--check`. These are local SQLite/Worker mocks and static checks; no deployed multi-user,
+non-disclosure, or live acceptance occurred.
+
+§10 remains PARTIAL. Implemented scope is the fixed-audience advisory fact subset above. No configurable
+collaboration posture/audience, private-project publication workflow, delegation or project/extension
+linkage, request-to-use authority, role-filtered assistant discovery, expiry/refresh policy, lifecycle
+reconciliation, resource reservation/singleton enforcement, concurrent provisioning test, or broad
+side-channel test exists. Duplicate keys are allowed intentionally; no uniqueness policy is active.
+Do not infer facts from project content, expose actor metadata to ordinary members, or claim that
+advisory entries grant access.
+
+The earlier extension-settings and voice-dashboard commits `07af44c2` and `9919963e` remain pushed.
+The voice microapp edits Space Assistant preferences only; it is not a customer voice-agent package.
+§9.5's package-owned customer dashboard, test/publish/monitor flow, custom voice lifecycle, voice
+preview, supported public streaming and provider acceptance remain open.
 
 §5 remains PARTIAL. Space Template setup values are persisted with their idempotent install record,
 but are still not exposed to template code; no browser draft/resume lifecycle, conditional/localized
@@ -20,19 +35,16 @@ fields, visual authoring, expected-usage inputs, complete provider/runtime rate 
 update/uninstall acceptance exists. The new extension settings store is install-scoped but is not a
 template runtime consumer. Fields cannot collect provider secrets; use host-managed connections.
 
-The new voice dashboard configures Space Assistant preferences only. It does not implement a
-customer-agent product package, test call/preview, custom voice lifecycle, streaming phone path,
-provider quote, usage dashboard or live acceptance; public phone streaming remains rejected. The
-managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
+The managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
 their named product policy, unsupported runtime/platform contract, external resource evidence or
 deployed/live acceptance gap. P01/P02 remain fail-closed on environment IDs, ownership receipts and
 operator-attested migration baselines; P03/P20 retain the grace/restriction,
 refund/dispute/author-accounting and independent operator-identity gaps. Exact next task: reconcile
-§10's proposed Space coordination registry with current Blackboard sharing, project visibility,
-extension grants and approval callers; implement explicit Space-owned advisory facts with a disclosure
-preview and bounded member reads. Do not infer facts from private projects or enforce singleton rules
-before policy approval. Continue remaining §9 customer voice product gaps and §10 lifecycle,
-concurrency and privacy requirements; keep implementation, mocked, deployed and live evidence distinct.
+§9.5 customer voice package setup with current `/customer-voice/*` route retirement, installed phone
+extensions, line assignments, phone settings and cost/status surfaces. Do not resurrect retired
+customer call behavior or public streaming. Then continue the remaining §9 package/runtime/cost gaps
+and §10 policy, lifecycle, concurrency and privacy work; keep implementation, mocked, deployed and
+live evidence distinct.
 
 Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
 `origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a

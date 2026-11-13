@@ -2,6 +2,24 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; initial Shared-Space registry `36ff9179` pushed)
+
+- Code commit `36ff917928748987d518da19c9551a830f388c91` is pushed to
+  `origin/Mcbt5s-Backup-2`; fetched remote SHA matches. It adds a separate advisory Space
+  coordination registry, migration 114, explicit disclosure preview, current-member reads, owner/admin
+  publication and expected-version revocation. It does not infer or fetch project content, connect
+  private projects, enforce singleton policy, or return actor IDs in member responses.
+- Local evidence: SDK contract **2/2**, Spaces gateway/DO/migration **11/11**, Router path
+  allowlist **39/39**, SDK build, Spaces/Shell/Router typechecks and `git diff --check`. This is local
+  SQLite/Worker-mock evidence; no deployed or multi-user/live non-disclosure acceptance occurred.
+- This is a platform-plan §10 partial slice, not a change to managed-services S2–S9/U01–U12
+  classifications. Keep the unrelated untracked `infra/scripts/__pycache__/` untouched.
+- Exact next task: reconcile §9.5 customer voice-package requirements against the current retired
+  `/customer-voice/*` route, installed phone-extension lifecycle, number/line assignment and actual
+  reachable Shell/SDK surfaces. Reuse existing managed phone and cost ledgers, do not re-enable the
+  retired flow or public streaming, and implement an independent caller gap only if its runtime
+  contract is supported. Then continue §9 and §10 lifecycle/concurrency gaps.
+
 ### Active continuation (2026-11-13; voice dashboard `9919963e` pushed)
 
 - Code `9919963e` is pushed to `origin/Mcbt5s-Backup-2` after `07af44c2`. It adds a reference
