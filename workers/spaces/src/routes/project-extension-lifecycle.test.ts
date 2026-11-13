@@ -4,16 +4,14 @@ import spacesWorker from "../index.js";
 
 const secret = "project-extension-lifecycle-secret";
 
-function setup(canManage: boolean) {
+function setup(canManage: boolean, canRead = canManage) {
   const forwarded: Request[] = [];
   const stub = {
     fetch: vi.fn(async (request: Request) => {
       forwarded.push(request);
-      if (
-        new URL(request.url).pathname ===
-        "/projects/project-a/automation-access"
-      ) {
-        return canManage
+      if (new URL(request.url).pathname === "/projects/project-a/automation-access") {
+        const allowed = new URL(request.url).searchParams.get("access") === "read" ? canRead : canManage;
+        return allowed
           ? Response.json({ project_id: "project-a", can_manage: true })
           : Response.json({ error_code: "forbidden" }, { status: 403 });
       }
@@ -21,6 +19,10 @@ function setup(canManage: boolean) {
         return Response.json({
           installations: [{ instance: { status: "disabled" } }],
         });
+      }
+      if (new URL(request.url).pathname === "/extension-settings") {
+        if (request.method === "PATCH" && request.headers.get("x-naelao-project-manage") !== "1") return Response.json({ error_code: "forbidden" }, { status: 403 });
+        return Response.json({ revision: 0, settings: {}, can_configure: request.headers.get("x-naelao-project-manage") === "1" });
       }
       return Response.json({ instance_id: "instance-a", status: "disabled" });
     }),
@@ -53,6 +55,14 @@ async function patchLifecycle(env: unknown, role: string, action = "disable") {
     ),
     env as never
   );
+}
+
+async function projectSettings(env: unknown, role: string, method: "GET" | "PATCH" = "GET") {
+  return spacesWorker.fetch(new Request(
+    "https://spaces.test/spaces/space-a/projects/project-a/extension-installations/installation:tenant:extension:project/settings",
+    { method, headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+      "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": `${role}-a`, "x-naelao-role": role },
+      ...(method === "PATCH" ? { body: JSON.stringify({ settings: { greeting: "Hello" }, revision: 0 }) } : {}) }), env as never);
 }
 
 describe("project extension lifecycle route", () => {
@@ -118,5 +128,30 @@ describe("project extension lifecycle route", () => {
     expect(h.forwarded.map((request) => new URL(request.url).pathname)).toEqual(
       ["/projects/project-a/automation-access", "/container-installations"]
     );
+  });
+
+  it("allows readable project members to review exact installation settings but only managers to change them", async () => {
+    const readOnly = setup(false, true);
+    const read = await projectSettings(readOnly.env, "editor");
+    expect(await read.json()).toMatchObject({ revision: 0, can_configure: false });
+    expect(readOnly.forwarded.map(request => new URL(request.url).pathname)).toEqual([
+      "/projects/project-a/automation-access", "/projects/project-a/automation-access", "/extension-settings",
+    ]);
+    expect(readOnly.forwarded.at(-1)?.headers.get("x-naelao-project-read")).toBe("1");
+    expect(readOnly.forwarded.at(-1)?.headers.get("x-naelao-project-manage")).toBeNull();
+
+    const deniedWrite = setup(false, true);
+    expect((await projectSettings(deniedWrite.env, "editor", "PATCH")).status).toBe(403);
+    expect(deniedWrite.forwarded.map(request => new URL(request.url).pathname)).toEqual([
+      "/projects/project-a/automation-access", "/projects/project-a/automation-access", "/extension-settings",
+    ]);
+
+    const manager = setup(true);
+    const write = await projectSettings(manager.env, "editor", "PATCH");
+    expect(write.status).toBe(200);
+    const forwarded = manager.forwarded.at(-1);
+    expect(forwarded && new URL(forwarded.url).pathname).toBe("/extension-settings");
+    expect(forwarded?.headers.get("x-naelao-project-manage")).toBe("1");
+    await expect(forwarded?.json()).resolves.toMatchObject({ settings: { greeting: "Hello" }, revision: 0 });
   });
 });

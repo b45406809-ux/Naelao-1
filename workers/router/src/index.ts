@@ -667,6 +667,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // owner/admin policy, publisher trust, and exact installation scope.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/([^/]+)\/lifecycle$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/((?:[A-Za-z0-9._:-]|%[0-9A-Fa-f]{2})+)\/settings$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/releases$/,
   /^\/spaces\/([^/]+)\/extension-releases\/rollback$/,
   /^\/spaces\/([^/]+)\/extension-publishers(\/[^/]+)?$/,

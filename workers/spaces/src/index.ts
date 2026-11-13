@@ -3313,6 +3313,42 @@ app.patch("/spaces/:spaceId/projects/:projectId/extension-installations/:instanc
     body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action }) }));
 });
 
+const projectExtensionSettingsPath = "/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/settings";
+app.use(projectExtensionSettingsPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+async function forwardProjectExtensionSettings(c: any) {
+  const identity = getCallerIdentity(c), { spaceId, projectId, instanceId } = c.req.param();
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_settings_scope_required" }, 400);
+  let manageable = false;
+  if (c.req.method === "PATCH") {
+    const deniedManage = await requireManageableAutomationProject(c, spaceId, projectId);
+    if (!deniedManage) manageable = true;
+    else {
+      const deniedRead = await requireReadableAutomationProject(c, spaceId, projectId);
+      if (deniedRead) return deniedRead;
+    }
+  } else {
+    const deniedRead = await requireReadableAutomationProject(c, spaceId, projectId);
+    if (deniedRead) return deniedRead;
+    manageable = !(await requireManageableAutomationProject(c, spaceId, projectId));
+  }
+  let body: ArrayBuffer | undefined;
+  if (c.req.method === "PATCH") {
+    try { body = (await readBoundedRequestBytes(c.req.raw, 64 * 1024)).buffer as ArrayBuffer; }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  }
+  const query = new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  return stub.fetch(new Request(`http://space-do/extension-settings?${query}`, {
+    method: c.req.method,
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId),
+      "x-naelao-role": identity.role, "x-naelao-user-id": identity.userId, "x-naelao-project-read": "1", ...(manageable ? { "x-naelao-project-manage": "1" } : {}) },
+    ...(body ? { body } : {}),
+  }));
+}
+app.get(projectExtensionSettingsPath, forwardProjectExtensionSettings);
+app.patch(projectExtensionSettingsPath, forwardProjectExtensionSettings);
+
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {
   const extensionId = c.req.param("extensionId");

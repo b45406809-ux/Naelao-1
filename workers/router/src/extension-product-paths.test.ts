@@ -5,6 +5,8 @@ describe("product session routes for composed project extensions", () => {
   const paths = [
     "/spaces/s/projects/p/extensions",
     "/spaces/s/projects/p/extension-installations/install-a/lifecycle",
+    "/spaces/s/projects/p/extension-installations/install-a/settings",
+    "/spaces/s/projects/p/extension-installations/installation%3Atenant%3Aext_voice%3Aowner/settings",
     "/spaces/s/projects/p/extensions/ext_demo/releases",
     "/spaces/s/extension-releases/rollback",
     "/spaces/s/extension-publishers",
@@ -39,6 +41,7 @@ describe("product session routes for composed project extensions", () => {
       "/spaces/s/projects/p/extensions/install-a/secrets",
       "/spaces/s/projects/p/channel-extensions/install-a/inbox/send-anything",
       "/spaces/s/projects/p/extensions/install-a/connections/slack/credentials/export",
+      "/spaces/s/projects/p/extension-installations/install-a/settings/admin",
     ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });

@@ -12236,29 +12236,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async extensionSettings(request: Request, url: URL): Promise<Response> {
     const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "", appId = url.searchParams.get("app_id") ?? "";
-    if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)
+    const projectId = url.searchParams.get("project_id") ?? "", instanceId = url.searchParams.get("instance_id") ?? "";
+    const projectScoped = Boolean(projectId || instanceId);
+    if (!tenantId || !spaceId || projectScoped && (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId))
+      || !projectScoped && !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
     const role = request.headers.get("x-naelao-role") ?? "";
-    if (request.method === "PATCH" && role !== "owner" && role !== "admin") return Response.json({ error_code: "forbidden" }, { status: 403 });
-    const rows = queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; scope: string; status: string; manifest_json: string }>(this.ctx.storage.sql as never,
-      `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json
-       FROM extension_installation_manifests i
-       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'`, tenantId, spaceId);
-    const matches = rows.flatMap(row => {
+    if (projectScoped && request.headers.get("x-naelao-project-read") !== "1") return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (request.method === "PATCH" && !projectScoped && role !== "owner" && role !== "admin") return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const rows = projectScoped
+      ? queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; scope: string; status: string; user_id: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.user_id,i.manifest_json
+         FROM extension_installation_manifests i
+         WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.instance_id=?
+           AND (i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') OR (i.scope='PROJECT_USER' AND i.user_id=?)) AND i.status='active'`,
+        tenantId, spaceId, projectId, instanceId, request.headers.get("x-naelao-user-id") ?? "")
+      : queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; scope: string; status: string; user_id: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.user_id,i.manifest_json
+         FROM extension_installation_manifests i
+         WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'`, tenantId, spaceId);
+    const matches: Array<{ row: typeof rows[number]; manifest: ExtensionManifest }> = [];
+    for (const row of rows) {
       try {
         const raw = JSON.parse(row.manifest_json) as ExtensionManifest;
         const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+        if (projectScoped) {
+          if (row.instance_id === instanceId) matches.push({ row, manifest });
+          continue;
+        }
         const suffixes = [
           ...(manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3).map(gadget => gadget.id),
           ...(manifest.bundle?.primitives ?? []).filter(primitive => primitive.kind === "canvas").map(primitive => primitive.id),
         ];
         const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
-        return new Set(suffixes.map(id => `${prefix}${id}`)).has(appId) ? [{ row, manifest }] : [];
-      } catch { return []; }
-    });
+        if (new Set(suffixes.map(id => `${prefix}${id}`)).has(appId)) matches.push({ row, manifest });
+      } catch { /* Invalid legacy manifests are not exposed to the host form. */ }
+    }
     if (matches.length !== 1) return Response.json({ error_code: matches.length ? "extension_app_ambiguous" : "extension_settings_unavailable" }, { status: matches.length ? 409 : 404 });
     const { row, manifest } = matches[0]!;
+    const projectUserOwner = projectScoped && row.scope === "PROJECT_USER" && row.user_id === request.headers.get("x-naelao-user-id");
+    if (request.method === "PATCH" && projectScoped && request.headers.get("x-naelao-project-manage") !== "1" && !projectUserOwner)
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
     const schema = manifest.settingsSchema;
     const capabilities = new Set(manifest.capabilityRequirements);
     const permissions = new Set(manifest.declaredPermissions);
@@ -12273,7 +12292,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       let settings: Record<string, unknown>;
       try { settings = validateExtensionSettingsValues(manifest, current ? JSON.parse(current.settings_json) : {}, { allowIncomplete: !current }); }
       catch { return Response.json({ error_code: "extension_settings_migration_required" }, { status: 409, headers: { "cache-control": "private, no-store" } }); }
-      return Response.json({ schema, settings, revision: current?.revision ?? 0, ...(current ? { updated_at: current.updated_at } : {}) }, { headers: { "cache-control": "private, no-store" } });
+      return Response.json({ schema, settings, revision: current?.revision ?? 0,
+        ...(projectScoped ? { can_configure: request.headers.get("x-naelao-project-manage") === "1" || projectUserOwner } : {}),
+        ...(current ? { updated_at: current.updated_at } : {}) }, { headers: { "cache-control": "private, no-store" } });
     }
 
     let body: { settings?: unknown; revision?: number };

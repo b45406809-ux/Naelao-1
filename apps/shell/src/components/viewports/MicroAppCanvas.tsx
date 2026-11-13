@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
-import { callProjectExtensionCanvasGadgetRead, callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
+import { callProjectExtensionCanvasGadgetRead, callProjectExtensionSettings, callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
 
 export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, extensionInstallationId, extensionCanvasId, readableGadgets = [], session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; extensionInstallationId?: string; extensionCanvasId?: string; readableGadgets?: Array<{ gadgetId: string; tables: string[] }>; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>, requestId?: string): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
@@ -63,7 +63,8 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
         return;
       }
       if (rpc?.type === "naelao.extension.rpc") {
-        if (typeof rpc.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(rpc.id) || !session || projectScoped
+        const projectSettingsRequest = projectScoped && Boolean(extensionInstallationId) && rpc.path === "/api/settings";
+        if (typeof rpc.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(rpc.id) || !session || projectScoped && !projectSettingsRequest
           || !["GET", "POST", "DELETE", "PATCH"].includes(String(rpc.method)) || !["/api/data", "/api/storage", "/api/settings", "/api/assistant-voice", "/api/template-setup", "/mcp"].includes(String(rpc.path))
           || (rpc.path === "/mcp" && rpc.method !== "POST")
           || (rpc.path === "/api/settings" && ((rpc.method === "GET" && !capabilities.includes("extension.settings.read")) || (rpc.method === "PATCH" && (!capabilities.includes("extension.settings.read") || !capabilities.includes("extension.settings.configure"))) || !["GET", "PATCH"].includes(String(rpc.method))))
@@ -79,7 +80,10 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
           try { if (new TextEncoder().encode(JSON.stringify(rpc.body)).byteLength > 64_000) return; }
           catch { return; }
         }
-        void callSpaceSharedExtensionApi(spaceId, appId, session, { method: rpc.method as "GET" | "POST" | "DELETE" | "PATCH", path: rpc.path as "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/mcp", ...(query ? { query: query as Record<string, string> } : {}), ...(rpc.body !== undefined ? { body: rpc.body } : {}) })
+        const result = projectSettingsRequest
+          ? callProjectExtensionSettings(spaceId, projectId, extensionInstallationId!, session, { method: rpc.method as "GET" | "PATCH", ...(rpc.body !== undefined ? { body: rpc.body } : {}) })
+          : callSpaceSharedExtensionApi(spaceId, appId, session, { method: rpc.method as "GET" | "POST" | "DELETE" | "PATCH", path: rpc.path as "/api/data" | "/api/storage" | "/api/settings" | "/api/assistant-voice" | "/api/template-setup" | "/mcp", ...(query ? { query: query as Record<string, string> } : {}), ...(rpc.body !== undefined ? { body: rpc.body } : {}) });
+        void result
           .then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: true, result }, "*"))
           .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Extension API request failed" }, "*"));
         return;
