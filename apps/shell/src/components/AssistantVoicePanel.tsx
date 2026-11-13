@@ -14,6 +14,10 @@ export function AssistantVoicePanel({ spaceId, session, canManage = false, onboa
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const projectId = target.startsWith("project:") ? target.slice(8) : undefined;
+  const selectedVoice = settings?.voiceCatalog?.find(voice => voice.id === draft.voiceProfileId && voice.modelClass === draft.modelClass)
+    ?? settings?.voiceCatalog?.find(voice => voice.modelClass === draft.modelClass);
+  const speechPerMinute = selectedVoice ? 375 * selectedVoice.speechRateUsdPerMillionCharacters / 1_000_000 : null;
+  const transcriptionPerMinute = selectedVoice ? 30 * selectedVoice.transcriptionRateUsdPerSecond : null;
 
   React.useEffect(() => {
     let active = true;
@@ -65,6 +69,13 @@ export function AssistantVoicePanel({ spaceId, session, canManage = false, onboa
         <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}><input type="checkbox" checked={draft.allowProjectOverrides} onChange={e => update("allowProjectOverrides", e.target.checked)} /> Allow Project assistants to use tighter voice settings</label>
       </>}
       <p>Voice cloning and provider failover are unavailable until the host has consent, lifecycle and fallback controls. Calls fail closed if their selected model is unavailable.</p>
+      {selectedVoice && <aside style={{ marginTop: 14, padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
+        <strong>Selected voice catalog and list-rate estimate</strong>
+        <p>{selectedVoice.speechProvider} speech: <code>{selectedVoice.speechModel}</code> / <code>{selectedVoice.speechVoice}</code> at {selectedVoice.sampleRate} Hz; ${selectedVoice.speechRateUsdPerMillionCharacters} {selectedVoice.speechRateUnit}. Transcription: {selectedVoice.transcriptionProvider} <code>{selectedVoice.transcriptionModel}</code> at ${selectedVoice.transcriptionRateUsdPerSecond} {selectedVoice.transcriptionRateUnit}.</p>
+        <p>Supported catalog languages: {selectedVoice.languages.join(", ")}. Illustrative speech subtotal: ${(speechPerMinute! + transcriptionPerMinute!).toFixed(6)} per minute equivalent, assuming 375 generated characters and 30 seconds of transcription. This is a published list-rate estimate, not a quote, invoice or measured cost. Catalog research snapshot: {settings.voiceCatalogResearch?.date ?? "date unavailable"}.</p>
+        <p>Excluded: telephony and number rental, planner/LLM and tools, retrieval, runtime/compute/networking, retries, taxes and provider-specific routing or fallback charges. Provider availability, actual billed rates and regional eligibility have not been verified.</p>
+        {settings.voiceCatalogResearch?.sources?.length ? <p>Rate references: {settings.voiceCatalogResearch.sources.map((source, index) => <React.Fragment key={source.url}>{index > 0 ? "; " : ""}<a href={source.url} target="_blank" rel="noreferrer">{source.label}</a></React.Fragment>)}</p> : null}
+      </aside>}
       {settings.inherited && <p>These settings inherit from the Space. Saving creates Project overrides; Space limits still apply.</p>}
       <button type="button" className="btn btn-primary" disabled={busy || !canManage && !projectId} onClick={() => void save()} style={{ marginTop: 14 }}>{busy ? "Saving…" : "Save voice settings"}</button>
     </>}

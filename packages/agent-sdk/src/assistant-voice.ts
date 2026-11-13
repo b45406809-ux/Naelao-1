@@ -24,7 +24,27 @@ export interface AssistantVoiceSettings {
   overrides: Partial<AssistantVoicePreferences>;
   revision: number;
   inherited: boolean;
-  voiceCatalog?: Array<{ id: string; name: string; modelClass: ModelClass; languages: string[] }>;
+  voiceCatalog?: Array<{
+    id: string;
+    name: string;
+    modelClass: ModelClass;
+    speechProvider: string;
+    speechModel: string;
+    speechVoice: string;
+    sampleRate: 16000 | 24000;
+    speechRateUsdPerMillionCharacters: number;
+    speechRateUnit: "USD per million generated characters";
+    transcriptionProvider: string;
+    transcriptionModel: string;
+    transcriptionRateUsdPerSecond: number;
+    transcriptionRateUnit: "USD per audio second";
+    languages: string[];
+  }>;
+  voiceCatalogResearch?: {
+    date: "2026-11-12";
+    basis: "published_list_rates";
+    sources: Array<{ label: string; url: string }>;
+  };
 }
 export const DEFAULT_ASSISTANT_VOICE: Readonly<AssistantVoicePreferences> = Object.freeze({
   schemaVersion: 1, enabled: false, voiceProfileId: null, language: "auto",

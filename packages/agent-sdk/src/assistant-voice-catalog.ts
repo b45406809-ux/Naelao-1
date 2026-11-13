@@ -16,6 +16,17 @@ export interface ApprovedAssistantVoice {
   languages: string[];
 }
 
+export const ASSISTANT_VOICE_CATALOG_RESEARCH = Object.freeze({
+  date: "2026-11-12" as const,
+  basis: "published_list_rates" as const,
+  sources: Object.freeze([
+    { label: "OpenRouter Grok Voice TTS", url: "https://openrouter.ai/x-ai/grok-voice-tts-1.0" },
+    { label: "OpenRouter MAI Voice 2.1 Flash", url: "https://openrouter.ai/microsoft/mai-voice-2.1-flash" },
+    { label: "OpenRouter MAI Voice 2.1", url: "https://openrouter.ai/microsoft/mai-voice-2.1" },
+    { label: "OpenRouter Whisper Large v3 Turbo", url: "https://openrouter.ai/openai/whisper-large-v3-turbo" },
+  ]),
+});
+
 export const ASSISTANT_VOICE_CATALOG: readonly ApprovedAssistantVoice[] = Object.freeze([
   ...(["eve", "ara", "rex", "sal", "leo"] as const).map((voice) => ({
     id: `economy-${voice}`, name: `Economy · ${voice[0]!.toUpperCase()}${voice.slice(1)}`,

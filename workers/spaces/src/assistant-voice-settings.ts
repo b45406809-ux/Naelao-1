@@ -1,5 +1,5 @@
 import { resolveAssistantVoice, validateAssistantVoicePatch, type AssistantVoicePreferences } from "@naelao/agent-sdk";
-import { ASSISTANT_VOICE_CATALOG } from "@naelao/agent-sdk";
+import { ASSISTANT_VOICE_CATALOG, ASSISTANT_VOICE_CATALOG_RESEARCH } from "@naelao/agent-sdk";
 
 type Row = { preferences_json: string; revision: number };
 /** Internal DO handler. The gateway attests scope and authorizes the human before forwarding. */
@@ -48,6 +48,22 @@ export async function assistantVoiceSettings(storage: DurableObjectStorage, requ
   return Response.json({
     preferences: resolveAssistantVoice(base ? JSON.parse(base.preferences_json) : {}, projectId ? overrides : undefined),
     overrides, revision: current?.revision ?? 0, inherited: !!projectId && !current,
-    voiceCatalog: ASSISTANT_VOICE_CATALOG.map(({ id, name, modelClass, languages }) => ({ id, name, modelClass, languages })),
+    voiceCatalog: ASSISTANT_VOICE_CATALOG.map((voice) => ({
+      id: voice.id,
+      name: voice.name,
+      modelClass: voice.modelClass,
+      speechProvider: "OpenRouter",
+      speechModel: voice.speechModel,
+      speechVoice: voice.speechVoice,
+      sampleRate: voice.sampleRate,
+      speechRateUsdPerMillionCharacters: voice.priceUsdPerMillionCharacters,
+      speechRateUnit: "USD per million generated characters" as const,
+      transcriptionProvider: "OpenRouter",
+      transcriptionModel: voice.transcriptionModel,
+      transcriptionRateUsdPerSecond: voice.transcriptionUsdPerSecond,
+      transcriptionRateUnit: "USD per audio second" as const,
+      languages: voice.languages,
+    })),
+    voiceCatalogResearch: ASSISTANT_VOICE_CATALOG_RESEARCH,
   });
 }

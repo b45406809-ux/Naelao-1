@@ -33,8 +33,16 @@ describe("revisioned voice preferences in SpaceDO", () => {
   });
   it("lists only host-approved voices and accepts a model-matched preset", async () => {
     const { call } = fixture();
-    const initial = await (await call()).json() as { voiceCatalog: Array<{ id: string; modelClass: string }> };
+    const initial = await (await call()).json() as { voiceCatalog: Array<{ id: string; modelClass: string; speechModel: string; speechRateUnit: string; transcriptionModel: string; transcriptionRateUnit: string }>; voiceCatalogResearch: { date: string; basis: string; sources: Array<{ url: string }> } };
     expect(initial.voiceCatalog.some((v) => v.id === "economy-eve" && v.modelClass === "economy")).toBe(true);
+    expect(initial.voiceCatalog.find((v) => v.id === "economy-eve")).toMatchObject({
+      speechModel: "x-ai/grok-voice-tts-1.0",
+      speechRateUnit: "USD per million generated characters",
+      transcriptionModel: "openai/whisper-large-v3-turbo",
+      transcriptionRateUnit: "USD per audio second",
+    });
+    expect(initial.voiceCatalogResearch).toMatchObject({ date: "2026-11-12", basis: "published_list_rates" });
+    expect(initial.voiceCatalogResearch.sources.length).toBeGreaterThan(0);
     expect((await call(undefined, { revision: 0, preferences: { modelClass: "balanced", voiceProfileId: "balanced-harper" } })).status).toBe(200);
     expect((await call(undefined, { revision: 1, preferences: { modelClass: "advanced" } })).status).toBe(409);
     expect((await call(undefined, { revision: 1, preferences: { customVoicesEnabled: true } })).status).toBe(409);
