@@ -248,6 +248,18 @@ export interface BlueprintSetupVisibilityCondition {
   equals: string | number | boolean;
 }
 
+export type BlueprintSetupMigrationOperation =
+  | { kind: "rename"; fromProjectId: string; fromFieldId: string; toProjectId: string; toFieldId: string }
+  | { kind: "drop"; projectId: string; fieldId: string }
+  | { kind: "default"; projectId: string; fieldId: string; value: string | number | boolean };
+
+/** Declarative migration pinned to one installed artifact and canonical setup-schema digest. */
+export interface BlueprintSetupMigration {
+  fromArtifactSha256: string;
+  fromSchemaSha256: string;
+  operations: BlueprintSetupMigrationOperation[];
+}
+
 /** Version 1 is a primitive form; version 2 adds bounded localization and one equality condition. */
 export type BlueprintSetupField =
   | ({ id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
@@ -258,6 +270,8 @@ export type BlueprintSetupField =
 export interface SpaceBlueprint {
   /** Required when any project declares setupFields. */
   setupSchemaVersion?: 1 | 2;
+  /** Optional signed, data-only migrations for owner-reviewed template setup updates. */
+  setupMigrations?: BlueprintSetupMigration[];
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
   id: string;
   schemaVersion: "2.0";

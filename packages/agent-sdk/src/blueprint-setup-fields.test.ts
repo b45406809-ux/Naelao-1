@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel,
-  validateBlueprintSetupGroups, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema } from "./blueprint-setup-fields.js";
+  migrateBlueprintSetupValues, validateBlueprintSetupGroups, validateBlueprintSetupSchema, validateBlueprintSetupValues,
+  validateBlueprintSetupValuesForSchema } from "./blueprint-setup-fields.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const blueprint: SpaceBlueprint = {
@@ -95,5 +96,64 @@ describe("versioned Space Template setup fields", () => {
       support: { greeting: "Hello", hours: 8, enabled: false, language: "fr" },
     });
     expect(() => validateBlueprintSetupGroups([{ project_id: "support", project_name: "Support", fields: [], executable: "run()" }])).toThrow("unsupported property");
+  });
+
+  it("previews a signed declarative setup migration and reports fields needing owner input", () => {
+    const target: SpaceBlueprint = {
+      ...blueprint,
+      setupSchemaVersion: 2,
+      setupMigrations: [{
+        fromArtifactSha256: "a".repeat(64),
+        fromSchemaSha256: "b".repeat(64),
+        operations: [
+          { kind: "rename", fromProjectId: "support", fromFieldId: "greeting", toProjectId: "support", toFieldId: "welcome" },
+          { kind: "drop", projectId: "support", fieldId: "enabled" },
+          { kind: "drop", projectId: "support", fieldId: "language" },
+          { kind: "default", projectId: "support", fieldId: "timezone", value: "UTC" },
+        ],
+      }],
+      projects: [{ ...blueprint.projects[0]!, setupFields: [
+        { id: "welcome", type: "text", label: "Welcome", required: true, minLength: 3, maxLength: 80 },
+        { id: "hours", type: "number", label: "Business hours", minimum: 1, maximum: 24, integer: true, defaultValue: 8 },
+        { id: "timezone", type: "select", label: "Timezone", required: true, options: [{ value: "UTC", label: "UTC" }, { value: "PST", label: "Pacific" }] },
+        { id: "region", type: "text", label: "Support region", required: true, minLength: 2, maxLength: 32 },
+      ] }],
+    };
+    const oldGroups = validateBlueprintSetupSchema(blueprint);
+    const newGroups = validateBlueprintSetupSchema(target);
+    const migration = target.setupMigrations![0]!;
+    const source = { artifactSha256: migration.fromArtifactSha256, schemaSha256: migration.fromSchemaSha256 };
+    const preview = migrateBlueprintSetupValues(oldGroups, newGroups,
+      { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration, source);
+    expect(preview).toEqual({
+      values: { support: { welcome: "Hello", hours: 12, timezone: "UTC" } },
+      missingRequired: [{ project_id: "support", field_id: "region", label: "Support region" }],
+    });
+    expect(migrateBlueprintSetupValues(oldGroups, newGroups,
+      { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration,
+      source, { support: { region: "southern-africa" } }).missingRequired).toEqual([]);
+    expect(() => migrateBlueprintSetupValues(oldGroups, newGroups,
+      { support: { greeting: "Hello", hours: 12, enabled: true, language: "fr" } }, migration,
+      { ...source, artifactSha256: "c".repeat(64) })).toThrow("does not match the installed artifact");
+  });
+
+  it("rejects implicit loss, incompatible renames, invalid defaults and executable migration data", () => {
+    const oldGroups = validateBlueprintSetupSchema(blueprint);
+    const target = { ...blueprint, projects: [{ ...blueprint.projects[0]!, setupFields: [
+      { id: "greeting", type: "number", label: "Greeting number" },
+    ] }] } as SpaceBlueprint;
+    const newGroups = validateBlueprintSetupSchema(target);
+    const base = { fromArtifactSha256: "a".repeat(64), fromSchemaSha256: "b".repeat(64), operations: [] };
+    const source = { artifactSha256: base.fromArtifactSha256, schemaSha256: base.fromSchemaSha256 };
+    expect(() => migrateBlueprintSetupValues(oldGroups, newGroups,
+      { support: { greeting: "Hello", hours: 8, enabled: false, language: "en" } }, base, source)).toThrow("explicit migration");
+    expect(() => migrateBlueprintSetupValues(oldGroups, newGroups,
+      { support: { greeting: "Hello", hours: 8, enabled: false, language: "en" } }, { ...base, operations: [
+        { kind: "rename", fromProjectId: "support", fromFieldId: "greeting", toProjectId: "support", toFieldId: "greeting" },
+      ] }, source)).toThrow("incompatible");
+    expect(() => validateBlueprintSetupSchema({ ...blueprint, setupMigrations: [{ ...base, operations: [
+      { kind: "default", projectId: "support", fieldId: "language", value: "unknown" },
+    ] }] })).toThrow("Invalid setup value");
+    expect(() => validateBlueprintSetupSchema({ ...blueprint, setupMigrations: [{ ...base, executable: "run()", operations: [] } as never] })).toThrow("unsupported property");
   });
 });

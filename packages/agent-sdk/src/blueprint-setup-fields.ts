@@ -1,4 +1,4 @@
-import type { BlueprintSetupField, SpaceBlueprint } from "./types.js";
+import type { BlueprintSetupField, BlueprintSetupMigration, BlueprintSetupMigrationOperation, SpaceBlueprint } from "./types.js";
 
 export type BlueprintSetupValue = string | number | boolean;
 export type BlueprintSetupValues = Record<string, Record<string, BlueprintSetupValue>>;
@@ -252,7 +252,9 @@ export function validateBlueprintSetupSchema(blueprint: SpaceBlueprint): Bluepri
     if (total > MAX_FIELDS_TOTAL) throw new Error("Space Template setup schema exceeds the field limit");
     groups.push({ project_id: project.id, project_name: project.name, fields: checkedFields });
   }
-  return validateBlueprintSetupGroups(groups);
+  const checked = validateBlueprintSetupGroups(groups);
+  validateBlueprintSetupMigrations(blueprint.setupMigrations, checked);
+  return checked;
 }
 
 /** Validates persisted setup schema data before it is used by a runtime consumer. */
@@ -298,4 +300,163 @@ export function validateBlueprintSetupValuesForSchema(groups: readonly Blueprint
 /** Validates user values against the signed schema and supplies declared defaults. */
 export function validateBlueprintSetupValues(blueprint: SpaceBlueprint, raw: unknown): BlueprintSetupValues {
   return validateBlueprintSetupValuesForSchema(validateBlueprintSetupSchema(blueprint), raw);
+}
+
+const SETUP_MIGRATION_HASH = /^[a-f0-9]{64}$/;
+const MAX_SETUP_MIGRATIONS = 8;
+const MAX_SETUP_MIGRATION_OPERATIONS = 128;
+
+function setupField(groups: readonly BlueprintSetupFieldGroup[], projectId: string, fieldId: string): BlueprintSetupField | undefined {
+  return groups.find(group => group.project_id === projectId)?.fields.find(field => field.id === fieldId);
+}
+
+function setupPath(projectId: string, fieldId: string): string { return `${projectId}\u0000${fieldId}`; }
+
+/** Validate the bounded, non-executable migration language and its target-schema references. */
+export function validateBlueprintSetupMigrations(raw: unknown, targetGroups?: readonly BlueprintSetupFieldGroup[]): BlueprintSetupMigration[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_SETUP_MIGRATIONS) throw new Error("Invalid setup schema migrations");
+  const checkedTargets = targetGroups ? validateBlueprintSetupGroups(targetGroups) : undefined;
+  return raw.map(value => {
+    if (!isRecord(value)) throw new Error("Invalid setup schema migration");
+    rejectUnknownKeys(value, ["fromArtifactSha256", "fromSchemaSha256", "operations"], "setup schema migration");
+    if (typeof value.fromArtifactSha256 !== "string" || !SETUP_MIGRATION_HASH.test(value.fromArtifactSha256)
+      || typeof value.fromSchemaSha256 !== "string" || !SETUP_MIGRATION_HASH.test(value.fromSchemaSha256))
+      throw new Error("Invalid setup schema migration source digest");
+    if (!Array.isArray(value.operations) || value.operations.length > MAX_SETUP_MIGRATION_OPERATIONS)
+      throw new Error("Invalid setup schema migration operations");
+    const sources = new Set<string>(), targets = new Set<string>();
+    const operations = value.operations.map((entry): BlueprintSetupMigrationOperation => {
+      if (!isRecord(entry) || typeof entry.kind !== "string") throw new Error("Invalid setup schema migration operation");
+      if (entry.kind === "rename") {
+        rejectUnknownKeys(entry, ["kind", "fromProjectId", "fromFieldId", "toProjectId", "toFieldId"], "setup migration rename");
+        if (typeof entry.fromProjectId !== "string" || !PROJECT_ID_PATTERN.test(entry.fromProjectId)
+          || typeof entry.fromFieldId !== "string" || !ID_PATTERN.test(entry.fromFieldId)
+          || typeof entry.toProjectId !== "string" || !PROJECT_ID_PATTERN.test(entry.toProjectId)
+          || typeof entry.toFieldId !== "string" || !ID_PATTERN.test(entry.toFieldId))
+          throw new Error("Invalid setup migration rename path");
+        const source = setupPath(entry.fromProjectId, entry.fromFieldId), target = setupPath(entry.toProjectId, entry.toFieldId);
+        if (sources.has(source) || targets.has(target)) throw new Error("Duplicate setup migration path");
+        sources.add(source); targets.add(target);
+        const sourceGroupField = checkedTargets && setupField(checkedTargets, entry.toProjectId, entry.toFieldId);
+        if (checkedTargets && !sourceGroupField) throw new Error("Unknown setup migration target");
+        return { kind: "rename", fromProjectId: entry.fromProjectId, fromFieldId: entry.fromFieldId,
+          toProjectId: entry.toProjectId, toFieldId: entry.toFieldId };
+      }
+      if (entry.kind === "drop") {
+        rejectUnknownKeys(entry, ["kind", "projectId", "fieldId"], "setup migration drop");
+        if (typeof entry.projectId !== "string" || !PROJECT_ID_PATTERN.test(entry.projectId)
+          || typeof entry.fieldId !== "string" || !ID_PATTERN.test(entry.fieldId)) throw new Error("Invalid setup migration drop path");
+        const source = setupPath(entry.projectId, entry.fieldId);
+        if (sources.has(source)) throw new Error("Duplicate setup migration source");
+        sources.add(source);
+        return { kind: "drop", projectId: entry.projectId, fieldId: entry.fieldId };
+      }
+      if (entry.kind === "default") {
+        rejectUnknownKeys(entry, ["kind", "projectId", "fieldId", "value"], "setup migration default");
+        if (typeof entry.projectId !== "string" || !PROJECT_ID_PATTERN.test(entry.projectId)
+          || typeof entry.fieldId !== "string" || !ID_PATTERN.test(entry.fieldId)
+          || !["string", "number", "boolean"].includes(typeof entry.value)
+          || (typeof entry.value === "number" && !Number.isFinite(entry.value)))
+          throw new Error("Invalid setup migration default");
+        const target = setupPath(entry.projectId, entry.fieldId);
+        if (targets.has(target)) throw new Error("Duplicate setup migration target");
+        targets.add(target);
+        const field = checkedTargets && setupField(checkedTargets, entry.projectId, entry.fieldId);
+        if (checkedTargets && !field) throw new Error("Unknown setup migration target");
+        if (field) validateSetupFieldValues([field], { [field.id]: entry.value }, { allowIncomplete: true });
+        return { kind: "default", projectId: entry.projectId, fieldId: entry.fieldId,
+          value: entry.value as string | number | boolean };
+      }
+      throw new Error("Unsupported setup schema migration operation");
+    });
+    return { fromArtifactSha256: value.fromArtifactSha256, fromSchemaSha256: value.fromSchemaSha256, operations };
+  });
+}
+
+export interface BlueprintSetupMigrationPreview {
+  values: BlueprintSetupValues;
+  missingRequired: Array<{ project_id: string; field_id: string; label: string }>;
+}
+
+export interface BlueprintSetupMigrationSource {
+  artifactSha256: string;
+  schemaSha256: string;
+}
+
+/** Apply one signed migration to stored values without coercion; missing required target fields
+ * are returned for owner input before the migration can be committed. */
+export function migrateBlueprintSetupValues(
+  oldGroups: readonly BlueprintSetupFieldGroup[],
+  newGroups: readonly BlueprintSetupFieldGroup[],
+  rawValues: unknown,
+  migration: unknown,
+  source: BlueprintSetupMigrationSource,
+  ownerValues: unknown = {},
+): BlueprintSetupMigrationPreview {
+  const oldSchema = validateBlueprintSetupGroups(oldGroups), newSchema = validateBlueprintSetupGroups(newGroups);
+  const [checked] = validateBlueprintSetupMigrations([migration], newSchema);
+  if (!checked) throw new Error("Setup schema migration is unavailable");
+  if (!SETUP_MIGRATION_HASH.test(source.artifactSha256) || !SETUP_MIGRATION_HASH.test(source.schemaSha256)
+    || checked.fromArtifactSha256 !== source.artifactSha256 || checked.fromSchemaSha256 !== source.schemaSha256)
+    throw new Error("Setup schema migration source does not match the installed artifact");
+  const existingValues = validateBlueprintSetupValuesForSchema(oldSchema, rawValues);
+  const sourcePaths = new Set<string>();
+  const moved = new Map<string, string>();
+  const defaults = new Map<string, string | number | boolean>();
+  for (const operation of checked.operations) {
+    if (operation.kind === "rename") {
+      const from = setupPath(operation.fromProjectId, operation.fromFieldId), to = setupPath(operation.toProjectId, operation.toFieldId);
+      const sourceField = setupField(oldSchema, operation.fromProjectId, operation.fromFieldId);
+      const targetField = setupField(newSchema, operation.toProjectId, operation.toFieldId);
+      if (!sourceField || !targetField || sourceField.type !== targetField.type) throw new Error("Setup migration rename is incompatible");
+      sourcePaths.add(from); moved.set(from, to);
+    } else if (operation.kind === "drop") {
+      const from = setupPath(operation.projectId, operation.fieldId);
+      if (!setupField(oldSchema, operation.projectId, operation.fieldId)) throw new Error("Unknown setup migration source");
+      sourcePaths.add(from);
+    } else {
+      const to = setupPath(operation.projectId, operation.fieldId);
+      if (!setupField(newSchema, operation.projectId, operation.fieldId)) throw new Error("Unknown setup migration target");
+      defaults.set(to, operation.value);
+    }
+  }
+  const result: Record<string, Record<string, BlueprintSetupValue>> = Object.create(null) as Record<string, Record<string, BlueprintSetupValue>>;
+  const put = (path: string, value: BlueprintSetupValue) => {
+    const [projectId, fieldId] = path.split("\u0000");
+    if (!projectId || !fieldId || !setupField(newSchema, projectId, fieldId)) throw new Error("Setup migration target is unavailable");
+    const group = result[projectId] ?? (result[projectId] = Object.create(null) as Record<string, BlueprintSetupValue>);
+    if (Object.hasOwn(group, fieldId)) throw new Error("Setup migration target collision");
+    group[fieldId] = value;
+  };
+  for (const oldGroup of oldSchema) for (const field of oldGroup.fields) {
+    const source = setupPath(oldGroup.project_id, field.id);
+    const value = existingValues[oldGroup.project_id]?.[field.id];
+    if (sourcePaths.has(source)) {
+      const target = moved.get(source);
+      if (target && value !== undefined) put(target, value);
+      continue;
+    }
+    const targetField = setupField(newSchema, oldGroup.project_id, field.id);
+    if (!targetField || targetField.type !== field.type) throw new Error("Removed or changed setup fields need an explicit migration");
+    if (value !== undefined) put(setupPath(oldGroup.project_id, field.id), value);
+  }
+  for (const [path, value] of defaults) {
+    const [projectId, fieldId] = path.split("\u0000");
+    const current = projectId && fieldId ? result[projectId]?.[fieldId] : undefined;
+    if (current === undefined) put(path, value);
+  }
+  if (!isRecord(ownerValues)) throw new Error("Owner setup values must be an object");
+  for (const [projectId, values] of Object.entries(ownerValues)) {
+    if (!isRecord(values)) throw new Error(`Owner setup values for ${projectId} must be an object`);
+    const target = result[projectId] ?? (result[projectId] = Object.create(null) as Record<string, BlueprintSetupValue>);
+    for (const [fieldId, value] of Object.entries(values)) target[fieldId] = value as BlueprintSetupValue;
+  }
+  const normalized = validateBlueprintSetupValuesForSchema(newSchema, result, { allowIncomplete: true });
+  const missingRequired = newSchema.flatMap(group => group.fields.flatMap(field => {
+    if (!field.required || !isBlueprintSetupFieldVisible(group.fields, field, normalized[group.project_id] ?? {})
+      || Object.hasOwn(normalized[group.project_id] ?? {}, field.id)) return [];
+    return [{ project_id: group.project_id, field_id: field.id, label: field.label }];
+  }));
+  return { values: normalized, missingRequired };
 }
