@@ -2,18 +2,25 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): guided-template code commit `46f38eea` is pushed to
-`origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch. New Spaces
-retain the exact selected Marketplace listing; activation preview and activation bind to that same
-listing. The owner review shows a recorded paid license or current zero-price listing as a known
-one-time cost, leaves the total null, and lists unknown model, channel, runtime, storage, tax, regional
-and account-specific costs. Targeted Spaces tests pass **63/63**, Spaces and Shell typechecks pass,
-and `git diff --check` passes. These are local checks only; expected-usage inputs, complete
-provider/runtime rates, deployed installation and live provider checks remain absent. §5 remains
-PARTIAL. P03/P20 caller code `41996f29` is also pushed: subscription status/portal and audited
-buyer/creator refund status are reachable; grace/restriction and refund/dispute/author-accounting
-policy plus independent operator identity/UI remain unresolved. Preserve the unrelated
-`infra/scripts/__pycache__/`.
+Current continuation checkpoint (2026-11-13): code commit `e3c4451f` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Guided Space Templates now
+support a versioned setup schema with bounded text, number, boolean and select fields; the host
+validates the signed schema and owner values, displays those fields in the Shell review, and stores
+normalized values with the idempotent per-Space installation claim. Local evidence: focused Spaces
+routes/installation/migrations **25/25**, SDK schema/compiler **7/7**, SDK/Spaces/Shell typechecks and
+`git diff --check`. These are local/mock checks only. §5 remains PARTIAL: no saved draft/resume after
+leaving the client, conditional/localized fields, settings update/read surface, runtime/microapp
+consumer, expected-usage estimate or complete provider pricing exists. Provider credentials are not
+supported by this field contract; host-managed connection flows remain separate. The managed-services
+S2–S9/U01–U12 ledger remains reconciled with its named product-policy, unsupported-platform and live
+acceptance gaps; do not claim those are completed/live. P01/P02 remain fail-closed on unverified
+resource separation, ownership receipts and operator-attested migration baselines. P03/P20 still need
+approved grace/restriction and refund/dispute/author-accounting policies plus independently
+authenticated operator identity. Exact next task: reconcile current microapp settings, voice APIs and
+assistant voice dashboards against platform plan §9.5; reuse the bounded server-validated setup
+contract and implement the next safe install-scoped dashboard/settings connection. Then continue
+through §10 Shared-Space coordination. Preserve `infra/scripts/__pycache__/`; keep rollout disabled,
+and do not deploy, buy services, or push with force.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.

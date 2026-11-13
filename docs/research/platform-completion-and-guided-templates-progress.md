@@ -2,6 +2,35 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after code commit `e3c4451f` was pushed to `origin/Mcbt5s-Backup-2`.
+SpaceBlueprint package schema v1 adds a bounded data-only field vocabulary (text, number, boolean,
+select), with schema complexity, IDs, labels, help, choices, defaults and values validated in the
+SDK host compiler. Provider-credential field types and obvious secret/credential names are rejected;
+the owner UI also directs credentials through host connections. The authenticated Spaces activation
+preview returns supported field definitions; Shell renders them; activation validates values before
+install side effects; SpaceDO repeats validation and persists normalized values in the same durable,
+idempotent per-Space installation claim. A retry with different settings is rejected rather than
+silently returning the first install.
+
+Local evidence: focused Spaces activation/installation/migration suites **25/25**, SDK blueprint and
+setup schema suites **7/7**, SDK/Spaces/Shell typechecks, and `git diff --check`. These are local
+fixtures and mocks; no deployed Durable Object, provider, or customer installation was exercised.
+§5 remains PARTIAL: values are retained with the install record but are not yet readable by the
+template runtime or an extension microapp; drafts do not survive closing/reloading the browser;
+configuration updates, conditional/localized fields, expected-usage inputs, complete provider/runtime
+rates, visual authoring and full install/update/uninstall acceptance remain open. The setup form is
+not a credential vault or provider connection.
+
+The prior-source managed-services sweep still records S2–S9/U01–U12 independently. Local code is
+implemented for currently supported lanes, but rows remain partial for named policy decisions,
+unsupported runtime/platform contracts, missing external resource evidence and live/deployed
+acceptance. P01/P02 remain fail-closed on environment IDs, ownership/receipts and operator-attested
+migration baselines; P03/P20 retain the open grace/restriction, refund/dispute/author-accounting and
+independent operator identity contracts. Exact next task: compare the current scoped MicroApp/Gadget
+API, extension canvas and assistant-voice settings against §9.5; add the missing safe,
+installation-scoped settings path for the new configuration contract, then implement voice dashboard
+caller slices and proceed to §10 Shared-Space coordination. No provider streaming support is enabled.
+
 Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
 `origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a
 template; preview and activation bind to that same tenant fork/listing. Owner review reports an

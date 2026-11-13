@@ -2,6 +2,27 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; guided setup schema `e3c4451f` pushed)
+
+- Code `e3c4451f` is pushed to `origin/Mcbt5s-Backup-2`. The SDK defines setup-schema version 1
+  with bounded text, number, boolean and select fields. Host compiler validation rejects malformed
+  schemas, executable/unknown properties, obvious credential fields and invalid submitted values.
+  The signed template preview returns supported definitions; Shell renders the fields; the Spaces
+  activation route validates values before provisioning and SpaceDO revalidates and stores normalized
+  values in the durable idempotency claim. A repeated install must use the same values.
+- Local/mock evidence: Spaces activation/installation/migration suites **25/25**, SDK schema/compiler
+  suites **7/7**, SDK/Spaces/Shell typechecks, and `git diff --check`. No deployed DO, Marketplace
+  install, provider connection or live acceptance was exercised.
+- §5 remains PARTIAL. The values are stored, but no runtime/microapp settings reader consumes them;
+  drafts are not saved across a closed/reloaded browser; updates, localization/conditional logic,
+  expected usage and a full cost estimate remain absent. Template fields do not grant provider
+  credential access; use host-managed connections.
+- Managed-services S2–S9/U01–U12 retains the source/caller reconciliation and specific PARTIAL
+  product policy, unsupported platform contracts, external evidence and live acceptance. Exact next
+  task: inspect current extension microapp/Gadget APIs and assistant voice callers against platform
+  plan §9.5, then implement a scoped settings consumer and voice dashboard slice. Preserve
+  `infra/scripts/__pycache__/`; keep rollouts disabled.
+
 ### Active continuation (2026-11-13; §5 guided-template cost disclosure `46f38eea` pushed)
 
 - Code `46f38eea` is pushed to `origin/Mcbt5s-Backup-2`. Space creation retains the exact selected
