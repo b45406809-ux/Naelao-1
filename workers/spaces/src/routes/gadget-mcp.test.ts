@@ -124,6 +124,11 @@ describe("gadget MCP host adapter", () => {
     expect(idFromName).toHaveBeenCalledTimes(2);
     expect(platformFetch).not.toHaveBeenCalled();
     expect(spaceFetch).toHaveBeenCalledTimes(2);
+    const voiceRead = await app.request("/spaces/s/apps/voice_dashboard/api/assistant-voice", { headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
+    expect(await voiceRead.json()).toMatchObject({ path: "/extension-assistant-voice", method: "GET" });
+    const voiceMemberWrite = await app.request("/spaces/s/apps/voice_dashboard/api/assistant-voice", { method: "PATCH", headers: await auth("t", { "x-naelao-role": "member", "content-type": "application/json" }), body: JSON.stringify({ preferences: {}, revision: 0 }) }, env);
+    expect(voiceMemberWrite.status).toBe(403);
+    expect(spaceFetch).toHaveBeenCalledTimes(3);
   });
 
   it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {

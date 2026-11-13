@@ -1,5 +1,6 @@
 import type { ProjectKind, ViewportConfiguration } from "./types.js";
 import type { ExtensionSettingsSnapshot } from "./extensions.js";
+import { createAssistantVoiceClient, type VoiceCapability } from "./assistant-voice.js";
 
 /** The two first-party shells are deliberately layout contracts, not vertical products. */
 export const CANVAS_LAYOUTS = ["DualPane.Document", "DualPane.DataGrid"] as const;
@@ -278,6 +279,62 @@ export function createExtensionSettingsClient(options: { window?: CanvasBridgeWi
       disposed = true;
       target.removeEventListener("message", receive);
       for (const request of pending.values()) { target.clearTimeout(request.timer); request.reject(new Error("extension settings client disposed")); }
+      pending.clear();
+    },
+  };
+}
+
+/** Package-facing adapter for the existing, revisioned Space Assistant voice settings API. The
+ * extension must declare assistant.voice.read/configure; the Shell and SpaceDO check those grants
+ * again, and only Space owners/admins can write. */
+export function createExtensionAssistantVoiceClient(options: {
+  spaceId: string;
+  capabilities: readonly VoiceCapability[];
+  window?: CanvasBridgeWindow;
+  timeoutMs?: number;
+}) {
+  const target = options.window ?? globalThis as unknown as CanvasBridgeWindow;
+  if (target.parent === target) throw new Error("extension voice client must run in a hosted frame");
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("invalid extension voice timeout");
+  const expectedPath = `/spaces/${encodeURIComponent(options.spaceId)}/assistant-voice`;
+  let sequence = 0, disposed = false;
+  const prefix = `v${crypto.randomUUID().replaceAll("-", "")}`;
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: number }>();
+  const receive = (event: CanvasBridgeMessageEvent) => {
+    if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
+    const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+    if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id); target.clearTimeout(request.timer);
+    if (message.ok === true) request.resolve(message.result);
+    else request.reject(new Error(typeof message.error === "string" ? message.error.slice(0, 300) : "Extension voice request failed"));
+  };
+  target.addEventListener("message", receive);
+  const request = (path: string, init?: { method: string; body: string }): Promise<Response> => {
+    if (disposed) return Promise.reject(new Error("extension voice client disposed"));
+    const method = init?.method ?? "GET";
+    if (path !== expectedPath || !["GET", "PATCH"].includes(method)) return Promise.reject(new Error("invalid extension voice request"));
+    let body: unknown;
+    if (init?.body !== undefined) {
+      try { body = JSON.parse(init.body); } catch { return Promise.reject(new Error("invalid extension voice payload")); }
+      if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 8_000) return Promise.reject(new Error("extension voice payload too large"));
+    }
+    const id = `${prefix}_${++sequence}`;
+    return new Promise((resolve, reject) => {
+      const timer = target.setTimeout(() => { pending.delete(id); reject(new Error("Extension voice request timed out")); }, timeoutMs);
+      pending.set(id, { resolve: value => resolve(Response.json(value)), reject, timer });
+      target.parent.postMessage({ type: "naelao.extension.rpc", id, method, path: "/api/assistant-voice", ...(body !== undefined ? { body } : {}) }, "*");
+    });
+  };
+  const client = createAssistantVoiceClient({ spaceId: options.spaceId, capabilities: options.capabilities, request });
+  return {
+    ...client,
+    dispose() {
+      if (disposed) return;
+      disposed = true; target.removeEventListener("message", receive);
+      for (const item of pending.values()) { target.clearTimeout(item.timer); item.reject(new Error("extension voice client disposed")); }
       pending.clear();
     },
   };

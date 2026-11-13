@@ -8,8 +8,8 @@ describe("Space-shared extension settings", () => {
     const storage = createDOStorage(), secret = "extension-settings-test-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) }, PLATFORM_SECRET: secret } as never);
     const manifest = {
-      id: "ext_voice_dashboard", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure"],
-      capabilityRequirements: ["extension.settings.read", "extension.settings.configure"],
+      id: "ext_voice_dashboard", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure", "assistant.voice.read", "assistant.voice.configure"],
+      capabilityRequirements: ["extension.settings.read", "extension.settings.configure", "assistant.voice.read", "assistant.voice.configure"],
       gadgets: [{ id: "voice_dashboard", name: "Voice Dashboard", viewportComponent: "./voice.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
       daemons: [], commands: [], settingsSchema: { schemaVersion: 1, fields: [
         { id: "language", type: "select", label: "Language", options: [{ value: "en", label: "English" }, { value: "fr", label: "French" }], defaultValue: "en" },
@@ -36,5 +36,13 @@ describe("Space-shared extension settings", () => {
     expect((await request("PATCH", "admin", { settings: { greeting: "Changed" }, revision: 0 })).status).toBe(409);
     expect(await (await request("GET")).json()).toMatchObject({ revision: 1, settings: { language: "en", greeting: "Hello" } });
     expect((await request("GET", "admin", undefined, "wrong_app")).status).toBe(404);
+
+    const voiceRequest = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard") => space.fetch(new Request(`http://space/extension-assistant-voice?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {
+      method, headers: { "x-naelao-internal-token": token, "x-naelao-role": role, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }));
+    expect(await (await voiceRequest("GET")).json()).toMatchObject({ revision: 0, preferences: { enabled: false }, voiceCatalog: expect.any(Array) });
+    expect((await voiceRequest("PATCH", "member", { preferences: { language: "en" }, revision: 0 })).status).toBe(403);
+    expect(await (await voiceRequest("PATCH", "admin", { preferences: { enabled: true, language: "en" }, revision: 0 })).json()).toMatchObject({ revision: 1, preferences: { enabled: true, language: "en" } });
+    expect((await voiceRequest("GET", "admin", undefined, "wrong_app")).status).toBe(404);
   });
 });

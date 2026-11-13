@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, createExtensionSettingsClient, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
+import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, createExtensionAssistantVoiceClient, createExtensionSettingsClient, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
 
 describe("polymorphic canvas descriptors", () => {
   it("exposes the maintained shells and a generic third-party mount socket", () => {
@@ -49,5 +49,26 @@ describe("extension settings host client", () => {
     await expect(client.updateSettings({ credential: "not allowed by schema" }, -1)).rejects.toThrow("invalid extension settings update");
     client.dispose();
     await expect(client.getSettings()).rejects.toThrow("extension settings client disposed");
+  });
+
+  it("routes the SDK voice client through the capability-gated host bridge", async () => {
+    const sent: Record<string, unknown>[] = [];
+    let listener: ((event: { source: unknown; data: unknown }) => void) | undefined;
+    const parent = { postMessage(message: unknown) {
+      const rpc = message as Record<string, unknown>; sent.push(rpc);
+      const revision = sent.length - 1;
+      queueMicrotask(() => listener?.({ source: parent, data: { type: "naelao.extension.rpc.result", id: rpc.id, ok: true, result: {
+        preferences: { schemaVersion: 1, enabled: false, voiceProfileId: null, language: revision ? "fr" : "auto", deliveryInstructions: "", speed: 1, modelClass: "economy", customVoicesEnabled: false, allowProjectOverrides: true, allowPrebuiltFallback: false, maxCallMinutes: 30, maxCallCostUsd: 2 },
+        overrides: {}, revision, inherited: false, voiceCatalog: [],
+      } } }));
+    } };
+    const target = { parent, addEventListener: (_: "message", receive: typeof listener) => { listener = receive; },
+      removeEventListener: () => { listener = undefined; }, setTimeout: () => 1, clearTimeout: () => undefined };
+    const client = createExtensionAssistantVoiceClient({ spaceId: "space-a", capabilities: ["assistant.voice.read", "assistant.voice.configure"], window: target as never });
+    await expect(client.getPreferences()).resolves.toMatchObject({ preferences: { language: "auto" }, revision: 0 });
+    await expect(client.updatePreferences({ language: "fr" }, 0)).resolves.toMatchObject({ preferences: { language: "fr" }, revision: 1 });
+    expect(sent.map(message => [message.method, message.path])).toEqual([["GET", "/api/assistant-voice"], ["PATCH", "/api/assistant-voice"]]);
+    expect(sent[1]?.body).toEqual({ preferences: { language: "fr" }, revision: 0 });
+    client.dispose();
   });
 });

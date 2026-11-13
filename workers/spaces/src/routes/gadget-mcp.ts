@@ -69,12 +69,40 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     });
     return c.env.SPACE_DO.get(id).fetch(request);
   };
+  const forwardAssistantVoice = async (c: Context<{ Bindings: Env }>) => {
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+    const { spaceId = "", appId = "" } = c.req.param();
+    const role = c.req.header("x-naelao-role") ?? "viewer";
+    if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
+    if (c.req.method === "PATCH" && role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
+    if (!owned) return c.json({ error_code: "not_found" }, 404);
+    if (role !== "owner" && role !== "admin") {
+      const userId = c.req.header("x-naelao-user-id");
+      if (!userId) return c.json({ error_code: "forbidden" }, 403);
+      const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
+      if (!member) return c.json({ error_code: "forbidden" }, 403);
+    }
+    let body: ArrayBuffer | undefined;
+    if (c.req.method === "PATCH") {
+      try { body = (await readBoundedRequestBytes(c.req.raw, 8 * 1024)).buffer as ArrayBuffer; }
+      catch { return c.json({ error_code: "payload_too_large" }, 413); }
+    }
+    const id = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+    const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
+    return c.env.SPACE_DO.get(id).fetch(new Request(`http://space-do/extension-assistant-voice?${query}`, {
+      method: c.req.method, headers: c.req.raw.headers, ...(body ? { body } : {}),
+    }));
+  };
   app.post("/spaces/:spaceId/apps/:appId/mcp", c => forward(c, "/mcp"));
   app.get("/spaces/:spaceId/apps/:appId/app", c => forward(c, "/app", "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/storage", c => forward(c, "/api/storage", "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/settings", forwardSettings);
   app.patch("/spaces/:spaceId/apps/:appId/api/settings", forwardSettings);
+  app.get("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
+  app.patch("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.post("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, "/api/data"));
   app.delete("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/apps/:appId/initialize", async c => {

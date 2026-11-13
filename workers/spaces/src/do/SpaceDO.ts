@@ -3437,6 +3437,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
+      if (url.pathname === "/extension-assistant-voice" && (method === "GET" || method === "PATCH")) return this.extensionAssistantVoiceSettings(request, url);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
         if (!userId) return Response.json({error_code:"user_required"},{status:400});
@@ -11913,6 +11914,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json({ schema, settings, revision: body.revision! + 1, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async extensionAssistantVoiceSettings(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "", appId = url.searchParams.get("app_id") ?? "";
+    if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    if (request.method === "PATCH" && !["owner", "admin"].includes(request.headers.get("x-naelao-role") ?? ""))
+      return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    const rows = queryAll<{ instance_id: string; instance_key: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.instance_key,i.manifest_json FROM extension_installation_manifests i
+       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'`, tenantId, spaceId);
+    const matches = rows.flatMap(row => {
+      try {
+        const raw = JSON.parse(row.manifest_json) as ExtensionManifest;
+        const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+        const appIds = [
+          ...(manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3).map(gadget => gadget.id),
+          ...(manifest.bundle?.primitives ?? []).filter(primitive => primitive.kind === "canvas").map(primitive => primitive.id),
+        ];
+        const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
+        return appIds.some(id => `${prefix}${id}` === appId) ? [{ row, manifest }] : [];
+      } catch { return []; }
+    });
+    if (matches.length !== 1) return Response.json({ error_code: matches.length ? "extension_app_ambiguous" : "extension_voice_unavailable" }, { status: matches.length ? 409 : 404, headers: { "cache-control": "private, no-store" } });
+    const manifest = matches[0]!.manifest;
+    const needed = request.method === "GET" ? "assistant.voice.read" : "assistant.voice.configure";
+    if (!manifest.capabilityRequirements.includes(needed) || !manifest.declaredPermissions.includes(needed))
+      return Response.json({ error_code: "extension_voice_capability_not_declared" }, { status: 403, headers: { "cache-control": "private, no-store" } });
+    let body: ArrayBuffer | undefined;
+    if (request.method === "PATCH") {
+      try { body = (await readBoundedRequestBytes(request, 8 * 1024)).buffer as ArrayBuffer; }
+      catch { return Response.json({ error_code: "invalid_voice_preferences" }, { status: 400, headers: { "cache-control": "private, no-store" } }); }
+    }
+    const result = await assistantVoiceSettings(this.ctx.storage, new Request(`http://space/assistant-voice?space_id=${encodeURIComponent(spaceId)}`, {
+      method: request.method, ...(body ? { headers: { "content-type": "application/json" }, body } : {}),
+    }));
+    return new Response(result.body, { status: result.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
   }
 
   private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {
