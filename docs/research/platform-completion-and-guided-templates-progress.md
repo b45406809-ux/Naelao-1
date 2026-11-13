@@ -2,14 +2,26 @@
 
 ## Active checkpoint
 
-Current continuation (2026-11-13): the prior local keypad simulator gap was already implemented in
+Current continuation (2026-11-13): P24 publisher revocation/drain code `f5b3c1dd` is pushed to
+`origin/Mcbt5s-Backup-2`. Migration 127 stores a per-key SpaceDO fence and durable receipt. The
+owner/admin DELETE caller authenticates its internal SpaceDO request, disables matching active
+installations, blocks new leases/re-enable/install/import, and returns draining/drained counts.
+Already admitted work may finish; the response and Shell caller do not claim it was terminated.
+Local evidence: SpaceDO runtime/install and migration suites **34/34**, Spaces/Shell typechecks, and
+`git diff --check`. No deployed DO or live package acceptance ran; rollouts remain disabled.
+P24 revocation is IMPLEMENTED_LOCAL for this path. Remaining: persisted receipt readback in Shell,
+full Worker/R2 lost-response acceptance, dependency closure, cross-Space restoration, broader update
+migrations/rollback, scanning, retention and key-custody/compromise notice. Exact next action: add an
+owner/admin per-key receipt read route and a Shell refresh/status view that survives page reload; test
+tenant/Space/role isolation, then continue the next uncoded P24 item and remaining S4–S9/U01–U12 gaps.
+
+Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.
 It accepts synthetic `call.received` and normalized `call.digits`, validates and renders bounded
 response actions, and performs no carrier request or saved-session write. Fresh local evidence:
 Agents suites **46/46**, Space route suite **18/18**, Agents/Spaces/Shell typechecks. No carrier,
-deployment or live test ran. Exact next action: continue the platform plan's commercial-integrity
-queue at P17 catalog/marketplace source-to-caller reconciliation; avoid redoing already verified
-purchase/refund or settlement ledgers.
+deployment or live test ran. The next action recorded then was P17 source/caller reconciliation; its
+result is recorded below. Resume from the active P24 receipt-readback action above.
 
 Updated 2026-11-13 after P05 visual setup authoring code `b3feecb5` was fetched and pushed to
 `origin/Mcbt5s-Backup-2`. Foundry Template Studio now authors optional v1/v2 declarative setup
@@ -397,8 +409,9 @@ SQLite/R2-mock checks; no deployed R2, isolated recovery, provider reconnection 
 exercised. P04 remains PARTIAL for these bounded size/row limits, merge-only relational restore,
 legal/key/jurisdiction policy, safe external side-effect reconnection, and live/isolated recovery
 evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, lost-response
-acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy, supply
-chain scanning and drain receipts for work already admitted at revocation. P01/P02 protections
+acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy and
+supply-chain scanning. The drain receipt gap from this checkpoint was later closed locally in
+`f5b3c1dd`; owner readback remains next. P01/P02 protections
 remain fail-closed on shared resources, missing ownership/receipts and operator-attested migration
 baselines. P03/P20 caller work is recorded in the subsequent `41996f29` checkpoint; policy and
 operator-identity gaps remain open.
@@ -412,8 +425,9 @@ upgrades require explicit approval when the selected install gains permissions o
 Local evidence at that checkpoint: six focused Spaces suites **67/67**, Spaces/Shell typechecks and
 `git diff --check`. No deployed R2, publisher registry, runtime or live provider acceptance was
 exercised. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, full
-Worker/R2 lost-response acceptance, key compromise notice, removal/retention policy, supply-chain
-scanning and drain receipts for work already admitted at revocation.
+Worker/R2 lost-response acceptance, key compromise notice, removal/retention policy and
+supply-chain scanning. The revocation/drain receipt code gap was subsequently closed in `f5b3c1dd`;
+see the active checkpoint for evidence and remaining receipt-readback work.
 
 ## Prior checkpoints
 
@@ -799,7 +813,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`), paused static Canvas/channel-code update receipts (`c7412170`) and runtime-work admission/drain (`15a04f7e`) are local. Schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, cross-Space package closure import (`b4cf5214`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated per-key revocation/drain receipts (`f5b3c1dd`) are local. Receipt readback, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 

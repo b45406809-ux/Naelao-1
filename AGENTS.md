@@ -12,16 +12,17 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P05 visual setup-field authoring code `b3feecb5` is pushed to
-`origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`; the prior progress/runbook
-checkpoint is `e8e2b945`. The P05 Foundry Canvas now authors optional v1/v2 declarative fields,
-localization and simple visibility conditions and sends them through the owner-only export route.
-The route binds fields to the selected exported project, uses the SDK schema validator before
-artifact creation, revalidates after sanitization, and retains the declarations in the conformance
-artifact. Focused Spaces tests pass **4/4**, Foundry Canvas tests **3/3**, Spaces/SDK typechecks and
-`git diff --check` pass. This is local Worker/mock evidence; no deployment, Marketplace, live
-provider, or live customer acceptance occurred. Keep rollouts disabled and preserve the untracked
-`infra/scripts/__pycache__/`.
+Current checkpoint (2026-11-13): P24 publisher revocation/drain code `f5b3c1dd` is pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. SpaceDO migration 127 stores a
+per-key fence and durable drain receipt. The owner/admin route authenticates its internal SpaceDO
+request, revokes matching releases, disables active installations, blocks new leases and attempts to
+re-enable/install/import under the revoked key, then returns current drain state. Already admitted
+work may finish. Shell displays the immediate status without claiming termination. Local evidence:
+SpaceDO runtime/install and migration suites **34/34**, Spaces/Shell typechecks and `git diff --check`;
+no deployed DO or live package acceptance ran. Exact next action: add an owner/admin readback route
+for the persisted revocation receipt and a Shell refresh/status view that survives reload, test
+tenant/Space/role isolation, then continue remaining P24 and S2–S9/U01–U12 gaps. Keep rollouts
+disabled and preserve the untracked `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
@@ -60,13 +61,10 @@ author-accounting policies remain unresolved and must not be guessed. Do not rep
 without new evidence. The previously recorded local keypad simulator task is already implemented in
 the current owner phone panel, exact-installation Space route and Agents host validator/renderer.
 Focused Agents tests pass **46/46**, the Space route tests **18/18**, and Agents/Spaces/Shell typechecks
-pass. These are local tests only; no carrier call occurred. Exact next action: reconcile P17 catalog,
-marketplace listing identity/freshness, purchase/license, refund/revocation, author settlement and
-onboarding callers against current source, then implement an independent reachable identity or
-availability gap without duplicating existing ledgers. Continue remaining S4–S9/U01–U12 and both
-plans' gaps afterward.
+pass. These are local tests only; no carrier call occurred. The prior P17 and simulator next-action
+notes are historical; current source reconciliation is already recorded in the two progress files.
 After compaction, interruption or a new session, read both plans, both progress records and this
-runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
+runbook; inspect the actual branch and worktree; resume from the exact current action at the top. Do not deploy,
 purchase, reset, clean, switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
 fetch before each push, safely incorporate remote advances, and never rewrite remote history.
@@ -82,12 +80,9 @@ richer responses, remaining provider journeys and live acceptance. Local evidenc
 suites **18/18**, Spaces migration/runtime/install-route suites **36/36**, SDK extension suite **29/29**;
 Agents, Spaces, Shell and SDK typechecks. No deployed DB, provider traffic or live acceptance occurred.
 
-Exact next action: add a read-only, owner-authorized phone operations view to the signed keypad
-package dashboard. Resolve the app to its exact active phone installation, and return only that
-installation's assigned line state and bounded call history through the host. Test tenant, role,
-release and cross-installation denial; label provider-reported amounts as non-invoice observations.
-Do not invoke carriers, expose credentials, or enable streaming/provisioning/rollout. Then continue
-the remaining requirements from both ledgers.
+Historical next action: add an owner-authorized phone operations view for the signed keypad package.
+That work was completed in later pushed checkpoints recorded below; resume from the active P24 action
+at the top. Do not invoke carriers, expose credentials, or enable streaming/provisioning/rollout.
 
 Prior keypad-package checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
@@ -140,10 +135,9 @@ U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTI
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
 product, policy, runtime contract and live acceptance gates remain in both progress records.
 
-Exact next action: continue §9.5 by tracing the signed extension package install and phone-handler
-callers against the existing bounded Telnyx `say`/DTMF runtime. Implement a customer-facing package
-microapp only for behavior that runtime actually supports, with local caller tests; keep public
-streaming and provider/live acceptance gated. Then continue uncoded requirements in both ledgers.
+Historical next action: continue §9.5 through the signed extension and bounded Telnyx `say`/DTMF
+callers. Its phone simulator/package work is recorded in later checkpoints; resume from the active
+P24 action at the top. Keep public streaming and provider/live acceptance gated.
 The earlier §10.2 expected-version-fenced, audience-confirmed amendment is already implemented and
 pushed as `bfc22ce6`; do not repeat it. After compaction, interruption or a new session, read both
 plans, both progress records and this runbook; inspect the actual worktree, branch and dirty state;
@@ -261,8 +255,9 @@ Space data-operations suite passes **9/9**, Spaces typecheck passes, and `git di
 These are local SQLite/R2-mock results; no deployment, isolated restore, live R2 check, or measured
 RPO/RTO drill was performed. P04 remains PARTIAL for archive size/row limits, merge-only relational
 restore, legal/key/jurisdiction policy, provider reconnection safety, and isolated/live recovery
-evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, package
-retention/compromise notices and drain receipts for already-admitted work. Preserve the unrelated
+evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration and package
+retention/compromise notices. The drain receipt is now implemented locally in `f5b3c1dd`; owner
+readback remains next. Preserve the unrelated
 `infra/scripts/__pycache__/`.
 
 P16 code commit `1056a322` remains pushed. One shared versioned capability definition supplies
