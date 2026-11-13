@@ -88,6 +88,51 @@ describe("project workspace deletion route", () => {
     expect(agentFetch).not.toHaveBeenCalled();
   });
 
+  it("retires coordination when the ordinary project patch archives a project", async () => {
+    const secret = "project-workspace-delete-test-secret";
+    const batches: string[][] = [];
+    const patchBodies: unknown[] = [];
+    let failRetirement = false;
+    const env = {
+      ENVIRONMENT: "test", PLATFORM_SECRET: secret,
+      PLATFORM_DB: {
+        prepare: (sql: string) => {
+          const statement: { sql: string; bind: () => unknown } = { sql, bind: () => statement };
+          return statement;
+        },
+        batch: async (statements: Array<{ sql: string }>) => {
+          batches.push(statements.map(statement => statement.sql));
+          if (failRetirement) throw new Error("d1_unavailable");
+          return statements.map(() => ({ meta: { changes: 1 } }));
+        },
+      },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => {
+        if (request.method === "PATCH") patchBodies.push(await request.json());
+        return Response.json({ id: "project-a", status: "archived" });
+      } }) },
+    } as never;
+    const patch = async (body: unknown) => spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/projects/project-a", {
+      method: "PATCH", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a",
+        "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") }, body: JSON.stringify(body),
+    }), env);
+
+    const active = await patch({ status: "active" });
+    expect(active.status).toBe(200);
+    expect(batches).toHaveLength(0);
+
+    const archived = await patch({ status: "archived" });
+    expect(archived.status).toBe(200);
+    expect(patchBodies).toEqual([{ status: "active" }, { status: "archived" }]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(6);
+
+    failRetirement = true;
+    const retryable = await patch({ status: "archived" });
+    expect(retryable.status).toBe(503);
+    expect(await retryable.json()).toMatchObject({ error_code: "project_coordination_cleanup_unavailable", archived: true, retryable: true });
+    expect(batches).toHaveLength(2);
+  });
+
   it("requires an explicit confirmation and space administrator", async () => {
     const secret = "project-workspace-delete-test-secret";
     const spaceFetch = vi.fn();

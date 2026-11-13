@@ -3902,11 +3902,23 @@ app.patch("/spaces/:spaceId/projects/:projectId", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  let archivesProject = false;
+  try {
+    const body = await c.req.raw.clone().json() as { status?: unknown };
+    archivesProject = !!body && typeof body === "object" && body.status === "archived";
+  } catch { /* Preserve the existing SpaceDO validation response for malformed JSON. */ }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   // §A1.17 Phase V: tenant_id rides the query string (not a header, since forwardToSpaceDO
   // doesn't forward client headers, and the body is streamed through unparsed) so
   // updateProject can live-sync via broadcastSpaceEvent.
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", c.req.raw.body);
+  if (res.ok && archivesProject) {
+    try {
+      await retireProjectCoordination(c.env.PLATFORM_DB, tenantId, spaceId, projectId);
+    } catch {
+      return c.json({ error_code: "project_coordination_cleanup_unavailable", archived: true, retryable: true }, 503, { "cache-control": "no-store" });
+    }
+  }
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
