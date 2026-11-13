@@ -154,6 +154,43 @@ describe("SpaceDO owner data operations", () => {
     expect(replay.status).toBe(409);
   });
 
+  it("inserts restored active event triggers disabled and records the safety action before owner reactivation", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name) VALUES(?,?,?)", "project-a", "space-a", "Project A");
+    storage.sql.exec("INSERT INTO event_triggers(id,space_id,project_id,event_type,script_name,enabled) VALUES(?,?,?,?,?,1)", "trigger-a", "space-a", "project-a", "thread.created", "external-effect-script");
+
+    const exported = await post({ action: "export", request_id: "trigger-archive" });
+    expect(exported.status).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    storage.sql.exec("DELETE FROM event_triggers WHERE id=?", "trigger-a");
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    const preview = await previewResponse.json() as { preview_id: string; safety_actions: { archived_active_event_trigger_count: number; missing_event_triggers_will_be_inserted_disabled: boolean; existing_event_trigger_state_will_be_preserved: boolean } };
+    expect(previewResponse.status).toBe(200);
+    expect(preview.safety_actions).toEqual({ archived_active_event_trigger_count: 1, missing_event_triggers_will_be_inserted_disabled: true, existing_event_trigger_state_will_be_preserved: true });
+
+    const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({ safety_actions: { restored_event_triggers_inserted_disabled: 1 } });
+    expect(storage.sql.exec<{ enabled: number }>("SELECT enabled FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 0 }]);
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({ restored_event_triggers_inserted_disabled: 1 });
+    const restoreList = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a&actor_id=owner-a", { headers }));
+    expect(await restoreList.json()).toMatchObject({ restores: [{ id: preview.preview_id, status: "completed", safety_actions: { restored_event_triggers_inserted_disabled: 1 } }] });
+
+    storage.sql.exec("UPDATE projects SET status='archived' WHERE id=?", "project-a");
+    const blockedReactivation = await space.fetch(new Request("https://space/event-triggers/trigger-a?space_id=space-a", { method: "PATCH", headers, body: JSON.stringify({ enabled: true, actor_id: "owner-a" }) }));
+    expect(blockedReactivation.status).toBe(409);
+    storage.sql.exec("UPDATE projects SET status='active' WHERE id=?", "project-a");
+    const reactivated = await space.fetch(new Request("https://space/event-triggers/trigger-a?space_id=space-a", { method: "PATCH", headers, body: JSON.stringify({ enabled: true, actor_id: "owner-a" }) }));
+    expect(reactivated.status).toBe(200);
+    expect(storage.sql.exec<{ enabled: number; updated_by: string }>("SELECT enabled,updated_by FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 1, updated_by: "owner-a" }]);
+  });
+
   it("captures bounded workspace bytes and retries a checksum-verified missing-object restore without overwriting conflicts", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);

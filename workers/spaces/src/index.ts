@@ -4325,6 +4325,8 @@ app.get("/spaces/:spaceId/presence", async (c) => {
 // created, ...), run script Y." Automation is always owned by a project.
 app.use("/spaces/:spaceId/event-triggers", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/event-triggers", requireSpaceMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/event-triggers/:triggerId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/event-triggers/:triggerId", requireSpaceMembership({ PATCH: "admin", DELETE: "admin" }));
 app.get("/spaces/:spaceId/event-triggers", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -4355,6 +4357,24 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/event-triggers/${encodeURIComponent(triggerId)}?space_id=${encodeURIComponent(spaceId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
+  const { spaceId, triggerId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const listed = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, tenantId), `/event-triggers?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  const listing = await listed.json<{ data?: Array<{ id?: string; project_id?: string }> }>().catch(() => ({} as { data?: Array<{ id?: string; project_id?: string }> }));
+  const trigger = listing.data?.find(row => row.id === triggerId);
+  if (!trigger) return c.json({ error_code: "event_trigger_not_found" }, 404);
+  const denied = await requireManageableAutomationProject(c, spaceId, trigger.project_id);
+  if (denied) return denied;
+  const body = await c.req.json<{ enabled?: unknown }>().catch(() => null);
+  if (typeof body?.enabled !== "boolean") return c.json({ error_code: "invalid_event_trigger_state" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/event-triggers/${encodeURIComponent(triggerId)}?space_id=${encodeURIComponent(spaceId)}`, "PATCH", JSON.stringify({ enabled: body.enabled, actor_id: userId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
