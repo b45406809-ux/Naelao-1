@@ -90,6 +90,7 @@ describe("SpaceDO migration replay", () => {
     const spendReservationTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('project_spend_reservations','project_spend_run_settlements')").toArray();
     const sessionColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('sessions')").toArray().map(column => column.name);
     const retentionTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('space_retention_policies','space_retention_previews','space_archive_records','space_archive_restore_previews')").toArray();
+    const archiveRestoreColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_archive_restores')").toArray().map(column => column.name);
     expect(table).toHaveLength(1);
     expect(foundryTemplateTable).toHaveLength(1);
     expect(foundryRequestTable).toHaveLength(1);
@@ -114,6 +115,7 @@ describe("SpaceDO migration replay", () => {
     expect(spendReservationTables).toHaveLength(2);
     expect(sessionColumns).toContain("retention_hold");
     expect(retentionTables).toHaveLength(4);
+    expect(archiveRestoreColumns).toContain("skipped_counts_json");
     expect(customerVoiceColumns).toContain("customer_agent_id");
     expect(customerVoiceColumns).toContain("number_binding_id");
     storage.sql.exec(
@@ -181,7 +183,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(123);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(124);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");

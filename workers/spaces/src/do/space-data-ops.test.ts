@@ -197,6 +197,47 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec<{ enabled: number; updated_by: string }>("SELECT enabled,updated_by FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 1, updated_by: "owner-a" }]);
   });
 
+  it("previews exact merge inserts and skips without mutating current rows, then persists the applied outcome", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES(?,?,?,?)", "project-existing", "space-a", "Archived name", "active");
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES(?,?,?,?)", "project-missing", "space-a", "To restore", "active");
+    const exported = await post({ action: "export", request_id: "merge-preview-receipt" });
+    expect(exported.status).toBe(201);
+    const archive = await exported.json() as { archive_id: string };
+    storage.sql.exec("UPDATE projects SET name='Current name' WHERE id='project-existing'");
+    storage.sql.exec("DELETE FROM projects WHERE id='project-missing'");
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archive.archive_id });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; row_merge: { would_insert: Record<string, number>; would_skip_by_constraints: Record<string, number> } };
+    expect(preview.row_merge.would_insert.projects).toBe(1);
+    expect(preview.row_merge.would_skip_by_constraints.projects).toBe(1);
+    expect(storage.sql.exec("SELECT id,name FROM projects WHERE id IN ('project-existing','project-missing') ORDER BY id").toArray()).toEqual([
+      { id: "project-existing", name: "Current name" },
+    ]);
+
+    const applied = await post({ action: "apply_restore", archive_id: archive.archive_id, preview_id: preview.preview_id });
+    expect(applied.status).toBe(200);
+    expect(await applied.json()).toMatchObject({ restored_counts: { projects: 1 }, skipped_counts: { projects: 1 } });
+    expect(storage.sql.exec("SELECT id,name FROM projects WHERE id IN ('project-existing','project-missing') ORDER BY id").toArray()).toEqual([
+      { id: "project-existing", name: "Current name" }, { id: "project-missing", name: "To restore" },
+    ]);
+    expect(storage.sql.exec<{ skipped_counts_json: string }>("SELECT skipped_counts_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray())
+      .toEqual([{ skipped_counts_json: expect.any(String) }]);
+    expect(JSON.parse(storage.sql.exec<{ skipped_counts_json: string }>("SELECT skipped_counts_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.skipped_counts_json))
+      .toMatchObject({ projects: 1 });
+    const listed = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+    }));
+    expect(await listed.json()).toMatchObject({ restores: [{ id: preview.preview_id, skipped_counts: { projects: 1 } }] });
+  });
+
   it("captures bounded workspace bytes and retries a checksum-verified missing-object restore without overwriting conflicts", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);

@@ -55,7 +55,9 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
     try {
       const result = await applySpaceArchiveRestore(spaceId, session, archiveId, previewId);
       setRestorePreview(null);
-      setMessage(`Restore completed. ${result.restored_object_count} workspace objects verified; ${result.safety_actions.restored_event_triggers_inserted_disabled} restored event triggers were inserted disabled.`);
+      const insertedRows = Object.values(result.restored_counts).reduce((sum, count) => sum + count, 0);
+      const skippedRows = Object.values(result.skipped_counts).reduce((sum, count) => sum + count, 0);
+      setMessage(`Restore completed in merge mode. ${insertedRows} rows added, ${skippedRows} archived rows skipped by existing keys/constraints, ${result.restored_object_count} workspace objects verified; ${result.safety_actions.restored_event_triggers_inserted_disabled} restored event triggers were inserted disabled.`);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Restore could not complete. A partial restore can be resumed below.");
@@ -78,12 +80,14 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
         {archives.every(archive => archive.status !== "verified") && <span style={{ color: "var(--text3)", fontSize: 12 }}>No verified archives are available.</span>}
         {restorePreview && <div className="settings-block" style={{ display: "grid", gap: 8 }}>
           <strong style={{ fontSize: 12 }}>Review archive {restorePreview.archive_id.slice(0, 8)}</strong>
-          <span style={{ color: "var(--text3)", fontSize: 12 }}>Merge mode · {restorePreview.object_references_verified} object references verified · {restorePreview.object_restore_required_count} missing objects need restoration · {restorePreview.safety_actions.archived_active_event_trigger_count} archived active event triggers will not be reactivated.</span>
+        <span style={{ color: "var(--text3)", fontSize: 12 }}>Merge mode · {restorePreview.object_references_verified} object references verified · {restorePreview.object_restore_required_count} missing objects need restoration · {restorePreview.safety_actions.archived_active_event_trigger_count} archived active event triggers will not be reactivated.</span>
+        <span style={{ color: "var(--text3)", fontSize: 12 }}>Temporary database merge simulation ({new Date(restorePreview.merge_snapshot_at).toLocaleString()}): {Object.values(restorePreview.row_merge.would_insert).reduce((sum, count) => sum + count, 0)} rows would be added; {Object.values(restorePreview.row_merge.would_skip_by_constraints).reduce((sum, count) => sum + count, 0)} archived rows would be skipped by existing keys or constraints. Per table: {Object.entries(restorePreview.row_merge.would_insert).map(([table, count]) => `${table} +${count}/skip ${restorePreview.row_merge.would_skip_by_constraints[table] ?? 0}`).join(" · ") || "none"}.</span>
+        <span style={{ color: "var(--text3)", fontSize: 11 }}>Preview runs in a rolled-back transaction; concurrent changes before apply can change these counts. Apply remains additive and keeps existing rows.</span>
           <span style={{ color: "var(--text3)", fontSize: 11 }}>Rows: {Object.entries(restorePreview.row_counts).map(([table, count]) => `${table} ${count}`).join(" · ") || "none"}</span>
           <button type="button" disabled={busy} onClick={() => void applyRestore(restorePreview.archive_id, restorePreview.preview_id)}>{busy ? "Restoring…" : "Apply reviewed restore"}</button>
         </div>}
         {restores.filter(restore => restore.status === "partial" || restore.status === "restoring").map(restore => <div key={restore.id} className="settings-row" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ flex: 1 }}>Restore {restore.archive_id.slice(0, 8)} · {restore.status} · {restore.restored_object_count} objects verified{restore.last_error ? ` · ${restore.last_error}` : ""}</span>
+          <span style={{ flex: 1 }}>Restore {restore.archive_id.slice(0, 8)} · {restore.status} · {restore.restored_object_count} objects verified · {Object.values(restore.row_counts).reduce((sum, count) => sum + count, 0)} rows added · {Object.values(restore.skipped_counts).reduce((sum, count) => sum + count, 0)} rows skipped{restore.last_error ? ` · ${restore.last_error}` : ""}</span>
           <button type="button" disabled={busy} onClick={() => void applyRestore(restore.archive_id, restore.id)}>{busy ? "Working…" : "Resume restore"}</button>
         </div>)}
       </div>

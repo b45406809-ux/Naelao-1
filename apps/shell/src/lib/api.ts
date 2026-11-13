@@ -69,7 +69,7 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
 
 export interface ArchiveRewrapJob { job_id: string; status: "active" | "blocked" | "completed"; scanned_count: number; rewrapped_count: number; last_error?: string | null; updated_at?: string }
 export interface SpaceArchiveRecord { archive_id: string; kind: "full" | "retention_messages"; status: string; checksum: string; plaintext_bytes: number; row_counts_json: string; created_by: string; created_at: string; restored_at?: string | null }
-export interface SpaceArchiveRestore { id: string; archive_id: string; restored_by: string; restored_at: string; row_counts: Record<string, number>; status: "restoring" | "partial" | "completed"; restored_object_count: number; last_error?: string | null; safety_actions: { restored_event_triggers_inserted_disabled?: number } }
+export interface SpaceArchiveRestore { id: string; archive_id: string; restored_by: string; restored_at: string; row_counts: Record<string, number>; skipped_counts: Record<string, number>; status: "restoring" | "partial" | "completed"; restored_object_count: number; last_error?: string | null; safety_actions: { restored_event_triggers_inserted_disabled?: number } }
 export function getSpaceDataOps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ archives: SpaceArchiveRecord[]; restores: SpaceArchiveRestore[]; rewrap_jobs: ArchiveRewrapJob[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { session, cache: "no-store" });
 }
@@ -86,9 +86,11 @@ export interface SpaceArchiveRestorePreview {
   schema_version: number;
   current_schema: number;
   row_counts: Record<string, number>;
+  row_merge: { would_insert: Record<string, number>; would_skip_by_constraints: Record<string, number> };
   object_references_verified: number;
   object_restore_required_count: number;
   restore_mode: "idempotent_merge_missing_rows";
+  merge_snapshot_at: string;
   safety_actions: {
     archived_active_event_trigger_count: number;
     missing_event_triggers_will_be_inserted_disabled: true;
@@ -101,7 +103,7 @@ export async function previewSpaceArchiveRestore(spaceId: string, session: Sessi
   return apiFetch<SpaceArchiveRestorePreview>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "preview_restore", archive_id: archiveId }) });
 }
 export async function applySpaceArchiveRestore(spaceId: string, session: SessionCredentials, archiveId: string, previewId: string) {
-  return apiFetch<{ archive_id: string; restored_counts: Record<string, number>; restored_object_count: number; safety_actions: { restored_event_triggers_inserted_disabled: number }; mode: "idempotent_merge_missing_rows"; active_sqlite_remains_canonical: true }>(
+  return apiFetch<{ archive_id: string; restored_counts: Record<string, number>; skipped_counts: Record<string, number>; restored_object_count: number; safety_actions: { restored_event_triggers_inserted_disabled: number }; mode: "idempotent_merge_missing_rows"; active_sqlite_remains_canonical: true }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "apply_restore", archive_id: archiveId, preview_id: previewId }) });
 }
 

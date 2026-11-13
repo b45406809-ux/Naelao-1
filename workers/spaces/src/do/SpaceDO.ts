@@ -2586,6 +2586,11 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_extension_settings_audit_recent
       ON extension_settings_audit_events(tenant_id,space_id,instance_id,created_at DESC,event_id DESC);`,
   },
+  {
+    version: 124,
+    description: "persist archive restore rows skipped by merge constraints",
+    up: `ALTER TABLE space_archive_restores ADD COLUMN skipped_counts_json TEXT NOT NULL DEFAULT '{}';`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3027,9 +3032,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const measurements = queryAll<{ allocated_bytes: number; measured_at: string }>(sql, "SELECT allocated_bytes,measured_at FROM space_storage_measurements WHERE tenant_id=? AND space_id=? ORDER BY measured_at DESC LIMIT 30", tenantId, spaceId);
       const forecast = forecastSpaceStorage(measurements.map(row => ({ allocatedBytes: row.allocated_bytes, measuredAt: row.measured_at })), policy?.target_storage_bytes as number | null ?? null, Number(policy?.warning_threshold_pct ?? 80));
       const archives = queryAll<Record<string, unknown>>(sql, "SELECT archive_id,kind,status,checksum,plaintext_bytes,row_counts_json,created_by,created_at,restored_at FROM space_archive_records WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 50", tenantId, spaceId);
-      const restores = queryAll<{ id: string; archive_id: string; restored_by: string; restored_at: string; row_counts_json: string; status: string; restored_object_count: number; last_error: string | null; safety_actions_json: string }>(sql,
-        "SELECT id,archive_id,restored_by,restored_at,row_counts_json,status,restored_object_count,last_error,safety_actions_json FROM space_archive_restores WHERE tenant_id=? AND space_id=? ORDER BY restored_at DESC LIMIT 20", tenantId, spaceId)
-        .map(row => ({ id: row.id, archive_id: row.archive_id, restored_by: row.restored_by, restored_at: row.restored_at, row_counts: safeJsonParseObj(row.row_counts_json), status: row.status, restored_object_count: row.restored_object_count, last_error: row.last_error, safety_actions: safeJsonParseObj(row.safety_actions_json) }));
+      const restores = queryAll<{ id: string; archive_id: string; restored_by: string; restored_at: string; row_counts_json: string; skipped_counts_json: string; status: string; restored_object_count: number; last_error: string | null; safety_actions_json: string }>(sql,
+        "SELECT id,archive_id,restored_by,restored_at,row_counts_json,skipped_counts_json,status,restored_object_count,last_error,safety_actions_json FROM space_archive_restores WHERE tenant_id=? AND space_id=? ORDER BY restored_at DESC LIMIT 20", tenantId, spaceId)
+        .map(row => ({ id: row.id, archive_id: row.archive_id, restored_by: row.restored_by, restored_at: row.restored_at, row_counts: safeJsonParseObj(row.row_counts_json), skipped_counts: safeJsonParseObj(row.skipped_counts_json), status: row.status, restored_object_count: row.restored_object_count, last_error: row.last_error, safety_actions: safeJsonParseObj(row.safety_actions_json) }));
       const rewrapJobs = queryAll<Record<string, unknown>>(sql, "SELECT job_id,status,scanned_count,rewrapped_count,last_error,updated_at FROM space_archive_rewrap_jobs WHERE tenant_id=? AND space_id=? AND status IN ('active','blocked') ORDER BY created_at DESC LIMIT 10", tenantId, spaceId);
       return Response.json({ policy: policy ?? { message_retention_days: 0, archive_before_delete: 0, target_storage_bytes: null, warning_threshold_pct: 80 }, storage: forecast, archives, restores, rewrap_jobs: rewrapJobs });
     }
@@ -3406,11 +3411,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const restoreOrder = resolvedOrder ?? Object.keys(payload.tableRows).sort();
       const archivedActiveEventTriggerCount = (payload.tableRows.event_triggers ?? [])
         .filter(row => row.enabled !== 0 && row.enabled !== false).length;
+      const mergeArchiveRows = () => {
+        const inserted: Record<string, number> = {}, skipped: Record<string, number> = {};
+        let restoredEventTriggersDisabled = 0;
+        this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
+        for (const table of restoreOrder) {
+          const rows = payload.tableRows[table] ?? [];
+          const columns = [...new Set([...rows.flatMap(row => Object.keys(row)), ...(table === "event_triggers" ? ["enabled"] : [])])].sort();
+          if (!columns.length) { inserted[table] = 0; skipped[table] = rows.length; continue; }
+          if (columns.some(column => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))) throw new Error("archive_column_invalid");
+          const placeholders = columns.map(() => "?").join(",");
+          let restored = 0;
+          for (const row of rows) {
+            const safeRow = table === "event_triggers" ? { ...row, enabled: 0 } : row;
+            const result = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO "${table}" (${columns.map(column => `"${column}"`).join(",")}) VALUES (${placeholders})`, ...columns.map(column => safeRow[column] ?? null));
+            restored += result.rowsWritten;
+            if (table === "event_triggers" && result.rowsWritten > 0) restoredEventTriggersDisabled++;
+          }
+          inserted[table] = restored;
+          skipped[table] = rows.length - restored;
+        }
+        return { inserted, skipped, restoredEventTriggersDisabled };
+      };
       if (action === "preview_restore") {
+        let mergePreview: ReturnType<typeof mergeArchiveRows>;
+        try {
+          mergePreview = this.ctx.storage.transactionSync(() => {
+            this.ctx.storage.sql.exec("SAVEPOINT archive_restore_preview_probe");
+            try { return mergeArchiveRows(); }
+            finally {
+              this.ctx.storage.sql.exec("ROLLBACK TO archive_restore_preview_probe");
+              this.ctx.storage.sql.exec("RELEASE archive_restore_preview_probe");
+            }
+          });
+        } catch (error) {
+          return Response.json({ error_code: "archive_restore_merge_preview_failed", message: ((error as Error).message || "merge_preview_failed").slice(0, 160) }, { status: 409 });
+        }
         execute(sql, "DELETE FROM space_archive_restore_previews WHERE tenant_id=? AND space_id=? AND (expires_at<? OR consumed_at IS NOT NULL)", tenantId, spaceId, now);
         const previewId = crypto.randomUUID(), expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
         execute(sql, "INSERT INTO space_archive_restore_previews (preview_id,tenant_id,space_id,archive_id,checksum,expires_at,created_by) VALUES (?,?,?,?,?,?,?)", previewId, tenantId, spaceId, archiveId, record.checksum, expiresAt, actorId);
-        return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts, object_references_verified: payload.objectReferences.length, object_restore_required_count: objectRestoreRequiredCount, restore_mode: "idempotent_merge_missing_rows", safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true, existing_event_trigger_state_will_be_preserved: true }, expires_at: expiresAt, requires_explicit_apply: true });
+        return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts,
+          row_merge: { would_insert: mergePreview.inserted, would_skip_by_constraints: mergePreview.skipped }, object_references_verified: payload.objectReferences.length,
+          object_restore_required_count: objectRestoreRequiredCount, restore_mode: "idempotent_merge_missing_rows", merge_snapshot_at: now,
+          safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
+            existing_event_trigger_state_will_be_preserved: true }, expires_at: expiresAt, requires_explicit_apply: true });
       }
       const previewId = String(body.preview_id ?? "");
       const preview = queryOne<{ tenant_id: string; space_id: string; archive_id: string; checksum: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_archive_restore_previews WHERE preview_id=?", previewId);
@@ -3458,28 +3502,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ error_code: "archive_object_restore_incomplete", message, restored_object_count: verifiedObjectCount }, { status });
       }
       const restoredCounts: Record<string, number> = {};
+      const skippedCounts: Record<string, number> = {};
       let restoredEventTriggersDisabled = 0;
       try {
         this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
-          for (const table of restoreOrder) {
-            const rows = payload.tableRows[table] ?? [];
-            const columns = [...new Set([...rows.flatMap(row => Object.keys(row)), ...(table === "event_triggers" ? ["enabled"] : [])])].sort();
-            if (!columns.length) { restoredCounts[table] = 0; continue; }
-            if (columns.some(column => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))) throw new Error("archive_column_invalid");
-            const placeholders = columns.map(() => "?").join(",");
-            let restored = 0;
-            for (const row of rows) {
-              const safeRow = table === "event_triggers" ? { ...row, enabled: 0 } : row;
-              const result = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO "${table}" (${columns.map(column => `"${column}"`).join(",")}) VALUES (${placeholders})`, ...columns.map(column => safeRow[column] ?? null));
-              restored += result.rowsWritten;
-              if (table === "event_triggers" && result.rowsWritten > 0) restoredEventTriggersDisabled += 1;
-            }
-            restoredCounts[table] = restored;
-          }
+          const merged = mergeArchiveRows();
+          Object.assign(restoredCounts, merged.inserted);
+          Object.assign(skippedCounts, merged.skipped);
+          restoredEventTriggersDisabled = merged.restoredEventTriggersDisabled;
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled };
-          execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
+          execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
         });
       } catch (error) {
@@ -3487,7 +3520,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", message, previewId, tenantId, spaceId);
         return Response.json({ error_code: "restore_transaction_rolled_back", message, restored_object_count: verifiedObjectCount }, { status: 409 });
       }
-      return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, restored_object_count: verifiedObjectCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
+      return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, skipped_counts: skippedCounts, restored_object_count: verifiedObjectCount,
+        safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });
   }
