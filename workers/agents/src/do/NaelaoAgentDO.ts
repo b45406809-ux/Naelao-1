@@ -46,6 +46,7 @@ import { ExecutionSessions } from "../tunnels/execution-sessions.js";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
+import { renderExtensionVoiceResponse } from "../communications/voice-response.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -9816,20 +9817,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!tenant || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenant, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await readBoundedResponseJson<{
-      bindingId: string; spaceId: string; validateOnly?: boolean;
+      bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string;
       event?: { id: string; type: string; payload: Record<string, unknown> };
     }>(new Response(request.body), 16_384);
     if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
     const row = await this.env.PLATFORM_DB.prepare(
-      "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,b.provider FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
+      "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,b.provider,b.policy_json FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
     ).bind(body.bindingId, tenant, body.spaceId).first<{
-      installation_id: string; handler_sha256: string; status: string; project_id: string | null; provider: string;
+      installation_id: string; handler_sha256: string; status: string; project_id: string | null; provider: string; policy_json: string;
     }>();
     if (!row || await this.tenantSpaceSuspended(tenant, body.spaceId))
       return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
-    const event = body.event;
+    const simulation = body.simulation === true;
+    const input = typeof body.input === "string" ? body.input.trim() : "";
+    if (simulation && (!input || new TextEncoder().encode(input).byteLength > 2_000))
+      return Response.json({ error_code: "phone_simulation_input_invalid" }, { status: 400 });
+    const event = simulation
+      ? { id: `simulation-${crypto.randomUUID()}`, type: "call.speech", payload: { caller: "simulation", speech: input } }
+      : body.event;
     if (!body.validateOnly && (row.status !== "active" || !event ||
-      !validPhoneExtensionEvent(row.provider, event.type, event.id)))
+      (!simulation && !validPhoneExtensionEvent(row.provider, event.type, event.id))))
       return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
@@ -9842,6 +9849,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const engine = await this.buildScriptEngineEnv(body.spaceId, "naelao-agent", tenant, undefined, row.project_id ?? undefined);
     const runChannel = engine?.codeRunner?.runChannel;
     if (!runChannel || !event) return Response.json({ error_code: "channel_runtime_unavailable" }, { status: 503 });
+
+    if (simulation) {
+      const result = await runChannel.call(engine.codeRunner, {
+        name: handler.name, code: handler.code, args: {}, tenantId: tenant, spaceId: body.spaceId,
+        agentId: "naelao-agent", installationId: row.installation_id,
+        maxConcurrency: handler.maxConcurrency, limits: handler.limits,
+        channel: {
+          provider: "phone",
+          event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: { ...event.payload, voice_event: event.type } },
+          conversation: { id: `simulation:${crypto.randomUUID()}` },
+          ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion, revision: handler.settings.revision, values: handler.settings.values } } : {}),
+        },
+      });
+      if (!result.ok || result.channel_replies?.length !== 1 || result.channel_answers?.length)
+        return Response.json({ error_code: "phone_simulation_handler_failed" }, { status: 409 });
+      const raw = result.channel_replies[0]!.trim();
+      if (!raw || new TextEncoder().encode(raw).byteLength > 8_192)
+        return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
+      let response: unknown;
+      try {
+        response = JSON.parse(raw);
+        const policy = JSON.parse(row.policy_json) as { allowSpeechInput?: boolean };
+        renderExtensionVoiceResponse(response, "/simulation", policy.allowSpeechInput === true);
+      } catch {
+        return Response.json({ error_code: "phone_simulation_output_invalid" }, { status: 409 });
+      }
+      return Response.json({ simulation: true, response });
+    }
 
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS phone_extension_events (
       installation_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL,

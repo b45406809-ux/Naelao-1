@@ -1123,6 +1123,15 @@ app.post('/internal/phone-extension-dispatch',async c=>{
  const stub=await getAgentDOForSpace(c.env,tenant,String(body.spaceId),'naelao-agent');
  return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify(body)}));
 });
+app.post('/internal/phone-extension-test',async c=>{
+ const tenant=c.req.header('x-naelao-tenant-id')??'';
+ if(!tenant||!await verifyInternalToken(c.req.header('x-naelao-internal-token'),tenant,c.env.PLATFORM_SECRET))return c.json({error_code:'forbidden'},403);
+ const body=JSON.parse(await readBoundedRequestText(c.req.raw,8192)) as {spaceId?:unknown;bindingId?:unknown;input?:unknown};
+ if(typeof body.spaceId!=='string'||typeof body.bindingId!=='string'||typeof body.input!=='string'
+   ||!body.input.trim()||new TextEncoder().encode(body.input).byteLength>2_000)return c.json({error_code:'phone_simulation_input_invalid'},400);
+ const stub=await getAgentDOForSpace(c.env,tenant,body.spaceId,'naelao-agent');
+ return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify({...body,simulation:true})}));
+});
 
 registerPhoneWebhooks(app);
 registerTelnyxWebhook(app);

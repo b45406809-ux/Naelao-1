@@ -968,6 +968,32 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
  });
 
+ it("runs an owner-only text simulation for the exact active extension without carrier egress", async () => {
+  const f = await phoneFixture();
+  const requests: Array<Record<string, unknown>> = [];
+  const dispatch = vi.fn(async (request: Request) => {
+   const body = await request.json() as Record<string, unknown>;
+   requests.push(body);
+   if (new URL(request.url).pathname === "/internal/phone-extension-test")
+    return Response.json({ simulation: true, response: { actions: [{ type: "say", text: "Simulated answer" }] } });
+   return Response.json({ valid: body.validateOnly === true });
+  });
+  f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
+  await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
+  dispatch.mockClear();
+  requests.length = 0;
+  f.provider.mockClear();
+
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "Where is order 42?" }))
+   .resolves.toEqual({ simulation: true, response: { actions: [{ type: "say", text: "Simulated answer" }] } });
+  expect(dispatch).toHaveBeenCalledTimes(1);
+  expect(requests).toMatchObject([{ bindingId: f.binding.id, spaceId: "space", input: "Where is order 42?" }]);
+  expect(f.provider).not.toHaveBeenCalled();
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "simulate" }, false, false)).rejects.toThrow("human_control_required");
+  await expect(f.act("phone-handler-test", { binding_id: f.binding.id, input: "x".repeat(2_001) })).rejects.toThrow("phone_simulation_input_invalid");
+  expect(dispatch).toHaveBeenCalledTimes(1);
+ });
+
  it("shows owner-scoped Telnyx extension call history with masked caller and no provider call ID",async()=>{
   const f=await phoneFixture();f.env.AGENTS_WORKER={fetch:vi.fn(async()=>Response.json({valid:true}))} as unknown as Fetcher;
   await f.act("phone-handler",{installation_id:"extension",handler_sha256:"a".repeat(64),confirm:true});

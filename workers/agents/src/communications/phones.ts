@@ -654,7 +654,7 @@ export async function handlePhoneAction(
         `BYO ${currentPhone?.provider === "telnyx" ? "Telnyx" : "Twilio"} bills your carrier account directly; rental, calls, messages, taxes and regulatory charges are separate.`,
     };
   }
-  const extensionSetup = action === "phone-handler" ||
+  const extensionSetup = action === "phone-handler" || action === "phone-handler-test" ||
     (action === "phone-import" && typeof body.legacy_binding_id === "string" && body.legacy_binding_id.length > 0);
   if (
     ![
@@ -980,6 +980,7 @@ export async function handlePhoneAction(
         "phone-detach",
         "phone-release",
         "phone-handler",
+        "phone-handler-test",
         "phone-policy",
         "phone-reconcile",
         "phone-reconcile-number",
@@ -1597,6 +1598,27 @@ export async function handlePhoneAction(
           .run();
       throw e;
     }
+  }
+  if (action === "phone-handler-test") {
+    if (!manager || agent || !binding || binding.status !== "active")
+      throw new Error("phone_handler_owner_confirmation_required");
+    const input = typeof body.input === "string" ? body.input.trim() : "";
+    if (!input || new TextEncoder().encode(input).byteLength > 2_000)
+      throw new Error("phone_simulation_input_invalid");
+    const r = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-test", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": scope.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId),
+      },
+      body: JSON.stringify({ bindingId: binding.id, spaceId: scope.spaceId, input }),
+    }));
+    if (!r.ok) {
+      const result = await r.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));
+      throw new Error(result.error_code ?? "phone_simulation_unavailable");
+    }
+    return r.json();
   }
   if (action === "phone-policy") {
     const policy = validatePhonePolicy(body.policy);

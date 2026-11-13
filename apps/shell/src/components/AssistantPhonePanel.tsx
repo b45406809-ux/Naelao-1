@@ -95,6 +95,8 @@ export function AssistantPhonePanel({
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
+  const [simulationInputs, setSimulationInputs] = React.useState<Record<string, string>>({});
+  const [simulationResults, setSimulationResults] = React.useState<Record<string, string>>({});
   const [liveCall, setLiveCall] = React.useState<{
     code: string;
     expires_at: number;
@@ -250,6 +252,13 @@ export function AssistantPhonePanel({
       if (action === "phone-telnyx-order") setTelnyxQuote(null);
       if (action === "phone-event")
         setContent(JSON.stringify(result.body, null, 2));
+      if (action === "phone-handler-test") {
+        const response = result.response as { actions?: Array<{ type?: string; text?: string }> } | undefined;
+        const spoken = response?.actions?.map(item => item.type === "hangup" ? "Call would end." : item.text)
+          .filter((item): item is string => typeof item === "string" && item.length > 0) ?? [];
+        const bindingId = String(args.binding_id ?? "");
+        setSimulationResults(current => ({ ...current, [bindingId]: spoken.join("\n") || "The handler returned no spoken text." }));
+      }
       if (action === "phone-live") {
         setLiveCall(
           result as unknown as {
@@ -329,6 +338,17 @@ export function AssistantPhonePanel({
               void act("phone-handler", { binding_id: line.id, installation_id: assignment.installation, handler_sha256: assignment.digest, confirm: true });
           }}>Assign or update extension</button>{" "}
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
+          {line.status === "active" && line.handler_status === "active" && <div>
+            <label>Try caller speech <textarea value={simulationInputs[line.id] ?? ""} maxLength={2_000}
+              onChange={event => setSimulationInputs(current => ({ ...current, [line.id]: event.target.value }))}
+              placeholder="Enter a synthetic caller message" /></label>
+            <button type="button" disabled={!(simulationInputs[line.id] ?? "").trim()}
+              onClick={() => void act("phone-handler-test", { binding_id: line.id, input: simulationInputs[line.id] ?? "" })}>
+              Run text simulation
+            </button>
+            <p>This runs the active signed handler with synthetic speech. It does not call the carrier or save a call or conversation session.</p>
+            {simulationResults[line.id] && <pre aria-label="Simulated phone response" role="status" style={{ whiteSpace: "pre-wrap" }}>{simulationResults[line.id]}</pre>}
+          </div>}
         </fieldset>;
       })}
       {((state?.extension_lines?.length ?? 0) > 0 || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
