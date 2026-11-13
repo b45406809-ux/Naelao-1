@@ -22,7 +22,10 @@ async function isValidCredentialToken(token: string | null, tenantId: string, sp
 function env(): NotificationsEnv {
   return { ENVIRONMENT: "test", RESEND_API_KEY: "resend", RESEND_API_URL: "https://api.resend.test", WEBHOOK_SIGNING_SECRET: "secret",
     TELEGRAM_BOT_TOKEN: "telegram-test", WHATSAPP_ACCESS_TOKEN: "123456789012345:meta-test",
-    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" } }) }) } as unknown as D1Database,
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({
+      first: async () => sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" },
+      run: async () => ({ success: true, meta: { changes: 1 } }),
+    }) }) } as unknown as D1Database,
   };
 }
 describe("interactive mobile approval delivery", () => {
@@ -45,6 +48,8 @@ describe("interactive mobile approval delivery", () => {
       accepted: true,
       outcome: "provider_accepted",
       provider_receipt_id: "email_receipt_123",
+      notification_id: "product-auth:operation-1",
+      outcome_recorded: true,
     });
   });
 
@@ -94,7 +99,7 @@ describe("interactive mobile approval delivery", () => {
     const db = { prepare: (sql: string) => ({ bind: () => ({ first: async () => {
       if (sql.includes("SELECT s.id FROM spaces")) return null;
       return sql.includes("FROM orgs") ? { status: "active" } : null;
-    } }) }) } as unknown as D1Database;
+    }, run: async () => ({ success: true, meta: { changes: 1 } }) }) }) } as unknown as D1Database;
     const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
@@ -152,9 +157,10 @@ describe("interactive mobile approval delivery", () => {
       ...env(), PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher,
     }, {} as ExecutionContext);
 
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(409);
     const body = await response.text();
     expect(body).toContain("telegram send failed");
+    expect(body).toContain('"outcome":"attempt_ambiguous"');
     expect(body).not.toContain("telegram-secret-token");
   });
 
@@ -173,8 +179,8 @@ describe("interactive mobile approval delivery", () => {
       CREDENTIALS_WORKER: credentials as unknown as Fetcher,
     }, {} as ExecutionContext);
 
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ delivered: false });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ delivered: false, outcome: "not_sent" });
     expect(outbound).not.toHaveBeenCalled();
   });
 
@@ -231,7 +237,7 @@ describe("interactive mobile approval delivery", () => {
     }, {} as ExecutionContext);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ delivered: true });
+    expect(await response.json()).toMatchObject({ delivered: true, outcome: "provider_accepted", provider_receipt_id: "wamid.1" });
     expect(outbound).toHaveBeenCalledOnce();
     expect(outbound.mock.calls[0]?.[0]).toBe("https://graph.facebook.com/v26.0/123456789012345/messages");
     expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer space-meta-token");
@@ -241,7 +247,7 @@ describe("interactive mobile approval delivery", () => {
     const updates: Array<{ sql: string; args: unknown[] }> = [];
     const db = { prepare(sql: string) { return { bind(...args: unknown[]) { return {
       async first() { return sql.includes("FROM orgs") ? { status: "active" } : { credential_name: "EXT_SLACK_install_conn_generation" }; },
-      async run() { updates.push({ sql, args }); return { success: true }; },
+      async run() { if (!sql.includes("notification_delivery_attempts")) updates.push({ sql, args }); return { success: true, meta: { changes: 1 } }; },
     }; } }; } };
     const credentials = { async fetch(request: Request) {
       expect(request.headers.has("x-naelao-internal-token")).toBe(false);
@@ -268,7 +274,7 @@ describe("interactive mobile approval delivery", () => {
         if (sql.includes("SELECT account_id")) return { account_id: "987654321012345" };
         return { config_json: "{}" };
       },
-      async run() { updates.push({ sql, args }); return { success: true }; },
+      async run() { if (!sql.includes("notification_delivery_attempts")) updates.push({ sql, args }); return { success: true, meta: { changes: 1 } }; },
     }; } }; } };
     const credentials = { async fetch(request: Request) {
       expect(new URL(request.url).pathname).toContain("EXT_WHATSAPP_install_connection_generation");
@@ -279,7 +285,7 @@ describe("interactive mobile approval delivery", () => {
       body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "+15551234567", message: "Reply", installation_id: "install", provider_connection_id: "wa-main" }) }),
       { ...env(), PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher }, {} as ExecutionContext);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ delivered: true });
+    expect(await response.json()).toMatchObject({ delivered: true, outcome: "provider_accepted", provider_receipt_id: "wamid.1" });
     expect(outbound).toHaveBeenCalledOnce();
     expect(outbound.mock.calls[0]?.[0]).toBe("https://graph.facebook.com/v26.0/987654321012345/messages");
     expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer installation-meta-token");

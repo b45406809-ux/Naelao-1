@@ -827,6 +827,7 @@ export function ManagedServicesPanel({ spaceId, session }: { spaceId: string; se
                   {alert.pushDeliveryStatus === "delivered" ? " · Browser push sent" :
                     alert.pushDeliveryStatus === "no_subscription" ? " · No browser push subscription" :
                     alert.pushDeliveryStatus === "suppressed" ? " · Browser push suppressed" :
+                    alert.pushDeliveryStatus === "ambiguous" ? " · Browser push outcome unknown; check notification status" :
                     alert.pushDeliveryStatus ? " · Browser push pending" : " · Browser push not queued"}
                 </div>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void acknowledgeProviderCostAlert(alert.id)}>Acknowledge</Button>

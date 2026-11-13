@@ -13,6 +13,7 @@ function env(): NotificationsEnv {
           first: vi.fn(async () => query.includes("FROM orgs")
             ? { status: "active" }
             : { config_json: '{"compliance":{"airGappedOnly":true}}' }),
+          run: vi.fn(async () => ({ success: true, meta: { changes: 1 } })),
         })),
       })),
     } as unknown as D1Database,
@@ -41,8 +42,8 @@ describe("notification air-gap boundary", () => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "t" },
       body: JSON.stringify({ channel: "telegram", space_id: "s", to: "1", message: "hello" }),
     }), env(), {} as ExecutionContext);
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ delivered: false, reason: "air_gapped_space_blocks_network_egress" });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ delivered: false, outcome: "not_sent", reason: "air_gapped_space_blocks_network_egress" });
     expect(outbound).not.toHaveBeenCalled();
   });
 });

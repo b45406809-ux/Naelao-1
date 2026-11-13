@@ -191,12 +191,14 @@ describe("managed-service provider-cost threshold notices", () => {
     const notify=vi.fn(async()=>Response.json({delivered:true,channel:"web_push",devices:1}));
     f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
     await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
-      .resolves.toEqual({scanned:1,delivered:1,noSubscription:0,suppressed:0,deferred:0});
+      .resolves.toEqual({scanned:1,delivered:1,noSubscription:0,suppressed:0,ambiguous:0,deferred:0});
     const request=notify.mock.calls[0]?.[0] as Request;
     expect(request.url).toBe("http://notifications-worker/internal/notify");
     expect(request.headers.get("x-naelao-tenant-id")).toBe(scope.tenantId);
-    expect(await request.json()).toMatchObject({channel:"web_push",space_id:scope.spaceId,user_id:scope.userId,
-      subject:"Managed service cost threshold reached",message:expect.stringContaining("0.01 USD")});
+    const payload=await request.json() as Record<string,unknown>;
+    expect(payload).toMatchObject({channel:"web_push",space_id:scope.spaceId,user_id:scope.userId,
+      subject:"Managed service cost threshold reached",message:expect.stringContaining("0.01 USD"),
+      notification_id:expect.stringMatching(/^managed-cost-alert:/)});
     expect(f.db.db.prepare("SELECT status,attempts,last_error FROM managed_service_cost_budget_alert_deliveries").get())
       .toEqual({status:"delivered",attempts:1,last_error:null});
 
@@ -218,6 +220,26 @@ describe("managed-service provider-cost threshold notices", () => {
       .resolves.toMatchObject({scanned:1,noSubscription:1,deferred:0});
     expect(retry.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
       .toEqual({status:"no_subscription",last_error:"no_active_web_push_subscription"});
+  });
+
+  it("holds an ambiguous notification outcome without automatic re-egress", async () => {
+    const f=fixture();
+    await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,provider:"telnyx",serviceId:"phone-number",
+      operationRef:"ambiguous-alert-operation",accountRef:"private-account-ref",usageKind:"sms",quantityUnit:"message",quantityMicros:1_000_000,
+      providerCost:"0.010000",currency:"USD",periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+    await setManagedServiceCostBudget(f.env,scope,{provider:"telnyx",serviceId:"phone-number",provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:5_000});
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    const notify=vi.fn(async()=>Response.json({delivered:false,outcome:"attempt_ambiguous",reconcile_required:true},{status:409}));
+    f.env.NOTIFICATIONS_WORKER={fetch:notify} as unknown as Fetcher;
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z")))
+      .resolves.toMatchObject({scanned:1,delivered:0,ambiguous:1,deferred:0});
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
+      .toEqual({status:"ambiguous",last_error:"notification_outcome_ambiguous"});
+    const dashboard=await getManagedServiceDashboard(f.env,scope,new Date("2026-11-12T02:02:00.000Z"));
+    expect(dashboard.providerCostAlerts[0]?.pushDeliveryStatus).toBe("ambiguous");
+    await expect(sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:02:00.000Z")))
+      .resolves.toMatchObject({scanned:0,ambiguous:0});
+    expect(notify).toHaveBeenCalledOnce();
   });
 
   it("suppresses queued push after the configuring user loses organization and Space access", async () => {

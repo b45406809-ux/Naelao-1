@@ -11,12 +11,17 @@ describe("notifications.notify.web_push", () => {
     const ctx = {
       env: {
         notificationsWorker: { fetch },
-        tenantId: "tenant-a", spaceId: "space-a", humanInvokerId: "user-a",
+        tenantId: "tenant-a", spaceId: "space-a", humanInvokerId: "user-a", runId: "run-1", taskId: "task-1",
       },
     } as unknown as PrebuiltOpContext;
     const result = await notifications.operations["notify.web_push"]!({ title: "Update", message: "Ready" }, ctx);
     expect(result).toMatchObject({ delivered: false, devices: 0, channel: "web_push", status: 404 });
     const request = fetch.mock.calls[0]?.[0] as Request;
-    expect(await request.json()).toMatchObject({ channel: "web_push", space_id: "space-a", user_id: "user-a", subject: "Update", message: "Ready" });
+    const first = await request.json() as Record<string,unknown>;
+    expect(first).toMatchObject({ channel: "web_push", space_id: "space-a", user_id: "user-a", subject: "Update", message: "Ready",
+      notification_id: expect.stringMatching(/^script:/) });
+    await notifications.operations["notify.web_push"]!({ title: "Update", message: "Ready" }, ctx);
+    const retry = fetch.mock.calls[1]?.[0] as Request;
+    expect(await retry.json()).toMatchObject({ notification_id: first.notification_id });
   });
 });

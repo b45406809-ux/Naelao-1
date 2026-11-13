@@ -181,6 +181,7 @@ async function sendResetEmail(env: AuthEnv, tenantId: string, to: string, token:
         to,
         subject: "Reset your Naelao password",
         body: `Reset token: ${token}${link}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`,
+        notification_id: `builder-password-reset:${await sha256Hex(token)}`,
       }),
     }));
   } catch { /* best-effort — never blocks the caller's own (constant) response */ }

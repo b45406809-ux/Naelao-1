@@ -197,8 +197,8 @@ export default function SettingsPage() {
             </ul>}
           </div>}
           {(claims?.role === "owner" || claims?.role === "admin") && (notificationDeliveriesLoading || notificationDeliveries.length > 0 || notificationDeliveriesError) && <div className="border-t border-gray-200 pt-3">
-            <h3 className="text-sm font-semibold text-gray-900">Recent notification queue outcomes</h3>
-            <p className="text-xs text-gray-500 mt-1">Provider acceptance does not confirm delivery to a recipient. In-app acceptance means the notification was saved. Dead-lettered items exhausted the queue&apos;s configured retries.</p>
+            <h3 className="text-sm font-semibold text-gray-900">Recent notification outcomes</h3>
+            <p className="text-xs text-gray-500 mt-1">Provider acceptance does not confirm delivery to a recipient. In-app acceptance means the notification was saved. Dead-lettered items exhausted the queue&apos;s configured retries. Ambiguous sends are held without automatic resend.</p>
             {notificationDeliveriesLoading ? <p className="text-sm text-gray-500 mt-2">Loading recent outcomes…</p> : <ul className="mt-2 space-y-2">
               {notificationDeliveriesError && <li role="status" className="text-sm text-gray-600">Notification outcome status is unavailable right now.</li>}
               {notificationDeliveries.map((item) => <li key={`${item.notification_id}:${item.channel}:${item.provider}`} className="rounded-lg border border-gray-200 p-3 text-sm">

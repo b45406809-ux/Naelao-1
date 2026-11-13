@@ -1,6 +1,6 @@
 // G-N01: Notifications worker — email + in-app notification consumer
 import { badRequest, errorResponse, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
 
@@ -74,6 +74,11 @@ async function readProviderJson<T>(response: Response): Promise<T | null> {
 
 function safeErrorName(error: unknown): string {
   return error instanceof Error ? error.name.slice(0, 80) : "UnknownError";
+}
+
+function safeProviderReceiptId(value: unknown): string | undefined {
+  const candidate = typeof value === "string" || typeof value === "number" ? String(value) : "";
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(candidate) ? candidate : undefined;
 }
 
 /** Sign the Credentials worker's short-lived v3 resolver token for this Space. The generic
@@ -155,7 +160,7 @@ async function markExtensionConnectionError(env: NotificationsEnv, input: { tena
 async function sendChatMessage(
   env: NotificationsEnv,
   opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }>; installationId?: string; providerConnectionId?: string; threadTs?: string; messageThreadId?: number }
-): Promise<{ delivered: boolean; reason?: string; status?: number }> {
+): Promise<{ delivered: boolean; reason?: string; status?: number; providerReceiptId?: string }> {
   const { channel, to, message } = opts;
   const actions = opts.actions?.filter(action => /^review:[a-zA-Z0-9_-]{1,48}$/.test(action.id) && typeof action.label === "string" && action.label.length > 0 && action.label.length <= 20).slice(0, 3) ?? [];
   const credName = CHANNEL_SEND_CREDENTIAL[channel];
@@ -193,6 +198,7 @@ async function sendChatMessage(
   const cred = credential ?? "";
   try {
     let resp: Response;
+    let providerReceiptId: string | undefined;
     if (channel === "telegram") {
       // `to` is the chat id the message came from, not a username.
       resp = await fetch(`https://api.telegram.org/bot${cred}/sendMessage`, {
@@ -215,13 +221,14 @@ async function sendChatMessage(
       });
       // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
       // HTTP status alone would report a silent drop as a success.
-      const payload = await readProviderJson<{ ok?: boolean; error?: string }>(resp);
+      const payload = await readProviderJson<{ ok?: boolean; error?: string; ts?: unknown; message?: { ts?: unknown } }>(resp);
       if (!payload?.ok) {
         if (opts.installationId && opts.providerConnectionId && ["invalid_auth", "token_revoked", "account_inactive", "missing_scope"].includes(payload?.error ?? "")) {
           await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
         }
         return { delivered: false, reason: `slack: ${payload?.error ?? "rejected"}`, status: resp.status };
       }
+      providerReceiptId = safeProviderReceiptId(payload?.ts ?? payload?.message?.ts);
     } else if (channel === "discord") {
       resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
         method: "POST",
@@ -284,8 +291,21 @@ async function sendChatMessage(
     }
 
     if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
-    if (channel === "telegram" && !(await readProviderJson<{ ok?: boolean; description?: string }>(resp))?.ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
-    return { delivered: true };
+    if (channel === "telegram") {
+      const payload = await readProviderJson<{ ok?: boolean; result?: { message_id?: unknown } }>(resp);
+      if (!payload?.ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
+      providerReceiptId = safeProviderReceiptId(payload.result?.message_id);
+    } else if (channel === "discord") {
+      const payload = await readProviderJson<{ id?: unknown }>(resp);
+      providerReceiptId = safeProviderReceiptId(payload?.id);
+    } else if (channel === "whatsapp" && !viaTwilio) {
+      const payload = await readProviderJson<{ messages?: Array<{ id?: unknown }> }>(resp);
+      providerReceiptId = safeProviderReceiptId(payload?.messages?.[0]?.id);
+    } else if (channel === "whatsapp" && viaTwilio) {
+      const payload = await readProviderJson<{ sid?: unknown }>(resp);
+      providerReceiptId = safeProviderReceiptId(payload?.sid);
+    }
+    return { delivered: true, ...(providerReceiptId ? { providerReceiptId } : {}) };
   } catch {
     return { delivered: false, reason: `${channel} send failed` };
   }
@@ -321,7 +341,8 @@ interface NotificationMessage {
 }
 
 type NotificationDeliveryOutcome = "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
-type NotificationDeliveryProvider = "resend" | "internal" | "webhook" | "apns" | "web_push";
+type NotificationDeliveryProvider = "resend" | "internal" | "webhook" | "apns" | "web_push"
+  | "slack" | "discord" | "whatsapp" | "telegram" | "fcm" | "other";
 function notificationProvider(type: NotificationMessage["type"]): NotificationDeliveryProvider {
   return type === "email" ? "resend" : type === "in_app" ? "internal" : type === "push" ? "apns" : type;
 }
@@ -336,30 +357,40 @@ async function recordNotificationDeliveryAttempt(
   provider: NotificationDeliveryProvider,
   outcome: NotificationDeliveryOutcome,
   queueAttempts: number,
-  details: { httpStatus?: number; providerReceiptId?: string; failureCode?: string } = {},
-): Promise<void> {
+  details: { httpStatus?: number; providerReceiptId?: string; failureCode?: string; channel?: string } = {},
+): Promise<boolean> {
   if ((message.subscriptionScope && outcome !== "dead_lettered") || !/^[A-Za-z0-9_-]{1,128}$/.test(message.tenantId)
-    || !/^[A-Za-z0-9._:-]{1,200}$/.test(notificationId)) return;
+    || !/^[A-Za-z0-9._:-]{1,200}$/.test(notificationId)) return false;
   const now = new Date().toISOString();
-  const receipt = details.providerReceiptId && /^[A-Za-z0-9_-]{1,128}$/.test(details.providerReceiptId)
+  const receipt = details.providerReceiptId && /^[A-Za-z0-9._:-]{1,128}$/.test(details.providerReceiptId)
     ? details.providerReceiptId : null;
+  const channel = details.channel && /^[a-z0-9_-]{1,32}$/.test(details.channel)
+    ? details.channel : message.type;
+  const failureCode = details.failureCode && /^[a-z0-9_-]{1,80}$/i.test(details.failureCode)
+    ? details.failureCode : null;
   try {
     await env.PLATFORM_DB.prepare(`INSERT INTO notification_delivery_attempts (
         tenant_id,notification_id,channel,provider,outcome,attempt_count,queue_attempts,
         last_http_status,provider_receipt_id,failure_code,first_attempt_at,last_attempt_at,accepted_at,updated_at
       ) VALUES(?,?,?,?,?,1,?,?,?,?,?,?,?,?)
       ON CONFLICT(tenant_id,notification_id,channel,provider) DO UPDATE SET
-        outcome=excluded.outcome,attempt_count=notification_delivery_attempts.attempt_count+1,
+        outcome=CASE WHEN notification_delivery_attempts.outcome IN ('provider_accepted','persisted')
+          THEN notification_delivery_attempts.outcome ELSE excluded.outcome END,
+        attempt_count=notification_delivery_attempts.attempt_count+1,
         queue_attempts=excluded.queue_attempts,last_http_status=excluded.last_http_status,
         provider_receipt_id=COALESCE(excluded.provider_receipt_id,notification_delivery_attempts.provider_receipt_id),
-        failure_code=excluded.failure_code,last_attempt_at=excluded.last_attempt_at,
+        failure_code=CASE WHEN notification_delivery_attempts.outcome IN ('provider_accepted','persisted')
+          THEN notification_delivery_attempts.failure_code ELSE excluded.failure_code END,
+        last_attempt_at=excluded.last_attempt_at,
         accepted_at=COALESCE(notification_delivery_attempts.accepted_at,excluded.accepted_at),updated_at=excluded.updated_at`)
-      .bind(message.tenantId, notificationId, message.type, provider, outcome,
+      .bind(message.tenantId, notificationId, channel, provider, outcome,
         Math.max(1, Number.isSafeInteger(queueAttempts) ? queueAttempts : 1), details.httpStatus ?? null, receipt,
-        details.failureCode?.slice(0, 80) ?? null, now, now, outcome === "provider_accepted" || outcome === "persisted" ? now : null, now)
+        failureCode, now, now, outcome === "provider_accepted" || outcome === "persisted" ? now : null, now)
       .run();
+    return true;
   } catch (error) {
     console.warn("[notifications/queue] delivery outcome persistence unavailable", safeErrorName(error));
+    return false;
   }
 }
 
@@ -978,6 +1009,109 @@ app.use("*", async (c, next) => {
 // calls have always 404'd and been silently swallowed by the caller's own best-effort try/catch.
 // Email, web_push, and paired chat channels have synchronous paths; APNs/FCM remain queue-only
 // here and report `delivered: false` rather than pretending to work.
+type SynchronousNotificationDescriptor = {
+  channel: string;
+  provider: NotificationDeliveryProvider;
+};
+
+function synchronousNotificationDescriptor(value: unknown): SynchronousNotificationDescriptor {
+  const requested = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (requested === "email") return { channel: "email", provider: "resend" };
+  if (requested === "web_push") return { channel: "web_push", provider: "web_push" };
+  if (requested === "apns" || requested === "fcm") return { channel: "push", provider: requested };
+  if (["slack", "discord", "whatsapp", "telegram"].includes(requested)) {
+    return { channel: requested, provider: requested as NotificationDeliveryProvider };
+  }
+  if (requested === "webhook") return { channel: "webhook", provider: "webhook" };
+  if (requested === "in_app") return { channel: "in_app", provider: "internal" };
+  return { channel: "other", provider: "other" };
+}
+
+function synchronousNotificationId(value: unknown): string | null {
+  if (value === undefined) return `sync-${crypto.randomUUID()}`;
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(value) ? value : null;
+}
+
+type ExistingNotificationOutcome = {
+  outcome: NotificationDeliveryOutcome;
+  last_http_status: number | null;
+  provider_receipt_id: string | null;
+  failure_code: string | null;
+};
+
+async function claimSynchronousNotification(
+  env: NotificationsEnv,
+  tenantId: string,
+  notificationId: string,
+  descriptor: SynchronousNotificationDescriptor,
+): Promise<{ claimed: boolean; existing: ExistingNotificationOutcome | null }> {
+  const now = new Date().toISOString();
+  const insert = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO notification_delivery_attempts (
+      tenant_id,notification_id,channel,provider,outcome,attempt_count,queue_attempts,
+      last_http_status,provider_receipt_id,failure_code,first_attempt_at,last_attempt_at,accepted_at,updated_at
+    ) VALUES (?,?,?,?,'attempt_ambiguous',1,1,NULL,NULL,'dispatch_in_progress',?,?,NULL,?)`)
+    .bind(tenantId, notificationId, descriptor.channel, descriptor.provider, now, now, now).run();
+  if (insert.meta.changes === 1) return { claimed: true, existing: null };
+  const existing = await env.PLATFORM_DB.prepare(`SELECT outcome,last_http_status,provider_receipt_id,failure_code
+      FROM notification_delivery_attempts WHERE tenant_id=? AND notification_id=? AND channel=? AND provider=?`)
+    .bind(tenantId, notificationId, descriptor.channel, descriptor.provider).first<ExistingNotificationOutcome>();
+  return { claimed: false, existing: existing ?? null };
+}
+
+async function finishSynchronousNotification(
+  env: NotificationsEnv,
+  tenantId: string,
+  notificationId: string,
+  descriptor: SynchronousNotificationDescriptor,
+  outcome: NotificationDeliveryOutcome,
+  details: { httpStatus?: number; providerReceiptId?: string; failureCode?: string } = {},
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const receipt = details.providerReceiptId && /^[A-Za-z0-9._:-]{1,128}$/.test(details.providerReceiptId)
+    ? details.providerReceiptId : null;
+  const failureCode = details.failureCode && /^[a-z0-9_-]{1,80}$/i.test(details.failureCode)
+    ? details.failureCode : null;
+  try {
+    const result = await env.PLATFORM_DB.prepare(`UPDATE notification_delivery_attempts
+        SET outcome=?,last_http_status=?,provider_receipt_id=COALESCE(?,provider_receipt_id),
+            failure_code=?,last_attempt_at=?,accepted_at=?,updated_at=?
+        WHERE tenant_id=? AND notification_id=? AND channel=? AND provider=?
+          AND outcome='attempt_ambiguous' AND failure_code='dispatch_in_progress'`)
+      .bind(outcome, details.httpStatus ?? null, receipt, failureCode, now,
+        outcome === "provider_accepted" || outcome === "persisted" ? now : null, now,
+        tenantId, notificationId, descriptor.channel, descriptor.provider).run();
+    return result.meta.changes === 1;
+  } catch (error) {
+    console.warn("[notifications/sync] delivery outcome persistence unavailable", safeErrorName(error));
+    return false;
+  }
+}
+
+function storedSynchronousOutcomeResponse(
+  c: Context<{ Bindings: NotificationsEnv }>,
+  channel: string,
+  notificationId: string,
+  outcome: ExistingNotificationOutcome,
+) {
+  const accepted = outcome.outcome === "provider_accepted" || outcome.outcome === "persisted";
+  return c.json({
+    delivered: accepted,
+    accepted,
+    outcome: outcome.outcome,
+    channel,
+    notification_id: notificationId,
+    ...(outcome.provider_receipt_id ? { provider_receipt_id: outcome.provider_receipt_id } : {}),
+    ...(outcome.failure_code ? { failure_code: outcome.failure_code } : {}),
+    outcome_recorded: true,
+    idempotent_replay: true,
+    ...(outcome.outcome === "attempt_ambiguous" ? { reconcile_required: true } : {}),
+  }, accepted ? 200 : outcome.outcome === "provider_rejected" ? 502 : 409);
+}
+
+// POST /internal/notify — synchronous notification dispatch. Reachable only via service binding.
+// Claim the stable operation ID before provider egress. Accepted and ambiguous IDs are never sent
+// again automatically; a new intentional operation needs a new ID. Provider acceptance is not
+// inbox delivery. The outcome ledger stores no recipient, endpoint, message, or device token.
 app.post("/internal/notify", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
@@ -993,7 +1127,6 @@ app.post("/internal/notify", async (c) => {
     body?: string;
     html?: string;
     reply_to?: string;
-    /** Chat channels carry their text here rather than in `body`. */
     message?: string;
     actions?: Array<{ id: string; label: string }>;
     user_id?: string;
@@ -1012,84 +1145,167 @@ app.post("/internal/notify", async (c) => {
     if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
     return c.json({ error_code: "invalid_request_body" }, 400);
   }
+  const notificationId = synchronousNotificationId(body.notification_id);
+  if (!notificationId) return c.json({ error_code: "invalid_notification_id" }, 400);
+  const descriptor = synchronousNotificationDescriptor(body.channel);
+  let claim: { claimed: boolean; existing: ExistingNotificationOutcome | null };
+  try {
+    claim = await claimSynchronousNotification(c.env, tenantId, notificationId, descriptor);
+  } catch {
+    return c.json({ delivered: false, outcome: "not_sent", channel: descriptor.channel,
+      notification_id: notificationId, reason: "notification_outcome_unavailable" }, 503);
+  }
+  if (!claim.claimed) {
+    if (claim.existing) return storedSynchronousOutcomeResponse(c, descriptor.channel, notificationId, claim.existing);
+    return c.json({ delivered: false, outcome: "attempt_ambiguous", channel: descriptor.channel,
+      notification_id: notificationId, reconcile_required: true, reason: "notification_outcome_unavailable" }, 503);
+  }
+
+  const record = async (
+    outcome: NotificationDeliveryOutcome,
+    details: { httpStatus?: number; providerReceiptId?: string; failureCode?: string } = {},
+  ) => finishSynchronousNotification(c.env, tenantId, notificationId, descriptor, outcome, details);
+  const notSent = async (failureCode: string, status: 400 | 403 | 404 | 503 = 403) => {
+    const outcomeRecorded = await record("not_sent", { failureCode });
+    return c.json({ delivered: false, outcome: "not_sent", channel: descriptor.channel,
+      notification_id: notificationId, reason: failureCode, outcome_recorded: outcomeRecorded }, status);
+  };
+
   if (body.space_id) {
-    const activeSpace = await c.env.PLATFORM_DB.prepare(
-      `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
-       AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
-    ).bind(body.space_id, tenantId).first<{ id: string }>();
-    if (!activeSpace) {
-      return c.json({ delivered: false, reason: "space_inactive" }, 403);
+    let activeSpace: { id: string } | null;
+    try {
+      activeSpace = await c.env.PLATFORM_DB.prepare(
+        `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+         AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+      ).bind(body.space_id, tenantId).first<{ id: string }>();
+    } catch {
+      return notSent("scope_check_unavailable", 503);
     }
+    if (!activeSpace) return notSent("space_inactive");
   }
 
-  if (body.channel === "email") {
-    if (!body.to) throw badRequest("email notification requires 'to'");
+  if (descriptor.channel === "email") {
+    if (typeof body.to !== "string" || !body.to.trim()) return notSent("email_recipient_missing", 400);
     if (body.space_id && await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
-      return c.json({ delivered: false, channel: "email", reason: "air_gapped_space_blocks_network_egress" }, 403);
+      return notSent("space_egress_blocked");
     }
-    const result = await sendEmailNow(c.env, {
-      tenantId,
-      email: body.to,
-      subject: body.subject ?? "(no subject)",
-      html: body.html ?? body.body ?? "",
-      ...(body.reply_to ? { replyTo: body.reply_to } : {}),
-    }, typeof body.notification_id === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(body.notification_id)
-      ? body.notification_id
-      : undefined);
+    let result: Awaited<ReturnType<typeof sendEmailNow>>;
+    try {
+      result = await sendEmailNow(c.env, {
+        tenantId,
+        email: body.to,
+        subject: body.subject ?? "(no subject)",
+        html: body.html ?? body.body ?? "",
+        ...(body.reply_to ? { replyTo: body.reply_to } : {}),
+      }, notificationId);
+    } catch {
+      const outcomeRecorded = await record("attempt_ambiguous", { failureCode: "provider_request_ambiguous" });
+      return c.json({ delivered: false, outcome: "attempt_ambiguous", channel: "email",
+        notification_id: notificationId, reconcile_required: true, outcome_recorded: outcomeRecorded }, 502);
+    }
     if (!result.ok) {
-      return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
+      const outcome: NotificationDeliveryOutcome = (result.status ?? 0) >= 500
+        ? "attempt_ambiguous" : "provider_rejected";
+      const outcomeRecorded = await record(outcome, {
+        ...(result.status === undefined ? {} : { httpStatus: result.status }),
+        failureCode: outcome === "attempt_ambiguous" ? "provider_request_ambiguous" : "provider_rejected",
+      });
+      return c.json({ delivered: false, outcome, channel: "email",
+        notification_id: notificationId, status: result.status ?? null, outcome_recorded: outcomeRecorded,
+        ...(outcome === "attempt_ambiguous" ? { reconcile_required: true } : {}) }, 502);
     }
-    return c.json({
-      delivered: true,
-      accepted: true,
-      outcome: "provider_accepted",
-      channel: "email",
-      from: result.from,
+    const outcomeRecorded = await record("provider_accepted", {
+      ...(result.status === undefined ? {} : { httpStatus: result.status }),
+      ...(result.providerReceiptId ? { providerReceiptId: result.providerReceiptId } : {}),
+    });
+    return c.json({ delivered: true, accepted: true, outcome: "provider_accepted", channel: "email",
+      notification_id: notificationId, from: result.from,
       ...(result.providerReceiptId ? { provider_receipt_id: result.providerReceiptId } : {}),
-    });
+      outcome_recorded: outcomeRecorded });
   }
 
-  if (body.channel === "web_push") {
-    if (!body.user_id || !tenantId || !body.space_id) throw badRequest("web_push requires an authenticated user, tenant and Space");
+  if (descriptor.channel === "web_push") {
+    if (typeof body.user_id !== "string" || !body.user_id || !body.space_id) return notSent("web_push_scope_required", 400);
     if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
-      return c.json({ delivered: false, channel: "web_push", reason: "air_gapped_space_blocks_network_egress" }, 403);
+      return notSent("space_egress_blocked");
     }
-    const delivered = await sendBrowserPush(c.env, {
-      type: "web_push", tenantId, userId: body.user_id,
-      ...(body.space_id ? { spaceId: body.space_id } : {}),
-      ...(body.subject ? { title: body.subject } : {}),
-      ...((body.message ?? body.body) ? { body: body.message ?? body.body } : {}),
-    });
-    return c.json({ delivered: delivered > 0, channel: "web_push", devices: delivered }, delivered > 0 ? 200 : 404);
+    let delivered: number;
+    try {
+      delivered = await sendBrowserPush(c.env, {
+        type: "web_push", tenantId, userId: body.user_id,
+        ...(body.space_id ? { spaceId: body.space_id } : {}),
+        ...(body.subject ? { title: body.subject } : {}),
+        ...((body.message ?? body.body) ? { body: body.message ?? body.body } : {}),
+      });
+    } catch (error) {
+      const failureCode = error instanceof Error && /not configured/i.test(error.message)
+        ? "provider_not_configured" : "provider_request_ambiguous";
+      const outcome = failureCode === "provider_not_configured" ? "not_sent" : "attempt_ambiguous";
+      const outcomeRecorded = await record(outcome, { failureCode });
+      return c.json({ delivered: false, outcome, channel: "web_push", notification_id: notificationId,
+        ...(outcome === "attempt_ambiguous" ? { reconcile_required: true } : {}), outcome_recorded: outcomeRecorded }, 502);
+    }
+    if (delivered === 0) return notSent("no_active_subscription", 404);
+    const outcomeRecorded = await record("provider_accepted");
+    return c.json({ delivered: true, accepted: true, outcome: "provider_accepted", channel: "web_push",
+      notification_id: notificationId, devices: delivered, outcome_recorded: outcomeRecorded });
   }
 
-  // Chat channels. Until now every one of these returned delivered:false unconditionally, which
-  // meant a customer could message a business on Slack/Discord/WhatsApp, the agent would run and
-  // produce a real answer, and the reply would never leave the building — the inbound half of
-  // every channel worked and the outbound half did not exist.
-  const chatChannel = String(body.channel ?? "");
-  if (CHANNEL_SEND_CREDENTIAL[chatChannel]) {
-    const result = await sendChatMessage(c.env, {
-      channel: chatChannel,
-      tenantId,
-      spaceId: body.space_id ?? "",
-      to: String(body.to ?? ""),
-      message: String(body.message ?? body.body ?? ""),
-      ...(body.actions ? { actions: body.actions } : {}),
-      ...(typeof body.installation_id === "string" ? { installationId: body.installation_id } : {}),
-      ...(typeof body.provider_connection_id === "string" ? { providerConnectionId: body.provider_connection_id } : {}),
-      ...(typeof body.thread_ts === "string" && /^\d{1,20}\.\d{1,10}$/.test(body.thread_ts) ? { threadTs: body.thread_ts } : {}),
-      ...(typeof body.message_thread_id === "string" && /^\d{1,20}$/.test(body.message_thread_id) ? { messageThreadId: Number(body.message_thread_id) } : {}),
+  if (["slack", "discord", "whatsapp", "telegram"].includes(descriptor.channel)) {
+    const chatChannel = descriptor.channel;
+    if (body.to !== undefined && typeof body.to !== "string") return notSent("recipient_invalid", 400);
+    if (body.actions !== undefined && (!Array.isArray(body.actions) || body.actions.some((action) =>
+      !action || typeof action !== "object" || typeof action.id !== "string" || typeof action.label !== "string"))) {
+      return notSent("actions_invalid", 400);
+    }
+    let result: Awaited<ReturnType<typeof sendChatMessage>>;
+    try {
+      result = await sendChatMessage(c.env, {
+        channel: chatChannel,
+        tenantId,
+        spaceId: body.space_id ?? "",
+        to: String(body.to ?? ""),
+        message: String(body.message ?? body.body ?? ""),
+        ...(body.actions ? { actions: body.actions } : {}),
+        ...(typeof body.installation_id === "string" ? { installationId: body.installation_id } : {}),
+        ...(typeof body.provider_connection_id === "string" ? { providerConnectionId: body.provider_connection_id } : {}),
+        ...(typeof body.thread_ts === "string" && /^\d{1,20}\.\d{1,10}$/.test(body.thread_ts) ? { threadTs: body.thread_ts } : {}),
+        ...(typeof body.message_thread_id === "string" && /^\d{1,20}$/.test(body.message_thread_id) ? { messageThreadId: Number(body.message_thread_id) } : {}),
+      });
+    } catch {
+      const outcomeRecorded = await record("attempt_ambiguous", { failureCode: "provider_request_ambiguous" });
+      return c.json({ delivered: false, outcome: "attempt_ambiguous", channel: chatChannel,
+        notification_id: notificationId, reconcile_required: true, outcome_recorded: outcomeRecorded }, 502);
+    }
+    if (!result.delivered) {
+      const knownPreflightFailure = !result.status && !/rejected/i.test(result.reason ?? "")
+        && !/send failed/i.test(result.reason ?? "");
+      const outcome: NotificationDeliveryOutcome = knownPreflightFailure
+        ? "not_sent" : (result.status ?? 0) >= 500 || /send failed/i.test(result.reason ?? "")
+          ? "attempt_ambiguous" : result.status !== undefined || /rejected/i.test(result.reason ?? "")
+          ? "provider_rejected" : "attempt_ambiguous";
+      const failureCode = outcome === "not_sent" ? "channel_not_ready"
+        : outcome === "provider_rejected" ? "provider_rejected" : "provider_request_ambiguous";
+      const outcomeRecorded = await record(outcome, {
+        ...(result.status === undefined ? {} : { httpStatus: result.status }), failureCode,
+      });
+      return c.json({ delivered: false, outcome, channel: chatChannel, notification_id: notificationId,
+        ...(result.reason ? { reason: result.reason } : {}),
+        ...(outcome === "attempt_ambiguous" ? { reconcile_required: true } : {}), outcome_recorded: outcomeRecorded },
+        outcome === "not_sent" ? 403 : outcome === "provider_rejected" ? 502 : 409);
+    }
+    const outcomeRecorded = await record("provider_accepted", {
+      ...(result.providerReceiptId ? { providerReceiptId: result.providerReceiptId } : {}),
     });
-    return c.json(
-      { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },
-      result.delivered ? 200 : 502
-    );
+    return c.json({ delivered: true, accepted: true, outcome: "provider_accepted", channel: chatChannel,
+      notification_id: notificationId,
+      ...(result.providerReceiptId ? { provider_receipt_id: result.providerReceiptId } : {}),
+      outcome_recorded: outcomeRecorded });
   }
 
-  // Push (apns/fcm) still isn't wired synchronously. Honest failure, not a silent no-op — callers
-  // already treat delivered:false as a real signal.
-  return c.json({ delivered: false, channel: body.channel ?? "unknown", reason: "channel not wired for synchronous delivery" });
+  const outcomeRecorded = await record("not_sent", { failureCode: "channel_not_wired" });
+  return c.json({ delivered: false, outcome: "not_sent", channel: descriptor.channel,
+    notification_id: notificationId, reason: "channel_not_wired", outcome_recorded: outcomeRecorded }, 501);
 });
 
 // Browser subscriptions are reached through a Space membership-gated route which mints an

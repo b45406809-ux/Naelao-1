@@ -223,8 +223,8 @@ app.get("/billing/dunning-notifications", async (c) => {
   return c.json({ data: result.results ?? [] }, 200, { "cache-control": "private, no-store" });
 });
 
-// Owner/admin-only, tenant-scoped outcomes for the general Notifications queue. Message bodies,
-// recipients, webhook URLs and device tokens are never retained or returned here.
+// Owner/admin-only, tenant-scoped outcomes for queue and synchronous Notifications sends. Message
+// bodies, recipients, webhook URLs and device tokens are never retained or returned here.
 app.get("/billing/notification-deliveries", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
@@ -239,7 +239,7 @@ app.get("/billing/notification-deliveries", async (c) => {
     ORDER BY last_attempt_at DESC,notification_id DESC LIMIT 50
   `).bind(orgId).all<{
     notification_id: string;
-    channel: "email" | "in_app" | "webhook" | "push" | "web_push";
+    channel: string;
     provider: string;
     outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
     attempt_count: number;

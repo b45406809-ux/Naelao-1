@@ -350,6 +350,7 @@ export async function deliverAssistantEvent(
             ...(to ? { to } : {}),
             subject: "Assistant update",
             body: input.message,
+            notification_id: `assistant-event:${input.event_id}`,
           }),
         })
       );

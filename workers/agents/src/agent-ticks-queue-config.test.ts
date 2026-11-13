@@ -9,7 +9,7 @@ describe("Agents tick queue consumer limits", () => {
     const consumers = [...config.matchAll(/^\[\[([^\]]+)\]\]([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)]
       .filter((match) => match[1]?.endsWith("queues.consumers"))
       .map((match) => ({ table: match[1] ?? "", block: match[2] ?? "" }))
-      .filter(({ block }) => /^queue\s*=\s*"naelao-agent-ticks"$/m.test(block));
+      .filter(({ block }) => /^queue\s*=\s*"naelao-agent-ticks(?:-staging)?"$/m.test(block));
 
     expect(consumers).toHaveLength(3);
     for (const { block } of consumers) {

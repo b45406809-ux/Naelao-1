@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0234_notification_delivery_outcomes",
+  "requiredSchemaVersion": "0236_cost_alert_ambiguous_delivery_status",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -939,6 +939,14 @@
     {
       "filename": "0234_notification_delivery_outcomes.sql",
       "sha256": "800624f0215bedd65d309e2f0b500fbc3603b42bb61ce5ac53df0be39ac516a9"
+    },
+    {
+      "filename": "0235_notification_delivery_channel_expansion.sql",
+      "sha256": "69322e27adafb83157550b589053f03b2ff46bc09d189e223cad08a14ad82bf5"
+    },
+    {
+      "filename": "0236_cost_alert_ambiguous_delivery_status.sql",
+      "sha256": "5a64a0c00806aeee974dabe1ea29d25df0cedd891e95cb09405364955d46576d"
     }
   ]
 }

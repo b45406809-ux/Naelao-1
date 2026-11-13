@@ -7480,6 +7480,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
     const envelope = toNormalizedInboundMessage({ channel: norm.channel, senderId: norm.channel_user_id,
       text: norm.text, externalId: norm.external_id, timestamp: norm.timestamp });
+    let replySequence = 0;
+    let eventTagPromise: Promise<string> | undefined;
+    const nextNotificationId = async () => {
+      eventTagPromise ??= opaqueExternalSubject(this.env.PLATFORM_SECRET, ["notification-event", body.spaceId ?? "_",
+        norm.channel, norm.channel_user_id, norm.external_id]);
+      return `channel-event:${await eventTagPromise}:${replySequence++}`;
+    };
 
     if((norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
       const result=await applyApprovalDecision(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:body.tenantId,spaceId:body.spaceId,channel:norm.channel,contact:norm.channel_user_id,token:norm.text.trim()},promise=>this.ctx.waitUntil(promise));
@@ -7532,7 +7539,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             if (!this.env.NOTIFICATIONS_WORKER) throw new Error("executive_confirmation_channel_unavailable");
             const response = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
               method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId! },
-              body: JSON.stringify({ channel: input.channel, space_id: body.spaceId, to: input.senderId, body: text }),
+              body: JSON.stringify({ channel: input.channel, space_id: body.spaceId, to: input.senderId, body: text,
+                notification_id: await nextNotificationId() }),
             }));
             if (!response.ok) throw new Error(`executive_confirmation_failed:${response.status}`);
           };
@@ -7594,7 +7602,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (!this.env.NOTIFICATIONS_WORKER) throw new Error("executive_confirmation_channel_unavailable");
           const response = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
             method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId! },
-            body: JSON.stringify({ channel, space_id: body.spaceId, to: senderId, body: text }),
+            body: JSON.stringify({ channel, space_id: body.spaceId, to: senderId, body: text,
+              notification_id: await nextNotificationId() }),
           }));
           if (!response.ok) throw new Error(`executive_confirmation_failed:${response.status}`);
         },
@@ -7675,6 +7684,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         await this.env.NOTIFICATIONS_WORKER!.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
           body: JSON.stringify({ channel: norm.channel, space_id: spaceId, to: norm.recipient_id ?? norm.channel_user_id, body: reply,
+            notification_id: await nextNotificationId(),
             ...(norm.thread_id && /^\d{1,20}$/.test(norm.thread_id) ? { message_thread_id: norm.thread_id } : {}) }),
         }));
       })().catch(error => console.error(`[channels] internal planner dispatch failed channel=${norm.channel}:`, error instanceof Error ? error.message : String(error))));
@@ -8747,9 +8757,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const sent = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: decision.summary?`${approvalText.slice(0,180)}\n${decision.summary}`:approvalText, actions: decision.actions.length?decision.actions:[{id:`review:${approvalId}`,label:"Review approval"}] }),
+          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: decision.summary?`${approvalText.slice(0,180)}\n${decision.summary}`:approvalText, actions: decision.actions.length?decision.actions:[{id:`review:${approvalId}`,label:"Review approval"}], notification_id: `approval:${approvalId}:${contact.user_id}:${contact.channel}` }),
         }));
-        if (sent.ok && (await sent.json<{delivered?:boolean}>()).delivered === true) return;
+        const result = await sent.json<{ delivered?: boolean; outcome?: string }>().catch(() => ({} as { delivered?: boolean; outcome?: string }));
+        if (sent.ok && result.delivered === true && result.outcome === "provider_accepted") return;
+        if (result.outcome === "attempt_ambiguous") return;
       }
 
       // Keep email as the backstop when no verified mobile contact exists or mobile delivery
@@ -8766,7 +8778,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
         body: JSON.stringify({ channel: "email", space_id: spaceId, to: contact.email,
           subject: `Approval needed: agent '${agentId}' wants to ${actionName}`,
-          body: `${approvalText} Review and approve or reject it from your authenticated Naelao dashboard.` }),
+          body: `${approvalText} Review and approve or reject it from your authenticated Naelao dashboard.`,
+          notification_id: `approval:${approvalId}:email` }),
       }));
     } catch {
       // best-effort — never block or fail the approval flow over a notification hiccup

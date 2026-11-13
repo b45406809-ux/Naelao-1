@@ -28,7 +28,7 @@ const RESET_TOKEN_EXPIRY_INDEX_MIGRATION = readFileSync(join(__dirname, "../../i
 
 function makeEnv() {
   const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION, RESET_TOKEN_EXPIRY_INDEX_MIGRATION]);
-  const notifyCalls: Array<{ to: string; subject: string; body: string; tenantId: string | null }> = [];
+  const notifyCalls: Array<{ to: string; subject: string; body: string; notification_id?: string; tenantId: string | null }> = [];
   return {
     ENVIRONMENT: "test",
     JWT_SECRET: "test-jwt-secret",
@@ -37,7 +37,7 @@ function makeEnv() {
     PLATFORM_DB: fakeDb,
     NOTIFICATIONS_WORKER: {
       fetch: async (req: Request) => {
-        const body = await req.json() as { to: string; subject: string; body: string };
+        const body = await req.json() as { to: string; subject: string; body: string; notification_id?: string };
         notifyCalls.push({ ...body, tenantId: req.headers.get("x-naelao-tenant-id") });
         return new Response(JSON.stringify({ delivered: true }), { status: 200 });
       },
@@ -278,6 +278,8 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     const user = await env.__db.prepare("SELECT org_id FROM users WHERE email = 'jane@acme.com'").first<{ org_id: string }>();
     expect(env.__notifyCalls[0]?.tenantId).toBe(user?.org_id);
     const token = extractResetToken(env.__notifyCalls);
+    expect(env.__notifyCalls[0]?.notification_id).toMatch(/^builder-password-reset:[a-f0-9]{64}$/);
+    expect(env.__notifyCalls[0]?.notification_id).not.toContain(token);
 
     const resetRes = await authWorker.fetch(req("/reset-password", { token, new_password: "newpassword1" }), env as never, execCtx);
     expect(resetRes.status).toBe(200);

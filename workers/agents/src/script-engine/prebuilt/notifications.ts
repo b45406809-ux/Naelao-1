@@ -46,6 +46,7 @@ async function resolveOwnerEmail(ctx: PrebuiltOpContext): Promise<string | undef
 
 async function dispatch(
   ctx: PrebuiltOpContext,
+  operation: string,
   channel: string,
   payload: Record<string, unknown>
 ): Promise<unknown> {
@@ -53,16 +54,31 @@ async function dispatch(
   if (!ctx.env.notificationsWorker) {
     return { delivered: false, reason: "notifications worker binding not configured", channel };
   }
+  const notificationId = await stableNotificationId(ctx, operation, payload);
   const resp = await ctx.env.notificationsWorker.fetch(
     new Request("http://notifications-worker/internal/notify", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId },
-      body: JSON.stringify({ channel, space_id: ctx.env.spaceId, ...payload }),
+      body: JSON.stringify({ channel, space_id: ctx.env.spaceId, ...payload,
+        ...(notificationId ? { notification_id: notificationId } : {}) }),
     })
   );
   const result: Record<string, unknown> = await resp.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
   if (!resp.ok) return { ...result, delivered: false, channel, status: resp.status };
   return { ...result, delivered: result.delivered !== false, channel };
+}
+
+async function stableNotificationId(ctx: PrebuiltOpContext, operation: string, payload: Record<string, unknown>): Promise<string | undefined> {
+  const invocation = ctx.env.taskId ?? ctx.env.rootRunId ?? ctx.env.runId;
+  if (!invocation) return undefined;
+  try {
+    const bytes = new TextEncoder().encode(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, invocation, operation, payload]));
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hex = [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `script:${hex}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export const notifications: PrebuiltScript = {
@@ -92,17 +108,17 @@ export const notifications: PrebuiltScript = {
           reason: "no recipient: none was given and this space has no owner email on record",
         };
       }
-      return dispatch(c, "email", { to, subject: a["subject"], body: a["body"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] });
+      return dispatch(c, "notify.email", "email", { to, subject: a["subject"], body: a["body"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] });
     },
-    "notify.slack": (a, c) => dispatch(c, "slack", { channel: a["channel"], message: a["message"], thread_ts: a["thread_ts"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
-    "notify.discord": (a, c) => dispatch(c, "discord", { channel: a["channel"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
-    "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.slack": (a, c) => dispatch(c, "notify.slack", "slack", { channel: a["channel"], message: a["message"], thread_ts: a["thread_ts"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.discord": (a, c) => dispatch(c, "notify.discord", "discord", { channel: a["channel"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.whatsapp": (a, c) => dispatch(c, "notify.whatsapp", "whatsapp", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
     // `to` is Telegram's chat id, not a username — a reply has to go back to the conversation
     // it came from, which in a group is not the sender (see telegramAdapter.normalizeInbound).
-    "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"], message_thread_id: a["message_thread_id"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
-    "notify.apns": (a, c) => dispatch(c, "apns", { device_token: a["device_token"], payload: a["payload"] }),
-    "notify.fcm": (a, c) => dispatch(c, "fcm", { token: a["token"], payload: a["payload"] }),
-    "notify.web_push": (a, c) => dispatch(c, "web_push", {
+    "notify.telegram": (a, c) => dispatch(c, "notify.telegram", "telegram", { to: a["to"], message: a["message"], message_thread_id: a["message_thread_id"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.apns": (a, c) => dispatch(c, "notify.apns", "apns", { device_token: a["device_token"], payload: a["payload"] }),
+    "notify.fcm": (a, c) => dispatch(c, "notify.fcm", "fcm", { token: a["token"], payload: a["payload"] }),
+    "notify.web_push": (a, c) => dispatch(c, "notify.web_push", "web_push", {
       user_id: a["user_id"] ?? c.env.humanInvokerId,
       subject: a["title"] ?? a["subject"],
       message: a["message"] ?? a["body"],

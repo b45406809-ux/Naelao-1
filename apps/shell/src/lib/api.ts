@@ -3247,5 +3247,5 @@ export interface ManagedServiceDashboard {
     currency: string; limitProviderCostMicros: number; updatedAt: string; observedProviderCostMicros: number; thresholdReached: boolean }>;
   providerCostAlerts: Array<{ id:string;provider:string;serviceId:string;provenance:"operator_imported"|"provider_api_observed";currency:string;
     observedProviderCostMicros:number;limitProviderCostMicros:number;windowStart:string;windowEnd:string;createdAt:string;
-    pushDeliveryStatus:"pending"|"running"|"delivered"|"no_subscription"|"suppressed"|null }>;
+    pushDeliveryStatus:"pending"|"running"|"delivered"|"no_subscription"|"suppressed"|"ambiguous"|null }>;
 }

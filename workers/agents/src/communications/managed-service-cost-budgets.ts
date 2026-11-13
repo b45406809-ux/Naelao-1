@@ -213,13 +213,13 @@ export async function sweepManagedServiceCostBudgetAlertDeliveries(
   env:AgentsEnv,
   now=new Date(),
   limit=50,
-):Promise<{scanned:number;delivered:number;noSubscription:number;suppressed:number;deferred:number}>{
+):Promise<{scanned:number;delivered:number;noSubscription:number;suppressed:number;ambiguous:number;deferred:number}>{
   if(!Number.isInteger(limit)||limit<1||limit>100)throw new Error("managed_service_cost_budget_delivery_limit_invalid");
   const at=now.toISOString();
   const due=await env.PLATFORM_DB.prepare(`SELECT d.id FROM managed_service_cost_budget_alert_deliveries d
     WHERE (d.status='pending' AND d.next_at<=?) OR (d.status='running' AND d.lease_until<=?)
     ORDER BY d.next_at,d.created_at,d.id LIMIT ?`).bind(at,at,limit).all<{id:string}>();
-  const result={scanned:due.results.length,delivered:0,noSubscription:0,suppressed:0,deferred:0};
+  const result={scanned:due.results.length,delivered:0,noSubscription:0,suppressed:0,ambiguous:0,deferred:0};
   for(const candidate of due.results){
     const token=`mcadl_${crypto.randomUUID()}`;
     const claimed=await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries
@@ -256,15 +256,21 @@ export async function sweepManagedServiceCostBudgetAlertDeliveries(
         method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":row.tenant_id},
         body:JSON.stringify({channel:"web_push",space_id:row.space_id,user_id:row.user_id,
           subject:"Managed service cost threshold reached",
-          message:`${row.provider} ${row.service_id} recorded ${formatCostMicros(row.observed_provider_cost_micros)} ${row.currency} over 30 days, reaching the configured ${formatCostMicros(row.limit_provider_cost_micros)} ${row.currency} threshold.`}),
+          message:`${row.provider} ${row.service_id} recorded ${formatCostMicros(row.observed_provider_cost_micros)} ${row.currency} over 30 days, reaching the configured ${formatCostMicros(row.limit_provider_cost_micros)} ${row.currency} threshold.`,
+          notification_id:`managed-cost-alert:${row.id}`}),
       }));
-      const body=await readBoundedResponseJson<{delivered?:unknown;reason?:unknown}>(response,8_192)
-        .catch(()=>({} as {delivered?:unknown;reason?:unknown}));
+      const body=await readBoundedResponseJson<{delivered?:unknown;reason?:unknown;outcome?:unknown}>(response,8_192)
+        .catch(()=>({} as {delivered?:unknown;reason?:unknown;outcome?:unknown}));
       if(response.ok&&body.delivered===true){
         const saved=await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries SET status='delivered',lease_token=NULL,
           lease_until=NULL,last_error=NULL,delivered_at=?,updated_at=? WHERE id=? AND lease_token=?`)
           .bind(at,at,row.id,token).run();
         if(saved.meta.changes)result.delivered++;else result.deferred++;
+      }else if(body.outcome==="attempt_ambiguous"){
+        await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries SET status='ambiguous',lease_token=NULL,lease_until=NULL,
+          last_error='notification_outcome_ambiguous',updated_at=? WHERE id=? AND lease_token=?`)
+          .bind(at,row.id,token).run();
+        result.ambiguous++;
       }else if(response.status===404||response.status===403||(response.status>=400&&response.status<500&&response.status!==408&&response.status!==429)){
         const terminal=response.status===404?"no_subscription":"suppressed";
         await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries SET status=?,lease_token=NULL,lease_until=NULL,

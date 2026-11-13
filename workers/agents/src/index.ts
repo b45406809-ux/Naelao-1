@@ -9319,6 +9319,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
   {
     let cursor = "";
     const now = Date.now();
+    const runDay = new Date(now).toISOString().slice(0, 10);
     for (;;) {
       const { results: rootRows } = await env.PLATFORM_DB.prepare(
         `SELECT id, tenant_id, config_json, last_digest_sent_at
@@ -9338,7 +9339,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
         if (!enabled) continue;
         const lastSentMs = row.last_digest_sent_at ? Date.parse(row.last_digest_sent_at) : 0;
         if (now - lastSentMs < 24 * 60 * 60 * 1000) continue; // not due yet
-        messages.push({ body: { kind: "daily_digest", spaceId: row.id, tenantId: row.tenant_id } });
+        messages.push({ body: { kind: "daily_digest", spaceId: row.id, tenantId: row.tenant_id, runDay } });
       }
       totalEnumerated += rootRows.length;
       if (rootRows.length < AGENT_TICKS_PAGE_SIZE) break;
@@ -9434,11 +9435,15 @@ async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, te
     if (!contact.found || !contact.email) return;
 
     for (const n of data) {
-      await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+      const delivery = await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-        body: JSON.stringify({ channel: "email", space_id: spaceId, to: contact.email, subject: n.title, body: n.body }),
+        body: JSON.stringify({ channel: "email", space_id: spaceId, to: contact.email, subject: n.title, body: n.body,
+          notification_id: `space-notification:${n.id}` }),
       }));
+      const result = await readBoundedResponseJson<{ accepted?: unknown; outcome?: unknown }>(delivery, 8_192)
+        .catch(() => ({} as { accepted?: unknown; outcome?: unknown }));
+      if (!delivery.ok || result.accepted !== true || result.outcome !== "provider_accepted") continue;
       await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/notifications`, {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
@@ -9602,6 +9607,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
     case "daily_digest": {
       if (wakePolicy.airGappedOnly) return;
       if (!env.NOTIFICATIONS_WORKER) return; // do not mark a digest sent when delivery is unwired
+      const runDay = msg.runDay ?? new Date().toISOString().slice(0, 10);
       // Tier 2/3 follow-up: a proactive daily digest email. Advances last_digest_sent_at FIRST
       // (before the email even sends) — at-least-once delivery means this message could be
       // redelivered, and it's much better to occasionally SKIP a digest on a redelivery race than
@@ -9676,6 +9682,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
             to: email,
             subject: "Your daily agent activity digest",
             body: lines.join("\n"),
+            notification_id: `daily-digest:${msg.spaceId}:${runDay}`,
           }),
         }));
         if (!delivery.ok) throw new Error(`daily_digest_delivery_failed:${delivery.status}`);
@@ -9860,7 +9867,7 @@ export default {
           return {alerts,deliveries};
         }).then(result=>{
           if(result.alerts.alertsCreated||result.alerts.thresholdsReset||result.alerts.deferred
-            ||result.deliveries.delivered||result.deliveries.noSubscription||result.deliveries.suppressed||result.deliveries.deferred)
+            ||result.deliveries.delivered||result.deliveries.noSubscription||result.deliveries.suppressed||result.deliveries.ambiguous||result.deliveries.deferred)
             console.log("managed_service_cost_budget_alerts_reconciled",result);
         }).catch(()=>{console.warn("Managed service cost-budget alert sweep postponed");}));
       _ctx.waitUntil(sweepPendingProviderEventRuns(env).catch(()=>{console.warn("Pending provider event wake sweep postponed");}));

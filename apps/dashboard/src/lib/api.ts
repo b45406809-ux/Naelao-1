@@ -397,7 +397,7 @@ export async function getBillingDunningNotificationAttempts(): Promise<BillingDu
 
 export interface BillingNotificationDelivery {
   notification_id: string;
-  channel: "email" | "in_app" | "webhook" | "push" | "web_push";
+  channel: string;
   provider: string;
   outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
   attempt_count: number;
