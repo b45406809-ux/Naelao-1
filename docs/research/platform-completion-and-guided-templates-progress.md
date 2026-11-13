@@ -2,6 +2,18 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after §10 project coordination lifecycle code `1b9146f1` was pushed to
+`origin/Mcbt5s-Backup-2`. Conditional request creation now checks that the target card remains
+published in the same D1 batch; unpublishing withdraws pending incoming proposals/events and policy
+state, while retaining accepted requests. Project archival retires all linked coordination state
+before workspace cleanup and returns a retryable error if that D1 batch fails. Focused Spaces
+coordination/deletion/pagination tests pass **8/8**, Spaces typecheck and `git diff --check` pass.
+These are local SQLite/Worker mocks; deployed D1, cross-service recovery and live acceptance are
+unverified. §10 is PARTIAL for broader policy, privacy, ownership/extension lifecycle, reservations,
+expiry, concurrency and non-disclosure scenarios. Exact next task: trace extension disable/transfer/
+uninstall and project membership/access-revocation callers against this retirement path; implement
+the next independently supported lifecycle link without inventing sharing or retention policy.
+
 Updated 2026-11-13 after §9.5 signed phone-handler candidate discovery code `881c1d1a` was pushed to
 `origin/Mcbt5s-Backup-2`. The owner phone dashboard now selects a handler only from active,
 correctly scoped installations whose publisher signature and complete package bytes match the release

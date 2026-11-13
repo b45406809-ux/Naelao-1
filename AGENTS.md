@@ -2,16 +2,26 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): phone-handler candidate discovery code `881c1d1a` is
-pushed to `origin/Mcbt5s-Backup-2`. Owner phone status lists only active, correctly scoped phone
-installations whose publisher signature and complete artifact set still verify; the panel selects and
-fills the exact handler digest, then requests explicit owner confirmation. SpaceDO listing supports
-Project and SPACE_SHARED installations, and assignment repeats the runtime admission check. Local
-evidence: Agents phone suite **34/34**, Spaces extension runtime suite **22/22**, Agents/Spaces/Shell
-typechecks, `git diff --check`. These are local mocks; no deployed Space or real provider call ran.
-Exact next task: continue §10.2 by tracing private-project visibility, publication and request-to-use
-callers against the audience-filtered coordination registry; implement the next independent host-side
-lifecycle gap without inventing sharing or uniqueness policy.
+Current continuation checkpoint (2026-11-13): §10 project coordination lifecycle code `1b9146f1` is
+pushed to `origin/Mcbt5s-Backup-2`. New requests are inserted only while the target card remains
+published; unpublishing atomically removes the card, its policies and pending incoming requests/events;
+project archival retires all project-linked coordination state before workspace cleanup. A failed D1
+retirement leaves the project archived, returns a retryable 503 and does not start workspace cleanup.
+Accepted requests are retained when a card is merely unpublished and removed when either project is
+archived. Local evidence: focused Spaces coordination/deletion/pagination tests **8/8**, Spaces
+typecheck and `git diff --check`; these use local SQLite/Worker mocks, not deployed D1. Code does not
+resolve broader retention, sharing, uniqueness or cross-service transaction policy.
+Exact next task: trace extension disable/transfer/uninstall and project membership/access-revocation
+callers against the new retirement path; implement the next independently supported lifecycle link,
+then continue the remaining §10 policy and request-to-use contract without inventing defaults.
+
+Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
+lists only active, correctly scoped phone installations whose publisher signature and complete
+artifact set still verify; the panel selects and fills the exact handler digest, then requests explicit
+owner confirmation. SpaceDO listing supports Project and SPACE_SHARED installations, and assignment
+repeats the runtime admission check. Local evidence: Agents phone suite **34/34**, Spaces extension
+runtime suite **22/22**, Agents/Spaces/Shell typechecks, `git diff --check`. These are local mocks; no
+deployed Space or real provider call ran.
 
 P01/P02 remain PARTIAL: distinct D1/KV resources, resolved `naelao-calls` ownership, read-only resource
 existence receipts, per-environment operator-attested migration baselines and isolated/deployed

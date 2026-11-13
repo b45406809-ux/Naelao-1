@@ -2,6 +2,27 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §10 project coordination lifecycle `1b9146f1` pushed)
+
+- New request-to-use rows and pending events are inserted only if the target remains published at
+  the atomic D1 batch boundary. Unpublishing removes the card, sharing/policy state and pending
+  requests/events aimed at that card; accepted request history remains. Project archival removes all
+  project-linked requests, events, cards and policy state before workspace cleanup. A D1 failure
+  reports `project_coordination_cleanup_unavailable` with `archived:true` and stops workspace cleanup
+  so the idempotent batch can be retried.
+- Code `1b9146f1` is pushed to `origin/Mcbt5s-Backup-2`. Focused Spaces coordination, deletion and
+  pagination tests pass **8/8**; Spaces typecheck and `git diff --check` pass. Evidence is local SQLite
+  and Worker mocks only. No deployed D1, workspace provider cleanup or live acceptance ran.
+- §10 remains PARTIAL: collaboration defaults and authority, private-project publication approval,
+  request-to-use decisions, extension ownership/dependency/transfer lifecycle, expiry, reservations,
+  concurrency and broad non-disclosure acceptance are not closed by this slice. Accepted request
+  retention after unpublishing is current behavior, not an approved retention policy.
+- S2–S9/U01–U12 remains reconciled, with unsupported U05/U06 runtime contracts, product/legal choices,
+  external receipts/feeds and deployed/live evidence still distinct. No rollout was enabled.
+- Exact next task: trace extension disable/transfer/uninstall and project membership/access-revocation
+  callers against the new retirement path; implement the next source-supported lifecycle link, then
+  continue remaining §10 policy and request-to-use gaps. Preserve `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; §9.5 signed phone-handler candidates `881c1d1a` pushed)
 
 - Owner phone status now returns active phone-channel installations for the exact Project or Space
