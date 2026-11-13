@@ -2,28 +2,11 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `c68725bd980f03a5d22362959d84a38d01de5cb3` was pushed and fetch-
-confirmed on `origin/Mcbt5s-Backup-2`. P24 now has signed exact dependency pins, transitive trusted
-same-Space/project resolution, install/rollback/activation/runtime rechecks, and protection against
-removing a needed pin. Catalog and update review show dependency pins. `c68725bd` also resumes an exact
-staged Space-shared package after a lost response, preserving prior grants and retrying app
-initialization and activation with the stable installation ID. Existing signed release/installation
-records persist state; no migration was needed.
+Updated 2026-11-13 after code `5f94c924b926794837a47d8ad4b592fed54f7b20` was pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`. P24's owner review verifies the exact requested release and complete transitive closure, including publisher/key, manifest digest, permissions, capabilities, connections, folder requests and install state. A five-minute HMAC receipt binds actor, Space, root release, dependency pins and approved root grants. One explicit install action installs missing signed dependencies in order before the requested package. Per-package SpaceDO staging/activation and stable installation IDs support partial progress and idempotent retry; dependencies receive no shared-folder grants by default. No schema migration was needed.
 
-Local/mock evidence: latest signed-package suite **9/9**, Spaces typecheck and `git diff --check`; the
-dependency checkpoint passed SDK **31/31**, Spaces focused suites **66/66**, and SDK/Spaces/Shell
-typechecks. No deployment, provider, publisher submission or live acceptance was exercised. P10/P24
-remain PARTIAL: dependency fetch/installation, complete owner review of dependency publisher/access
-changes, multi-package retry recovery, update application/schema migration and active-work drain remain
-uncoded. Cross-Space artifact restore, publisher compromise notice, scanning and retention policy also
-remain open. These are ordinary implementation or contract gaps, not credential blockers. §9.5/P06
-remains PARTIAL; the phone dashboard and synthetic handler preview do not provide conversational
-voice-agent lifecycle. Rollouts remain disabled.
+Local/mock evidence: six focused Spaces suites **71/71**, package closure/recovery suite **10/10**, SDK dependency tests **31/31**, Spaces/Shell typechecks and `git diff --check`. The failure-injection journey proves a dependency stays active after a root initialization failure, retry reuses it, and the root reaches the same stable installation ID. No deployment, publisher submission, provider or live acceptance occurred. P24 remains PARTIAL for cross-Space archive restore, update/schema migration, active-work drain, publisher compromise notices, scanning and artifact retention/purge rules. These are code or policy gaps, not credential blockers. Authorized deployed Space/D1/R2 restore acceptance was not performed. P10 and §9.5 remain PARTIAL; voice keypad/simulation surfaces do not provide the conversational voice-agent lifecycle. Rollouts remain disabled.
 
-Exact next action: add a read-only owner review of every exact dependency release, publisher,
-permission and capability; require explicit approval before adding packages. Then implement resumable,
-idempotent multi-package installation and lost-response recovery. Keep update apply and rollout disabled.
-
+Exact next action: trace Space archive/export/restore callers for signed extension manifests, exact dependency pins and artifact bytes; implement scoped cross-Space restore with publisher/signature/artifact verification, durable partial retry, and runtime fail-closed behavior for missing/revoked artifacts. Continue release/update and guided-template gaps after that.
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
 packages can declare bounded text attachment access, which requires explicit owner/admin approval.
@@ -734,7 +717,7 @@ resources/licenses and retained receipts, complete usage/provider/runtime rates,
 end-to-end live acceptance. Unknown rates remain unknown; these are not credential-only gaps. No
 deployed Marketplace, DB, payment or provider acceptance is claimed.
 
-### P24 — publisher and package trust: PARTIAL, scoped rollback and key-registry checks implemented
+### Prior P24 checkpoint (before `5f94c924`): scoped rollback and key-registry checks implemented
 
 Code `415ba199` applies the current D1 publisher-key registry to installed pins, release listing,
 blueprint export/preview/activation, workflow/channel execution admission and rollback. SpaceDO
@@ -755,13 +738,10 @@ install retry returning the same installation ID; Spaces and Shell typechecks pa
 mocked/local checks only. No deployed Worker, R2 artifact, D1 key registry or provider acceptance was
 tested.
 
-P24 remains partial. Extension manifests have no transitive dependency declaration/resolver or
-conflict graph; a blueprint activation checks exact installed pins but does not copy extension
-artifacts into a new Space. End-to-end Worker/R2 lost-response recovery is not covered by the local
-DO retry test. Key compromise notification, automated rotation, supply-chain scanning and uninstall
-artifact retention/purge rules are absent. Revocation blocks new admissions, but no drain/termination
-receipt exists for already-running executions; currently admitted work may continue. These are code
-or product/runtime gaps, not credential blockers.
+At that checkpoint P24 remained partial: extension manifests had no transitive dependency resolver,
+cross-Space restore, end-to-end Worker/R2 lost-response recovery, compromise notice, scanning,
+retention or active-work drain. The current state and the dependency/retry work since then are recorded
+at the top of this ledger; this section is retained as historical evidence, not current status.
 
 ## Current status index for P01–P24
 
@@ -795,7 +775,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Signed installed-release checks, scoped rollback and key registry exist; dependency closure, cross-Space restore, active-work drain and compromise handling remain. |
+| P24 | PARTIAL | Exact signed dependency closure, owner review, receipt-gated multi-package install and retry recovery are local in `5f94c924`; cross-Space restore, update/schema migration, active-work drain, compromise response, scanning, retention and live acceptance remain. |
 
 ## Requirement queue
 
@@ -820,9 +800,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
    non-ephemeral retrieval and live provider acceptance remain partial. P17's direct catalog, license
    status, return URL and Shell category-selection gaps are committed; preserve its cross-origin
-   identity/install handoff and P20 accounting policy as open. P24's scoped rollback/current-key
-   checks are committed but transitive dependencies, cross-Space artifact restore, active-work drain,
-   key compromise notice, scanning and package retention rules remain open. P15's indexed path is
+   identity/install handoff and P20 accounting policy as open. P24's exact dependency closure, owner review and resumable receipt-gated multi-package install are
+   implemented locally in `5f94c924`; cross-Space artifact restore, update/schema migration, active-work
+   drain, key compromise notice, scanning and package retention rules remain open. The next task is the
+   signed artifact restore path recorded at the top of this ledger. P15's indexed path is
    implemented; realistic private-member density and task-quality evidence remain open. Reuse the
    S/U ledgers for overlapping requirements and do not repeat completed audits without a source
    change or specific evidence need.

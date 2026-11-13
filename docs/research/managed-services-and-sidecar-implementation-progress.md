@@ -2,30 +2,13 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; dependency closure and staged-install recovery `c68725bd980f03a5d22362959d84a38d01de5cb3` pushed)
+### Active continuation (2026-11-13; dependency review and resumable closure install `5f94c924` pushed)
 
-- Code `c68725bd980f03a5d22362959d84a38d01de5cb3` is pushed to `origin/Mcbt5s-Backup-2` and fetch-
-  confirmed. Prior code `2546fd1c` added signed exact dependency pins, transitive version/digest
-  resolution against active trusted same-Space/project installations, cycle/conflict/missing-pin
-  checks, install/rollback/activation rechecks, runtime gates for workflow, Canvas/Gadget, channel and
-  phone-settings callers, removal protection for needed pins, and catalog/update-review pin display.
-  `c68725bd` adds single-package lost-response recovery: a matching deterministic staged Space-shared
-  install retries initialization and activation with its stable ID and previously approved grants;
-  different pins and disabled installs remain blocked. The existing signed manifest/release and
-  installation records persist the pins and recovery state; no migration was needed.
-- Local evidence: latest signed-package suite **9/9**, Spaces typecheck and `git diff --check`. The
-  dependency checkpoint passed SDK **31/31**, Spaces focused suites **66/66**, SDK/Spaces/Shell
-  typechecks. No deployed DB, publisher submission, provider, deployment or live acceptance occurred.
-  Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
-- P24 remains PARTIAL. Missing dependency fetching/installation, full owner review of every dependency
-  publisher/access change, multi-package partial-install recovery, update apply/migration, active-work
-  drain, cross-Space artifact restore, compromise notices, scanning and retention policy are still
-  uncoded or contract-limited; none is credential-blocked. S2–S9/U01–U12 statuses remain as previously
-  reconciled. No live external blocker was exercised in this checkpoint.
-- Exact next action: add a read-only owner review of every exact dependency release, publisher,
-  permission and capability; require explicit approval before adding packages. Then implement resumable,
-  idempotent multi-package installation and lost-response recovery. Keep update apply and rollout disabled.
-
+- Code `5f94c924b926794837a47d8ad4b592fed54f7b20` is pushed to `origin/Mcbt5s-Backup-2`; a post-push fetch confirmed the same SHA. It extends `2546fd1c`'s exact signed dependency closure and `c68725bd`'s staged single-package recovery.
+- The admin-only read-only review verifies each exact release's publisher key, manifest digest, signature/artifact digest, permissions, capabilities, connections and dependency state. Its five-minute HMAC receipt binds tenant, Space, actor, root release, transitive pins and approved root filesystem grants. A single explicit install action adds missing dependencies in topological order before the requested package. Dependencies receive no shared-folder grants by default. Per-package SpaceDO installation rows persist stage/activation state and stable IDs; partial progress is returned, retries skip active exact pins, and matching staged work resumes idempotently. No migration was needed.
+- Local evidence: six focused Spaces runtime/install suites **71/71**, package review/installation suite **10/10** (including invalid receipt, publisher/artifact checks, partial initialization failure, resume, idempotency and paused dependency), SDK dependency tests **31/31**, Spaces/Shell typechecks and `git diff --check`. These are Worker/SQLite/R2 mocks only. No deployed DB, publisher submission, provider, deployment or live acceptance occurred. Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+- P24 remains PARTIAL. Cross-Space archive restoration of exact signed manifests and artifact bytes, update/schema migration, active-work drain, publisher compromise notices, supply-chain scanning and artifact retention/purge rules remain. These are implementation or policy gaps, not credential blockers. Live restore acceptance needs authorized deployed Space/D1/R2 resources; none was accessed. S2–S9/U01–U12 statuses are otherwise unchanged.
+- Exact next action: trace Space archive/export/restore callers for signed extension manifests, dependency pins and artifact bytes; implement scoped cross-Space restoration with digest/signature/key checks, durable partial retry and fail-closed runtime admission. Then continue remaining release/update and guided-template gaps without enabling update apply or rollout.
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 
 - Code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` is pushed to `origin/Mcbt5s-Backup-2` after
