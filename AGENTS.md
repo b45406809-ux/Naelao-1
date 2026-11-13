@@ -2,27 +2,31 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §10 coordination-audience code `9ec259ba` is pushed to
-`origin/Mcbt5s-Backup-2`. Migration 119 preserves prior facts as schema v1 with their `space_members`
-audience; the v2 SDK, authenticated gateway, Router allowlist and Shell Settings support explicit
-`space_members` or narrower `space_admins` visibility. The SpaceDO filters rows in SQL before applying
-keyset limits and binds v2 cursors to the reader's audience class. Actor/approver IDs remain excluded
-from member results, and facts remain advisory only. Local evidence: SDK tests **4/4**, SpaceDO
-registry/migration/gateway tests **15/15**, Router route tests **45/45**, SDK/Spaces/Router/Shell
-typechecks and `git diff --check`. No deployed multi-user privacy test or live acceptance ran.
-§10 remains PARTIAL for broader configurable collaboration policy, project publication/request-to-use,
-ownership and lifecycle linkage, singleton reservations, concurrency and side-channel acceptance.
+Current continuation checkpoint (2026-11-13): P01 release-safety code `e68a8f4c` is pushed to
+`origin/Mcbt5s-Backup-2`. Both staging and production preflight now run the existing durable D1
+migration-runner interruption/concurrency suite, and the deployment-manifest validator requires that
+test to remain inside each preflight. Local evidence: runner **11/11**, deployment-manifest tests
+**8/8**, manifest validator passes and `git diff --check`. No remote D1, workflow deployment or live
+health probe ran. P01 remains PARTIAL pending operator-attested per-database baselines, distinct real
+environment resources, existence/ownership receipts, and isolated/deployed acceptance.
+
+The prior §10 audience code `9ec259ba` is also pushed. Migration 119 preserves prior facts as schema
+v1 with `space_members`; v2 SDK, gateway, Router and Shell support explicit `space_members` or narrower
+`space_admins` visibility. SQL filters before keyset limits and v2 cursors bind to audience class.
+Local evidence: SDK **4/4**, Spaces registry/migration/gateway **15/15**, Router **45/45**, SDK/Spaces/
+Router/Shell typechecks. §10 remains PARTIAL for broader collaboration policy, project publication/
+request-to-use, ownership/lifecycle links, singleton reservations, concurrency and broad side-channel
+acceptance. No deployed multi-user privacy test or live acceptance ran.
 
 The S2–S9/U01–U12 source/caller matrix is reconciled, not declared fully complete or accepted live.
 S2 is IMPLEMENTED_LOCAL for currently supported lanes; partial rows retain their named unsupported
 runtime/provider contracts, missing external feeds, product/legal decisions, external evidence or
 deployed/live acceptance. Keep U05/U06 live runtime disabled; their trusted allocation/observation
 producer and pinned writer-admission/drain/handoff contract are not credential blockers. Preserve the
-untracked `infra/scripts/__pycache__/`. Exact next task: resume platform §1 P01/P02 release and
-environment safety by comparing the current durable migration runner and rendered-resource preflight
-with the integrated plan; close an independent local code gap while retaining fail-closed gates for
-operator-attested D1 baselines, distinct real resources, ownership/existence receipts and deployed
-acceptance. Then continue commercial integrity/recovery before template, voice and Shared-Space gaps.
+untracked `infra/scripts/__pycache__/`. Exact next task: continue P02 resource isolation by reviewing
+the existing rendered-resource receipt/preflight contract for one independent local gap; preserve
+fail-closed behavior and do not guess resource IDs, service ownership or external receipts. Then
+continue commercial integrity/recovery before guided templates, voice and Shared-Space gaps.
 Do not deploy, buy services, reset, clean, switch branches or force-push.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable

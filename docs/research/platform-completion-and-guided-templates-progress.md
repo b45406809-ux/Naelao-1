@@ -2,18 +2,22 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after §10 audience code `9ec259ba` was pushed to
-`origin/Mcbt5s-Backup-2`. Migration 119 preserves all prior entries as schema v1 and adds an explicit
-audience field. The v2 SDK, owner/admin preview/publish/revoke routes, product-session Router paths and
-Shell panel allow an owner to disclose a fact to all active members or only Space owners/admins. The
-host SQL filters before keyset limits; audience-class-bound cursors prevent reuse across a downgrade.
-Local/mock evidence: SDK **4/4**, Spaces registry/migration/gateway **15/15**, Router paths **45/45**,
-SDK/Spaces/Router/Shell typechecks and `git diff --check`. No deployed multi-user non-disclosure or
-live acceptance was run. §10 remains PARTIAL for configurable policy, private-project publication,
-service ownership/lifecycle linkage, request-to-use, reservations/concurrency and broad side-channel
-acceptance. Exact next action: continue at §1 P01/P02 release and environment safety; inspect the
-durable migration runner and rendered-resource preflight against current source, close an independent
-local fail-closed gap, and preserve external evidence gates before commercial and recovery work.
+Updated 2026-11-13 after P01 test-gate code `e68a8f4c` was pushed to
+`origin/Mcbt5s-Backup-2`. Staging and production preflight now run the durable D1 migration runner's
+interruption, lock, ledger and required-schema tests. The deployment-manifest validator enforces that
+the suite remains inside each preflight. Local evidence: runner **11/11**, deployment-manifest tests
+**8/8**, validator passes and `git diff --check`. No remote D1, deployment workflow or live health
+probe ran. P01 remains PARTIAL for per-database operator-attested baselines, real resource separation,
+fresh ownership/existence receipts and isolated/deployed acceptance. Exact next action: inspect P02's
+current rendered-resource receipt/preflight boundary for one remaining independent code gap; retain
+the external Cloudflare ID/ownership/receipt gates and do not invent resource facts. Then continue P03/
+P20 commercial integrity and P04 recovery before guided templates, voice dashboards and Shared-Space
+gaps.
+
+Prior §10 audience code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Migration 119 preserves the
+legacy member audience and the v2 flow supports an explicit member or owners/admins audience, with
+SQL filtering before pagination and audience-class-bound cursors. Local/mock evidence and remaining
+§10 policy/lifecycle/concurrency/non-disclosure limits are in the managed-services progress record.
 
 Updated 2026-11-13 after §5 installation receipt/status code `5c7ba416` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 118 pins selected Marketplace listing and setup schema version

@@ -2,14 +2,21 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; §10 coordination audience `9ec259ba` pushed)
+### Active continuation (2026-11-13; P01 durable runner test gate `e68a8f4c` pushed)
+
+- Both staging and production deployment preflights now execute `test_release_migrations.py`, which exercises durable lock exclusion, atomic interruption recovery, checksum ledger validation and required-schema probes using a local D1 substitute. The deployment-manifest validator checks that the runner suite remains in each preflight, and its regression tests reject removal from either environment or moving the test outside preflight.
+- Code `e68a8f4c` is pushed to `origin/Mcbt5s-Backup-2`. Local evidence: migration runner **11/11**, deployment-manifest validator tests **8/8**, deployment-manifest validation passes, and `git diff --check`. No real D1, GitHub release workflow, deployment or health probe ran.
+- P01 remains PARTIAL for absent operator-attested D1 baselines, actual resource separation/ownership receipts and isolated/deployed acceptance. The runner already fails closed on missing baseline, serializes mutation, records per-file checksums, resumes only under the stored execution owner, retains the lock/error after failure, and checks the required schema; do not repeat that source audit absent a changed contract.
+- The immediately prior §10 code checkpoint `9ec259ba` is pushed and recorded below. S2–S9/U01–U12 remains reconciled but not fully implemented/live accepted; preserve every named unsupported contract, policy decision, external feed and acceptance gate. Rollout flags stay disabled; preserve `infra/scripts/__pycache__/`.
+- Exact next task: continue P02 resource isolation at the rendered-resource receipt/preflight boundary. Inspect only that current contract and close a concrete local validator/caller gap if present; keep fail-closed behavior for actual Cloudflare IDs, service ownership and fresh read-only receipts. Then proceed to commercial integrity and recovery.
+
+### Prior checkpoint (2026-11-13; §10 coordination audience `9ec259ba` pushed)
 
 - SpaceDO migration 119 rebuilds the advisory fact table with `schema_version` and the bounded audience enum. It copies every existing entry as v1 and preserves the existing `space_members` audience. The typed SDK and authenticated Spaces v2 routes support explicitly selected all-member or owners/admins visibility; Router product-session allowlists reach list, preview, publish and revoke. Shell Settings previews the exact audience and requires owner/admin confirmation.
 - Audience filtering occurs in the host-side SQL predicate before keyset `LIMIT`; v2 continuation cursors carry the authorized audience class so an owner/admin cursor is not accepted after a role downgrades. The legacy route remains v1-only. V2 revocation can act on legacy and v2 facts, while the v1 revoke path cannot mutate v2 entries. Member results omit actor and approver IDs; the fact remains advisory and does not grant service access.
 - Code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Local/mock evidence: SDK coordination **4/4**, Spaces registry/migration/gateway **15/15**, Router product paths **45/45**, SDK/Spaces/Router/Shell typechecks, and `git diff --check`. No deployed multi-user, browser, production database or live acceptance occurred.
 - §10 remains PARTIAL for collaboration posture and template defaults, private-project publication/proposal and request-to-use, role-filtered assistant discovery, ownership/dependency/lifecycle reconciliation, expiry, uniqueness reservations/concurrency and broad side-channel testing. Do not imply an admin-only fact is invisible to administrators or that advisory facts enforce uniqueness.
 - S2–S9/U01–U12 remains reconciled but not fully implemented/live accepted; preserve the matrix's named partial unsupported runtime/provider contracts, policy decisions, external feeds/evidence and deployed acceptance. Rollout flags remain disabled; preserve the untracked `infra/scripts/__pycache__/`.
-- Exact next task: continue new-plan §1 P01/P02 by inspecting the durable migration runner and rendered-resource preflight against the current source. Implement any independent fail-closed local release-safety gap; retain gates for operator-attested D1 baselines, real environment separation, ownership/existence receipts and deployed/isolated acceptance. Then advance commercial integrity/recovery, guided-template lifecycle, voice dashboards and Shared-Space coordination in plan order.
 
 ### Active continuation (2026-11-13; §5 installation receipt/status `5c7ba416` pushed)
 
