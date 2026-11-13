@@ -991,6 +991,32 @@ describe("assistant telephone safety and lifecycle", () => {
   expect(status.extension_lines).toMatchObject([{ handler_status: "active" }]);
  });
 
+ it("migrates a retired customer voice number while Space Assistant phone is disabled", async () => {
+  const f = await phoneFixture();
+  await f.db.prepare("UPDATE assistant_phone_bindings SET status='detached' WHERE id=?").bind(f.binding.id).run();
+  const now = new Date().toISOString();
+  await f.db.prepare(`INSERT INTO customer_voice_number_bindings
+    (id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,
+     monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
+    VALUES ('legacy-line','twilio',?,?, 'tenant','space','legacy-agent',?,'US',100,'USD',?,0,'user',?,?)`)
+    .bind(account, pn, number, now, now, now).run();
+  f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")
+    ? Response.json({ effective_role: "owner" })
+    : Response.json({ preferences: { enabled: { email: true, phone: false } } }));
+
+  const result = await f.act("phone-import", {
+    number_sid: pn,
+    legacy_binding_id: "legacy-line",
+    confirm: true,
+  }) as { legacy_migrated: boolean };
+
+  expect(result.legacy_migrated).toBe(true);
+  expect(await f.db.prepare("SELECT status FROM customer_voice_number_bindings WHERE id='legacy-line'").first())
+    .toMatchObject({ status: "disabled" });
+  expect(await f.db.prepare("SELECT purpose,status FROM assistant_phone_bindings WHERE provider_number_sid=? AND status='active'")
+    .bind(pn).first()).toMatchObject({ purpose: "extension", status: "active" });
+ });
+
  it("keeps public extension voice turn-by-turn and returns only host-rendered actions", async () => {
   const f = await phoneFixture();
   const dispatchedRequests: Request[] = [];

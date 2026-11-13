@@ -1252,7 +1252,8 @@ export async function handlePhoneAction(
       )
       .run();
     try {
-      await livePhoneAllowed(env, scope);
+      if (legacyBinding) await extensionPhoneSetupAllowed(env, scope);
+      else await livePhoneAllowed(env, scope);
       const form = new URLSearchParams(callbacks);
       if (quote) form.set("PhoneNumber", quote.phone_number);
       record = await phoneProvider(
