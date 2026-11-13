@@ -39,10 +39,15 @@
   and `git diff --check`. No deployed multi-user or live acceptance ran. §10 remains PARTIAL for
   configurable posture, private-project publication/request authority, extension ownership and
   dependencies, reservation/concurrency policy, actor history and broad non-disclosure acceptance.
-- Exact next action: expose already persisted creator, approver, provenance and revocation actor fields
-  only in the authorized owner/admin lifecycle view, retaining their omission from member responses.
-  Then continue §10.1–§10.6 caller checks and remaining independent S2–S9/U01–U12 and platform-plan
-  code gaps. Preserve `infra/scripts/__pycache__/`; keep rollout disabled.
+- Code `e8f77f7f` is pushed: v2 owner/admin lifecycle reads and the Settings view now expose persisted
+  creator, approver/role, provenance and revocation actor metadata. Member responses still omit actor
+  fields. SDK/Spaces/Shell typechecks and the same focused suites above pass; these remain local mocks,
+  not deployed multi-user evidence.
+- Exact next action: add append-only metadata-only publish/amend/revoke events with actor/role,
+  prior/new version, audience and expiry; expose history only to owner/admin and show it in Settings.
+  Do not store fact labels/descriptions or project content in audit events. Then continue §10.1–§10.6
+  and remaining independent S2–S9/U01–U12 and platform-plan gaps. Preserve
+  `infra/scripts/__pycache__/`; keep rollout disabled.
 
 ### Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded)
 

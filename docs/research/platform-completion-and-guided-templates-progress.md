@@ -30,11 +30,14 @@ renews expiry and shows revocation state. No default expiry or singleton behavio
 Verification: SDK coordination **4/4**, Spaces coordination/route/migration **17/17**, SDK/Spaces/Shell
 typechecks, and `git diff --check`. These are local SDK, SQLite and Worker checks; no deployed
 multi-user or live acceptance ran. §10 remains PARTIAL for configurable posture, private-project
-publication/request authority, extension ownership/dependencies, reservations, concurrency, audit
-history and broad non-disclosure acceptance. Exact next action: expose persisted creator, approver,
-provenance and revocation actor metadata only to owner/admin lifecycle reads and the Settings view,
-with member responses still omitting those fields. Continue the remaining §10 requirements and the
-uncoded S2–S9/U01–U12 and platform-plan code gaps. Rollouts remain disabled.
+publication/request authority, extension ownership/dependencies, reservations, concurrency, durable
+audit history and broad non-disclosure acceptance. Code `e8f77f7f` exposes persisted creator,
+approver, approval role, provenance and revocation actor only to owner/admin v2 reads and the Settings
+lifecycle view; member responses omit these fields. Exact next action: persist append-only
+metadata-only publish/amend/revoke events with actor/role, prior/new version, audience and expiry;
+provide owner/admin history reads and a Settings view without storing labels/descriptions or project
+content. Continue the remaining §10 requirements and uncoded S2–S9/U01–U12 and platform-plan code
+gaps. Rollouts remain disabled.
 
 Prior checkpoint (2026-11-13; keypad simulator path verified; next action superseded): the prior local keypad simulator gap was already implemented in
 `AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.

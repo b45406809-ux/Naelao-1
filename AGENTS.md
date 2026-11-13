@@ -41,11 +41,14 @@ filtered from audience reads, owners/admins can review expired/revoked records, 
 an expired fact through the confirmed expected-version edit. No default expiry or singleton policy was
 introduced. Local verification: SDK coordination **4/4**, Spaces coordination/route/migration
 **17/17**, SDK/Spaces/Shell typechecks, and `git diff --check`. These are local SQLite/Worker checks;
-no deployed multi-user or live acceptance ran. §10 remains PARTIAL. Exact next action: expose the
-already persisted creator, approver, provenance and revocation actor fields only in the authorized
-owner/admin lifecycle view, keep them absent from member responses, and verify the route/DO/UI boundary.
-Then continue §10.1–§10.6 against actual callers and resume remaining S2–S9/U01–U12 code gaps. Keep
-cross-tenant seller
+no deployed multi-user or live acceptance ran. Code `e8f77f7f` is pushed and exposes the persisted
+creator, approver, approval role, provenance and revocation actor only in authenticated owner/admin v2
+responses and the Settings lifecycle view. Member list responses continue to omit actor metadata.
+Verification remains SDK coordination **4/4**, Spaces coordination/route/migration **17/17**, and
+SDK/Spaces/Shell typechecks; local mocks only. Exact next action: persist append-only metadata-only
+audit events for publish/amend/revoke, recording actor/role, action, prior/new version, audience and
+expiry without storing labels/descriptions; add an owner/admin history read and Settings history view,
+then continue §10.1–§10.6 and remaining S2–S9/U01–U12 code gaps. Keep cross-tenant seller
 artifacts gated, rollouts disabled, and preserve `infra/scripts/__pycache__/`.
 
 Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
