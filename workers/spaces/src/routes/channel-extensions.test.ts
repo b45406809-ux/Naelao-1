@@ -91,13 +91,12 @@ describe("project channel-only extension install route", () => {
     const stub = {
       fetch: vi.fn(async (request: Request) => {
         forwarded.push(request);
-        if (
-          new URL(request.url).pathname ===
-          "/projects/project-a/automation-access"
-        )
+        const path = new URL(request.url).pathname;
+        if (path === "/projects/project-a/automation-access")
           return role === "owner"
             ? Response.json({ project_id: "project-a", can_manage: true })
             : Response.json({ error_code: "forbidden" }, { status: 403 });
+        if (path === "/extension-installations") return Response.json({ installations: [] });
         return Response.json(
           {
             installed: true,
@@ -186,6 +185,15 @@ describe("project channel-only extension install route", () => {
       gatekeeperCapabilities: ["channel.invoke"],
       manifest: { bundle: { id: "ext_trading_mentor" } },
     });
+  });
+
+  it("does not stage a channel package when an exact dependency pin is missing", async () => {
+    const h = setup("owner");
+    const manifest = packageManifest({ dependencies: [{ extensionId: "ext_calendar", version: "1.4.0", manifestSha256: "d".repeat(64) }] });
+    const response = await post(h.env, "owner", manifest);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "extension_dependency_unresolved" });
+    expect(h.forwarded.some(request => new URL(request.url).pathname === "/extensions")).toBe(false);
   });
 
   it("requires an owner-visible explicit approval for scoped attachment text access", async () => {

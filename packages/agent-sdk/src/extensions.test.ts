@@ -1,9 +1,59 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
+import { digestExtensionManifest, isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, resolveExtensionDependencyClosure,
+  validateExtensionManifest, validateExtensionSettingsValues } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
+  it("validates and canonicalizes exact dependency pins", () => {
+    const manifest = validateExtensionManifest({ ...valid, dependencies: [
+      { extensionId: "ext_zeta", version: "2.1.0", manifestSha256: "b".repeat(64) },
+      { extensionId: "ext_alpha", version: "1.0.0-rc.1", manifestSha256: "a".repeat(64) },
+    ] });
+    expect(manifest.dependencies?.map(item => item.extensionId)).toEqual(["ext_alpha", "ext_zeta"]);
+    expect(() => validateExtensionManifest({ ...valid, dependencies: [{ extensionId: "ext_safe", version: "1.0.0", manifestSha256: "a".repeat(64) }] }))
+      .toThrow("duplicate_or_self_dependency");
+    expect(() => validateExtensionManifest({ ...valid, dependencies: [
+      { extensionId: "ext_alpha", version: "1.0.0", manifestSha256: "a".repeat(64) },
+      { extensionId: "ext_alpha", version: "2.0.0", manifestSha256: "b".repeat(64) },
+    ] })).toThrow("duplicate_or_self_dependency");
+    expect(() => validateExtensionManifest({ ...valid, dependencies: [{ extensionId: "ext_alpha", version: "latest", manifestSha256: "a".repeat(64) }] }))
+      .toThrow("invalid_dependency_version");
+    expect(() => validateExtensionManifest({ ...valid, dependencies: [{ extensionId: "ext_alpha", version: "1.0.0", manifestSha256: "invalid" }] }))
+      .toThrow("invalid_dependency_manifest_digest");
+  });
+  it("resolves exact same-scope dependency closure and rejects missing pins, cycles, and transitive conflicts", async () => {
+    const released = (id: string, version: string, dependencies: unknown[] = []) => validateExtensionManifest({
+      id, type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id, version, primitives: [] }, dependencies,
+    });
+    const leafV1 = released("ext_leaf", "1.0.0"), leafV2 = released("ext_leaf", "2.0.0");
+    const leafV1Digest = await digestExtensionManifest(leafV1), leafV2Digest = await digestExtensionManifest(leafV2);
+    const middle = released("ext_middle", "1.0.0", [{ extensionId: "ext_leaf", version: "1.0.0", manifestSha256: leafV1Digest }]);
+    const middleDigest = await digestExtensionManifest(middle);
+    const root = released("ext_root", "1.0.0", [{ extensionId: "ext_middle", version: "1.0.0", manifestSha256: middleDigest }]);
+    const installed = [
+      { extensionId: "ext_middle", releaseVersion: "1.0.0", manifestSha256: middleDigest, manifest: middle },
+      { extensionId: "ext_leaf", releaseVersion: "1.0.0", manifestSha256: leafV1Digest, manifest: leafV1 },
+    ];
+    await expect(resolveExtensionDependencyClosure(root, installed)).resolves.toMatchObject({ resolved: true,
+      dependencies: [{ extensionId: "ext_leaf", version: "1.0.0" }, { extensionId: "ext_middle", version: "1.0.0" }] });
+    await expect(resolveExtensionDependencyClosure(root, installed.slice(0, 1))).resolves.toMatchObject({ resolved: false, error: "dependency_unresolved" });
+    const cycleB = released("ext_cycle_b", "1.0.0", [{ extensionId: "ext_cycle_a", version: "1.0.0", manifestSha256: "c".repeat(64) }]);
+    const cycleRoot = released("ext_cycle_a", "1.0.0", [{ extensionId: "ext_cycle_b", version: "1.0.0", manifestSha256: await digestExtensionManifest(cycleB) }]);
+    await expect(resolveExtensionDependencyClosure(cycleRoot, [{ extensionId: "ext_cycle_b", releaseVersion: "1.0.0",
+      manifestSha256: await digestExtensionManifest(cycleB), manifest: cycleB }])).resolves.toMatchObject({ resolved: false, error: "dependency_cycle" });
+    const otherMiddle = released("ext_other_middle", "1.0.0", [{ extensionId: "ext_leaf", version: "2.0.0", manifestSha256: leafV2Digest }]);
+    const conflictRoot = released("ext_conflict_root", "1.0.0", [
+      { extensionId: "ext_leaf", version: "1.0.0", manifestSha256: leafV1Digest },
+      { extensionId: "ext_other_middle", version: "1.0.0", manifestSha256: await digestExtensionManifest(otherMiddle) },
+    ]);
+    await expect(resolveExtensionDependencyClosure(conflictRoot, [
+      { extensionId: "ext_leaf", releaseVersion: "1.0.0", manifestSha256: leafV1Digest, manifest: leafV1 },
+      { extensionId: "ext_leaf", releaseVersion: "2.0.0", manifestSha256: leafV2Digest, manifest: leafV2 },
+      { extensionId: "ext_other_middle", releaseVersion: "1.0.0", manifestSha256: await digestExtensionManifest(otherMiddle), manifest: otherMiddle },
+    ])).resolves.toMatchObject({ resolved: false, error: "dependency_pin_conflict" });
+  });
   it("accepts bounded branch-isolated container parallelism and rejects unsupported claims", () => {
     const container = { schemaVersion: "1.0", kind: "container", id: "media_runtime", version: "1.0.0",
       permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "container" }], capabilityRequirements: ["native-execution"], lifecycle: {},

@@ -45,7 +45,7 @@ import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
   DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupMigrationCompatibility,
-  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest,
+  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest, resolveExtensionDependencyClosure,
   type BlueprintSetupMigration, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
@@ -1478,6 +1478,36 @@ const SPACE_SHARED_PACKAGE_CAPABILITIES = new Set([
 ]);
 const SPACE_SHARED_PACKAGE_PERMISSIONS = new Set(["events.subscribe", "extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"]);
 
+type SpaceExtensionDependencyInstallRow = {
+  instance_id?: string; extension_id: string; project_id: string | null; scope: string; status: string;
+  release_version?: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean;
+  manifest_sha256?: string | null; manifest?: unknown;
+};
+async function resolveSpaceExtensionDependencies(env: Env, tenantId: string, spaceId: string,
+  manifest: ReturnType<typeof validateExtensionManifest>, scope: string, projectId?: string,
+  suppliedRows?: SpaceExtensionDependencyInstallRow[]) {
+  if (!manifest.dependencies?.length) return resolveExtensionDependencyClosure(manifest, []);
+  let rows = suppliedRows;
+  if (!rows) {
+    const stub = await spaceDoStub(env, spaceId, tenantId);
+    const response = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId,
+      space_id: spaceId, extension_id: "__all__", include_manifest: "1", ...(projectId ? { project_id: projectId } : {}) })}`));
+    if (!response.ok) return { resolved: false as const, error: "dependency_registry_unavailable" };
+    const body = await readBoundedResponseJson<{ installations?: SpaceExtensionDependencyInstallRow[] }>(response, 2 * 1024 * 1024).catch(() => null);
+    if (!body?.installations) return { resolved: false as const, error: "dependency_registry_unavailable" };
+    rows = body.installations;
+  }
+  const visible = rows.filter(row => row.status === "active" && (
+    scope === "SPACE_SHARED" ? row.scope === "SPACE_SHARED" && row.project_id === null
+      : row.scope === "SPACE_SHARED" && row.project_id === null
+        || row.project_id === projectId && ["PROJECT_BOUND", "PROJECT_SHARED"].includes(row.scope)));
+  const trusted = await trustedExtensionInstallations(env, tenantId, spaceId, visible);
+  const pins = trusted.flatMap(row => row.extension_id && row.release_version && row.manifest_sha256 && row.manifest
+    ? [{ extensionId: row.extension_id, releaseVersion: row.release_version, manifestSha256: row.manifest_sha256, manifest: row.manifest }]
+    : []);
+  return resolveExtensionDependencyClosure(manifest, pins);
+}
+
 async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
   extensionId: string, version: string, instanceKey: string,
   approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
@@ -1555,10 +1585,14 @@ async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: 
     .map(byte => byte.toString(16).padStart(2, "0")).join("");
   if (artifactDigest !== release.artifact_sha256) return { ok: false, error: "extension_package_artifact_digest_mismatch" };
 
-  const collisions = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
+  const collisions = await spaceStub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId,
+    extension_id: "__all__", include_manifest: "1" })}`));
   if (!collisions.ok) return { ok: false, error: "extension_installation_lookup_unavailable" };
-  const installed = await readBoundedResponseJson<{ installations?: Array<{ instance_id?: string; extension_id?: string; instance_key?: string; scope?: string;
-    status?: string; release_version?: string | null; manifest?: ReturnType<typeof validateExtensionManifest> }> }>(collisions, 2 * 1024 * 1024);
+  const installed = await readBoundedResponseJson<{ installations?: Array<{ instance_id?: string; extension_id: string; instance_key?: string; scope: string;
+    status: string; project_id: string | null; publisher_key_id?: string | null; publisher_attestation_valid?: boolean;
+    release_version?: string | null; manifest_sha256?: string | null; manifest?: ReturnType<typeof validateExtensionManifest> }> }>(collisions, 2 * 1024 * 1024);
+  const dependencyClosure = await resolveSpaceExtensionDependencies(env, tenantId, spaceId, manifest, "SPACE_SHARED", undefined, installed.installations ?? []);
+  if (!dependencyClosure.resolved) return { ok: false, error: `extension_package_${dependencyClosure.error}` };
   const prior = installed.installations?.find(row => row.extension_id === extensionId && row.instance_key === instanceKey
     && row.scope === "SPACE_SHARED" && ["active", "disabled", "staging"].includes(row.status ?? ""));
   if (prior) {
@@ -1671,7 +1705,8 @@ app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   if (result.ok) return c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId, scope: "SPACE_SHARED" }, 201);
   const status = result.error === "first_party_extension_not_found" || result.error === "extension_package_release_unavailable" ? 404
     : result.error === "extension_publisher_key_untrusted_or_revoked" ? 403
-    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted") ? 409
+    : result.error.includes("dependency_registry_unavailable") ? 503
+    : result.error.includes("conflict") || result.error.includes("mismatch") || result.error.includes("untrusted") || result.error.includes("dependency") ? 409
     : result.error.includes("unsupported") ? 422
     : result.error.includes("invalid") ? 400 : 503;
   return c.json({ error_code: result.error }, status);
@@ -1719,6 +1754,7 @@ app.get("/spaces/:spaceId/shared-extension-catalog", async c => {
   if (!response.ok) return c.json({ error_code: "extension_package_catalog_unavailable" }, 503);
   const packages = await readBoundedResponseJson<{ releases?: Array<{ extension_id: string; version: string; has_canvas: boolean;
     name: string; requested_shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+    dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }>;
     publisher?: { id?: string; key_id?: string } }> }>(response, 2 * 1024 * 1024);
   const activeKeys = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,key_id FROM extension_publisher_keys
     WHERE tenant_id=? AND space_id=? AND status='active'`).bind(owned.tenantId, spaceId).all<{ publisher_id: string; key_id: string }>();
@@ -1728,7 +1764,7 @@ app.get("/spaces/:spaceId/shared-extension-catalog", async c => {
     const publisherPair = `${release.publisher?.id ?? ""}:${release.publisher?.key_id ?? ""}`;
     if (!release.has_canvas || firstPartyIds.has(release.extension_id) || !trusted.has(publisherPair)) return [];
     return [{ id: release.extension_id, version: release.version, name: release.name,
-      publisher_id: release.publisher?.id ?? "", requested_shared_filesystem: release.requested_shared_filesystem ?? [] }];
+      publisher_id: release.publisher?.id ?? "", requested_shared_filesystem: release.requested_shared_filesystem ?? [], dependencies: release.dependencies ?? [] }];
   });
   return c.json({ extensions: [...firstParty, ...signed] }, 200, { "cache-control": "private, no-store" });
 });
@@ -1789,7 +1825,8 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
   })}`));
   if (!installationsResponse.ok) return c.json({ error_code: "extension_update_review_installation_lookup_unavailable" }, 503);
   const installations = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
-    scope: string; instance_key?: string; status: string; release_version?: string | null; publisher_id?: string | null; publisher_key_id?: string | null; manifest?: unknown }> }>(installationsResponse, 2 * 1024 * 1024);
+    scope: string; instance_key?: string; status: string; release_version?: string | null; publisher_id?: string | null; publisher_key_id?: string | null;
+    manifest_sha256?: string | null; manifest?: unknown }> }>(installationsResponse, 2 * 1024 * 1024);
   const installed = installations.installations?.find(item => item.instance_id === instanceId);
   if (!installed || installed.project_id !== null || installed.scope !== "SPACE_SHARED" || !["active", "disabled"].includes(installed.status))
     return c.json({ error_code: "extension_update_review_installation_not_found" }, 404);
@@ -1889,24 +1926,42 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
   const currentConnections = (currentManifest.bundle?.connections ?? []).map(item => ({ id: item.id, provider: item.provider, purpose: item.purpose, required: item.required }));
   const candidateConnections = (candidateManifest.bundle?.connections ?? []).map(item => ({ id: item.id, provider: item.provider, purpose: item.purpose, required: item.required }));
   const connectionDiff = spacePackageReviewDiff(spacePackageReviewConnectionRows(currentManifest), spacePackageReviewConnectionRows(candidateManifest));
+  const dependencyRows = (manifest: SpacePackageReviewManifest) => (manifest.dependencies ?? []).map(item => ({
+    id: item.extensionId, digest: `${item.version}:${item.manifestSha256}`,
+  }));
+  const dependencyDiff = spacePackageReviewDiff(dependencyRows(currentManifest), dependencyRows(candidateManifest));
+  const sameScopeDependencies = (installations.installations ?? []).filter(item => item.instance_id !== instanceId && item.status === "active"
+    && item.scope === "SPACE_SHARED" && item.project_id === null);
+  const trustedDependencyInstalls = await trustedExtensionInstallations(c.env, owned.tenantId, spaceId, sameScopeDependencies);
+  const dependencyPins = trustedDependencyInstalls.flatMap(item => item.manifest && item.release_version && item.manifest_sha256
+      ? [{ extensionId: item.extension_id, releaseVersion: item.release_version, manifestSha256: item.manifest_sha256, manifest: item.manifest }]
+      : []);
+  const currentDependencyClosure = await resolveExtensionDependencyClosure(currentManifest, dependencyPins);
+  const candidateDependencyClosure = await resolveExtensionDependencyClosure(candidateManifest, dependencyPins);
+  const dependencyNames = (manifest: SpacePackageReviewManifest) => (manifest.dependencies ?? []).map(item => `${item.extensionId}@${item.version}`).sort();
   const permissionExpansion = addedPermissions.length > 0 || addedCapabilities.length > 0
     || candidateManifest.shared_filesystem?.some(next => !currentManifest.shared_filesystem?.some(prior => prior.path === next.path && prior.access === next.access)) === true;
   const publisherChanged = Boolean(installed.publisher_id && installed.publisher_id !== candidate.publisher.id);
   const approvalRequired = permissionExpansion || publisherChanged || schemaChanges.added.length > 0 || schemaChanges.removed.length > 0
-    || schemaChanges.changed.length > 0 || connectionDiff.added.length > 0 || connectionDiff.removed.length > 0 || connectionDiff.changed.length > 0;
+    || schemaChanges.changed.length > 0 || connectionDiff.added.length > 0 || connectionDiff.removed.length > 0 || connectionDiff.changed.length > 0
+    || dependencyDiff.added.length > 0 || dependencyDiff.removed.length > 0 || dependencyDiff.changed.length > 0;
   return c.json({ installation_id: instanceId, extension_id: installed.extension_id, space_id: spaceId, scope: "SPACE_SHARED",
     current: { version: body.expected_current_version, publisher_id: installed.publisher_id ?? null, publisher_key_id: installed.publisher_key_id ?? null },
     candidate: { version: candidate.version, publisher_id: candidate.publisher.id, publisher_key_id: candidate.publisher.key_id,
       artifact_sha256: candidate.artifact_sha256, signature_verified: true },
     permissions: { current: spacePackageReviewArray(currentManifest.declaredPermissions), candidate: spacePackageReviewArray(candidateManifest.declaredPermissions), added: addedPermissions, removed: removedPermissions },
     capabilities: { current: spacePackageReviewArray(currentManifest.capabilityRequirements), candidate: spacePackageReviewArray(candidateManifest.capabilityRequirements), added: addedCapabilities, removed: removedCapabilities },
-    dependencies: { package: { current: [], candidate: [], status: "not_declared_by_current_extension_contract" },
+    dependencies: { package: { current: dependencyNames(currentManifest), candidate: dependencyNames(candidateManifest),
+      current_pins: currentManifest.dependencies ?? [], candidate_pins: candidateManifest.dependencies ?? [],
+      status: candidateDependencyClosure.resolved ? "resolved" : candidateDependencyClosure.error },
       provider_connections: { current: currentConnections, candidate: candidateConnections, ...connectionDiff } },
     schema_changes: schemaChanges,
     shared_filesystem: { current: currentManifest.shared_filesystem ?? [], candidate: candidateManifest.shared_filesystem ?? [],
       ...spacePackageReviewDiff((currentManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access })),
         (candidateManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access }))) },
     price_terms: { current: null, candidate: null, status: "not_declared_by_current_extension_contract" },
+    dependency_resolution: { current: currentDependencyClosure.resolved ? { resolved: true as const } : currentDependencyClosure,
+      candidate: candidateDependencyClosure.resolved ? { resolved: true as const } : candidateDependencyClosure },
     review: { authority_expanded: permissionExpansion, publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
       mutates_installation: false, apply_supported: false, apply_block_reason: "safe migration rollback and active-work drain are not implemented for shared package updates" },
   }, 200, { "cache-control": "private, no-store" });
@@ -2598,6 +2653,9 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   if (!response.ok) return response;
   const result = await response.json<Record<string, unknown>>();
   const release = result.release as { version?: unknown; artifactSha256?: unknown; signatureValid?: unknown; publisher?: { keyId?: unknown } } | null | undefined;
+  const dependencyRelease = result.release as { dependenciesResolved?: unknown } | null | undefined;
+  if (result.dependenciesResolved !== true && dependencyRelease?.dependenciesResolved !== true)
+    return c.json({ error_code: "extension_dependency_unavailable" }, 409, { "cache-control": "private, no-store" });
   const keyId = release?.publisher?.keyId;
   if (release && typeof keyId === "string") {
     const trusted = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
@@ -2641,7 +2699,7 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ ...(projectId ? { project_id: projectId } : {}), tenant_id: tenantId, space_id: spaceId, ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
-  const result = await response.json<{ installations?: Array<{ publisher_key_id?: string; publisher_attestation_valid?: boolean }> }>();
+  const result = await response.json<{ installations?: Array<{ publisher_key_id?: string; publisher_attestation_valid?: boolean; dependencies_resolved?: boolean }> }>();
   const installations = result.installations ?? [];
   const keyIds = [...new Set(installations.flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []))];
   let activeKeys = new Set<string>();
@@ -2651,7 +2709,7 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
       WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`).bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
     activeKeys = new Set((trusted.results ?? []).map(row => row.key_id));
   }
-  return c.json({ ...result, installations: retainActivePublisherInstallations(installations, activeKeys) });
+  return c.json({ ...result, installations: retainActivePublisherInstallations(installations, activeKeys).filter(item => item.dependencies_resolved !== false) });
 });
 
 app.get("/spaces/:spaceId/container-installations", async (c) => {
@@ -3474,6 +3532,8 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
   }
   const scope = !projectId ? "SPACE_SHARED" : body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const dependencyClosure = await resolveSpaceExtensionDependencies(c.env, identity.tenantId, spaceId, manifest, scope, projectId);
+  if (!dependencyClosure.resolved) return c.json({ error_code: `extension_${dependencyClosure.error}` }, dependencyClosure.error === "dependency_registry_unavailable" ? 503 : 409);
   if (body.upgrade === true) {
     const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, extension_id: manifest.id })}`));
     if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
@@ -3738,6 +3798,8 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   } catch { return c.json({ error_code: "extension_publisher_signature_invalid" }, 403); }
   if (!publisherSignatureValid) return c.json({ error_code: "extension_publisher_signature_invalid" }, 403);
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const dependencyClosure = await resolveSpaceExtensionDependencies(c.env, identity.tenantId, spaceId, manifest, "PROJECT_BOUND", projectId);
+  if (!dependencyClosure.resolved) return c.json({ error_code: `extension_${dependencyClosure.error}` }, dependencyClosure.error === "dependency_registry_unavailable" ? 503 : 409);
   if (body.upgrade === true) {
     const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
       tenant_id: identity.tenantId, space_id: spaceId, extension_id: bundle.id,

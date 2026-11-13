@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -3650,11 +3650,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const projectId = url.searchParams.get("project_id") ?? "";
         const appId = url.searchParams.get("app_id") ?? "";
         if (!tenantId || !spaceId || !projectId || !appId) return Response.json({ error_code: "extension_runtime_scope_required" }, { status: 400 });
-        const rows = queryAll<{ instance_id: string; instance_key: string | null; status: string; extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,i.manifest_json FROM extension_installation_manifests i
+        const rows = queryAll<{ instance_id: string; instance_key: string | null; status: string; extension_id: string; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,i.scope,i.manifest_json FROM extension_installation_manifests i
            WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
           tenantId, spaceId, projectId);
-        let managed = false, active = false, releaseValid = false, publisherKeyId: string | undefined;
+        let managed = false, active = false, releaseValid = false, dependenciesResolved = false, publisherKeyId: string | undefined;
         for (const row of rows) {
           let manifest: ExtensionManifest;
           try { manifest = JSON.parse(row.manifest_json) as ExtensionManifest; } catch { continue; }
@@ -3675,18 +3675,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (!release) continue;
           const expected = await this.signExtensionRelease(manifest.bundle.id, manifest.bundle.version, release.manifest_json, release.artifact_sha256);
           if (release.manifest_json === row.manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release)) {
-            active = true;
             releaseValid = true;
+            dependenciesResolved = await this.extensionDependencyClosureActive(tenantId, spaceId, manifest, row.scope, projectId);
+            active = dependenciesResolved;
             if (release.publisher_key_id) publisherKeyId = release.publisher_key_id;
           }
         }
-        return Response.json({ managed, active, releaseValid, ...(publisherKeyId ? { publisherKeyId } : {}) });
+        return Response.json({ managed, active, releaseValid, dependenciesResolved, ...(publisherKeyId ? { publisherKeyId } : {}) });
       }
       if (url.pathname === "/workflow-installation" && method === "GET") {
         const statusFilter = url.searchParams.get("include_disabled") === "1"
           ? "i.status IN ('active','disabled')"
           : "i.status='active'";
-        const rows = queryAll<{ instance_id: string; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
+        const rows = queryAll<{ instance_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
           `SELECT i.* FROM extension_installation_manifests i WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
           url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
         const row = rows[0];
@@ -3695,14 +3696,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const manifest = JSON.parse(manifest_json) as ExtensionManifest;
         const bundle = manifest.bundle;
         const approved_shared_filesystem = this.listApprovedSharedFilesystemGrants(instance.instance_id);
-        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem });
+        const dependenciesResolved = await this.extensionDependencyClosureActive(instance.tenant_id, instance.space_id, manifest,
+          instance.scope, instance.project_id ?? undefined);
+        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem, dependenciesResolved });
         const release = queryOne<PublisherReleaseFields & { manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
+        const releaseValid = Boolean(release && release.manifest_json === manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release));
         return Response.json({ instance, manifest, approved_shared_filesystem, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
-          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release), signer: "naelao-host",
+          signatureValid: releaseValid, dependenciesResolved: releaseValid && dependenciesResolved, signer: "naelao-host",
           ...(hasPublisherReleaseFields(release) ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
-            payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null });
+            payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null, dependenciesResolved });
       }
       if (url.pathname === "/extension-installation" && method === "DELETE") {
         const instanceId = url.searchParams.get("instance_id") ?? "";
@@ -3710,6 +3714,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const spaceId = url.searchParams.get("space_id") ?? "";
         const projectId = url.searchParams.get("project_id") ?? "";
         if (!instanceId || !tenantId || !spaceId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
+        const target = queryOne<{ extension_id: string; scope: string; project_id: string | null; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+          `SELECT i.extension_id,i.scope,i.project_id,m.manifest_json,i.release_version FROM extension_instances i
+           JOIN extension_installation_manifests m ON m.instance_id=i.instance_id
+           WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${projectId ? "i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')" : "i.project_id IS NULL AND i.scope='SPACE_SHARED'"}`,
+          instanceId, tenantId, spaceId, ...(projectId ? [projectId] : []));
+        if (target && target.release_version) {
+          let targetDigest: string | null = null;
+          try { targetDigest = await digestExtensionManifest(validateExtensionManifest(JSON.parse(target.manifest_json))); } catch { /* invalid target manifests cannot satisfy exact dependency pins */ }
+          const dependents = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,m.manifest_json FROM extension_installation_manifests m
+             JOIN extension_instances i ON i.instance_id=m.instance_id
+             WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') AND i.instance_id<>?
+               AND ${target.scope === "SPACE_SHARED" ? "i.project_id IS NULL AND i.scope='SPACE_SHARED'" : "i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')"}`,
+            tenantId, spaceId, instanceId, ...(target.scope === "SPACE_SHARED" ? [] : [target.project_id ?? projectId]));
+          const requiredBy = dependents.flatMap(row => {
+            try {
+              const manifest = validateExtensionManifest(JSON.parse(row.manifest_json));
+              return manifest.dependencies?.some(dependency => dependency.extensionId === target.extension_id
+                && dependency.version === target.release_version && dependency.manifestSha256 === targetDigest) ? [row.instance_id] : [];
+            } catch { return []; }
+          }).slice(0, 20);
+          if (requiredBy.length) return Response.json({ error_code: "extension_required_by_installed_package", required_by: requiredBy }, { status: 409 });
+        }
         if (!projectId) {
           const dependency = queryOne<{ blueprint_id: string }>(this.ctx.storage.sql as never,
             `SELECT b.blueprint_id FROM space_blueprint_installations b
@@ -3742,25 +3769,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           return Response.json({ error: "project_not_found" }, { status: 404 });
         }
         const rows = projectId
-          ? queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
-            `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
+          ? queryAll<{ instance_id: string; extension_id: string; project_id: string | null; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,i.extension_id,i.project_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
             url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId)
-          : queryAll<{ instance_id: string; extension_id: string; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
-            `SELECT i.instance_id,i.extension_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED' AND ${statusFilter} ORDER BY i.installed_at`,
+          : queryAll<{ instance_id: string; extension_id: string; project_id: string | null; instance_key: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,i.extension_id,i.project_id,i.instance_key,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED' AND ${statusFilter} ORDER BY i.installed_at`,
             url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
-        const installations = rows.flatMap(row => {
+        const installations = (await Promise.all(rows.map(async row => {
           let manifest: ExtensionManifest;
           try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return []; }
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
           const publisher = row.release_version ? queryOne<PublisherReleaseFields>(this.ctx.storage.sql as never,
             "SELECT publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, row.release_version) : null;
+          const dependenciesResolved = await this.extensionDependencyClosureActive(url.searchParams.get("tenant_id") ?? "", url.searchParams.get("space_id") ?? "",
+            manifest, row.scope, row.project_id ?? undefined);
           return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, instance_key: row.instance_key, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy", release_version: row.release_version,
+            dependencies_resolved: dependenciesResolved,
             ...(publisher?.publisher_key_id ? { publisher_key_id: publisher.publisher_key_id } : {}), publisher_attestation_valid: publisher ? publisherReleaseFieldsValid(publisher) : row.release_version === null,
             permissions: [...new Set(manifest.declaredPermissions)].sort(), capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.attachmentAccess ? { attachment_access: { mode: channel.attachmentAccess.mode, max_files: channel.attachmentAccess.maxFiles ?? 3, max_total_bytes: channel.attachmentAccess.maxTotalBytes ?? 2 * 1024 * 1024 } } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
-        });
+        }))).flat();
         return Response.json({ installations });
       }
       if (url.pathname === "/extensions/first-party" && method === "GET") {
@@ -12296,6 +12326,45 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ apps });
   }
 
+  private async extensionDependencyClosureActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
+    scope: string, projectId?: string): Promise<boolean> {
+    if (!manifest.dependencies?.length) return true;
+    const rows = queryAll<{ extension_id: string; release_version: string | null; manifest_json: string;
+      artifact_sha256: string | null; host_signature: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
+      `SELECT i.extension_id,i.release_version,i.manifest_json,r.artifact_sha256,r.host_signature,
+          r.publisher_id,r.publisher_key_id,r.publisher_signature,r.publisher_payload_sha256,r.publisher_revoked_at
+       FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+       WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (
+         (i.scope='SPACE_SHARED' AND i.project_id IS NULL)${scope === "SPACE_SHARED" ? "" : " OR (i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED'))"}
+       ) ORDER BY i.extension_id,i.instance_id LIMIT 129`, tenantId, spaceId, ...(scope === "SPACE_SHARED" ? [] : [projectId ?? ""]));
+    if (rows.length > 128) return false;
+    const activeKeyIds = new Set<string>();
+    const keyIds = [...new Set(rows.flatMap(row => row.publisher_key_id ? [row.publisher_key_id] : []))];
+    if (keyIds.length) {
+      try {
+        if (!this.env.PLATFORM_DB) return false;
+        const placeholders = keyIds.map(() => "?").join(",");
+        const active = await this.env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
+          WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`)
+          .bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
+        for (const row of active.results ?? []) activeKeyIds.add(row.key_id);
+      } catch { return false; }
+    }
+    const pins: Array<{ extensionId: string; releaseVersion: string; manifestSha256: string; manifest: ExtensionManifest }> = [];
+    for (const row of rows) {
+      if (!row.release_version || !row.artifact_sha256 || !row.host_signature || !publisherReleaseFieldsValid(row)
+        || row.publisher_key_id && !activeKeyIds.has(row.publisher_key_id)) continue;
+      try {
+        const parsed = validateExtensionManifest(JSON.parse(row.manifest_json));
+        if (!parsed.bundle || parsed.id !== row.extension_id || parsed.bundle.version !== row.release_version
+          || await this.signExtensionRelease(row.extension_id, row.release_version, row.manifest_json, row.artifact_sha256) !== row.host_signature) continue;
+        pins.push({ extensionId: row.extension_id, releaseVersion: row.release_version,
+          manifestSha256: await digestExtensionManifest(parsed), manifest: parsed });
+      } catch { /* An invalid or untrusted installation cannot satisfy a dependency pin. */ }
+    }
+    return (await resolveExtensionDependencyClosure(manifest, pins)).resolved;
+  }
+
   private async spaceSharedExtensionRuntime(params: URLSearchParams): Promise<Response> {
     const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "", appId = params.get("app_id") ?? "";
     if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return Response.json({ error_code: "extension_runtime_scope_required" }, { status: 400 });
@@ -12328,6 +12397,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!release) return Response.json({ managed: true, active: false, releaseValid: false });
       const expected = await this.signExtensionRelease(row.extension_id, row.release_version, release.manifest_json, release.artifact_sha256);
       const releaseValid = release.manifest_json === row.manifest_json && expected === release.host_signature && publisherReleaseFieldsValid(release);
+      const dependenciesResolved = releaseValid && await this.extensionDependencyClosureActive(tenantId, spaceId, manifest, "SPACE_SHARED");
       const primitives = manifest.bundle?.primitives ?? [];
       const phoneChannel = primitives.some(primitive => primitive.kind === "channel"
         && primitive.provider === "phone" && primitive.context === "channel_only");
@@ -12337,7 +12407,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const phoneSimulationAllowed = phoneChannel
         && manifest.capabilityRequirements.includes("assistant.phone.simulate")
         && manifest.declaredPermissions.includes("assistant.phone.simulate");
-      return Response.json({ managed: true, active: releaseValid, releaseValid,
+      return Response.json({ managed: true, active: releaseValid && dependenciesResolved, releaseValid, dependenciesResolved,
         ...(release.publisher_key_id ? { publisherKeyId: release.publisher_key_id } : {}),
         ...(releaseValid ? { installationId: row.instance_id, extensionId: row.extension_id, phoneChannel,
           phoneDashboardAllowed, phoneSimulationAllowed } : {}) });
@@ -13077,6 +13147,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    if (manifest.dependencies?.length) {
+      if (!body.tenantId || !body.spaceId || !body.scope || !["SPACE_SHARED", "PROJECT_BOUND", "PROJECT_SHARED"].includes(body.scope)
+        || body.scope !== "SPACE_SHARED" && !body.projectId || body.scope === "SPACE_SHARED" && body.projectId)
+        return Response.json({ error_code: "extension_dependency_scope_unsupported" }, { status: 409 });
+      const dependencies = await this.extensionDependencyClosureActive(body.tenantId, body.spaceId, manifest, body.scope, body.projectId);
+      if (!dependencies) return Response.json({ error_code: "extension_dependency_unresolved" }, { status: 409 });
+    }
       if (body.deferActivation && (!manifest.bundle || !body.scope || !body.tenantId || !body.spaceId
         || body.scope !== "SPACE_SHARED" && !body.projectId
         || body.scope === "SPACE_SHARED" && (body.projectId || body.userId)))
@@ -13270,6 +13347,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         !== queryOne<{ host_signature: string }>(this.ctx.storage.sql as never,
           "SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version)?.host_signature)
       return Response.json({ error_code: "staged_extension_attestation_invalid" }, { status: 409 });
+    if (!await this.extensionDependencyClosureActive(body.tenantId, body.spaceId, manifest, body.scope, body.projectId))
+      return Response.json({ error_code: "staged_extension_dependency_unresolved" }, { status: 409 });
     if (row.status === "active") return Response.json({ activated: true, installationId: body.installationId, status: "active" });
     if (row.status !== "staging") return Response.json({ error_code: "staged_extension_not_activatable" }, { status: 409 });
     const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='active'
@@ -13335,6 +13414,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       manifest = validateExtensionManifest(JSON.parse(release.manifest_json));
     } catch { return Response.json({ error: "extension_release_manifest_invalid" }, { status: 409 }); }
+    if (!await this.extensionDependencyClosureActive(body.tenantId, body.spaceId, manifest, "PROJECT_BOUND", body.projectId))
+      return Response.json({ error: "extension_dependency_unresolved" }, { status: 409 });
     const current = queryOne<{ release_version: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
       `SELECT i.release_version,v.manifest_json FROM extension_instances i
        JOIN extension_installation_manifests v ON v.instance_id=i.instance_id
@@ -13409,6 +13490,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const gadgetName = manifest.gadgets?.find(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)?.name;
       return { extension_id: row.extension_id, version: row.version, has_canvas: Boolean(canvas),
         name: gadgetName ?? canvas?.id ?? row.extension_id, requested_shared_filesystem: manifest.shared_filesystem ?? [],
+        dependencies: manifest.dependencies ?? [],
         publisher: { id: row.publisher_id, key_id: row.publisher_key_id }, created_at: row.created_at };
     }));
     return Response.json({ releases: releases.filter((row): row is NonNullable<typeof row> => row !== null) });

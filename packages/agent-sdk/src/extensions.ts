@@ -6,6 +6,14 @@ import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
 
 export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
+/** Exact immutable dependency pin. The manifest digest fences same-version substitution. */
+export interface ExtensionDependency { extensionId: ExtensionId; version: string; manifestSha256: string }
+export interface InstalledExtensionDependencyPin {
+  extensionId: string;
+  releaseVersion: string | null;
+  manifestSha256: string | null;
+  manifest: unknown;
+}
 export interface ExtensionSettingsSnapshot {
   schema: ExtensionSettingsSchema;
   settings: Partial<Record<string, BlueprintSetupValue>>;
@@ -68,6 +76,8 @@ export interface ExtensionManifest {
   widgetSubscriptions?: readonly ExtensionWidgetSubscription[];
   /** Optional per-installation settings for a package-owned microapp dashboard. */
   settingsSchema?: ExtensionSettingsSchema;
+  /** Exact immutable package dependencies; host admission must verify the complete scoped closure. */
+  dependencies?: ExtensionDependency[];
 }
 
 /** Stable content pin for the canonical modular extension manifest stored by the host. */
@@ -133,10 +143,27 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions", "settingsSchema", "dependencies"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
+  let dependencies: ExtensionDependency[] | undefined;
+  if (raw.dependencies !== undefined) {
+    assert(Array.isArray(raw.dependencies) && raw.dependencies.length <= 32, "invalid_dependencies");
+    const seen = new Set<string>();
+    dependencies = (raw.dependencies as unknown[]).map(value => {
+      assert(value !== null && typeof value === "object" && !Array.isArray(value), "invalid_dependency");
+      const dependency = value as Record<string, unknown>;
+      assert(Object.keys(dependency).every(key => ["extensionId", "version", "manifestSha256"].includes(key)), "invalid_dependency_field");
+      assert(typeof dependency.extensionId === "string", "invalid_dependency_id");
+      try { assertExtensionId(dependency.extensionId); } catch { throw new Error("invalid_extension_manifest:invalid_dependency_id"); }
+      assert(dependency.extensionId !== raw.id && !seen.has(dependency.extensionId), "duplicate_or_self_dependency");
+      seen.add(dependency.extensionId);
+      assert(typeof dependency.version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(dependency.version), "invalid_dependency_version");
+      assert(typeof dependency.manifestSha256 === "string" && /^[a-f0-9]{64}$/.test(dependency.manifestSha256), "invalid_dependency_manifest_digest");
+      return Object.freeze({ extensionId: dependency.extensionId, version: dependency.version, manifestSha256: dependency.manifestSha256 });
+    }).sort((left, right) => left.extensionId.localeCompare(right.extensionId));
+  }
   assert(raw.type === "extension", "invalid_type");
   assert(raw.releaseVersion === undefined || (typeof raw.releaseVersion === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw.releaseVersion)), "invalid_release_version");
   assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.length <= 128 && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
@@ -262,7 +289,55 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}), ...(settingsSchema ? { settingsSchema } : {}) } as unknown as ExtensionManifest;
+  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}), ...(settingsSchema ? { settingsSchema } : {}), ...(dependencies ? { dependencies: Object.freeze(dependencies) as unknown as ExtensionDependency[] } : {}) } as unknown as ExtensionManifest;
+}
+
+/** Resolve an exact, same-scope dependency graph against admitted installation pins. The caller
+ * supplies only active installations visible to the target package's own scope/project. */
+export async function resolveExtensionDependencyClosure(
+  root: ExtensionManifest,
+  installed: readonly InstalledExtensionDependencyPin[],
+): Promise<{ resolved: true; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }> }
+  | { resolved: false; error: "dependency_unresolved" | "dependency_pin_conflict" | "dependency_cycle" | "dependency_manifest_invalid" }> {
+  const requested = new Map<string, { version: string; manifestSha256: string }>();
+  const visiting = new Set<string>([root.id]);
+  const visited = new Set<string>();
+  const closure = new Map<string, { extensionId: string; version: string; manifestSha256: string }>();
+  type DependencyResolutionError = "dependency_unresolved" | "dependency_pin_conflict" | "dependency_cycle" | "dependency_manifest_invalid";
+  const walk = async (manifest: ExtensionManifest): Promise<DependencyResolutionError | null> => {
+    for (const dependency of manifest.dependencies ?? []) {
+      if (visiting.has(dependency.extensionId)) return "dependency_cycle";
+      const prior = requested.get(dependency.extensionId);
+      if (prior && (prior.version !== dependency.version || prior.manifestSha256 !== dependency.manifestSha256)) return "dependency_pin_conflict";
+      requested.set(dependency.extensionId, { version: dependency.version, manifestSha256: dependency.manifestSha256 });
+      const candidates = installed.filter(item => item.extensionId === dependency.extensionId && item.releaseVersion === dependency.version);
+      if (!candidates.length) return installed.some(item => item.extensionId === dependency.extensionId) ? "dependency_pin_conflict" : "dependency_unresolved";
+      let selected: { manifest: ExtensionManifest; manifestSha256: string } | undefined;
+      for (const candidate of candidates) {
+        try {
+          const parsed = validateExtensionManifest(candidate.manifest);
+          if (!parsed.bundle || parsed.bundle.version !== dependency.version) continue;
+          const digest = await digestExtensionManifest(parsed);
+          if (digest === candidate.manifestSha256 && digest === dependency.manifestSha256) {
+            selected = { manifest: parsed, manifestSha256: digest };
+            break;
+          }
+        } catch { /* Invalid or non-modular installs cannot satisfy exact package dependencies. */ }
+      }
+      if (!selected) return "dependency_pin_conflict";
+      const key = `${dependency.extensionId}@${dependency.version}:${dependency.manifestSha256}`;
+      closure.set(dependency.extensionId, { extensionId: dependency.extensionId, version: dependency.version, manifestSha256: dependency.manifestSha256 });
+      if (visited.has(key)) continue;
+      visiting.add(dependency.extensionId);
+      const childError = await walk(selected.manifest);
+      visiting.delete(dependency.extensionId);
+      if (childError) return childError;
+      visited.add(key);
+    }
+    return null;
+  };
+  const error = await walk(root);
+  return error ? { resolved: false, error } : { resolved: true, dependencies: [...closure.values()].sort((left, right) => left.extensionId.localeCompare(right.extensionId)) };
 }
 
 export function validateExtensionSettingsValues(manifest: Pick<ExtensionManifest, "settingsSchema">, raw: unknown, options: { allowIncomplete?: boolean } = {}): Record<string, BlueprintSetupValue> {

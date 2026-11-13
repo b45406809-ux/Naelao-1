@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SpaceDO } from "./SpaceDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
-import { PERSONAL_ASSISTANT_SPACE_TEMPLATE } from "@naelao/agent-sdk";
+import { digestExtensionManifest, PERSONAL_ASSISTANT_SPACE_TEMPLATE, validateExtensionManifest } from "@naelao/agent-sdk";
 
 const planDb = { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) };
 
@@ -15,6 +15,55 @@ function manifest(binary = "ffmpeg") {
 }
 
 describe("runtime extension installation", () => {
+  it("rechecks exact dependency closure at runtime and blocks removing an active dependency", async () => {
+    const storage = createDOStorage(), secret = "extension-dependency-runtime-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const released = (id: string, dependencies: unknown[] = []) => ({ id, type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"],
+      gadgets: [], daemons: [], commands: [], ...(dependencies.length ? { dependencies } : {}),
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id, version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "channel", id: "handler", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+          provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] },
+      ] } });
+    const dependencyManifest = validateExtensionManifest(released("ext_dependency"));
+    const dependencyDigest = await digestExtensionManifest(dependencyManifest);
+    const install = (manifest: unknown, deferActivation = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND",
+        gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "a".repeat(64), deferActivation }) }));
+    const dependencyInstall = await install(dependencyManifest);
+    expect(dependencyInstall.status).toBe(201);
+    const dependencyInstallationId = (await dependencyInstall.json() as { installationId: string }).installationId;
+    const rootManifest = validateExtensionManifest(released("ext_dependency_root", [
+      { extensionId: "ext_dependency", version: "1.0.0", manifestSha256: dependencyDigest },
+    ]));
+    const rootInstall = await install(rootManifest, true);
+    expect(rootInstall.status, await rootInstall.clone().text()).toBe(201);
+    const rootInstallationId = (await rootInstall.json() as { installationId: string }).installationId;
+    const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: rootInstallationId, tenant_id: "tenant", space_id: "space" })));
+    const token = await mintInternalToken(secret, "tenant");
+    const activate = () => space.fetch(new Request("http://space/extension-installation/activate", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId: rootInstallationId, extensionId: "ext_dependency_root", version: "1.0.0", artifactSha256: "a".repeat(64),
+        tenantId: "tenant", spaceId: "space", scope: "PROJECT_BOUND", projectId: "project-a" }) }));
+    storage.sql.exec("UPDATE extension_instances SET status='removed' WHERE instance_id=?", dependencyInstallationId);
+    const blockedActivation = await activate();
+    expect(blockedActivation.status).toBe(409);
+    expect(await blockedActivation.json()).toMatchObject({ error_code: "staged_extension_dependency_unresolved" });
+    storage.sql.exec("UPDATE extension_instances SET status='active',removed_at=NULL WHERE instance_id=?", dependencyInstallationId);
+    expect((await activate()).status).toBe(200);
+    expect(await (await lookup()).json()).toMatchObject({ dependenciesResolved: true, release: { signatureValid: true, dependenciesResolved: true } });
+
+    const removeDependency = () => space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: dependencyInstallationId,
+      tenant_id: "tenant", space_id: "space", project_id: "project-a" }), { method: "DELETE" }));
+    const blockedRemoval = await removeDependency();
+    expect(blockedRemoval.status).toBe(409);
+    expect(await blockedRemoval.json()).toMatchObject({ error_code: "extension_required_by_installed_package", required_by: [rootInstallationId] });
+
+    storage.sql.exec("UPDATE extension_instances SET status='removed' WHERE instance_id=?", dependencyInstallationId);
+    expect(await (await lookup()).json()).toMatchObject({ dependenciesResolved: false, release: { signatureValid: true, dependenciesResolved: false } });
+  });
+
   it("lists space-shared channel installations separately from project channel installations", async () => {
     const storage = createDOStorage();
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "channel-list-secret" } as never);
@@ -422,14 +471,14 @@ describe("runtime extension installation", () => {
     const upgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
     expect(upgrade.status).toBe(201);
-    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
-    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true });
+    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
+    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true });
     const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installed.installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a" }), { method: "DELETE" }));
     expect(removed.status).toBe(200);
-    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
-    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
+    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
+    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
     expect(await (await space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: "not_a_canvas" })))).json())
-      .toEqual({ managed: false, active: false, releaseValid: false });
+      .toEqual({ managed: false, active: false, releaseValid: false, dependenciesResolved: false });
   });
 
   it("keeps a composed Canvas bundle unavailable until its host initialization is confirmed", async () => {
@@ -451,7 +500,7 @@ describe("runtime extension installation", () => {
     const visible = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_staged_canvas"));
     expect(await visible.json()).toMatchObject({ installations: [{ status: "staging", project_id: "project-a" }] });
     const appRoute = () => space.fetch(new Request(`http://space/project-extension-runtime?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: "canvas" })}`));
-    expect(await (await appRoute()).json()).toEqual({ managed: true, active: false, releaseValid: false });
+    expect(await (await appRoute()).json()).toEqual({ managed: true, active: false, releaseValid: false, dependenciesResolved: false });
 
     const token = await mintInternalToken(secret, "tenant");
     const activate = (overrides: Record<string, unknown> = {}, authToken = token) => space.fetch(new Request("http://space/extension-installation/activate", {
@@ -467,7 +516,7 @@ describe("runtime extension installation", () => {
     await expect((await abort("project-b")).json()).resolves.toMatchObject({ aborted: false });
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("staging");
     expect((await activate()).status).toBe(200);
-    expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true });
+    expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true, dependenciesResolved: true });
     expect((await activate()).status).toBe(200); // idempotent host retry
     expect(await (await abort()).json()).toMatchObject({ aborted: false });
   });

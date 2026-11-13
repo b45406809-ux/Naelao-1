@@ -139,7 +139,8 @@ export default function ExtensionsPage() {
             <p>Permissions added: {review.permissions.added.join(", ") || "none"}; removed: {review.permissions.removed.join(", ") || "none"}</p>
             <p>Capabilities added: {review.capabilities.added.join(", ") || "none"}; removed: {review.capabilities.removed.join(", ") || "none"}</p>
             <p>Schema changes — added: {review.schema_changes.added.join(", ") || "none"}; removed: {review.schema_changes.removed.join(", ") || "none"}; changed: {review.schema_changes.changed.join(", ") || "none"}</p>
-            <p>Package dependencies: {review.dependencies.package.status}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
+            <p>Package dependencies: {review.dependencies.package.status}. Candidate pins: {review.dependencies.package.candidate_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") || "none"}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
+            {!review.dependency_resolution.candidate.resolved && <p role="alert">Dependency closure is unresolved: {review.dependency_resolution.candidate.error}. The host will not activate this package.</p>}
             <p>Shared folders — added: {review.shared_filesystem.added.join(", ") || "none"}; removed: {review.shared_filesystem.removed.join(", ") || "none"}; changed: {review.shared_filesystem.changed.join(", ") || "none"}</p>
             <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
             {review.review.explicit_owner_approval_required && <p>Owner approval is required for this update review.</p>}
@@ -155,6 +156,7 @@ export default function ExtensionsPage() {
       </Card>)}</div> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => <Card key={entry.id}>
       <CardTitle>{entry.name}</CardTitle><CardDesc>{entry.version ? `Signed release ${entry.version} from ${entry.publisher_id ?? "a trusted publisher"}. Its app and storage are isolated to the active Space.` : "Install this first-party Space-shared extension. Its app and storage are isolated to the active Space."}</CardDesc>
+      {entry.dependencies?.length ? <p style={{ color: "var(--text3)", fontSize: 12 }}>Requires exact installed releases: {entry.dependencies.map(item => `${item.extensionId}@${item.version}`).join(", ")}.</p> : null}
       {grantsEditor(entry.id, entry.requested_shared_filesystem, [])}
       <Button disabled={installing !== null} onClick={() => void install(entry)}>{installing === entry.id ? "Installing…" : "Install extension"}</Button>
     </Card>)}</div></section> : null}

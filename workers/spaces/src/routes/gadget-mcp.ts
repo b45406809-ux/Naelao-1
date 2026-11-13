@@ -14,8 +14,9 @@ async function sharedExtensionRuntimeError(env: Env, tenantId: string, spaceId: 
     const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, app_id: appId });
     const response = await env.SPACE_DO.get(actor).fetch(new Request(`http://space-do/space-shared-extension-runtime?${query}`));
     if (!response.ok) return "space_extension_runtime_unavailable";
-    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; publisherKeyId?: unknown };
+    const runtime = await response.json() as { managed?: unknown; active?: unknown; releaseValid?: unknown; dependenciesResolved?: unknown; publisherKeyId?: unknown };
     if (runtime.managed !== true) return null;
+    if (runtime.dependenciesResolved === false) return "space_extension_dependency_unavailable";
     if (runtime.active !== true || runtime.releaseValid !== true) return "space_extension_release_invalid";
     if (typeof runtime.publisherKeyId === "string") {
       const publisher = await env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
@@ -409,7 +410,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const installed = await installedResponse.json<{
       instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; instance_key?: string | null; scope?: string; status?: string };
       manifest?: { id?: string; bundle?: { id?: string; primitives?: Array<{ id?: string; kind?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
-      release?: { signatureValid?: boolean; publisher?: { keyId?: string; revoked?: boolean } } | null;
+      release?: { signatureValid?: boolean; dependenciesResolved?: boolean; publisher?: { keyId?: string; revoked?: boolean } } | null;
     }>();
     const instance = installed.instance, bundle = installed.manifest?.bundle;
     const canvas = bundle?.primitives?.find(part => part.id === canvasId && part.kind === "canvas");
@@ -418,15 +419,18 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!instance || instance.instance_id !== installationId || instance.tenant_id !== tenantId || instance.space_id !== spaceId
       || instance.project_id !== projectId || instance.scope !== "PROJECT_BOUND" || instance.status !== "active"
       || !installed.manifest?.id || installed.manifest.id !== bundle?.id || !canvas || !gadgetExists || !declaredRead
-      || installed.release?.signatureValid !== true || installed.release.publisher?.revoked) return c.json({ error_code: "canvas_gadget_read_not_granted" }, 403);
+      || installed.release?.signatureValid !== true || installed.release.dependenciesResolved !== true || installed.release.publisher?.revoked)
+      return c.json({ error_code: installed.release?.dependenciesResolved === false ? "extension_dependency_unavailable" : "canvas_gadget_read_not_granted" }, 403);
     const appId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${gadgetId}` : gadgetId;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "extension_gadget_identity_invalid" }, 400);
     const runtimeUrl = new URL("http://space-do/project-extension-runtime");
     runtimeUrl.search = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, app_id: appId }).toString();
     const runtimeResponse = await spaceDo.fetch(new Request(runtimeUrl));
     if (!runtimeResponse.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
-    const runtime = await runtimeResponse.json<{ active?: boolean; releaseValid?: boolean; publisherKeyId?: string }>();
-    if (!runtime.active || !runtime.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
+    const runtime = await runtimeResponse.json<{ active?: boolean; releaseValid?: boolean; dependenciesResolved?: boolean; publisherKeyId?: string }>();
+    if (!runtime.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
+    if (runtime.dependenciesResolved === false) return c.json({ error_code: "project_extension_dependency_unavailable" }, 503);
+    if (!runtime.active) return c.json({ error_code: "project_extension_release_invalid" }, 503);
     if (runtime.publisherKeyId) {
       const trustedPublisher = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
         WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtime.publisherKeyId).first();

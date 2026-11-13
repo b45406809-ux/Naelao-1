@@ -1621,19 +1621,24 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
 export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
-export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[];
+  dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> }
 export interface SpaceSharedExtensionUpdateReview {
   installation_id: string; extension_id: string; space_id: string; scope: "SPACE_SHARED";
   current: { version: string; publisher_id: string | null; publisher_key_id: string | null };
   candidate: { version: string; publisher_id: string; publisher_key_id: string; artifact_sha256: string; signature_verified: true };
   permissions: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
   capabilities: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
-  dependencies: { package: { current: string[]; candidate: string[]; status: string };
+  dependencies: { package: { current: string[]; candidate: string[];
+    current_pins: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+    candidate_pins: Array<{ extensionId: string; version: string; manifestSha256: string }>; status: string };
     provider_connections: { current: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
       candidate: Array<{ id: string; provider: string; purpose: string; required: boolean }>; added: string[]; removed: string[]; changed: string[] } };
   schema_changes: { added: string[]; removed: string[]; changed: string[] };
   shared_filesystem: { current: SharedFilesystemGrant[]; candidate: SharedFilesystemGrant[]; added: string[]; removed: string[]; changed: string[] };
   price_terms: { current: null; candidate: null; status: string };
+  dependency_resolution: { current: { resolved: true } | { resolved: false; error: string };
+    candidate: { resolved: true } | { resolved: false; error: string } };
   review: { authority_expanded: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false; apply_supported: false; apply_block_reason: string };
 }
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {

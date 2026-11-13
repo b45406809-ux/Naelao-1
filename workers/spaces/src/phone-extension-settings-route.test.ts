@@ -14,7 +14,8 @@ function harness(activePublisher = true, settingsDeclared = true) {
         declaredPermissions: settingsDeclared ? ["extension.settings.read"] : [],
         capabilityRequirements: settingsDeclared ? ["extension.settings.read"] : [],
         ...(settingsDeclared ? { settingsSchema: { schemaVersion: 2, fields: [] } } : {}) },
-      release: { version: "1.0.0", artifactSha256: "b".repeat(64), signatureValid: true, publisher: { keyId: "a".repeat(64) } },
+      dependenciesResolved: true,
+      release: { version: "1.0.0", artifactSha256: "b".repeat(64), signatureValid: true, dependenciesResolved: true, publisher: { keyId: "a".repeat(64) } },
     });
     return Response.json({ schema_version: 2, revision: 4, settings: { greeting: "Welcome" } });
   }) };
@@ -59,6 +60,27 @@ describe("internal phone extension settings handoff", () => {
     }), h.env);
     expect(response.status).toBe(200);
     expect(await response.json()).not.toHaveProperty("phone_settings");
+    expect(h.forwarded).toHaveLength(1);
+  });
+
+  it("does not expose phone settings when an installed dependency pin is unavailable", async () => {
+    const h = harness();
+    h.spaceStub.fetch.mockImplementation(async (request: Request) => {
+      h.forwarded.push(request);
+      if (new URL(request.url).pathname === "/workflow-installation") return Response.json({
+        instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active" },
+        manifest: { id: "ext_phone", bundle: { id: "ext_phone", version: "1.0.0" }, declaredPermissions: ["extension.settings.read"],
+          capabilityRequirements: ["extension.settings.read"], settingsSchema: { schemaVersion: 2, fields: [] } },
+        release: { version: "1.0.0", artifactSha256: "b".repeat(64), signatureValid: true, dependenciesResolved: false,
+          publisher: { keyId: "a".repeat(64) } }, dependenciesResolved: false,
+      });
+      return Response.json({ schema_version: 2, revision: 4, settings: { greeting: "Welcome" } });
+    });
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    }), h.env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "extension_dependency_unavailable" });
     expect(h.forwarded).toHaveLength(1);
   });
 });

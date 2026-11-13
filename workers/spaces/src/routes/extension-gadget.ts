@@ -24,12 +24,19 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     const stub = c.env.SPACE_DO.get(c.env.SPACE_DO.idFromName(name));
     const installed = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: tenantId, space_id: spaceId })));
     if (!installed.ok) return c.json({ error_code: "extension_installation_unavailable" }, installed.status === 404 ? 404 : 503);
-    const value = await installed.json<{ instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; instance_key?: string | null; status?: string; scope?: string }; manifest?: { id?: string; bundle?: { id?: string; version?: string; primitives?: Array<{ id?: string; kind?: string; entry?: string; toolNames?: string[] }>; workerRoles?: Array<{ principal?: string; execution?: string; invocation?: string; entry?: string; primitiveIds?: string[]; gadgetActions?: Array<{ gadgetId: string; operations: string[]; tables: string[] }> }> } } }>();
+    const value = await installed.json<{ instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; instance_key?: string | null; status?: string; scope?: string }; manifest?: { id?: string; bundle?: { id?: string; version?: string; primitives?: Array<{ id?: string; kind?: string; entry?: string; toolNames?: string[] }>; workerRoles?: Array<{ principal?: string; execution?: string; invocation?: string; entry?: string; primitiveIds?: string[]; gadgetActions?: Array<{ gadgetId: string; operations: string[]; tables: string[] }> }> } }; release?: { signatureValid?: boolean; dependenciesResolved?: boolean; publisher?: { keyId?: string; revoked?: boolean } } | null }>();
     const instance = value.instance, bundle = value.manifest?.bundle;
+    if (typeof value.release?.publisher?.keyId === "string") {
+      const active = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+        WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, value.release.publisher.keyId).first();
+      if (!active) return c.json({ error_code: "extension_publisher_revoked" }, 403);
+    }
     if (!instance || instance.instance_id !== installationId || instance.tenant_id !== tenantId || instance.space_id !== spaceId
       || instance.project_id !== projectId || instance.status !== "active" || instance.scope !== "PROJECT_BOUND"
       || !bundle?.id || value.manifest?.id !== bundle.id || !bundle.version
-      || !bundle.primitives?.some(part => part.id === primitiveId && part.kind === "gadget")) return c.json({ error_code: "extension_gadget_scope_mismatch" }, 403);
+      || !bundle.primitives?.some(part => part.id === primitiveId && part.kind === "gadget")
+      || value.release?.signatureValid !== true || value.release.dependenciesResolved !== true || value.release.publisher?.revoked)
+      return c.json({ error_code: value.release?.dependenciesResolved === false ? "extension_dependency_unavailable" : "extension_gadget_scope_mismatch" }, 403);
     const appId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${primitiveId}` : primitiveId;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "extension_gadget_identity_invalid" }, 400);
     const allowed = operation === "list" ? ["table", "filter", "limit"] : operation === "get" || operation === "delete" ? ["table", "id"] : operation === "insert" ? ["table", "record"] : ["table", "id", "record"];

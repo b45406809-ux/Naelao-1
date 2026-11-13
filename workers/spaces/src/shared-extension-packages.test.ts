@@ -218,6 +218,20 @@ describe("signed Space-shared extension packages", () => {
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/abort")).toBe(true);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extension-installation/activate")).toBe(false);
   });
+
+  it("fails closed when a signed package dependency is not installed at its exact pin", async () => {
+    const h = harness();
+    h.release.artifact_sha256 = await digest(JSON.stringify([["./dashboard.html", html], ["./handler.ts", handler]]));
+    h.release.manifest = validateExtensionManifest({ ...h.release.manifest, dependencies: [
+      { extensionId: "ext_shared_calendar", version: "2.0.0", manifestSha256: "c".repeat(64) },
+    ] });
+    h.release.manifest_json = JSON.stringify(h.release.manifest);
+    const response = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extensions/ext_customer_voice/install", "POST", { version: "1.2.0" }), h.env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "extension_package_dependency_unresolved" });
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/extensions")).toBe(false);
+    expect(h.microAppRequests).toHaveLength(0);
+  });
 });
 
 describe("signed Space-shared package update review", () => {
@@ -230,7 +244,7 @@ describe("signed Space-shared package update review", () => {
     expect(await response.json()).toMatchObject({ current: { version: "1.0.0" }, candidate: { version: "1.2.0", signature_verified: true },
       permissions: { added: ["assistant.phone.simulate"] }, capabilities: { added: ["assistant.phone.simulate"] },
       schema_changes: { added: ["gadget:usage_stats"] },
-      dependencies: { package: { status: "not_declared_by_current_extension_contract" } },
+      dependencies: { package: { status: "resolved", candidate_pins: [] } },
       price_terms: { current: null, candidate: null }, review: { authority_expanded: true, explicit_owner_approval_required: true,
         mutates_installation: false, apply_supported: false } });
     expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
