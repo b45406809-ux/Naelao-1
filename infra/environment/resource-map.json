@@ -185,6 +185,648 @@
       }
     },
     {
+      "kind": "durable_object",
+      "binding": "BROWSER_SESSION_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "BrowserSessionDO",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "BrowserSessionDO",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "BUILDER_ACCOUNT_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "BuilderAccountDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "BuilderAccountDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "CONCURRENCY_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ConcurrencyDO",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ConcurrencyDO",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "CONFORMANCE_SANDBOX_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ConformanceSandboxDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ConformanceSandboxDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "DOCUMENT_SANDBOX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "DocumentSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "DocumentSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "DYNAMIC_SANDBOX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "DynamicSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "DynamicSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "FEATURE_FLAG_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "FeatureFlagDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "FeatureFlagDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "HITL_APPROVAL_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "HITLApprovalDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "HITLApprovalDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "LIVE_RUNTIME_CONTROL_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "LiveRuntimeControlDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "LiveRuntimeControlDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "LOCAL_TUNNEL",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "LocalTunnelDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "LocalTunnelDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "LOCK_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "LockDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "LockDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "MEDIA_SANDBOX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "MediaSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "MediaSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "MICRO_APP_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "MicroAppDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "MicroAppDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "NAELAO_AGENT_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "NaelaoAgentDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "NaelaoAgentDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "OWNER_VOICE_AGENT",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "OwnerVoiceAgent",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "OwnerVoiceAgent",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "PRODUCT_USER_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ProductUserDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ProductUserDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "RATE_LIMITER",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "RateLimiterDO",
+            "workers": [
+              "workers/security-gateway/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "RateLimiterDO",
+            "workers": [
+              "workers/security-gateway/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "RATE_LIMIT_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "RateLimitDO",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "RateLimitDO",
+            "workers": [
+              "workers/router/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "REPOSITORY_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "RepositoryDO",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "RepositoryDO",
+            "workers": [
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "RISK_GUARD",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "RiskGuardDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "RiskGuardDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "SPACE_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "SpaceDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "SpaceDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "SPACE_TYPE_REGISTRY_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "SpaceTypeRegistryDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "SpaceTypeRegistryDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "TASK_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "TaskDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "TaskDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "TOOL_SANDBOX",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "ToolSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "ToolSandboxDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "TRANSACTION_COORDINATOR_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "TransactionCoordinatorDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "TransactionCoordinatorDO",
+            "workers": [
+              "workers/spaces/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "WEBSITE_PROFILE_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "WebsiteProfileDO",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "WebsiteProfileDO",
+            "workers": [
+              "workers/browser/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "WORKFLOW_RUN_DO",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "WorkflowRunDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "WorkflowRunDO",
+            "workers": [
+              "workers/agents/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "WORKSPACE_COORDINATOR",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "WorkspaceCoordinatorDO",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "WorkspaceCoordinatorDO",
+            "workers": [
+              "workers/agents/wrangler.toml",
+              "workers/artifact/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "durable_object",
+      "binding": "WS_HUB",
+      "environments": {
+        "staging": [
+          {
+            "id_or_name": "WsHubDO",
+            "workers": [
+              "workers/ws-gateway/wrangler.toml"
+            ]
+          }
+        ],
+        "production": [
+          {
+            "id_or_name": "WsHubDO",
+            "workers": [
+              "workers/ws-gateway/wrangler.toml"
+            ]
+          }
+        ]
+      }
+    },
+    {
       "kind": "durable_object_script",
       "binding": "CONCURRENCY_DO",
       "environments": {
@@ -1990,6 +2632,354 @@
       "status": "unverified"
     },
     {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "BrowserSessionDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "BuilderAccountDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "ConcurrencyDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "ConformanceSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "DocumentSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "DynamicSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "FeatureFlagDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "HITLApprovalDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "LiveRuntimeControlDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "LocalTunnelDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "LockDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "MediaSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "MicroAppDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "NaelaoAgentDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "OwnerVoiceAgent",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "ProductUserDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "RateLimitDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "RateLimiterDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "RepositoryDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "RiskGuardDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "SpaceDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "SpaceTypeRegistryDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "TaskDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "ToolSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "TransactionCoordinatorDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "WebsiteProfileDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "WorkflowRunDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "WorkspaceCoordinatorDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "production",
+      "id_or_name": "WsHubDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "BrowserSessionDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "BuilderAccountDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "ConcurrencyDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "ConformanceSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "DocumentSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "DynamicSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "FeatureFlagDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "HITLApprovalDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "LiveRuntimeControlDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "LocalTunnelDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "LockDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "MediaSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "MicroAppDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "NaelaoAgentDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "OwnerVoiceAgent",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "ProductUserDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "RateLimitDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "RateLimiterDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "RepositoryDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "RiskGuardDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "SpaceDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "SpaceTypeRegistryDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "TaskDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "ToolSandboxDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "TransactionCoordinatorDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "WebsiteProfileDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "WorkflowRunDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "WorkspaceCoordinatorDO",
+      "status": "unverified"
+    },
+    {
+      "kind": "durable_object",
+      "environment": "staging",
+      "id_or_name": "WsHubDO",
+      "status": "unverified"
+    },
+    {
       "kind": "kv",
       "environment": "production",
       "id_or_name": "0b8cfd9b3d4c4aa5a7b14c343aeab8fe",
@@ -2119,6 +3109,90 @@
       "kind": "kv",
       "environment": "staging",
       "id_or_name": "d9668899b225423a980124f4ff38eeb0",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-agent-ticks",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-agent-ticks-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-analytics",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-billing-events",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-billing-events-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-channel-sessions",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-channel-sessions-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-events-dlq-production",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-events-production",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-notifications-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-notifications-queue-production",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-provisioning-dlq",
+      "status": "unverified"
+    },
+    {
+      "kind": "queue",
+      "environment": "production",
+      "id_or_name": "naelao-provisioning-queue",
       "status": "unverified"
     },
     {
@@ -2207,6 +3281,42 @@
     },
     {
       "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-agent-scripts",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-artifacts",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-browser-artifacts",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-exports",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-kb",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
+      "environment": "production",
+      "id_or_name": "naelao-repository-objects",
+      "status": "unverified"
+    },
+    {
+      "kind": "r2",
       "environment": "staging",
       "id_or_name": "naelao-agent-scripts-staging",
       "status": "unverified"
@@ -2239,6 +3349,48 @@
       "kind": "r2",
       "environment": "staging",
       "id_or_name": "naelao-repository-objects-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-agent-memory",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-agent-scripts",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-kb-prod",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-kb-vectors",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-platform-docs",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-semantic-cache",
+      "status": "unverified"
+    },
+    {
+      "kind": "vectorize",
+      "environment": "production",
+      "id_or_name": "naelao-space-types",
       "status": "unverified"
     },
     {
@@ -2281,6 +3433,72 @@
       "kind": "vectorize",
       "environment": "staging",
       "id_or_name": "naelao-space-types-staging",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "AgentTaskWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "BlueprintConformanceWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "CompanyAutomationWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "DataErasureWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "DunningWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "GenericSubagentWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "KbIngestionWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "QueueHealthWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "ScheduledReminderWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "ScriptRunWorkflow",
+      "status": "unverified"
+    },
+    {
+      "kind": "workflow",
+      "environment": "production",
+      "id_or_name": "SpaceProvisioningWorkflow",
       "status": "unverified"
     },
     {

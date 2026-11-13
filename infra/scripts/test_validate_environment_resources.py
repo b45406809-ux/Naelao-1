@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from validate_environment_resources import (
+    _resource_conflicts,
     _validate_receipts,
     build_source_map,
     validate,
@@ -19,6 +20,11 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         self.assertEqual(source_map["unresolved_service_targets"], ["naelao-calls"])
         self.assertGreater(len(source_map["required_existence_receipts"]), 0)
         self.assertTrue(all(row["status"] == "unverified" for row in source_map["required_existence_receipts"]))
+        required = {(row["kind"], row["environment"]) for row in source_map["required_existence_receipts"]}
+        self.assertIn(("queue", "staging"), required)
+        self.assertIn(("queue", "production"), required)
+        self.assertIn(("durable_object", "staging"), required)
+        self.assertIn(("durable_object", "production"), required)
 
     def test_current_worktree_fails_closed_for_shared_ids_unresolved_service_and_missing_receipts(self):
         errors = validate()
@@ -128,6 +134,62 @@ class EnvironmentResourceMapTests(unittest.TestCase):
             datetime(2026, 11, 13, 12, tzinfo=timezone.utc),
         )
         self.assertEqual(sum("exact configured resource ID" in error for error in errors), 2)
+
+    def test_all_mutable_environment_targets_must_be_separate(self):
+        rows = []
+        for kind in ("r2", "queue", "workflow", "vectorize", "durable_object_script", "service"):
+            rows.append({
+                "kind": kind,
+                "binding": f"{kind.upper()}_BINDING",
+                "environments": {
+                    "staging": [{"id_or_name": "shared-target", "workers": ["staging-worker"]}],
+                    "production": [{"id_or_name": "shared-target", "workers": ["production-worker"]}],
+                },
+            })
+        # A Durable Object class is the same code symbol in each Worker environment; its
+        # deployed namespace IDs are checked from receipts instead of comparing class names.
+        rows.append({
+            "kind": "durable_object",
+            "binding": "CACHE_DO",
+            "environments": {
+                "staging": [{"id_or_name": "CacheDO", "workers": ["staging-worker"]}],
+                "production": [{"id_or_name": "CacheDO", "workers": ["production-worker"]}],
+            },
+        })
+        errors = _resource_conflicts({"bindings": rows})
+        self.assertEqual(sum("shares staging/production resource target(s)" in error for error in errors), 6)
+        self.assertFalse(any(error.startswith("durable_object CACHE_DO") for error in errors))
+
+    def test_durable_object_namespace_receipts_reject_cross_environment_id_reuse(self):
+        source_map = {
+            "required_existence_receipts": [
+                {"kind": "durable_object", "environment": environment, "id_or_name": "CacheDO"}
+                for environment in ("staging", "production")
+            ]
+        }
+        receipts = {
+            "version": 1,
+            "account_id": "account-1",
+            "observed_at": "2026-11-12T12:00:00Z",
+            "resources": [
+                {
+                    "kind": "durable_object",
+                    "environment": environment,
+                    "id_or_name": "CacheDO",
+                    "resource_id": "same-namespace-id",
+                    "evidence_source": "read-only namespace inventory",
+                    "observer": "operator",
+                    "read_only": True,
+                }
+                for environment in ("staging", "production")
+            ],
+        }
+        errors = _validate_receipts(
+            source_map,
+            receipts,
+            datetime(2026, 11, 13, 12, tzinfo=timezone.utc),
+        )
+        self.assertTrue(any("durable_object observed resource ID is shared" in error for error in errors))
 
     def test_rejects_map_drift(self):
         with tempfile.TemporaryDirectory() as directory:

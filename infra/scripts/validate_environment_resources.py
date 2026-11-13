@@ -20,7 +20,18 @@ MAP_PATH = ROOT / "infra/environment/resource-map.json"
 RECEIPTS_PATH = ROOT / "infra/environment/resource-receipts.json"
 RECEIPT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 ENVIRONMENTS = ("staging", "production")
-RECEIPT_KINDS = {"queue", "workflow", "r2", "vectorize"}
+RECEIPT_KINDS = {"queue", "workflow", "r2", "vectorize", "durable_object"}
+MUTABLE_RESOURCE_KINDS = {
+    "d1",
+    "kv",
+    "r2",
+    "vectorize",
+    "queue",
+    "workflow",
+    "durable_object_script",
+    "service",
+}
+REQUIRED_ENVIRONMENT_RESOURCE_KINDS = MUTABLE_RESOURCE_KINDS | {"durable_object"}
 
 
 def _rows(value: Any) -> list[dict[str, Any]]:
@@ -54,7 +65,14 @@ def _resource_rows(environment: dict[str, Any]) -> list[tuple[str, str, str]]:
     add("workflow", environment.get("workflows"), "name")
     durable_objects = environment.get("durable_objects")
     if isinstance(durable_objects, dict):
-        add("durable_object_script", durable_objects.get("bindings"), "script_name")
+        for row in _rows(durable_objects.get("bindings")):
+            binding = row.get("name") or row.get("binding") or "durable_object"
+            class_name = row.get("class_name")
+            if isinstance(class_name, str) and class_name.strip():
+                resources.append(("durable_object", str(binding), class_name.strip()))
+            script_name = row.get("script_name")
+            if isinstance(script_name, str) and script_name.strip():
+                resources.append(("durable_object_script", str(binding), script_name.strip()))
     return resources
 
 
@@ -63,7 +81,7 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
     by_binding: dict[tuple[str, str], dict[str, dict[str, set[str]]]] = {}
     receipt_requirements: set[tuple[str, str, str]] = set()
     service_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
-    known_targets: set[str] = set()
+    known_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
 
     for path in files:
         parsed = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -74,14 +92,14 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
             if not isinstance(environment, dict):
                 continue
             target_name = environment.get("name")
-            known_targets.add(str(target_name or f"{worker_name}-{environment_name}"))
+            known_targets[environment_name].add(str(target_name or f"{worker_name}-{environment_name}"))
             for kind, binding, resource in _resource_rows(environment):
                 target = by_binding.setdefault((kind, binding), {})
                 environment_resources = target.setdefault(environment_name, {})
                 environment_resources.setdefault(resource, set()).add(relative)
                 if kind == "service":
                     service_targets[environment_name].add(resource)
-                if environment_name == "staging" and kind in RECEIPT_KINDS:
+                if kind in RECEIPT_KINDS:
                     receipt_requirements.add((kind, environment_name, resource))
                 if kind in {"d1", "kv"}:
                     receipt_requirements.add((kind, environment_name, resource))
@@ -108,7 +126,7 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
         "source_files": source_hashes,
         "bindings": mapped_bindings,
         "unresolved_service_targets": sorted(
-            set.union(*(service_targets[name] for name in ENVIRONMENTS)) - known_targets
+            set.union(*(service_targets[name] - known_targets[name] for name in ENVIRONMENTS))
         ),
         "required_existence_receipts": [
             {"kind": kind, "environment": environment_name, "id_or_name": name, "status": "unverified"}
@@ -129,36 +147,37 @@ def _read_json(path: Path, label: str) -> tuple[Any | None, list[str]]:
 def _resource_conflicts(source_map: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     by_kind_environment: dict[str, dict[str, set[str]]] = {
-        "d1": {"staging": set(), "production": set()},
-        "kv": {"staging": set(), "production": set()},
+        kind: {"staging": set(), "production": set()} for kind in MUTABLE_RESOURCE_KINDS
     }
     for binding in source_map["bindings"]:
         kind = binding["kind"]
         name = binding["binding"]
         staging = {row["id_or_name"] for row in binding["environments"].get("staging", [])}
         production = {row["id_or_name"] for row in binding["environments"].get("production", [])}
-        if kind in {"d1", "kv"}:
+        if kind in REQUIRED_ENVIRONMENT_RESOURCE_KINDS:
             if not staging or not production:
-                errors.append(f"{kind} {name} must have explicit staging and production resource IDs")
-            elif staging & production:
+                errors.append(f"{kind} {name} must have explicit staging and production resource targets")
+            elif kind in MUTABLE_RESOURCE_KINDS and staging & production:
                 shared = ", ".join(sorted(staging & production))
-                errors.append(f"{kind} {name} shares staging/production resource ID(s): {shared}")
-            by_kind_environment[kind]["staging"].update(staging)
-            by_kind_environment[kind]["production"].update(production)
-            id_pattern = re.compile(
-                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-                if kind == "d1"
-                else r"^[0-9a-fA-F]{32}$"
-            )
-            for environment_name, values in (("staging", staging), ("production", production)):
-                for value in values:
-                    if not id_pattern.fullmatch(value):
-                        errors.append(f"{kind} {name} {environment_name} resource ID is not a real-format ID: {value}")
+                errors.append(f"{kind} {name} shares staging/production resource target(s): {shared}")
+            if kind in MUTABLE_RESOURCE_KINDS:
+                by_kind_environment[kind]["staging"].update(staging)
+                by_kind_environment[kind]["production"].update(production)
+            if kind in {"d1", "kv"}:
+                id_pattern = re.compile(
+                    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                    if kind == "d1"
+                    else r"^[0-9a-fA-F]{32}$"
+                )
+                for environment_name, values in (("staging", staging), ("production", production)):
+                    for value in values:
+                        if not id_pattern.fullmatch(value):
+                            errors.append(f"{kind} {name} {environment_name} resource ID is not a real-format ID: {value}")
     for kind, environments in by_kind_environment.items():
         shared_across_bindings = environments["staging"] & environments["production"]
         for resource in sorted(shared_across_bindings):
-            if not any(f"resource ID(s): {resource}" in error for error in errors):
-                errors.append(f"{kind} resource ID is shared across staging and production bindings: {resource}")
+            if not any(f"resource target(s): {resource}" in error for error in errors):
+                errors.append(f"{kind} resource target is shared across staging and production bindings: {resource}")
     return errors
 
 
@@ -218,6 +237,18 @@ def _validate_receipts(
             errors.append(f"receipt for {key[0]} {key[2]} must be from a read-only inventory")
         if key[0] in {"d1", "kv"} and row.get("resource_id") != key[2]:
             errors.append(f"receipt for {key[0]} {key[2]} must confirm the exact configured resource ID")
+    observed_ids: dict[str, dict[str, set[str]]] = {
+        kind: {"staging": set(), "production": set()} for kind in RECEIPT_KINDS
+    }
+    for key, row in observed.items():
+        kind, environment, _ = key
+        resource_id = row.get("resource_id")
+        if kind in observed_ids and isinstance(resource_id, str) and resource_id.strip():
+            observed_ids[kind][environment].add(resource_id.strip())
+    for kind, environments in observed_ids.items():
+        shared = environments["staging"] & environments["production"]
+        for resource_id in sorted(shared):
+            errors.append(f"{kind} observed resource ID is shared across staging and production: {resource_id}")
     return errors
 
 
