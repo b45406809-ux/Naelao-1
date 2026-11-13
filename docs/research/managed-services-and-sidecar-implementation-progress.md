@@ -2,7 +2,7 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P23 synchronous outcomes `27683db1` pushed)
+### Active continuation (2026-11-13; P23 outcomes `27683db1`, setup migration foundation `4dbd5c99` pushed)
 
 - `27683db1` is pushed to `origin/Mcbt5s-Backup-2`. Notifications claims a stable operation ID before
   provider egress, stores non-PII not-sent/rejected/accepted/ambiguous results, returns the ID and
@@ -22,12 +22,15 @@
   policy and deployed/live recovery acceptance are not credential blockers. Keep rollouts disabled.
 - S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain governed by their source/
   caller matrix and are not declared complete. Preserve the untracked `infra/scripts/__pycache__/`.
-- Exact next task: implement §5's currently uncoded signed, owner-reviewed template setup-schema
-  migration/update flow. Trace the installed/source schema and setup-value callers, then add bounded
-  declarative migration preview and per-installation persistence with provenance/revision fences.
-  Keep permission, price, dependency, provider-resource and generated-project effects explicitly
-  reviewed; do not invent unresolved lifecycle policy. Then continue the remaining managed-services
-  rows from their exact matrix actions.
+- Code `4dbd5c99` adds the signed, data-only setup migration schema pinned to source artifact and
+  schema SHA-256 values. Rename/drop/default operations are bounded and type-checked; preview preserves
+  existing values without coercion and reports required owner input. Agent SDK test **10/10**, SDK
+  typecheck and `git diff --check` pass. It is not yet wired to the installation UI or persistence.
+- Exact next task: connect this foundation to Marketplace's same-publisher signed source check and
+  owner/admin status caller, then implement preview/apply with exact artifact/schema/listing and setup
+  revision fences. Permit only setup-only updates with unchanged package runtime, dependencies and
+  terms; preserve project, provider and permission state. Then resume the remaining managed-services
+  matrix actions from their recorded next tasks.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

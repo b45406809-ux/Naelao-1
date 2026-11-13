@@ -13,7 +13,8 @@ a new session, read both plans, both progress records, and this runbook; inspect
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
 Current checkpoint (2026-11-13): P23 synchronous notification outcomes are committed and pushed as
-`27683db1` to `origin/Mcbt5s-Backup-2`, following remote tip `e3d58399`. The Notifications route now
+`27683db1`, and the signed declarative template setup-migration foundation is pushed as `4dbd5c99`,
+to `origin/Mcbt5s-Backup-2`. The Notifications route now
 claims stable operation IDs before provider egress, records non-PII `not_sent`, rejected, accepted or
 ambiguous outcomes, returns outcome and ID, and never automatically repeats an ambiguous operation.
 Reachable callers pass stable IDs where their event or operation identity supports it. Migrations
@@ -27,18 +28,24 @@ No provider, deployed database, deployment, or live acceptance was exercised. P2
 approved retention, audited operator replay and live acceptance. `infra/scripts/__pycache__/` remains
 untracked and preserved.
 
+`4dbd5c99` adds a signed, data-only setup migration declaration pinned to the installed artifact and
+schema digests, validates rename/drop/default steps, and previews values without coercion while
+reporting required owner input. Agent SDK focused tests **10/10**, SDK typecheck and
+`git diff --check` pass. This helper is not yet reachable from the Marketplace installation caller
+and does not apply an update.
+
 S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10 retain
 their specific statuses and gaps in the ledgers. P01/P02 code controls pass locally and fail closed on
 one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, 158 missing read-only resource receipts,
 and absent operator-attested migration baselines. No rollout is enabled.
 
-Exact next action: continue in dependency order after the already reconciled release/environment,
-commercial-recovery and P04 work. The first current uncoded implementation item is §5's signed,
-owner-reviewed template setup schema migration/update flow. Inspect its package and installation
-contracts, then implement a bounded, declarative per-installation migration preview and persistence
-with provenance/revision checks. Keep package, permission, price, provider-resource and generated-
-project effects behind explicit review; do not invent unresolved lifecycle policy. Update both
-progress records at the next meaningful checkpoint.
+Exact next action: wire the §5 migration foundation to the current Marketplace source verifier,
+owner/admin installation-status caller and SpaceDO persistence. Add an owner preview that resolves the
+newest same-publisher signed artifact, confirms the runtime package/dependencies/price are unchanged,
+matches the exact installed artifact/schema digests, collects missing values, and applies only after
+explicit confirmation with expected listing/hash/setup-revision fences. Keep generated-project,
+permission, dependency, price and provider-resource changes out of this setup-only path. Then continue
+the remaining managed-services matrix actions. Update both progress records after each coherent slice.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing

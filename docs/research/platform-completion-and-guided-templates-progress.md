@@ -2,8 +2,8 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P23 synchronous notification outcomes `27683db1` were pushed to
-`origin/Mcbt5s-Backup-2`. The route claims caller-stable IDs before provider egress, persists
+Updated 2026-11-13 after P23 synchronous notification outcomes `27683db1` and setup migration
+foundation `4dbd5c99` were pushed to `origin/Mcbt5s-Backup-2`. The route claims caller-stable IDs before provider egress, persists
 non-PII not-sent/rejected/accepted/ambiguous outcomes, returns outcome/ID, and refuses automatic
 resend after ambiguous attempts. Migrations 0235/0236 widen channels and add terminal ambiguous
 cost-alert delivery. Existing asynchronous ledger/status paths remain in migration 0234.
@@ -24,7 +24,10 @@ acceptance gaps. These are not credential blockers. No rollout is enabled.
 
 **§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
 localized declarations, expected-usage inputs, install status, owner host forms and per-installation
-settings migration exist. A Marketplace Template setup-schema migration/update flow is uncoded.
+settings migration exist. Code `4dbd5c99` adds a bounded, signed, data-only setup migration contract
+and pure preview helper pinned to source artifact/schema digests; it is tested **10/10** and typechecks.
+It is not connected to Marketplace source verification, owner UI or per-installation persistence yet.
+The Template setup-schema migration/update caller flow therefore remains uncoded.
 Permission/pricing review, rollback/uninstall effects, generated-project/provider-resource lifecycle,
 complete verified rates, visual authoring and live acceptance also remain gaps; ordinary unwritten code
 is not labeled credential-blocked.
@@ -40,11 +43,11 @@ Owner-configurable posture/defaults, private publication/request-to-use authorit
 linkage, reservation/cardinality, expiry/concurrency policy and broad non-disclosure acceptance remain.
 Unresolved product/policy choices are not credential blocks.
 
-Exact next task: implement the §5 signed, owner-reviewed setup-schema migration/update slice. Trace
-the installed/source schema and setup-value callers, then add bounded declarative migration preview
-and per-installation persistence with provenance/revision fences. Keep permissions, price, dependency,
-provider-resource and generated-project effects behind explicit review; do not invent unresolved
-lifecycle policy. Resume the managed-services source/caller matrix after this slice.
+Exact next task: wire the §5 migration helper to Marketplace's same-publisher signed source verifier,
+owner/admin installation-status UI and SpaceDO persistence. Add preview/apply with exact artifact,
+schema, listing and setup-revision fences; allow only setup-only updates with unchanged runtime,
+dependencies and terms. Keep generated-project, permission, dependency, price and provider-resource
+changes outside this path. Resume the managed-services source/caller matrix after this slice.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
