@@ -2120,6 +2120,39 @@ async function visibleAutomationProjectIds(c: any, spaceId: string): Promise<str
   return (payload?.data ?? []).flatMap((project) => typeof project.id === "string" ? [project.id] : []);
 }
 
+async function visibleAutomationProjectPage(
+  c: any,
+  spaceId: string,
+  after: string,
+  limit: number,
+): Promise<{ projectIds: string[]; nextCursor: string | null; hasMore: boolean } | Response> {
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const params = new URLSearchParams({ space_id: spaceId, after, limit: String(limit) });
+  if (identity.userId) params.set("viewer_id", identity.userId);
+  else params.set("space_manager", "1");
+  const response = await forwardToSpaceDO(await spaceDoStub(c.env, spaceId, tenantId),
+    `/projects/blackboard-visible-page?${params}`, "GET");
+  if (!response.ok) return c.json({ error_code: "project_access_unavailable", message: "Could not resolve visible project page" }, 503);
+  const payload = await response.json<{ project_ids?: unknown; next_cursor?: unknown; truncated?: unknown }>()
+    .catch(() => null);
+  const projectIds = payload?.project_ids;
+  const nextCursor = payload?.next_cursor;
+  const truncated = payload?.truncated;
+  const validIds = Array.isArray(projectIds) && projectIds.length <= limit &&
+    projectIds.every((id, index) => typeof id === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(id) &&
+      id > after && (index === 0 || id > projectIds[index - 1]));
+  const validCursor = nextCursor === null || (typeof nextCursor === "string" &&
+    /^[A-Za-z0-9._:-]{1,160}$/.test(nextCursor) && nextCursor > after);
+  if (!payload || !validIds || !validCursor || typeof truncated !== "boolean" ||
+      (truncated && (!nextCursor || !projectIds.length || nextCursor !== projectIds[projectIds.length - 1])) ||
+      (!truncated && nextCursor !== null)) {
+    return c.json({ error_code: "project_page_unavailable", message: "Invalid visible project page" }, 503);
+  }
+  return { projectIds: projectIds as string[], nextCursor: nextCursor as string | null, hasMore: truncated };
+}
+
 app.use("/internal/spaces/:spaceId/projects/:projectId/automation-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/spaces/:spaceId/projects/:projectId/automation-access", async (c) => {
   const denied = await requireManageableAutomationProject(c, c.req.param("spaceId"), c.req.param("projectId"));
@@ -2164,18 +2197,16 @@ app.get("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
   return c.json({card:card ? {projectId:card.project_id,summary:card.summary,capabilities:JSON.parse(card.capabilities_json),evidence:JSON.parse(card.evidence_json),updatedAt:card.updated_at} : null});
 });
 app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
-  const spaceId = c.req.param("spaceId"), visible = await visibleAutomationProjectIds(c, spaceId);
-  if (visible instanceof Response) return visible;
+  const spaceId = c.req.param("spaceId");
   const cursor = c.req.query("after") ?? "";
   if (cursor && !/^[A-Za-z0-9._:-]{1,160}$/.test(cursor)) return c.json({ error_code:"invalid_cursor" },400);
-  const candidates = [...new Set(visible)].sort().filter(id => id > cursor);
-  // Keep the ID list plus tenant/space bindings below Workerd SQLite's bind-variable ceiling.
-  // A 100-ID page creates 102 parameters and fails on the embedded SQLite build used by Workers.
-  const page = candidates.slice(0,90);
-  if (!page.length) return c.json({ cards: [], next_cursor: null, truncated: false });
+  const visible = await visibleAutomationProjectPage(c, spaceId, cursor, 90);
+  if (visible instanceof Response) return visible;
+  const page = visible.projectIds;
+  if (!page.length) return c.json({ cards: [], next_cursor: visible.nextCursor, truncated: visible.hasMore });
   const placeholders = page.map(() => "?").join(",");
   const cards = await c.env.PLATFORM_DB.prepare(`SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) ORDER BY project_id`).bind(c.req.header("x-naelao-tenant-id"), spaceId, ...page).all<{ project_id: string; summary: string; capabilities_json: string; evidence_json: string; updated_at: string }>();
-  return c.json({ next_cursor: candidates.length > page.length ? page[page.length-1] : null, truncated: candidates.length > page.length, cards: cards.results.map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
+  return c.json({ next_cursor: visible.nextCursor, truncated: visible.hasMore, cards: cards.results.map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
 });
 app.post("/internal/spaces/:spaceId/blackboard/requests", async c => {
   const spaceId = c.req.param("spaceId"), tenant = c.req.header("x-naelao-tenant-id")!, user = c.req.header("x-naelao-user-id")!;

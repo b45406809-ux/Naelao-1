@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "space_blackboard_indexed_pagination",
+  "evidence_class": "integrated-local-wrangler-d1-spacedo-sdk-operation",
+  "started_at": "2026-11-12T23:56:20.431Z",
+  "completed_at": "2026-11-12T23:57:39.845Z",
+  "setup": {
+    "migration_files": 232,
+    "migration_apply_ms": 63207,
+    "worker_start_ms": 12683,
+    "total_runtime_ms": 79413
+  },
+  "fixture": {
+    "visible_cards_per_scale": [100, 1000, 10000],
+    "query_positions": ["first", "middle", "last"],
+    "cards_are_synthetic": true,
+    "providers_called": 0
+  },
+  "results": [
+    {
+      "visible_cards": 100,
+      "pages": 2,
+      "search_cases": [
+        { "position": 1, "found": true, "elapsed_ms": 29, "page_p50_ms": 7, "page_p95_ms": 20 },
+        { "position": 51, "found": true, "elapsed_ms": 11, "page_p50_ms": 4, "page_p95_ms": 7 },
+        { "position": 100, "found": true, "elapsed_ms": 12, "page_p50_ms": 5, "page_p95_ms": 7 }
+      ],
+      "assistant_last_position": { "found": true, "search_calls": 1, "loop_steps": 7, "elapsed_ms": 32 }
+    },
+    {
+      "visible_cards": 1000,
+      "pages": 12,
+      "search_cases": [
+        { "position": 1, "found": true, "elapsed_ms": 53, "page_p50_ms": 4, "page_p95_ms": 5 },
+        { "position": 501, "found": true, "elapsed_ms": 51, "page_p50_ms": 4, "page_p95_ms": 5 },
+        { "position": 1000, "found": true, "elapsed_ms": 57, "page_p50_ms": 5, "page_p95_ms": 6 }
+      ],
+      "assistant_last_position": { "found": true, "search_calls": 2, "loop_steps": 9, "elapsed_ms": 63 }
+    },
+    {
+      "visible_cards": 10000,
+      "pages": 112,
+      "search_cases": [
+        { "position": 1, "found": true, "elapsed_ms": 565, "page_p50_ms": 5, "page_p95_ms": 8 },
+        { "position": 5001, "found": true, "elapsed_ms": 515, "page_p50_ms": 4, "page_p95_ms": 6 },
+        { "position": 10000, "found": true, "elapsed_ms": 512, "page_p50_ms": 4, "page_p95_ms": 6 }
+      ],
+      "assistant_last_position": { "found": true, "search_calls": 12, "loop_steps": 29, "elapsed_ms": 536 }
+    }
+  ],
+  "caveats": [
+    "One local Wrangler run using synthetic public cards; not a production latency distribution.",
+    "Exact-reference retrieval and cursor consumption are verified; live model propensity and independently labeled relevance are not measured.",
+    "The snapshot comparator materializes all cards and remains test-only."
+  ]
+}

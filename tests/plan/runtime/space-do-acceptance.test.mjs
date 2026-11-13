@@ -1129,15 +1129,31 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
     }, 120_000);
     assert.equal(seeded.seeded_projects, count);
     assert.equal(seeded.seeded_cards, count);
+    const targetIndices = [...new Set([0, Math.floor(count / 2), count - 1])];
+    const searchCases = [];
+    let search;
+    for (const targetIndex of targetIndices) {
+      const targetProjectId = `00000000-0000-4000-8000-${targetIndex.toString(16).padStart(12, "0")}`;
+      const currentSearch = await jsonRequest(agentsBaseUrl, "/__test/blackboard/search-all", "POST", {
+        query: `ref${String(targetIndex).padStart(5, "0")}`,
+        projectId: targetProjectId,
+        maxPages: 150,
+      }, 180_000);
+      assert.equal(currentSearch.found, true, `card at position ${targetIndex + 1} was not found at ${count}`);
+      assert.equal(currentSearch.truncated, false, `search stopped before exhausting cards at ${count}`);
+      assert.equal(currentSearch.pages, Math.ceil(count / 90), `cursor/page count drift at ${count}`);
+      searchCases.push({
+        target_position: targetIndex + 1,
+        target_found: currentSearch.found,
+        pages_followed: currentSearch.pages,
+        end_to_end_ms: currentSearch.elapsed_ms,
+        page_latency_p50_ms: currentSearch.page_latencies_ms.sort((a, b) => a - b)[Math.ceil(currentSearch.page_latencies_ms.length * 0.5) - 1] ?? 0,
+        page_latency_p95_ms: currentSearch.page_latencies_ms.sort((a, b) => a - b)[Math.ceil(currentSearch.page_latencies_ms.length * 0.95) - 1] ?? 0,
+      });
+      search = currentSearch;
+    }
+    if (!search) throw new Error("blackboard_search_case_missing");
     const targetProjectId = `00000000-0000-4000-8000-${(count - 1).toString(16).padStart(12, "0")}`;
-    const search = await jsonRequest(agentsBaseUrl, "/__test/blackboard/search-all", "POST", {
-      query: `ref${String(count - 1).padStart(5, "0")}`,
-      projectId: targetProjectId,
-      maxPages: 150,
-    }, 180_000);
-    assert.equal(search.found, true, `last seeded card was not found at ${count}`);
-    assert.equal(search.truncated, false, `search stopped before exhausting cards at ${count}`);
-    assert.equal(search.pages, Math.ceil(count / 90), `cursor/page count drift at ${count}`);
     const assistantSearch = await jsonRequest(agentsBaseUrl, "/__test/blackboard/assistant-search", "POST", {
       query: `ref${String(count - 1).padStart(5, "0")}`,
       projectId: targetProjectId,
@@ -1162,6 +1178,8 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
     const measurement = {
       visible_cards: count,
       target_position: count,
+      query_distribution: "exact reference at first, middle, and final sorted positions",
+      search_cases: searchCases,
       target_found: search.found,
       pages_followed: search.pages,
       assistant_target_found: assistantSearch.found,
@@ -1191,7 +1209,7 @@ test("real local D1 and SpaceDO blackboard search compares cursor traversal with
     name: "blackboard-cursor-pagination-local-wrangler",
     evidence_class: "integrated-local-wrangler-d1-spacedo-sdk-operation",
     query_cases: resultByScale,
-    note: "Each target is the last seeded card. The SDK arm follows one cursor per call; the assistant arm runs the production ScriptToolSurface and runScriptLoop against the local Wrangler+D1 operation with a deterministic reasoner fixture, following the returned cursor across bounded 10-page search batches. It tests cursor consumption and ranking, not model propensity. Snapshot arm is a test-only comparator and does not establish full ranking semantics.",
+    note: "The SDK arm tests exact-reference targets at first, middle, and final positions of each sorted corpus and follows one cursor per call. The assistant arm exercises the final-position query through the production ScriptToolSurface and runScriptLoop against local Wrangler+D1 with a deterministic reasoner fixture, following returned cursors across bounded 10-page search batches. It tests cursor consumption and ranking, not model propensity. Snapshot arm is a test-only comparator and does not establish full ranking semantics.",
   });
 });
 

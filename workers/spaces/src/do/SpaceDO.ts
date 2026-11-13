@@ -2342,6 +2342,11 @@ const MIGRATIONS: Migration[] = [
     );
     CREATE INDEX idx_space_erasure_tombstones_request ON space_erasure_tombstones(request_id);`,
   },
+  {
+    version: 110,
+    description: "index bounded Space Blackboard project visibility pagination",
+    up: `CREATE INDEX IF NOT EXISTS idx_projects_space_id ON projects(space_id,id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3578,6 +3583,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /projects?space_id= — list projects
       if (method === "GET" && url.pathname === "/projects") {
         return this.listProjects(url.searchParams);
+      }
+      if (method === "GET" && url.pathname === "/projects/blackboard-visible-page") {
+        return this.listBlackboardVisibleProjectPage(url.searchParams);
       }
       // POST /projects — create a project (idempotent on (space_id, name))
       if (method === "POST" && url.pathname === "/projects") {
@@ -5973,6 +5981,40 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       })),
       count: visible.length,
     });
+  }
+
+  /** Bounded keyset page for Space Blackboard. ACL predicates stay in the authoritative SpaceDO,
+   * are reevaluated on every page, and avoid materializing/sorting all Space projects on each
+   * caller turn. The stable project-ID order matches the previous host-side sort. */
+  private listBlackboardVisibleProjectPage(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const viewerId = params.get("viewer_id") ?? "";
+    const manager = params.get("space_manager") === "1";
+    const after = params.get("after") ?? "";
+    const requestedLimit = Number(params.get("limit") ?? "90");
+    if (!spaceId || (after && !/^[A-Za-z0-9._:-]{1,160}$/.test(after)) ||
+        !Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 90 ||
+        (!viewerId && !manager)) {
+      return Response.json({ error_code: "invalid_project_page" }, { status: 400 });
+    }
+    const rows = queryAll<{ id: string }>(this.ctx.storage.sql as never, `
+      SELECT p.id FROM projects p INDEXED BY idx_projects_space_id
+      WHERE p.space_id=? AND p.subspace_id IS NULL AND p.id>? AND p.status!='archived' AND (
+        p.visibility='public' OR ?=1 OR
+        EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?) OR
+        EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id=p.space_id AND sm.user_id=? AND sm.role IN ('owner','admin')) OR
+        EXISTS (
+          SELECT 1 FROM spaces child JOIN space_members parent_member
+            ON parent_member.space_id=child.parent_id
+          WHERE child.id=p.space_id AND child.depth=1 AND child.status='active'
+            AND parent_member.user_id=? AND parent_member.role IN ('owner','admin')
+        )
+      ) ORDER BY p.id LIMIT ?`,
+      spaceId, after, manager ? 1 : 0, viewerId, viewerId, viewerId, requestedLimit + 1);
+    const truncated = rows.length > requestedLimit;
+    const page = rows.slice(0, requestedLimit);
+    return Response.json({ project_ids: page.map((row) => row.id),
+      next_cursor: truncated ? page.at(-1)?.id ?? null : null, truncated });
   }
 
   private async createProject(request: Request): Promise<Response> {

@@ -67,6 +67,7 @@ describe("SpaceDO migration replay", () => {
     const foundryRequestTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='foundry_feature_requests'").toArray();
     const acceptedWorkerTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='accepted_cross_space_workers'").toArray();
     const glossaryTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_glossary_terms'").toArray();
+    const blackboardProjectIndex = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_projects_space_id'").toArray();
     const foundrySchema = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray()[0]?.sql;
     const applied = storage.sql
       .exec<{ count: number }>(
@@ -93,6 +94,7 @@ describe("SpaceDO migration replay", () => {
     expect(foundryRequestTable).toHaveLength(1);
     expect(acceptedWorkerTable).toHaveLength(1);
     expect(glossaryTable).toHaveLength(1);
+    expect(blackboardProjectIndex).toHaveLength(1);
     expect(foundrySchema).toContain("validated_version");
     expect(applied[0]?.count).toBe(1);
     expect(acceptedWorkerMigration[0]?.count).toBe(1);
@@ -177,6 +179,6 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(109);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(110);
   });
 });
