@@ -13,31 +13,35 @@ a new session, read both plans, both progress records, and this runbook; inspect
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
 Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` matches fetched
-`origin/Mcbt5s-Backup-2` at code `9d5a0c23c506e41dffd0ba81dd2992ea56887839`. P10/P24 now support
-an owner-reviewed, same-publisher update only for a paused, version-only static Canvas package with
-no declared permissions, settings, dependencies, connections, channels, state migrations or other
-runtime surfaces. The worker re-verifies the signed candidate and active publisher key; SpaceDO checks
-the exact version pin and signature, keeps the installation paused, and atomically writes a durable,
-idempotent receipt with the new pin. Owner/admin Shell can apply and view bounded update history.
-SpaceDO migration 125 stores receipts. Local evidence: Spaces package/update/runtime/migration suites
-**49/49**, Spaces/Shell typechecks and `git diff --check`. Fetch confirmed `origin/Mcbt5s-Backup-2`
-at the same SHA. Only the pre-existing untracked `infra/scripts/__pycache__/` remains.
+`origin/Mcbt5s-Backup-2` at code `15a04f7e19df8d586445e1f0eb7a2d69754c9c9f`. P10/P24 now persist
+per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch, phone calls and
+simulations, shared/project Gadgets, Canvas Gadget reads, workflow Gadget actions, dynamic pages and
+first-party initialization acquire before invoking the runtime; streamed responses retain the lease
+through completion or cancellation. Pause closes admission and supports a bounded 0–10 second drain.
+Generic install retries cannot reactivate disabled/staged instances; package pin upgrades and rollback
+require a paused installation with zero active leases. The prior static Canvas path retains its
+receipt. Local evidence: Spaces focused suites **61/61**, Agent phone suite **7/7**, Spaces/Agents/Shell
+typechecks, and `git diff --check`. These are local mocks/SQLite checks; no deployed DO, live provider,
+package, call or recovery drill ran. Preserve the untracked `infra/scripts/__pycache__/`; rollouts stay
+disabled.
 
-The generic package path is still PARTIAL: active-work admission/drain, stateful channel/gadget updates,
-settings/data migrations, rollback UI/version selection, permission or dependency expansion, provider
-connections, price changes, compromise response, scanning/retention and live acceptance are uncoded
-or unverified. P04/P06 remain PARTIAL as recorded below; P01/P02 resource separation, ownership,
-158 read-only receipts and operator-attested D1 baselines remain external gates. No deployed DO,
-provider, Marketplace, live call or recovery drill was exercised. Rollouts remain disabled.
+P10/P24 remain PARTIAL: general update review receipts, runtime/data migration preview and recovery,
+rollback/version selection UI, authority/dependency expansion, provider connection and price changes,
+compromise response, scanning/retention and live acceptance remain uncoded or unverified. The 30-minute
+lease expiry is crash cleanup; provider/deployed timing is not verified. P04/P06 remain PARTIAL. P01/P02
+still require actual resource separation, ownership, 158 read-only receipts and operator-attested D1
+baselines. No live or deployed acceptance is claimed.
 
-Exact next action: continue P10/P24 by tracing every channel and gadget invocation from admission to
-completion. Add a durable per-installation active-work lease that blocks new admissions after pause and
-supports a bounded drain before any runtime-bearing update. Add tests for concurrent calls, lost
-response and restart/revocation; keep state migrations, authority expansions, dependencies,
-connections and prices disabled until their separate review/rollback paths exist. After compaction,
-interruption or a new session, read both plans, both progress records and this runbook; inspect the
-actual worktree and branch; resume from this exact action. Do not deploy, purchase, reset, clean,
-switch branches or force-push.
+The detailed managed-services ledger already reconciles supported U11/U12 callers; their remaining
+invoice, billed-idle/CPU-size, policy and live-evidence gaps are not credential blockers. Do not repeat
+those audits without new source evidence. Exact next action: close the P04 owner-facing backup gap by
+adding a reachable owner/admin full-archive export control to `ArchiveKeyRotationPanel`, using the
+existing resumable `data-ops` API and a stable request ID across retries. Cover request identity,
+authorization and visible completion/failure in local checks; update the archive runbook. Then resume
+the exact uncoded rows in the S4–S9/U01–U12 and platform ledgers, preserving P01/P02 external gates.
+After compaction, interruption or a new session, read both plans, both progress records and this
+runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
+purchase, reset, clean, switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
 fetch before each push, safely incorporate remote advances, and never rewrite remote history.
 

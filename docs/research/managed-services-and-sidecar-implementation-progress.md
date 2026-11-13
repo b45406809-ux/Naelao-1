@@ -2,13 +2,34 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; paused static Canvas update receipt `9d5a0c23` pushed)
+### Active continuation (2026-11-13; runtime-work drain `15a04f7e` pushed)
 
-- Code `9d5a0c23c506e41dffd0ba81dd2992ea56887839` is pushed and fetch-confirmed on `origin/Mcbt5s-Backup-2`; branch `autonomous-managed-services-20261111` matches it. It follows P06 `b2d4ac0f71992a8d66fc5ad9c6a9cc7b28235dc2` and P04 `849bf78a54af5921dbf33c7d807f16eff61153a5`.
-- P10/P24 now permit an update only when the installation is disabled, same publisher/key, and current/candidate manifests differ only by release version. The package may contain static Canvas only, requires only the Canvas-mount capability, and has no permissions, settings, dependencies, provider connections, channels, shared storage, schema or other runtime surfaces. The owner/admin reviews a short-lived actor/install/version/artifact-bound token and explicitly applies. The worker rechecks the publisher signature, active key and artifact bytes; SpaceDO verifies its host signature, enforces the disabled exact-pin compare-and-swap, keeps the installation disabled, and atomically writes migration-125 receipt data. Hono retries retrieve the existing receipt before rechecking current publisher trust, allowing lost-response recovery. Owner/admin Shell shows the last 50 receipts.
-- Local evidence: `shared-extension-packages.test.ts`, `extension-runtime-install.test.ts` and `SpaceDO-migrations.test.ts` **49/49**; Spaces and Shell typechecks; `git diff --check`. These are local Worker/SQLite/R2/DB mocks, not deployed acceptance. No live Marketplace, provider, deployed DO or production package ran. Preserve untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
-- P10/P24 remain PARTIAL: runtime-bearing updates still need durable active-work admission/drain; settings and data migrations, rollback/version selection, authority or dependency expansion, provider connection/price changes, compromise response, scanning, retention and deployed/live acceptance remain uncoded or unverified. P04/P06 retain their gaps below; P01/P02 resource separation, ownership, 158 read-only receipts and operator-attested D1 baselines remain external gates. S2–S9/U01–U12 status is unchanged.
-- Exact next action: trace every channel and gadget invocation from admission through completion. Add a durable per-installation active-work lease, block new admissions after pause, and implement a bounded drain before runtime-bearing updates; cover concurrent calls, lost response, restart and revocation. Keep state migrations, authority expansion, dependencies, provider connections and prices disabled pending their separate approval/rollback paths. This is implementation work, not a credential blocker.
+- Code `15a04f7e19df8d586445e1f0eb7a2d69754c9c9f` is pushed and fetch-confirmed on
+  `origin/Mcbt5s-Backup-2`; branch `autonomous-managed-services-20261111` matches it. It follows
+  static Canvas update receipt `9d5a0c23`.
+- P10/P24 now persist per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch,
+  phone calls/simulations, shared and project Gadget calls, Canvas Gadget reads, workflow Gadget
+  operations, dynamic pages and first-party initialization acquire before runtime invocation. Streamed
+  responses hold the lease until complete or cancelled. Pause blocks new admissions and returns a
+  bounded drain result. Generic install retries preserve disabled/staged state; package pin upgrades
+  and rollback require paused status and zero active work. Owner UI exposes pause/drain status and a
+  wait-for-work action. Static Canvas update receipts remain unchanged.
+- Local evidence: Spaces focused runtime/migration/Gadget/page suites **61/61**; Agents phone scope
+  suite **7/7**; Spaces, Agents and Shell typechecks; `git diff --check`. These are local mocks and
+  SQLite only. No deployed DO, real provider, Marketplace, live call or recovery drill ran. Preserve
+  `infra/scripts/__pycache__/`; rollouts remain disabled.
+- P10/P24 remain PARTIAL: general owner-reviewed update intent/receipt, runtime/data migration preview
+  and recovery, rollback/version-selection UI, authority/dependency expansion, connection/price
+  changes, compromise response, scanning/retention and deployed/live acceptance remain uncoded or
+  unverified. The 30-minute lease expiry is crash cleanup, not measured provider timing. S2–S9/U01–U12
+  status is otherwise unchanged. P01/P02 retain their external resource/ownership/receipt/baseline
+  gates; P03/P20 retain unresolved policy and operator-identity questions.
+- Managed-services source/caller reconciliation already closes the supported U11/U12 audits. Missing
+  invoices, billed-idle/CPU-size feeds, approved policy and live evidence remain distinct gaps; do not
+  repeat those audits without new source evidence. Exact next action: implement the P04 owner/admin
+  full-archive export caller in `ArchiveKeyRotationPanel`, retaining a stable request ID for safe
+  retry through the existing resumable API. Then resume the exact uncoded S4–S9/U01–U12 rows from this
+  ledger; do not infer completion from the reconciliation alone.
 
 ### Prior active continuation (2026-11-13; cross-Space signed package import `b4cf5214` pushed)
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
