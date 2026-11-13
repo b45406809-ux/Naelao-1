@@ -2,34 +2,32 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code commit `e3c4451f` was pushed to `origin/Mcbt5s-Backup-2`.
-SpaceBlueprint package schema v1 adds a bounded data-only field vocabulary (text, number, boolean,
-select), with schema complexity, IDs, labels, help, choices, defaults and values validated in the
-SDK host compiler. Provider-credential field types and obvious secret/credential names are rejected;
-the owner UI also directs credentials through host connections. The authenticated Spaces activation
-preview returns supported field definitions; Shell renders them; activation validates values before
-install side effects; SpaceDO repeats validation and persists normalized values in the same durable,
-idempotent per-Space installation claim. A retry with different settings is rejected rather than
-silently returning the first install.
+Updated 2026-11-13 after code commit `07af44c2` was pushed to `origin/Mcbt5s-Backup-2`.
+Extension manifests now use the same bounded schema-v1 field vocabulary as Space Templates.
+Installation settings are stored per active Space-shared extension with optimistic revisions; the
+Shell renders a basic settings form and exposes a restricted microapp RPC. Each host request
+revalidates the active installation, signed manifest schema, declared read/configure capability and
+permission, Space membership/administrator role, value shape and revision. Initial reads apply
+defaults while leaving required values blank. Focused local evidence: SDK schema/canvas tests **36/36**,
+Spaces settings/MCP-route/migration tests **20/20**, SDK/Spaces/Shell typechecks, local SDK build and
+`git diff --check`. No deployed Durable Object, package runtime, customer install or provider was
+exercised.
 
-Local evidence: focused Spaces activation/installation/migration suites **25/25**, SDK blueprint and
-setup schema suites **7/7**, SDK/Spaces/Shell typechecks, and `git diff --check`. These are local
-fixtures and mocks; no deployed Durable Object, provider, or customer installation was exercised.
-§5 remains PARTIAL: values are retained with the install record but are not yet readable by the
-template runtime or an extension microapp; drafts do not survive closing/reloading the browser;
-configuration updates, conditional/localized fields, expected-usage inputs, complete provider/runtime
-rates, visual authoring and full install/update/uninstall acceptance remain open. The setup form is
-not a credential vault or provider connection.
+§5 remains PARTIAL. Space Template setup values are persisted with their idempotent install record,
+but are still not exposed to template code; no browser draft/resume lifecycle, conditional/localized
+fields, visual authoring, expected-usage inputs, complete provider/runtime rate coverage or full
+update/uninstall acceptance exists. The new extension settings store is install-scoped but is not a
+template runtime consumer. Fields cannot collect provider secrets; use host-managed connections.
 
-The prior-source managed-services sweep still records S2–S9/U01–U12 independently. Local code is
-implemented for currently supported lanes, but rows remain partial for named policy decisions,
-unsupported runtime/platform contracts, missing external resource evidence and live/deployed
-acceptance. P01/P02 remain fail-closed on environment IDs, ownership/receipts and operator-attested
-migration baselines; P03/P20 retain the open grace/restriction, refund/dispute/author-accounting and
-independent operator identity contracts. Exact next task: compare the current scoped MicroApp/Gadget
-API, extension canvas and assistant-voice settings against §9.5; add the missing safe,
-installation-scoped settings path for the new configuration contract, then implement voice dashboard
-caller slices and proceed to §10 Shared-Space coordination. No provider streaming support is enabled.
+The managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
+their named product policy, unsupported runtime/platform contract, external resource evidence or
+deployed/live acceptance gap. P01/P02 remain fail-closed on environment IDs, ownership receipts and
+operator-attested migration baselines; P03/P20 retain the grace/restriction,
+refund/dispute/author-accounting and independent operator-identity gaps. Exact next task: connect the
+existing `createAssistantVoiceClient` to a capability-checked Space-shared extension RPC for the
+existing `/assistant-voice` service, then build a package dashboard caller that reuses its catalog,
+revision and safe preferences. Do not enable unsupported public phone streaming. Continue §9 and then
+§10 Shared-Space coordination; keep implementation, mocked, deployed and live evidence distinct.
 
 Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
 `origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a

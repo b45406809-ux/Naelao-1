@@ -2,7 +2,27 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; guided setup schema `e3c4451f` pushed)
+### Active continuation (2026-11-13; extension settings foundation `07af44c2` pushed)
+
+- Code `07af44c2` is pushed to `origin/Mcbt5s-Backup-2`. The ExtensionManifest now includes the
+  same bounded schema-v1 field contract used by Space Templates. SpaceDO persists settings by
+  installation with optimistic revisions; a schema-rendered Shell form and narrow microapp RPC call
+  the host. The host checks active installation, manifest declaration, role, values and revision on
+  every request; defaults are returned before required first-save values exist.
+- Local evidence: SDK schema/canvas tests **36/36**, Spaces settings, route and migration tests **20/20**,
+  SDK/Spaces/Shell typechecks, local SDK build and `git diff --check`. This is local/mock evidence;
+  no deployed DO, extension runtime or provider acceptance was exercised.
+- The earlier Space Template values remain stored with the Space install claim, with no template
+  runtime consumer or browser draft/resume path. Conditional/localized fields and full usage/rate
+  estimates remain open. S2–S9/U01–U12 statuses do not change: locally implemented supported lanes
+  remain distinct from documented policy, unsupported-platform, external evidence and live gates.
+- Exact next task: connect the existing SDK `createAssistantVoiceClient` through a
+  capability-checked Space-shared extension host RPC to `/assistant-voice`, then add a voice dashboard
+  caller using the existing safe catalog and revision model. Keep public extension streaming disabled;
+  then continue §9 voice dashboard requirements and §10 Shared-Space coordination. Preserve
+  `infra/scripts/__pycache__/`; keep global rollouts disabled.
+
+### Prior continuation (2026-11-13; guided setup schema `e3c4451f` pushed)
 
 - Code `e3c4451f` is pushed to `origin/Mcbt5s-Backup-2`. The SDK defines setup-schema version 1
   with bounded text, number, boolean and select fields. Host compiler validation rejects malformed

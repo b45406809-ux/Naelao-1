@@ -2,25 +2,31 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code commit `e3c4451f` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Guided Space Templates now
-support a versioned setup schema with bounded text, number, boolean and select fields; the host
-validates the signed schema and owner values, displays those fields in the Shell review, and stores
-normalized values with the idempotent per-Space installation claim. Local evidence: focused Spaces
-routes/installation/migrations **25/25**, SDK schema/compiler **7/7**, SDK/Spaces/Shell typechecks and
-`git diff --check`. These are local/mock checks only. §5 remains PARTIAL: no saved draft/resume after
-leaving the client, conditional/localized fields, settings update/read surface, runtime/microapp
-consumer, expected-usage estimate or complete provider pricing exists. Provider credentials are not
-supported by this field contract; host-managed connection flows remain separate. The managed-services
-S2–S9/U01–U12 ledger remains reconciled with its named product-policy, unsupported-platform and live
-acceptance gaps; do not claim those are completed/live. P01/P02 remain fail-closed on unverified
-resource separation, ownership receipts and operator-attested migration baselines. P03/P20 still need
-approved grace/restriction and refund/dispute/author-accounting policies plus independently
-authenticated operator identity. Exact next task: reconcile current microapp settings, voice APIs and
-assistant voice dashboards against platform plan §9.5; reuse the bounded server-validated setup
-contract and implement the next safe install-scoped dashboard/settings connection. Then continue
-through §10 Shared-Space coordination. Preserve `infra/scripts/__pycache__/`; keep rollout disabled,
-and do not deploy, buy services, or push with force.
+Current continuation checkpoint (2026-11-13): code commit `07af44c2` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Extension manifests now carry
+the shared bounded schema-v1 field contract. SpaceDO stores settings per active Space-shared install
+with optimistic revisions; Shell has a basic schema-rendered settings form and the isolated
+microapp bridge exposes a narrow settings RPC. The host revalidates manifest, install, capability,
+role and values on each call. First-load reads return defaults and allow required fields to be filled
+before the first save. Focused local evidence: SDK schema/canvas tests **36/36**, Spaces settings,
+MCP-route and migration tests **20/20**, SDK/Spaces/Shell typechecks and `git diff --check`; SDK dist
+was rebuilt locally. These are local tests, not deployed or live acceptance. The earlier guided
+Space Template setup values remain stored on their install claim and still lack a runtime consumer,
+save/resume drafts, conditional/localized fields, expected-usage estimates and full rate coverage.
+The new per-extension settings path does not yet make template setup values visible to template code.
+
+Managed-services S2–S9/U01–U12 remains reconciled in the progress ledger, with named policy,
+unsupported runtime/platform contract, external evidence and live acceptance gaps kept distinct.
+P01/P02 remain fail-closed on environment-resource separation, ownership receipts and
+operator-attested migration baselines. P03/P20 still need approved grace/restriction and
+refund/dispute/author-accounting policies plus an independently authenticated operator identity.
+Exact next task: connect the existing `createAssistantVoiceClient` to a capability-checked
+Space-shared extension RPC for the current `/assistant-voice` service, then build a voice dashboard
+caller that reuses its catalog, revision and safe preferences. Preserve the public phone-extension
+streaming rejection and current rollout flags. After that slice, continue the §9 voice requirements
+and §10 Shared-Space coordination; keep recording implementation, mock, deployed and provider-live
+evidence separately. Preserve `infra/scripts/__pycache__/`; keep rollout disabled, and do not deploy,
+buy services, or force-push.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
