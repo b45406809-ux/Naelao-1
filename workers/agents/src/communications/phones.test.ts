@@ -19,6 +19,7 @@ import { phoneProvider, PhoneProviderError } from "./phone-provider.js";
 import { registerPhoneWebhooks } from "./phone-webhooks.js";
 import { registerCommunicationRoutes } from "./routes.js";
 import { detachAssistantPhonesForErasure } from "./phone-lifecycle.js";
+import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
 const account = "AC" + "a".repeat(32),
   token = "b".repeat(32),
   pn = "PN" + "c".repeat(32),
@@ -994,7 +995,7 @@ describe("assistant telephone safety and lifecycle", () => {
   expect(dispatch).toHaveBeenCalledTimes(1);
  });
 
- it("shows owner-scoped Telnyx extension call history with masked caller and no provider call ID",async()=>{
+ it("shows owner-scoped Telnyx call-cost summaries without exposing provider call IDs",async()=>{
   const f=await phoneFixture();f.env.AGENTS_WORKER={fetch:vi.fn(async()=>Response.json({valid:true}))} as unknown as Fetcher;
   await f.act("phone-handler",{installation_id:"extension",handler_sha256:"a".repeat(64),confirm:true});
   const now=Math.floor(Date.now()/1000);
@@ -1002,10 +1003,32 @@ describe("assistant telephone safety and lifecycle", () => {
   await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,started_at,
     expires_at,duration_seconds,created_at,updated_at) VALUES(?,?,?,'ended',2,?,?,25,?,?)`)
     .bind("provider-call-control-private",f.binding.id,"+14155550199",now-30,now+300,now-30,now).run();
+  await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,started_at,
+    expires_at,duration_seconds,created_at,updated_at) VALUES(?,?,?,'ended',1,?,?,10,?,?)`)
+    .bind("provider-call-control-mixed",f.binding.id,"+14155550188",now-40,now+300,now-40,now).run();
+  await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,started_at,
+    expires_at,duration_seconds,created_at,updated_at) VALUES(?,?,?,'ended',1,?,?,5,?,?)`)
+    .bind("provider-call-control-no-report",f.binding.id,"+14155550177",now-50,now+300,now-50,now).run();
+  const addReceipt = async (callControlId:string,legHash:string,currency:string,cost:number,eventHash:string) => {
+    await f.db.prepare(`INSERT INTO assistant_telnyx_voice_cost_receipts(binding_id,call_leg_id_sha256,call_session_id_sha256,
+      first_event_id_sha256,provider_cost_micros,currency,billed_duration_seconds,occurred_at,cost_evidence_sha256,observed_at,call_control_id_sha256)
+      VALUES(?,?,NULL,?,?,?,NULL,?,?,?,?)`)
+      .bind(f.binding.id,legHash,eventHash,cost,currency,new Date().toISOString(),"f".repeat(64),new Date().toISOString(),
+        await telnyxCallControlIdHash(f.binding.id,callControlId)).run();
+  };
+  await addReceipt("provider-call-control-private","1".repeat(64),"USD",10_600,"a".repeat(64));
+  await addReceipt("provider-call-control-private","2".repeat(64),"USD",200,"b".repeat(64));
+  await addReceipt("provider-call-control-mixed","3".repeat(64),"USD",800,"c".repeat(64));
+  await addReceipt("provider-call-control-mixed","4".repeat(64),"EUR",100,"d".repeat(64));
   const status=await f.act("phone-status") as {recent_telnyx_extension_calls:Array<Record<string,unknown>>};
-  expect(status.recent_telnyx_extension_calls).toEqual([expect.objectContaining({state:"ended",turn_count:2,
-    started_at:now-30,duration_seconds:25,caller_hint:"•••• 0199"})]);
+  expect(status.recent_telnyx_extension_calls).toEqual([
+    expect.objectContaining({state:"ended",turn_count:2,started_at:now-30,duration_seconds:25,caller_hint:"•••• 0199",
+      cost_report:{status:"reported",provider_cost_micros:10_800,currency:"USD",leg_count:2}}),
+    expect.objectContaining({cost_report:{status:"unavailable",provider_cost_micros:null,currency:null,leg_count:null}}),
+    expect.objectContaining({cost_report:{status:"not_linked",provider_cost_micros:null,currency:null,leg_count:null}}),
+  ]);
   expect(JSON.stringify(status)).not.toContain("provider-call-control-private");
+  expect(JSON.stringify(status)).not.toContain("provider-call-control-mixed");
   expect(JSON.stringify(status)).not.toContain("+14155550199");
   const nonManager=await f.act("phone-status",{},false,false) as {recent_telnyx_extension_calls:unknown[]};
   expect(nonManager.recent_telnyx_extension_calls).toEqual([]);

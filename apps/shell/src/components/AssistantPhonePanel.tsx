@@ -37,6 +37,19 @@ type Row = {
 type PhoneHistoryPage = { data: Row[]; next_cursor: string | null };
 type TelnyxInventoryNumber = { phone_number: string; country_code: string; number_type: string | null; features: string[]; locality: string | null; region: string | null; upfront_cost_minor: number; monthly_cost_minor: number; currency: string };
 type PhoneHandlerCandidate = { installation_id: string; extension_id: string; name: string; version: string; handler_sha256: string };
+type RecentExtensionCall = {
+  state: string;
+  turn_count: number;
+  started_at: number;
+  duration_seconds: number | null;
+  caller_hint: string | null;
+  cost_report: {
+    status: "reported" | "unavailable" | "not_linked";
+    provider_cost_micros: number | null;
+    currency: string | null;
+    leg_count: number | null;
+  };
+};
 export function AssistantPhonePanel({
   spaceId,
   projectId,
@@ -56,7 +69,7 @@ export function AssistantPhonePanel({
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
-      recent_telnyx_extension_calls?: Array<{ state:string;turn_count:number;started_at:number;duration_seconds:number|null;caller_hint:string|null }>;
+      recent_telnyx_extension_calls?: RecentExtensionCall[];
       phone_handler_candidates?: PhoneHandlerCandidate[];
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
@@ -145,6 +158,7 @@ export function AssistantPhonePanel({
           handler_status: string | null;
           status: string;
         }>;
+        recent_telnyx_extension_calls?: RecentExtensionCall[];
         phone_handler_candidates?: PhoneHandlerCandidate[];
         legacy_numbers?: Array<{ id: string; phone_number: string; provider_number_sid: string; status: string }>;
       }>(
@@ -353,11 +367,19 @@ export function AssistantPhonePanel({
       })}
       {((state?.extension_lines?.length ?? 0) > 0 || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
         <summary>Recent customer extension calls · Telnyx</summary>
-        <p>The latest 50 call records from the last 7 days. Caller IDs are masked. This keypad extension does not store transcripts or recordings, and this view is not an invoice.</p>
+        <p>The latest 50 call records from the last 7 days. Caller IDs are masked. Costs appear only when a signed Telnyx report is linked. No linked report means the amount is unknown, not zero. These provider-reported amounts are not invoices or customer charges.</p>
         {state?.recent_telnyx_extension_calls?.length ? <ol>
-          {state.recent_telnyx_extension_calls.map((call, index) => <li key={`${call.started_at}:${index}`}>
-            {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`}
-          </li>)}
+          {state.recent_telnyx_extension_calls.map((call, index) => {
+            const cost = call.cost_report;
+            const costLabel = cost.status === "reported" && cost.provider_cost_micros !== null && cost.currency
+              ? `Telnyx reported ${cost.currency} ${(cost.provider_cost_micros / 1_000_000).toFixed(6)}${cost.leg_count ? ` across ${cost.leg_count} cost legs` : ""}`
+              : cost.status === "unavailable"
+                ? "Provider cost report unavailable"
+                : "No linked provider report · amount unknown, not zero";
+            return <li key={`${call.started_at}:${index}`}>
+              {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {costLabel}
+            </li>;
+          })}
         </ol> : <p>No recent Telnyx extension calls are recorded.</p>}
       </details>}
       <p>

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0236_cost_alert_ambiguous_delivery_status",
+  "requiredSchemaVersion": "0237_telnyx_voice_call_cost_control_hash",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -947,6 +947,10 @@
     {
       "filename": "0236_cost_alert_ambiguous_delivery_status.sql",
       "sha256": "5a64a0c00806aeee974dabe1ea29d25df0cedd891e95cb09405364955d46576d"
+    },
+    {
+      "filename": "0237_telnyx_voice_call_cost_control_hash.sql",
+      "sha256": "1e0e85df3860b2a63848e4c161204ef3ac0b43e2ffd969d431f125e201edb22a"
     }
   ]
 }

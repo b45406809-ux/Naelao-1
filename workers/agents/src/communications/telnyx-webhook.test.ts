@@ -7,6 +7,7 @@ import type { AgentsEnv } from "../index.js";
 import { ensureIdentity } from "./core.js";
 import { defaultPhonePolicy } from "./phones.js";
 import { registerTelnyxWebhook } from "./telnyx-webhook.js";
+import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -52,6 +53,8 @@ describe("Telnyx extension ingress", () => {
     const result = await request();
     expect(result.status).toBe(200);
     expect(await result.json()).toEqual({ accepted: true });
+    // Simulate an exact pre-migration receipt that is replayed after adding the hash column.
+    await f.db.prepare("UPDATE assistant_telnyx_voice_cost_receipts SET call_control_id_sha256=NULL WHERE binding_id='cost-binding'").run();
     await f.db.prepare("UPDATE assistant_telnyx_ingress_receipts SET state='indeterminate' WHERE binding_id='cost-binding' AND event_id='cost-event-1'").run();
     const replayed = await request();
     expect(replayed.status).toBe(200);
@@ -61,12 +64,14 @@ describe("Telnyx extension ingress", () => {
       provider_cost_micros,currency,source_api FROM managed_service_provider_cost_observations`).first())
     ).toMatchObject({ provider: "telnyx", service_id: "telnyx.voice.call", usage_kind: "voice", quantity_unit: "second",
       quantity_micros: 120_000_000, provider_cost_micros: 10_600, currency: "USD", source_api: "telnyx.call_cost.webhook" });
-    const receipt = await f.db.prepare("SELECT call_leg_id_sha256,call_session_id_sha256,first_event_id_sha256 FROM assistant_telnyx_voice_cost_receipts").first<Record<string, string>>();
+    const receipt = await f.db.prepare("SELECT call_leg_id_sha256,call_session_id_sha256,first_event_id_sha256,call_control_id_sha256 FROM assistant_telnyx_voice_cost_receipts").first<Record<string, string>>();
     expect(receipt?.call_leg_id_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt?.call_session_id_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(receipt?.first_event_id_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt?.call_control_id_sha256).toBe(await telnyxCallControlIdHash("cost-binding", "v3:call-control"));
     expect(Object.values(receipt ?? {}).join(" ")).not.toContain("leg-identity-raw");
     expect(Object.values(receipt ?? {}).join(" ")).not.toContain("session-identity-raw");
+    expect(Object.values(receipt ?? {}).join(" ")).not.toContain("v3:call-control");
   });
 
   it("rejects unadmitted calls and conflicting cost totals without adding another observation", async () => {

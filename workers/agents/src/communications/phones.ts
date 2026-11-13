@@ -25,6 +25,63 @@ import {
   phonePublicOrigin,
   xml,
 } from "./phone-provider.js";
+import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
+
+type ExtensionCallCostSummary = {
+  status: "reported" | "unavailable" | "not_linked";
+  provider_cost_micros: number | null;
+  currency: string | null;
+  leg_count: number | null;
+};
+
+const MAX_REPORTED_COST_LEGS_PER_CALL = 32;
+
+async function extensionCallCostSummaries(
+  env: AgentsEnv,
+  calls: Array<{ binding_id: string; call_control_id: string }>,
+) {
+  const unique = [...new Map(calls.map(call => [`${call.binding_id}\0${call.call_control_id}`, call])).values()];
+  if (!unique.length) return new Map<string, ExtensionCallCostSummary>();
+  const hashed = await Promise.all(unique.map(async call => ({
+    binding_id: call.binding_id,
+    call_control_id: call.call_control_id,
+    call_control_id_sha256: await telnyxCallControlIdHash(call.binding_id, call.call_control_id),
+  })));
+  const values = hashed.map(() => "(?,?)").join(",");
+  const rows = (await env.PLATFORM_DB.prepare(`WITH requested(binding_id,call_control_id_sha256) AS (VALUES ${values}),
+      ranked AS (
+        SELECT c.binding_id,c.call_control_id_sha256,c.provider_cost_micros,c.currency,
+          ROW_NUMBER() OVER (PARTITION BY c.binding_id,c.call_control_id_sha256 ORDER BY c.call_leg_id_sha256) AS leg_rank
+        FROM assistant_telnyx_voice_cost_receipts c
+        JOIN requested r ON r.binding_id=c.binding_id AND r.call_control_id_sha256=c.call_control_id_sha256
+      )
+      SELECT binding_id,call_control_id_sha256,MAX(leg_rank) AS sampled_leg_count,
+        COUNT(DISTINCT CASE WHEN leg_rank<=${MAX_REPORTED_COST_LEGS_PER_CALL} THEN currency END) AS currency_count,
+        MIN(CASE WHEN leg_rank<=${MAX_REPORTED_COST_LEGS_PER_CALL} THEN currency END) AS currency,
+        SUM(CASE WHEN leg_rank<=${MAX_REPORTED_COST_LEGS_PER_CALL} THEN provider_cost_micros ELSE 0 END) AS provider_cost_micros
+      FROM ranked WHERE leg_rank<=${MAX_REPORTED_COST_LEGS_PER_CALL + 1}
+      GROUP BY binding_id,call_control_id_sha256`)
+    .bind(...hashed.flatMap(row => [row.binding_id, row.call_control_id_sha256]))
+    .all<{ binding_id: string; call_control_id_sha256: string; sampled_leg_count: number; currency_count: number;
+      currency: string | null; provider_cost_micros: number | null }>()).results;
+  const output = new Map<string, ExtensionCallCostSummary>();
+  for (const row of rows) {
+    const legCount = Number(row.sampled_leg_count);
+    const amount = row.provider_cost_micros == null ? NaN : Number(row.provider_cost_micros);
+    const available = legCount <= MAX_REPORTED_COST_LEGS_PER_CALL && Number(row.currency_count) === 1
+      && typeof row.currency === "string" && /^[A-Z]{3}$/.test(row.currency) && Number.isSafeInteger(amount) && amount >= 0;
+    output.set(`${row.binding_id}\0${row.call_control_id_sha256}`, {
+      status: available ? "reported" : "unavailable",
+      provider_cost_micros: available ? amount : null,
+      currency: available ? row.currency : null,
+      leg_count: available ? legCount : null,
+    });
+  }
+  return new Map(hashed.flatMap(row => {
+    const summary = output.get(`${row.binding_id}\0${row.call_control_id_sha256}`);
+    return summary ? [[`${row.binding_id}\0${row.call_control_id}`, summary] as const] : [];
+  }));
+}
 
 export interface AssistantPhonePolicy {
   allowWebsiteVerification?: boolean;
@@ -575,18 +632,22 @@ export async function handlePhoneAction(
     const telnyxRelease = await env.PLATFORM_DB.prepare("SELECT id,status,phone_number,next_reconcile_at,last_error FROM assistant_telnyx_number_release_operations WHERE identity_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
       .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
     const phoneHandlerCandidates = manager ? await listPhoneHandlerCandidates(env, scope) : [];
-    const recentExtensionCalls = manager
-      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds
+    const recentExtensionCallRows = manager
+      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.binding_id,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds
           FROM assistant_telnyx_extension_calls c JOIN assistant_phone_bindings b ON b.id=c.binding_id
           WHERE b.identity_id=? AND b.purpose='extension' AND c.started_at>=?
           ORDER BY c.started_at DESC,c.call_control_id DESC LIMIT 50`)
           .bind(identity.id, Math.floor(Date.now() / 1000) - 7 * 86_400)
-          .all<{ call_control_id:string;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
-          .results.map(row => ({
+          .all<{ call_control_id:string;binding_id:string;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
+          .results
+      : [];
+    const extensionCallCosts = await extensionCallCostSummaries(env, recentExtensionCallRows);
+    const recentExtensionCalls = recentExtensionCallRows.map(row => ({
             state: row.state, turn_count: row.turn_count, started_at: row.started_at,
             duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller),
-          }))
-      : [];
+            cost_report: extensionCallCosts.get(`${row.binding_id}\0${row.call_control_id}`)
+              ?? { status: "not_linked" as const, provider_cost_micros: null, currency: null, leg_count: null },
+          }));
     const agentPortShare = currentPhone?.provider === "telnyx" ? await env.PLATFORM_DB.prepare(`SELECT m.agentport_link_status,
         (SELECT o.operation_name FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
           ORDER BY o.updated_at DESC LIMIT 1) AS operation_name,

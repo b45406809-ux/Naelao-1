@@ -14,6 +14,11 @@ async function sha256(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** Binding-scoped, domain-separated reference for matching provider cost to admitted calls. */
+export async function telnyxCallControlIdHash(bindingId: string, callControlId: string): Promise<string> {
+  return sha256(`telnyx-call-control:v1\0${bindingId}\0${callControlId}`);
+}
+
 function decimalMicros(value: unknown): number {
   if (typeof value !== "string") throw new Error("telnyx_call_cost_amount_invalid");
   try { return providerCostToMicros(value); }
@@ -76,6 +81,7 @@ export async function observeTelnyxVoiceCallCost(env: AgentsEnv, binding: Assist
   const durationSeconds = duration == null ? null : Number(duration);
   const callLegHash = await sha256(callLegId);
   const callSessionHash = typeof callSessionId === "string" ? await sha256(callSessionId) : null;
+  const callControlHash = await telnyxCallControlIdHash(binding.id, callControlId);
   const eventHash = await sha256(event.eventId);
   const costEvidenceHash = await sha256(JSON.stringify([binding.id, callLegHash, callSessionHash,
     totalMicros, currency, durationSeconds, occurred, parts.map(part => [part.cost, part.currency])]));
@@ -83,21 +89,33 @@ export async function observeTelnyxVoiceCallCost(env: AgentsEnv, binding: Assist
 
   const receiptWrite = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_voice_cost_receipts(
       binding_id,call_leg_id_sha256,call_session_id_sha256,first_event_id_sha256,provider_cost_micros,currency,
-      billed_duration_seconds,occurred_at,cost_evidence_sha256,observed_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      billed_duration_seconds,occurred_at,cost_evidence_sha256,observed_at,call_control_id_sha256)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(binding.id, callLegHash, callSessionHash, eventHash, totalMicros, currency,
-      durationSeconds, occurred, costEvidenceHash, observedAt).run();
+      durationSeconds, occurred, costEvidenceHash, observedAt, callControlHash).run();
   const receipt = await env.PLATFORM_DB.prepare(`SELECT call_session_id_sha256,provider_cost_micros,currency,
-      billed_duration_seconds,occurred_at,cost_evidence_sha256
+      billed_duration_seconds,occurred_at,cost_evidence_sha256,call_control_id_sha256
     FROM assistant_telnyx_voice_cost_receipts WHERE binding_id=? AND call_leg_id_sha256=?`)
     .bind(binding.id, callLegHash)
     .first<{ call_session_id_sha256: string | null; provider_cost_micros: number; currency: string;
-      billed_duration_seconds: number | null; occurred_at: string; cost_evidence_sha256: string }>();
+      billed_duration_seconds: number | null; occurred_at: string; cost_evidence_sha256: string;
+      call_control_id_sha256: string | null }>();
   if (!receipt || receipt.call_session_id_sha256 !== callSessionHash || Number(receipt.provider_cost_micros) !== totalMicros
     || receipt.currency !== currency || (receipt.billed_duration_seconds == null ? null : Number(receipt.billed_duration_seconds)) !== durationSeconds
     || receipt.occurred_at !== occurred || receipt.cost_evidence_sha256 !== costEvidenceHash) {
     throw new Error("telnyx_call_cost_receipt_conflict");
   }
+  if (receipt.call_control_id_sha256 === null) {
+    // Upgrade an older exact receipt on a verified replay. The provider call ID is
+    // hashed only after its signed event has passed the admitted-call check above.
+    await env.PLATFORM_DB.prepare(`UPDATE assistant_telnyx_voice_cost_receipts
+      SET call_control_id_sha256=? WHERE binding_id=? AND call_leg_id_sha256=? AND call_control_id_sha256 IS NULL`)
+      .bind(callControlHash, binding.id, callLegHash).run();
+  }
+  const linked = await env.PLATFORM_DB.prepare(`SELECT call_control_id_sha256
+    FROM assistant_telnyx_voice_cost_receipts WHERE binding_id=? AND call_leg_id_sha256=?`)
+    .bind(binding.id, callLegHash).first<{ call_control_id_sha256: string | null }>();
+  if (linked?.call_control_id_sha256 !== callControlHash) throw new Error("telnyx_call_cost_receipt_conflict");
 
   const observation = await recordProviderApiCostObservation(env.PLATFORM_DB, {
     tenantId: identity.tenant_id,
