@@ -159,6 +159,10 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           <div className="settings-row-sub" style={{ marginTop: 4 }}>{entry.audience === "space_admins" ? "Visible to Space owners and administrators" : "Visible to all active Space members"} · advisory only · version {entry.version} · {entry.status}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>{formatExpiry(entry.expires_at)}</div>
           <div className="settings-row-sub" style={{ marginTop: 3 }}>Last confirmed {formatConfirmationTime(entry.last_confirmed_at)}</div>
+          {entry.created_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Created by actor {entry.created_by}</div>}
+          {entry.approved_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Last approved by actor {entry.approved_by} ({entry.approved_role ?? "owner/admin"})</div>}
+          {entry.provenance && <div className="settings-row-sub" style={{ marginTop: 3 }}>Provenance: {entry.provenance}</div>}
+          {entry.status === "revoked" && entry.revoked_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Revoked by actor {entry.revoked_by}{entry.revoked_at ? ` · ${formatConfirmationTime(entry.revoked_at)}` : ""}</div>}
         </div>
         {canManage && entry.status !== "revoked" && <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => beginEdit(entry)}>{entry.status === "expired" ? "Renew or edit" : "Edit"}</button>

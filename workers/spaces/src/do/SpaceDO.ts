@@ -2886,6 +2886,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const statusProjection = schemaVersion === 2
       ? "CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status"
       : "status";
+    const actorProjection = canReviewLifecycle ? ",created_by,approved_by,approved_role,provenance,revoked_by" : "";
     let rows: Array<Record<string, unknown>>;
     if (after) {
       let cursorTime = "", cursorId = "";
@@ -2906,13 +2907,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!Number.isFinite(Date.parse(cursorTime)) || !/^[A-Za-z0-9_-]{1,128}$/.test(cursorId)) throw new Error("cursor_invalid");
       } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
       rows = queryAll(sql,
-        `SELECT entry_id,schema_version,capability_key,label,description,audience,${statusProjection},version,created_at,updated_at,revoked_at,last_confirmed_at${schemaVersion === 2 ? ",expires_at" : ""}
+        `SELECT entry_id,schema_version,capability_key,label,description,audience,${statusProjection},version,created_at,updated_at,revoked_at,last_confirmed_at${schemaVersion === 2 ? ",expires_at" : ""}${actorProjection}
          FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND ${lifecycle}
            AND ${visibility} AND (created_at>? OR (created_at=? AND entry_id>?)) ORDER BY created_at,entry_id LIMIT ?`,
         ...(schemaVersion === 2 ? [now] : []), tenantId, spaceId, ...lifecycleArgs, ...visibilityArgs, cursorTime, cursorTime, cursorId, limit + 1);
     } else {
       rows = queryAll(sql,
-        `SELECT entry_id,schema_version,capability_key,label,description,audience,${statusProjection},version,created_at,updated_at,revoked_at,last_confirmed_at${schemaVersion === 2 ? ",expires_at" : ""}
+        `SELECT entry_id,schema_version,capability_key,label,description,audience,${statusProjection},version,created_at,updated_at,revoked_at,last_confirmed_at${schemaVersion === 2 ? ",expires_at" : ""}${actorProjection}
          FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND ${lifecycle}
          AND ${visibility} ORDER BY created_at,entry_id LIMIT ?`, ...(schemaVersion === 2 ? [now] : []), tenantId, spaceId, ...lifecycleArgs, ...visibilityArgs, limit + 1);
     }
@@ -2949,7 +2950,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         existing.schema_version === schemaVersion && existing.approved_role === body.approved_role && existing.status === "active" &&
         (existing.expires_at ?? null) === expiresAt;
       const publicEntry = same ? queryOne<Record<string, unknown>>(sql,
-        "SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+        `SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at${schemaVersion === 2 ? ",created_by,approved_by,approved_role,provenance,revoked_by" : ""} FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?`,
         new Date().toISOString(),
         body.tenant_id, body.space_id, body.entry_id) : null;
       return same
@@ -2965,7 +2966,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.tenant_id, body.space_id, body.entry_id, schemaVersion, parsed.value.capability_key, parsed.value.label,
       parsed.value.description ?? null, audience, body.actor_id, body.actor_id, body.approved_role, now, now, now, body.actor_id, expiresAt);
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at${schemaVersion === 2 ? ",created_by,approved_by,approved_role,provenance,revoked_by" : ""} FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?`,
       body.tenant_id, body.space_id, body.entry_id);
     return Response.json({ entry: { ...entry, advisory_only: true } }, { status: 201 });
   }
@@ -2984,7 +2985,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=? AND (?=2 OR schema_version=1)`,
       now, now, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version, schemaVersion);
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at${schemaVersion === 2 ? ",created_by,approved_by,approved_role,provenance,revoked_by" : ""} FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?`,
       body.tenant_id, body.space_id, entryId);
     if (!entry) return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
     if (changed.rowsWritten !== 1) {
@@ -3024,7 +3025,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.actor_id, body.approved_role, now, now, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version);
     if (changed.rowsWritten !== 1) return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
-      "SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at,created_by,approved_by,approved_role,provenance,revoked_by FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
       now,
       body.tenant_id, body.space_id, entryId);
     return Response.json({ entry: { ...entry, advisory_only: true } });

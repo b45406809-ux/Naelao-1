@@ -40,6 +40,12 @@ export interface SpaceCoordinationEntryV2 extends Omit<SpaceCoordinationDraftV2,
   last_confirmed_at: string;
   expires_at: string | null;
   revoked_at: string | null;
+  /** Returned only to Space owners and administrators by the v2 lifecycle API. */
+  created_by?: string;
+  approved_by?: string;
+  approved_role?: "owner" | "admin";
+  provenance?: "explicit_owner_or_admin_approval";
+  revoked_by?: string | null;
 }
 
 export interface SpaceCoordinationDisclosureV1 {

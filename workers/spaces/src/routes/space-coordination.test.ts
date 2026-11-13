@@ -79,6 +79,9 @@ describe("Space coordination registry gateway", () => {
     expect(readUrl.searchParams.get("schema_version")).toBe("2");
     expect(readUrl.searchParams.get("viewer_role")).toBe("member");
     expect(readUrl.searchParams.get("after")).toBe("v2~members~time~entry");
+    const owner = env("owner");
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user"), owner.bindings)).status).toBe(200);
+    expect(new URL(owner.calls[0]!.url).searchParams.get("viewer_role")).toBe("owner");
 
     const preview = await app.fetch(await request("/spaces/space/coordination-registry/v2/preview", "product_end_user", "POST", {
       schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins",
@@ -92,19 +95,18 @@ describe("Space coordination registry gateway", () => {
     expect(await expiredPreview.json()).toMatchObject({ error_code: "coordination_expiry_must_be_future" });
     expect(member.calls).toHaveLength(1);
 
-    const owner = env("owner");
     const expiresAt = "2026-12-01T23:59:59.999Z";
     const draft = { schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins", expires_at: expiresAt };
     const unconfirmed = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: false }), owner.bindings);
     expect(await unconfirmed.json()).toMatchObject({ error_code: "coordination_disclosure_confirmation_required", disclosure: { audience: "Space owners and administrators" } });
     const published = await app.fetch(await request("/spaces/space/coordination-registry/v2", "product_end_user", "POST", { ...draft, confirm_disclosure: true }), owner.bindings);
     expect(published.status).toBe(201);
-    const publishedBody = await owner.calls[0]!.json() as Record<string, unknown>;
+    const publishedBody = await owner.calls[1]!.json() as Record<string, unknown>;
     expect(publishedBody).toMatchObject({ schema_version: 2, approved_role: "owner", confirmed: true, draft });
 
     const revoked = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "DELETE", { schema_version: 2, expected_version: 1 }), owner.bindings);
     expect(revoked.status).toBe(200);
-    expect(await owner.calls[1]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user" });
+    expect(await owner.calls[2]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, actor_id: "user" });
 
     const needsConfirmation = await app.fetch(await request("/spaces/space/coordination-registry/v2/entry-a", "product_end_user", "PATCH", {
       ...draft, expected_version: 1, confirm_disclosure: false,
@@ -115,7 +117,7 @@ describe("Space coordination registry gateway", () => {
     }), owner.bindings);
     expect(amended.status).toBe(200);
     await expect(amended.json()).resolves.toMatchObject({ entry: { version: 2 }, disclosure: { audience: "Space owners and administrators" } });
-    expect(await owner.calls[2]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, confirmed: true, approved_role: "owner",
+    expect(await owner.calls[3]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, confirmed: true, approved_role: "owner",
       draft: { label: "Updated company site", audience: "space_admins" } });
   });
 });

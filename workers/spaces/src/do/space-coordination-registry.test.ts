@@ -89,11 +89,15 @@ describe("Space-owned advisory coordination registry", () => {
     const page1 = await first.json() as { entries: Array<Record<string, unknown>>; next_after: string | null };
     expect(page1.entries.map(entry => entry.entry_id)).toEqual(["legacy-member"]);
     expect(page1.entries[0]).toMatchObject({ schema_version: 1, audience: "space_members" });
+    expect(page1.entries[0]).not.toHaveProperty("created_by");
+    expect(page1.entries[0]).not.toHaveProperty("approved_by");
     expect(page1.next_after).toMatch(/^v2~members~/);
 
     const second = await memberRead(page1.next_after ?? undefined);
     const page2 = await second.json() as { entries: Array<Record<string, unknown>>; next_after: string | null };
     expect(page2.entries.map(entry => entry.entry_id)).toEqual(["member-v2-a"]);
+    expect(page2.entries[0]).not.toHaveProperty("created_by");
+    expect(page2.entries[0]).not.toHaveProperty("approved_by");
     expect(page2.next_after).toMatch(/^v2~members~/);
     const third = await memberRead(page2.next_after ?? undefined);
     expect(await third.json()).toMatchObject({ entries: [{ entry_id: "member-v2-b", schema_version: 2 }], next_after: null });
@@ -103,6 +107,7 @@ describe("Space-owned advisory coordination registry", () => {
     const ownerParams = new URLSearchParams({ tenant_id: "tenant", space_id: "space", schema_version: "2", viewer_role: "owner", limit: "10" });
     const ownerPage = await space.fetch(new Request(`${root}?${ownerParams}`)).then(response => response.json()) as { entries: Array<Record<string, unknown>> };
     expect(ownerPage.entries.map(entry => entry.entry_id)).toEqual(["admin-before", "legacy-member", "member-v2-a", "admin-middle", "member-v2-b"]);
+    expect(ownerPage.entries[0]).toMatchObject({ created_by: "owner", approved_by: "owner", approved_role: "owner", provenance: "explicit_owner_or_admin_approval" });
 
     const legacyPage = await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=1&viewer_role=member&limit=10`)).then(response => response.json()) as { entries: Array<Record<string, unknown>> };
     expect(legacyPage.entries.map(entry => entry.entry_id)).toEqual(["legacy-member"]);
@@ -114,8 +119,11 @@ describe("Space-owned advisory coordination registry", () => {
     const legacyRevoke = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", expected_version: 1 }) }));
     expect(legacyRevoke.status).toBe(404);
+    const revokeV2 = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", schema_version: 2, expected_version: 1 }) }));
+    expect(await revokeV2.json()).toMatchObject({ entry: { status: "revoked", revoked_by: "owner", created_by: "owner", provenance: "explicit_owner_or_admin_approval" } });
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries)
-      .toMatchObject([{ entry_id: "admin-only", status: "active" }]);
+      .toMatchObject([{ entry_id: "admin-only", status: "revoked", revoked_by: "owner", created_by: "owner", approved_by: "owner", approved_role: "owner", provenance: "explicit_owner_or_admin_approval" }]);
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`)).then(response => response.json())).entries).toEqual([]);
   });
 
@@ -172,6 +180,9 @@ describe("Space-owned advisory coordination registry", () => {
       .entries).toEqual([]);
     expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json()))
       .entries).toMatchObject([{ entry_id: "entry", version: 2, label: "Current company site" }]);
+    const ownerEntry = (await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json())).entries[0];
+    expect(ownerEntry).toMatchObject({ created_by: "owner", approved_by: "admin", approved_role: "admin", provenance: "explicit_owner_or_admin_approval" });
+    expect(ownerEntry).toHaveProperty("revoked_by", null);
   });
 });
 
