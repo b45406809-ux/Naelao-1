@@ -11,6 +11,8 @@ from validate_environment_resources import (
     validate,
 )
 
+ACCOUNT_ID = "a" * 32
+
 
 class EnvironmentResourceMapTests(unittest.TestCase):
     def test_current_source_inventory_is_explicit_and_unverified(self):
@@ -42,7 +44,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         }
         receipts = {
             "version": 1,
-            "account_id": "account-1",
+            "account_id": ACCOUNT_ID,
             "observed_at": "2026-11-12T12:00:00Z",
             "resources": [
                 {
@@ -74,11 +76,19 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_rejects_malformed_cloudflare_account_id(self):
+        errors = _validate_receipts(
+            {"required_existence_receipts": []},
+            {"version": 1, "account_id": "account-1", "observed_at": "2026-11-12T12:00:00Z", "resources": []},
+            datetime(2026, 11, 13, 12, tzinfo=timezone.utc),
+        )
+        self.assertIn("resource receipts require the observed 32-character hexadecimal Cloudflare account_id", errors)
+
     def test_rejects_stale_or_write_capable_receipts(self):
         source_map = {"required_existence_receipts": [{"kind": "workflow", "environment": "staging", "id_or_name": "sync-staging"}]}
         receipts = {
             "version": 1,
-            "account_id": "account-1",
+            "account_id": ACCOUNT_ID,
             "observed_at": "2026-11-01T12:00:00Z",
             "resources": [
                 {
@@ -108,7 +118,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         }
         receipts = {
             "version": 1,
-            "account_id": "account-1",
+            "account_id": ACCOUNT_ID,
             "observed_at": "2026-11-12T12:00:00Z",
             "resources": [
                 {
@@ -169,7 +179,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         }
         receipts = {
             "version": 1,
-            "account_id": "account-1",
+            "account_id": ACCOUNT_ID,
             "observed_at": "2026-11-12T12:00:00Z",
             "resources": [
                 {
@@ -206,7 +216,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
             map_path = root / "map.json"
             map_path.write_text(json.dumps({"version": 1}), encoding="utf-8")
             receipts_path = root / "receipts.json"
-            receipts_path.write_text(json.dumps({"version": 1, "resources": [], "account_id": "a", "observed_at": "2026-11-12T12:00:00Z"}), encoding="utf-8")
+            receipts_path.write_text(json.dumps({"version": 1, "resources": [], "account_id": ACCOUNT_ID, "observed_at": "2026-11-12T12:00:00Z"}), encoding="utf-8")
             errors = validate(workers, map_path, receipts_path)
         self.assertIn("resource map is stale; regenerate it from the current Worker Wrangler TOMLs", errors)
 

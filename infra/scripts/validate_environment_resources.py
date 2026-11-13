@@ -20,6 +20,7 @@ WORKERS = ROOT / "workers"
 MAP_PATH = ROOT / "infra/environment/resource-map.json"
 RECEIPTS_PATH = ROOT / "infra/environment/resource-receipts.json"
 RECEIPT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+CF_ACCOUNT_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 ENVIRONMENTS = ("staging", "production")
 RECEIPT_KINDS = {"queue", "workflow", "r2", "vectorize", "durable_object"}
 MUTABLE_RESOURCE_KINDS = {
@@ -286,8 +287,8 @@ def _validate_receipts(
         observed[key] = row
 
     account_id = receipts.get("account_id")
-    if not isinstance(account_id, str) or not account_id.strip():
-        errors.append("resource receipts require the observed Cloudflare account_id")
+    if not isinstance(account_id, str) or not CF_ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        errors.append("resource receipts require the observed 32-character hexadecimal Cloudflare account_id")
     try:
         observed_at = datetime.fromisoformat(str(receipts.get("observed_at", "")).replace("Z", "+00:00"))
         if observed_at.tzinfo is None:
