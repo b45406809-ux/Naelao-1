@@ -12,23 +12,22 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `c1d56baeb4f57a32875b4c81257b12000a437a74` is pushed to
-`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. The signed keypad
-package now has an owner-only server-backed synthetic handler test. It requires the separate
-`assistant.phone.simulate` capability, an active signed package and exactly one active binding from
-that installation, then invokes the existing `phone-handler-test` contract with saved settings and
-synthetic input. It creates no carrier call or call session. Local/mock evidence: SDK package **4/4**,
-Spaces route/runtime/package suites **44/44**, Agents handler simulation/phone suites **44/44**,
-SDK/Spaces/Agents/Shell typechecks and `git diff --check`. The first Spaces typecheck caught a
-`TextDecoder` option mismatch; fixed and rerun successfully. No package publication, provider,
-deployment or live call was exercised. Preserve untracked `infra/scripts/__pycache__/`.
+Current checkpoint (2026-11-13): code `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. P10 now has a
+read-only owner/admin update review for one exact signed Space-shared installation and expected
+release pin. It validates the latest catalog candidate, publisher key/signature and stored artifact
+digest, then reports permissions/capabilities, provider connections, shared folders, schema IDs and
+price-term availability. Stale pins, wrong-Space installation IDs, revoked keys and invalid publisher
+signatures fail closed. The Shell management page reaches this API. No installation or Canvas mutation
+occurs; apply remains unsupported until safe migration, rollback and active-work drain are implemented.
+Local/mock evidence: Spaces package/DO suites **30/30**, Spaces/Shell typechecks and `git diff --check`.
+No deployment, provider or live acceptance was exercised. Preserve untracked
+`infra/scripts/__pycache__/`.
 
-Exact next action: continue §5/P10 by adding a read-only owner/admin update review for the signed
-Space-shared package catalog. Bind the preview to the exact current installation and release pin;
-verify the candidate publisher/signature and show version, requested permissions/capabilities,
-dependencies, schema changes and any known price terms. Test stale-pin, cross-Space, revoked-key and
-authority-expansion handling. Do not mutate the active Canvas or installation during preview; only
-add an apply path after compatibility, rollback and active-work behavior are demonstrably safe.
+Exact next action: continue P24/§5 by adding a signed, exact-version extension dependency declaration
+to the SDK manifest contract and update review. Validate duplicate IDs, cycles, conflicts and exact
+same-Space installed pins; fail closed on unresolved closure. Then implement the host resolver and
+recovery path before allowing dependency installation or package activation. Keep rollout disabled.
 After compaction, interruption, or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from the exact next action. Keep rollout
 disabled; do not deploy, purchase, reset, clean, switch branches or force-push. The user has authorized

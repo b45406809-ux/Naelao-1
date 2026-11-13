@@ -2,25 +2,27 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; owner-safe keypad simulator `c1d56baeb4f57a32875b4c81257b12000a437a74` pushed)
+### Active continuation (2026-11-13; signed Space-shared update review `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` pushed)
 
-- Code `c1d56baeb4f57a32875b4c81257b12000a437a74` is pushed to `origin/Mcbt5s-Backup-2` after
-  fetching and confirming the remote was an ancestor. The signed keypad dashboard now invokes the
-  exact active installed handler through the existing synthetic `phone-handler-test` path. A separate
-  `assistant.phone.simulate` declaration gates this owner/admin route; the host rechecks the active
-  signed release, requires one active line bound to that installation, and rejects stale release,
-  unauthorized role, malformed input, ambiguous line and cross-installation cases. It uses saved
-  settings and creates no carrier call/session. Local/mock evidence: SDK package **4/4**, Spaces
-  package/route/runtime suites **44/44**, Agents synthetic simulation/phone suites **44/44**,
-  SDK/Spaces/Agents/Shell typechecks and `git diff --check`. Spaces' first typecheck caught a decoder
-  option mismatch; fixed and rerun. No package publication, provider, deployment or live call occurred.
-- §9.5/P06 remains PARTIAL: package publishing, conversational runtime, provider billing, broader
-  lifecycle and live acceptance remain. Rollouts stay disabled.
-- Exact next action: continue §5/P10 with a read-only owner/admin review for updates to signed
-  Space-shared packages. Resolve one exact installation/version pin; verify the candidate signed
-  publisher release; return a bounded version, authority, dependency, schema and price/terms diff.
-  Test stale pin, wrong Space, revoked publisher and added authority. Keep preview mutation-free;
-  implement activation only after safe migration, rollback and active-work behavior are verified.
+- Code `9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` is pushed to `origin/Mcbt5s-Backup-2` after
+  fetching and confirming the remote was an ancestor. The Spaces owner/admin API and Shell page now
+  preview an update for one exact Space-shared installation and expected release pin. The host checks
+  the latest catalog release, registered active publisher key, publisher signature, manifest and
+  stored artifact digest. The bounded response shows permission/capability, provider-connection,
+  shared-folder and schema-ID changes; the package contract currently has no dependency or price-term
+  fields, so both are explicitly shown as undeclared. Stale pins, wrong-Space IDs, revoked keys and bad
+  signatures fail closed. Preview performs only reads and cannot change a Canvas or installation.
+- Local/mock evidence: Spaces signed-package and SpaceDO runtime suites **30/30**, Spaces/Shell
+  typechecks and `git diff --check`. No package publication, provider, deployment or live acceptance
+  occurred. Preserve unrelated untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+- P10/P24 remain PARTIAL. General update activation, dependency resolution, schema migration, automatic
+  rollback, active-work drain, package pricing and commercial reconciliation remain uncoded or
+  contract-limited. The managed S2–S9/U01–U12 ledger is unchanged; retain its recorded runtime/provider
+  boundaries and do not repeat completed audits without a concrete source change.
+- Exact next action: add a signed exact-version extension dependency declaration to the SDK manifest
+  contract and update review. Validate duplicate IDs, cycles, conflicts and exact same-Space installed
+  pins; fail closed when closure is unresolved. Then implement the host resolver and recovery before
+  allowing dependency installation or package activation.
 
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 

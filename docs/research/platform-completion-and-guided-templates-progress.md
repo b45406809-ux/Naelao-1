@@ -2,22 +2,27 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after owner-safe keypad simulator code `c1d56baeb4f57a32875b4c81257b12000a437a74` was
-pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestor verification. The signed package's
-`assistant.phone.simulate` capability gates an owner/admin host route that resolves the exact active
-signed install, requires a single active phone binding for that install, and invokes the existing
-synthetic handler test with saved settings. Cross-install, ambiguous, stale-release, role and invalid
-input paths fail closed. There is no carrier call, billing, or call-session write. Local/mock evidence:
-SDK **4/4**, Spaces route/runtime/package **44/44**, Agents synthetic phone **44/44**, four typechecks
-and `git diff --check`. A Spaces typecheck initially caught a decoder options type issue; fixed and
-rerun. No package publication, provider, deployment or live call was exercised.
+Updated 2026-11-13 after signed Space-shared package review code
+`9bc4d3b5b6f93e0c6ea57ebf4f8793c6157de61f` was pushed to `origin/Mcbt5s-Backup-2` after fetch and
+ancestor verification. P10 now has an owner/admin, read-only update preview bound to the exact
+installation and expected release pin. It validates the latest catalog candidate, active publisher
+key, publisher signature, manifest and R2 artifact digest. The Shell extension manager displays
+version, permission/capability changes, provider connections, shared-folder changes, schema IDs and
+whether price terms are declared. Stale pin, wrong-Space, revoked-key and bad-signature cases fail
+closed; preview makes no writes. Package dependencies and prices are not present in the current
+signed manifest contract, so the preview reports them as undeclared.
 
-§9.5/P06 remains PARTIAL. Exact next action: continue §5/P10 with a read-only, owner/admin review of
-updates to signed Space-shared packages. Bind the review to one exact installation/current pin and a
-verified candidate publisher release; show a bounded version, authority, dependency, schema and
-price/terms diff. Cover stale pins, wrong Space, revoked publisher and authority expansion. Do not
-change the active install during preview. Add an apply path only after compatibility, rollback and
-active-work behavior are safe.
+Local/mock evidence: Spaces shared-package/DO suites **30/30**, Spaces/Shell typechecks and
+`git diff --check`. No package publication, provider, deployment or live acceptance was exercised.
+P10/P24 remain PARTIAL: dependency declaration/resolution, package update application, schema
+migration, safe rollback and active-work drain are not implemented. §9.5/P06 remains PARTIAL; the
+phone dashboard and synthetic handler preview do not provide a conversational voice-agent lifecycle.
+Rollouts remain disabled.
+
+Exact next action: add signed exact-version dependencies to the SDK package manifest and update
+preview. Validate duplicate IDs, cycles, conflicts and exact same-Space installed pins; fail closed
+when the dependency closure is unresolved. Then implement the host resolver and recovery before
+allowing dependency installation or package activation.
 
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
