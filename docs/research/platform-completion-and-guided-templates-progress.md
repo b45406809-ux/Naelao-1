@@ -2,7 +2,7 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after general notification outcome code `e967eaa3` was pushed. Migration 0234
+Updated 2026-11-13 after source-aware inbox code `34093b6b` was pushed, following notification outcome code `e967eaa3`. Migration 0234
 adds a tenant-scoped, non-PII outcome ledger for Notifications queue work, including provider
 accepted/rejected/ambiguous, not-sent, in-app persisted and terminal dead-letter outcomes. Dunning
 provider attempts remain on their existing table; the new ledger records only terminal dunning DLQ
@@ -18,9 +18,7 @@ live acceptance. Release/environment preflight still fails closed on one shared 
 IDs, unresolved `naelao-calls`, and **158** absent read-only resource receipts. P01's operator-attested
 legacy D1 baselines and isolated/deployed acceptance remain absent.
 
-The managed-services caller refresh found the Assistant mailbox and AgentMail panels already have
-separate reachable search/page/read flows; no unified cross-source history is stored. The managed
-mission remains open under its source-to-caller ledger. No rollout is enabled.
+The Connectors page now combines the selected Assistant mailbox and explicitly selected active AgentMail search results in memory. Code `34093b6b` is pushed; Shell passes **25/25** across ten files and typecheck. Source/scope IDs and independent cursors remain; message and attachment reads use existing authorization APIs. This closes the local combined-search gap, not Cloudflare Email ingress, live provider acceptance or the remaining managed-services ledger. No rollout is enabled.
 
 **§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
 localized setup declarations, expected-usage inputs, install status, owner host forms and per-extension
@@ -42,13 +40,7 @@ coverage. Owner-configurable posture/defaults, private publication and request-t
 extension/dependency linkage, reservation/cardinality, expiry/concurrency policy and broad
 non-disclosure acceptance remain. Product/policy choices are unresolved, not credential blocks.
 
-Exact next task: add a source-aware inbox search/results view on the Connectors page for the selected
-Assistant mailbox and one explicitly selected active AgentMail connection. Keep independent cursors
-and source-tagged message IDs; read messages/attachments only through the existing source-authorized
-APIs, and do not persist cross-provider message content or invent a retention period. After this
-managed-services item, continue the platform plan in release/environment, commercial/recovery, guided
-templates, voice dashboards and Shared-Space order. Preserve implementation, mocked, deployed and
-live acceptance as separate states.
+P01/P02 current validators pass locally and their preflight blocks only on recorded external D1/resource evidence; no independent code gap was found in the current runner/map. Exact next task: close P23 synchronous `/internal/notify` outcomes by reusing migration 0234, carrying stable IDs from reachable callers where available, returning status/ID, and persisting non-PII not-sent/rejected/accepted/ambiguous outcomes. Verify retry semantics per caller; do not infer inbox delivery. Then continue P03/P12/P20 and P04 before §5 guided-template gaps.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
@@ -397,10 +389,18 @@ health gates run before frontend publication. Latest local checkpoint `e967eaa3`
 migration/release/environment suites **25/25**, manifest validators, typechecks and staging/production
 Wrangler dry runs. These are local/mock/static checks; no remote D1 or deployed endpoint was queried.
 
+Latest local P01/P02 verification: release migration tests **12/12**, environment-resource tests
+**10/10**, Wrangler isolation **6/6**, release-manifest tests **5/5**, deployment-manifest tests
+**8/8**, both manifest validators. The release validator confirms 234 migration files and required
+schema `0234_notification_delivery_outcomes`. Environment preflight remains fail-closed on one shared
+D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, missing account/time observations and
+**158** resource receipts. No Cloudflare account or remote D1 was inspected.
+
 Neither staging nor production has an operator-attested baseline file or verified applied-history/data
 inspection. The release runner therefore stops before mutation. There is no isolated migration
-rehearsal, automatic rollback or live health acceptance. Do not create a baseline from source-only
-evidence.
+rehearsal, automatic rollback or live health acceptance. No independent P01/P02 code gap was found in
+the current runner and map; do not create a baseline from source-only evidence. Next code task is P23's
+synchronous `/internal/notify` outcome integration, followed by P03/P12/P20 policy-safe recovery work.
 
 ### P02 — isolated environments: PARTIAL, fail-closed
 
@@ -690,7 +690,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P20 | PARTIAL | Idempotent refund review ledger and buyer/creator status exist; dispute, access reversal, author accounting and independent operator identity remain unresolved. |
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
-| P23 | PARTIAL | Async queue outcomes and owner status exist; sync outcomes, retention policy, audited replay and live delivery remain. |
+| P23 | PARTIAL | Async queue outcomes and owner status exist; synchronous `/internal/notify` outcomes remain uncoded, as do retention policy, audited replay and live delivery. Next code task. |
 | P24 | PARTIAL | Signed installed-release checks, scoped rollback and key registry exist; dependency closure, cross-Space restore, active-work drain and compromise handling remain. |
 
 ## Requirement queue

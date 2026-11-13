@@ -2,35 +2,45 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; general notification outcomes `e967eaa3` pushed)
+### Active continuation (2026-11-13; source-aware unified inbox `34093b6b` pushed)
 
-- Code `e967eaa3` is pushed to `origin/Mcbt5s-Backup-2`. Migration 0234 adds a tenant-scoped,
-  non-PII notification outcome table. The Notifications queue records provider acceptance/rejection,
-  ambiguous requests, policy skips, internal persistence and terminal dead-letter state. Dunning
-  provider attempts remain in `dunning_notification_attempts`; only dunning's terminal DLQ state is
-  recorded in the general table. Billing exposes an owner/admin-only, no-store status view through
-  Router, and Dashboard settings renders only provider, channel, outcome, count, bounded status/receipt
-  and safe reason codes. Production's DLQ is now separately named; the redacted environment map was
-  regenerated. No queue resource was created.
-- Local evidence: Notifications **40/40**, Billing **4/4**, Router **2/2**, migration/release/environment
-  suites **25/25**, affected typechecks, release/deployment manifest validation, and staging/production
-  Wrangler dry runs. These use mocks and local static configuration; no provider delivery, remote D1,
-  deployment or live acceptance ran. P23 remains PARTIAL for synchronous notification receipts,
-  retention policy, audited replay and live acceptance. P01/P02 remain fail-closed on the shared D1,
-  eleven shared KV IDs, unresolved `naelao-calls` ownership and **158** missing resource receipts.
-- The MS07 source/caller audit found a first-party Assistant inbox with search and cursor paging plus
-  an AgentMail inbox/search/read/attachment panel in `ManagedServicesPanel`. Both paths are already
-  reachable and preserve their own authorization/cursors. They are separate source views; no
-  cross-source unified search/history is persisted. MS07 remains PARTIAL for that combined view and
-  the still-unverified provider/deployed acceptance.
-- S2 remains IMPLEMENTED_LOCAL for currently supported lanes; S3–S9/U01–U12 remain PARTIAL for their
-  separately recorded implementation, contract, policy, external evidence or live acceptance gaps.
-  No rollout is enabled.
-- Exact next task: add a source-aware inbox search/results view on the Connectors page for the
-  selected Assistant mailbox and one explicitly selected active AgentMail connection. Retain a cursor
-  per source and tag each message ID with its source; continue reading messages/attachments only through
-  the existing authorized APIs. Do not add cross-provider content persistence or retention defaults.
-  Preserve `infra/scripts/__pycache__/`.
+- Code `34093b6b` is pushed to `origin/Mcbt5s-Backup-2`, following docs reconciliation `84e6a213`
+  and notification outcomes `e967eaa3`. The Connectors page combines search results from the selected
+  Space/Project Assistant mailbox and one explicitly selected active AgentMail connection. It keeps
+  each source cursor independently, tags IDs by source and scope, and merges/sorts results in memory.
+  Message and attachment reads use the existing Assistant communications API or owner-authorized
+  `agentmail-operation` route. No message body, provider credential or new backend record is stored.
+- Local evidence: Shell suite **25/25** across ten files, including unified inbox source, nested
+  AgentMail response, cursor and active-account cases; Shell typecheck and `git diff --check` pass.
+  No provider, deployed API or live acceptance was exercised. MS07's cross-source search view is
+  IMPLEMENTED_LOCAL; MS07 remains PARTIAL for disabled Cloudflare Email live ingress, broader
+  provider/session contracts and provider/deployed acceptance.
+- P23 remains PARTIAL after `e967eaa3`: migration 0234 records non-PII async notification queue
+  outcomes, and Billing/Router/Dashboard expose tenant-scoped owner/admin status. General synchronous
+  outcome receipts, approved retention and audited replay remain open. P01/P02 remain fail-closed on
+  missing operator-attested migration baselines, one shared D1, eleven shared KV IDs, unresolved
+  `naelao-calls` ownership and **158** missing read-only resource receipts.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 retain the specific gates in their
+  source/caller matrix; no rollout is enabled.
+- P01/P02 were rechecked after migration 0234. Local suites pass: release migration **12/12**,
+  environment resource validator **10/10**, Wrangler isolation **6/6**, release manifest **5/5**,
+  deployment manifest **8/8**. Both manifest validators pass; release inventory reports 234 files and
+  required schema `0234_notification_delivery_outcomes`. The live source preflight correctly fails on
+  one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, absent valid account/time
+  observation fields and **158** resource existence receipts. No resource/account was queried or
+  changed; no additional P01/P02 code gap was found in this check.
+- The recorded latest AgentPort account/thread code is `804656cd` (route/index **21/21**, SDK **15/15**
+  and both typechecks recorded locally). AgentPort health changes in `2d4bde5a` are covered by the P01
+  worker health suite **15/15 across 13 Workers**. The interrupted project-main
+  `workers/agents/src/do/DynamicSandboxDO.test.ts` registry suite was already rerun after its last
+  source change and passed **28/28**; there is no newer registry or AgentPort source change to justify
+  repeating it.
+- Exact next task: close the independent P23 synchronous `/internal/notify` outcome gap using
+  migration 0234. Preserve caller-stable IDs where available, return outcome/ID to callers, and persist
+  non-PII not-sent/rejected/accepted/ambiguous states. Audit reachable callers for stable operation IDs
+  before describing retries as safe. Then continue P03/P12/P20 commercial recovery and P04. Preserve
+  `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
 - Code `82e36d16` is pushed to `origin/Mcbt5s-Backup-2`. Public-project read now requires direct
@@ -805,6 +815,7 @@ Statuses describe inspected source only; they do not claim a fresh test, deploym
 | MS07b | PARTIAL: signed/deduplicated AgentMail provider webhooks ingest references into AgentPort; only the AgentPort subscription receiver enqueues the assistant wake. Owner-facing Shell lists/searches an explicitly selected active inbox, reads messages and retrieves attachments through the grant-checked adapter, and reads persisted cumulative storage/message/thread counts. The attachment view now validates current signed HTTPS links, expiry and a 20 MiB size ceiling; it does not persist signed URLs or copy provider bytes into the workspace. US/EU region is selected and used for all connected inbox API calls. Content stays out of AgentPort. | AgentMail `communications/agentmail.ts`, authenticated `agentmail-operation`/`agentmail-usage` routes, `ManagedServicesPanel.tsx`, `managed-service-attachments.ts`, AgentPort event queue; migrations 0215/0216; Shell suite 18/18 | Preserve owner checks and keep provider bytes external until the user explicitly follows a current link; do not claim the quantity endpoint is a monetary usage report. |
 | MS07c | PARTIAL: AgentMail AgentPort deliveries persist owner-selected assistant, wake pause, route revision, assistant-scoped session and stable run ID; the exact subscription is revalidated and content remains provider-side | `assistant_agentport_event_routes`, `assistant_agentport_event_runs`, `agentport_event_deliveries`; Agents queue dispatcher and communications route; migration 0193 | General provider routing and external-consumer session binding remain; add only for providers with verified link/session contracts. |
 | MS07d | IMPLEMENTED_LOCAL for owner attachment reads and project mailbox visibility: inbound attachment bodies remain encrypted in identity-scoped R2; attachment download requires the mailbox owner, verifies the requested ID is referenced by the selected inbound message, enforces 8 MiB encrypted-envelope and 5 MiB decoded-file limits, and always serves a private attachment with `no-store` and `nosniff`. Project membership is the existing scope grant for shared message reads; bound verification text/subject are private to the originating actor, and command lists/approval stay owner-only. | Agents `communications/inbound.ts`, `core.ts`, `routes.ts`; Shell `AssistantMailboxPanel.tsx` and `api.ts`; migrations 0130/0132 | Focused route tests **10/10**, Shell **18/18**, Agents/Shell typechecks and `git diff --check` passed. Local fixtures only. No deployed R2 or live email delivery. Continue at S6/MS10 channel-grant and event-routing callers.
+| MS07e | IMPLEMENTED_LOCAL for combined inbox search: Connectors combines the selected Space/Project Assistant mailbox and one explicitly selected active AgentMail connection. Results have source/scope-tagged IDs, are merged in memory and keep independent cursors; message and attachment reads remain routed through the existing source-authorized APIs. No bodies, credentials or cross-source records are persisted. | Shell `UnifiedInboxSearchPanel.tsx`, `unified-inbox.ts`, Connectors page; AgentMail `agentmail-operation`; Assistant communications `messages`/`message`/`attachment` | Shell suite **25/25** across ten files, Shell typecheck and `git diff --check`. No provider or deployed acceptance; Cloudflare Email ingress remains disabled. |
 | MS08a | PARTIAL: AgentMail has managed/user-connected mailboxes, encrypted credentials, region-pinned US/EU API calls, owner-readable cumulative usage quantities, billing lifecycle, signed webhook dedupe, AgentPort event delivery, session wake, send idempotency and unknown-send status. Twilio has owner-visible SMS/call charge reads; Telnyx has message charge reads and signed admitted-call cost webhook observations. | Agents `communications/agentmail.ts`, `telnyx-voice-cost.ts`, `managed-service-dashboard.ts`, `twilio-cost.ts`, Shell `ManagedServicesPanel.tsx` and `AssistantPhonePanel.tsx`; migrations 0215/0216/0218; Telnyx account/phone/billing adapters | Telnyx must have `call_cost_in_webhooks` enabled at the provider for call observations to arrive. Complete provider-neutral write/sync lifecycle and verify regional, commercial and live provider evidence. No AgentMail monetary usage or invoice reconciliation is claimed. |
 | MS08b | PARTIAL: customer-owned Telnyx inventory search, current account cost quote, explicit single-number order and read-only customer-reference reconciliation reach `AssistantPhonePanel`; search exposes provider-supported number types and voice/SMS features. Scheduled recovery never replays purchase. Managed Telnyx release journals before DELETE and confirms unknown outcomes by exact-number GET; customer-owned active numbers detach without changing their carrier rental. Managed ordering remains limited to already assigned Naelao inventory. | `telnyx-telephony.ts`, `phones.ts`, `AssistantPhonePanel.tsx`; migrations 0195/0200/0203; phone suite 26/26 | Add country-specific sender-registration workflow only against reviewed account requirements; test authorized provider accounts, and do not enable managed inventory without pricing/entitlement/renewal policy. |
 | MS08c | PARTIAL: owner-scoped control and instance-key checks, operator evidence gate, customer-owned create/start/sleep/exec, durable allocation/execution records, named-exec recovery and selected-path artifact import/stage/publish are wired behind `AGENT37_RUNTIME_ENABLED`. Artifact operations recheck erasure, connection, template and exact allocation generation before provider I/O; failed admission durably fails pending transfers. `/providers` now reports the disabled rollout and owner-connection prerequisites honestly. | Sandboxes `index.ts`, `providers/agent37.ts`, `providers/agent37-workspace-client.ts`, migrations 0184/0185 | Validate exact template digest, current plan/region and customer-account funding before any rollout. Full Sandboxes suite 56/56 and typecheck passed locally; exact provider pricing/account limits and deployed acceptance remain external. |

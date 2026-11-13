@@ -2,31 +2,38 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `e967eaa3` is pushed to
-`origin/Mcbt5s-Backup-2`. Migration 0234 adds a tenant-scoped, non-PII notification queue outcome
-ledger. The Notifications Worker records accepted, rejected, ambiguous, not-sent, persisted and
-terminal dead-letter states; dunning provider attempts stay in their existing ledger, with only its
-terminal dead-letter state added here. Owner/admin Billing status is routed through Router and shown
-in Dashboard settings. The production dead-letter queue has its own name and consumer; the checked-in
-environment resource map was regenerated. No queue resource was created and no deployment occurred.
+Current continuation checkpoint (2026-11-13): code `34093b6b` is pushed to
+`origin/Mcbt5s-Backup-2`, following the documentation reconciliation `84e6a213` and notification
+outcome implementation `e967eaa3`. The Connectors page now has a source-aware combined inbox search
+for the selected Assistant mailbox and one explicitly selected active AgentMail connection. It keeps
+separate source cursors, source/scope-tagged IDs and results only in React memory. Message and
+attachment reads go through the existing Assistant communications and owner-authorized AgentMail
+operations; no provider data or credentials were added to storage.
 
-Local/mock evidence for `e967eaa3`: Notifications **40/40**, Billing **4/4**, Router **2/2**,
-notification/release/environment Python suites **25/25**, Notifications/Billing/Router/Dashboard
-typechecks, release/deployment manifest validation, and staging/production Wrangler dry runs. No
-provider delivery or deployed D1 was exercised. P23 remains PARTIAL for general synchronous
-notification outcomes, approved retention, audited operator replay and live acceptance. P01/P02
-remain fail-closed on operator-attested D1 baselines, one shared D1, eleven shared KV IDs, unresolved
-`naelao-calls` ownership, and **158** missing read-only resource receipts. No rollout is enabled.
+Local/mock evidence for `34093b6b`: Shell tests **25/25** across ten files, including unified-inbox
+source/cursor cases; Shell typecheck and `git diff --check` pass. No provider, deployed API or live
+acceptance ran. MS07's combined view is IMPLEMENTED_LOCAL; Cloudflare Email remains disabled and
+live delivery/provider acceptance remains unverified. P01/P02 local controls are implemented, but
+release remains fail-closed without operator-attested D1 baselines, and environment preflight remains
+blocked on one shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership and **158** missing
+resource receipts. No rollout is enabled.
 
-S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 and platform §5/§9.5/§10 retain
-named code, runtime-contract, policy and live-acceptance gaps in their ledgers. The MS07 caller audit
-found an existing searchable Assistant inbox and an AgentMail inbox/search/read view; both use their
-existing authorization paths but remain separate and keep no unified cross-source history. Exact next
-action: add a source-aware inbox search/results view to the Connectors page for the selected assistant
-mailbox and one explicitly selected active AgentMail connection. Keep independent cursors and
-source-tagged message IDs; delegate message/attachment reads to the existing authorized source APIs;
-do not persist message bodies or copy credentials. Preserve `infra/scripts/__pycache__/`, keep rollout
-disabled, and do not deploy or purchase services.
+S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10
+retain named code, runtime-contract, policy and live-acceptance gaps in their ledgers. P01/P02 were
+rechecked after migration 0234: release migration tests **12/12**, environment-resource tests **10/10**,
+Wrangler isolation **6/6**, release-manifest tests **5/5**, and deployment-manifest tests **8/8** pass.
+Both manifest validators pass and confirm 234 migrations with required schema
+`0234_notification_delivery_outcomes`. The environment preflight correctly remains blocked by one
+shared D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, malformed/missing account
+observation fields and **158** missing resource receipts. No independent P01/P02 code gap was found in
+the current release runner or source map.
+
+Exact next action: close P23 synchronous `/internal/notify` outcome recording by reusing migration 0234,
+preserving caller-stable IDs where available, returning the outcome/ID to callers, and recording
+non-PII `not_sent`, rejected, accepted or ambiguous state. Audit reachable callers for a durable ID
+before considering retries safe. Then continue P03/P12/P20 and P04. Keep rollout disabled, preserve
+`infra/scripts/__pycache__/`, and do not deploy or purchase services.
+
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
 artifact set still verify; the panel selects and fills the exact handler digest, then requests explicit
