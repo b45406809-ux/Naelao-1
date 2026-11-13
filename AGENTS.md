@@ -2,19 +2,19 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P17 code commit `91f17842` is pushed to
-`origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch in
-`/workspace/Naelao-1-managed-services`. The stale Portal Whop catalog now reports its retired state;
-Marketplace cards show actual fixed-license pricing, use a same-origin Naelao sign-in, report the
-buyer's no-store license/fork state, and send checkout returns to the selected listing. Shell's
-template picker now reads all Marketplace categories with fresh pagination and passes the selected
-listing ID through fork and Space creation. The existing purchase, fork and refund journals are
-reused. Local evidence: Marketplace/Billing tests **12/12**, Router license/product-path tests
-**38/38**, Shell catalog test **1/1**, Marketplace web/Portal/Shell/Marketplace Worker/Router/Billing
-typechecks, environment/deployment/Wrangler validators **19/19**, regenerated source inventory,
-and `git diff --check`. No provider acceptance or deployment was exercised. P17 remains PARTIAL:
-cross-product Marketplace-to-Shell identity/install handoff, refund/license reversal and author
-payout policy remain open. Preserve the unrelated `infra/scripts/__pycache__/`.
+Current continuation checkpoint (2026-11-13): P24 scoped publisher trust and rollback code commit
+`415ba199` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
+`autonomous-managed-services-20261111` branch in `/workspace/Naelao-1-managed-services`. Rollback is
+fenced to one tenant/Space/project installation and its expected current release; it no longer
+changes sibling installs or the Space-wide catalog manifest. Incomplete publisher metadata fails
+closed, worker install/runtime paths consult the current D1 publisher-key registry, and rollback and
+upgrade require explicit approval when the selected installation gains permissions or capabilities.
+Local evidence: six focused Spaces suites **67/67**, Spaces and Shell typechecks, and `git diff
+--check`. These are local/mocked checks; no deployment or live provider acceptance was exercised.
+P24 remains PARTIAL for transitive extension dependency resolution, verified cross-Space artifact
+restore, package removal/retention and owner compromise-notice policy, and a drain/receipt for work
+already admitted when a publisher key is revoked. Preserve the unrelated
+`infra/scripts/__pycache__/`.
 
 P16 code commit `1056a322` remains pushed. One shared versioned capability definition supplies
 Discord's attachment bounds and 30-day retention; the verified no-store Agents route, Router
@@ -55,13 +55,14 @@ probe or D1 migration has run. P02 resource IDs/ownership/receipts and P01 legac
 attestations remain external evidence gates. P03 remains partial on unapproved grace/restriction
 policy and live provider delivery. P23 remains partial on general channel exhaustion/replay auditing
 and receipt coverage outside the Product auth outbox; see
-`docs/operations/notification-delivery-contract.md`. Exact next task: audit P24 from publication
-through signature verification, dependency installation, execution, restore, upgrade and
-revocation. Reuse current package signatures, publisher revocation, installation receipts and
-rollback controls; implement independent provenance/revocation gaps before continuing guided
-template authoring, voice-extension dashboards and Shared-Space coordination. P17 remains partial
-for the Marketplace-to-Shell identity/install handoff, refund/license policy and live provider
-acceptance. P01/P02
+`docs/operations/notification-delivery-contract.md`. P24 local code `415ba199` is pushed; its
+remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
+in the two progress ledgers. Exact next task: continue the platform plan at P04 recovery by tracing
+Space archive object references through current export and restore callers, then implement bounded
+object-byte capture and verification using the existing archive and R2 contracts. P01/P02 already
+fail closed on the recorded resource and baseline evidence gates. P17 remains partial for the
+Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
+P01/P02
 remain fail-closed on actual
 resource separation, ownership/receipts, and operator-attested D1 baselines; these are evidence and
 configuration gates. Keep all rollouts disabled. Fetch before every push and safely integrate remote

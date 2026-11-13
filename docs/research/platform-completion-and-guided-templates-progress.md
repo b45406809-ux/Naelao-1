@@ -2,22 +2,22 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P17 code commit `91f17842` was pushed to
-`origin/Mcbt5s-Backup-2`. The Portal no longer renders retired Whop entries as live. Marketplace
-listing cards show the actual fixed-license price; a same-origin Naelao sign-in stores the current
-session key, the listing page reads buyer-scoped license/fork state with `no-store`, and checkout
-returns to that exact listing. Shell's actual template categories are read with fresh pagination;
-selected listing IDs continue through the existing fork, Space-create, activation-preview and
-activation callers. Existing settlement and refund journals were reused. Local evidence:
-Marketplace/Billing tests **12/12**, Router license/product-path tests **38/38**, Shell listing test
-**1/1**, six affected TypeScript projects typechecked, environment/deployment/Wrangler checks
-**19/19**, source resource inventory regenerated, and `git diff --check`. No live checkout, provider
-acceptance or deployment was exercised. P17 remains PARTIAL for a cross-origin Marketplace-to-Shell
-identity and selected-product handoff, refund/license reversal and author payout policy, and live
-acceptance. Exact next task: audit P24 installed-package trust across signed publication, dependency
-closure, install receipts, runtime execution, restore, upgrades, permissions and revocation; reuse
-existing controls and implement independent code gaps. Then continue guided templates, voice-extension
-dashboards and Shared-Space coordination.
+Updated 2026-11-13 after P24 code commit `415ba199` was pushed to `origin/Mcbt5s-Backup-2`.
+Publisher/package trust now fails closed for incomplete publisher metadata, applies the current D1
+publisher-key registry to installation views, template paths and rollback, and fences rollback to
+one exact tenant/Space/project installation with an expected current release. Rollback and supported
+package upgrades require explicit approval when the selected install gains permissions or
+capabilities. Local evidence: six focused Spaces suites **67/67**, Spaces/Shell typechecks and
+`git diff --check`. No deployed R2, publisher registry, runtime or live provider acceptance was
+exercised. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, lost-response
+acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy, supply
+chain scanning and drain receipts for work already admitted at revocation. P01/P02 protections
+remain fail-closed on the recorded shared resources, missing ownership/receipts and operator-attested
+migration baselines. Exact next task: advance to P04 recovery; trace Space archive object references
+through current export and restore calls, then add bounded object-byte capture and checksum-verified
+restore using the current archive/R2 contracts. Continue commercial recovery, guided templates, voice
+extension dashboards and Shared-Space coordination in the dependency order; reuse existing ledgers
+and avoid repeating completed audits without changed source or specific evidence.
 
 ## Prior checkpoints
 
@@ -286,6 +286,35 @@ complete installation. Refund-to-license revocation, author earning/payout recov
 policy remain unresolved under P20, and provider/live acceptance remains separate. Do not represent
 the listing as installed merely because checkout returned or a fork row exists.
 
+### P24 — publisher and package trust: PARTIAL, scoped rollback and key-registry checks implemented
+
+Code `415ba199` applies the current D1 publisher-key registry to installed pins, release listing,
+blueprint export/preview/activation, workflow/channel execution admission and rollback. SpaceDO
+rejects partial publisher attestation fields rather than treating them as a first-party release.
+Rollback now identifies one installation by tenant, Space, project and instance ID, compares its
+expected current release version, and changes only that installation pin. The Space-wide manifest
+is left as the install catalog. The Shell release picker shows added permissions/capabilities; the
+Worker re-computes the difference and requires an explicit approval. The supported channel and
+Canvas/Gadget update callers use the same approval check.
+
+The existing path still verifies P-256 publisher signatures during upload, stores immutable release
+manifests/artifact digests and host attestations, checks exact artifacts at runtime, pins each
+installation version and rechecks active publisher keys before applicable execution. Existing
+publisher keys can be manually rotated by adding a new Space key and revoking the old one. Local
+evidence: focused Spaces suites **67/67**, including exact rollback pin isolation, stale-version and
+cross-tenant rejection, publisher metadata/revocation, access expansion acknowledgement, and lost
+install retry returning the same installation ID; Spaces and Shell typechecks pass. These are
+mocked/local checks only. No deployed Worker, R2 artifact, D1 key registry or provider acceptance was
+tested.
+
+P24 remains partial. Extension manifests have no transitive dependency declaration/resolver or
+conflict graph; a blueprint activation checks exact installed pins but does not copy extension
+artifacts into a new Space. End-to-end Worker/R2 lost-response recovery is not covered by the local
+DO retry test. Key compromise notification, automated rotation, supply-chain scanning and uninstall
+artifact retention/purge rules are absent. Revocation blocks new admissions, but no drain/termination
+receipt exists for already-running executions; currently admitted work may continue. These are code
+or product/runtime gaps, not credential blockers.
+
 ## Requirement queue
 
 The platform plan's P01–P03, P11–P13, P17, P18/P20/P21 and P23 have now been reconciled against current source.
@@ -295,19 +324,20 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    read-only resource receipts, and per-database baselines are verified. Do not invent them.
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
-3. P04 remains partial on backup completeness and isolated recovery drills. P22's independent local
-   cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`; retain the exact
-   provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
+3. P04 remains partial on byte-complete archive coverage and isolated restore drills. Next, trace
+   current archive object references through export and restore, implement bounded object-byte
+   capture/checksum verification using the existing archive/R2 contracts, and test retry behavior.
+   P22's independent local cache-entry purge and whole-Space cleanup status gaps are closed in
+   `7b6942e8`; retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
    non-ephemeral retrieval and live provider acceptance remain partial. P17's direct catalog, license
    status, return URL and Shell category-selection gaps are committed; preserve its cross-origin
-   identity/install handoff and P20 accounting policy as open. Continue at P24: verify installed
-   release, dependencies, artifacts and image against trusted provenance at execution and after
-   restore; trace publisher revocation, rollback, update and permission expansion; implement
-   independent gaps before guided templates, voice dashboards and Shared-Space coordination. P15's
-   indexed path is implemented; realistic private-member density and task-quality evidence remain
-   open. Reuse the S/U ledgers for overlapping requirements and do not repeat completed audits
-   without a source change or specific evidence need.
+   identity/install handoff and P20 accounting policy as open. P24's scoped rollback/current-key
+   checks are committed but transitive dependencies, cross-Space artifact restore, active-work drain,
+   key compromise notice, scanning and package retention rules remain open. P15's indexed path is
+   implemented; realistic private-member density and task-quality evidence remain open. Reuse the
+   S/U ledgers for overlapping requirements and do not repeat completed audits without a source
+   change or specific evidence need.
 
 Keep rollout disabled. Do not deploy, create resources, purchase services, or claim deployed/live
 acceptance. Commit and push each coherent checkpoint to `origin/Mcbt5s-Backup-2` after fetching and

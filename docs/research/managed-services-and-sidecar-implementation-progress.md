@@ -2,7 +2,35 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P17 code `91f17842` pushed)
+### Active continuation (2026-11-13; P24 scoped rollback `415ba199` pushed)
+
+- P24 code `415ba199` is pushed to `origin/Mcbt5s-Backup-2`. Publisher trust now fails closed when
+  publisher metadata is partial and applies the active D1 publisher-key registry to installation
+  listings, blueprint export/preview/activation, workflow/channel execution admission and release
+  rollback. Rollback updates only one tenant/Space/project installation and fences on its expected
+  current release; it cannot rewrite the Space-wide manifest or sibling pins. Both rollback and
+  supported package-upgrade callers display/require explicit permission/capability expansion
+  approval.
+- Local evidence: focused SpaceDO, trust, channel, Canvas/Gadget and blueprint suites **67/67**;
+  Spaces and Shell typechecks; `git diff --check`. This is mocked/local evidence; no deployed key,
+  R2, runtime, or provider acceptance was exercised.
+- P24 remains PARTIAL: there is no transitive extension dependency resolver/closure contract;
+  installation retry is locally idempotent but the complete R2-to-DO lost-response path lacks an
+  acceptance test; uninstall retains immutable release records/artifacts under an undecided purge
+  policy; key-custody rotation and owner compromise notices are manual; currently admitted work has
+  no drain/termination receipt on publisher revocation. Blueprint activation checks installed exact
+  pins but does not transfer an extension package and its artifacts into a new Space. These are
+  implementation/product/runtime gaps, not credential blockers.
+- P01/P02 release and isolation validators remain fail-closed on shared configured IDs, missing
+  ownership/receipts and operator-attested D1 baselines. Their code is already recorded; don't repeat
+  that audit absent a source/configuration change. P03/P20 recovery policies remain decision gates.
+- Exact next task: continue the ordered platform work at P04. Trace Space archive object references
+  through current export and restore calls, and add bounded object-byte capture plus checksum-
+  verified restore using the existing archive/R2 contracts. Then continue commercial recovery/UI,
+  guided templates, voice extension dashboards and Shared-Space coordination in the plan's order.
+  Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+
+### Prior checkpoint (2026-11-13; P17 code `91f17842` pushed)
 
 - P17 code `91f17842` is pushed to `origin/Mcbt5s-Backup-2`. The stale Portal Whop fallback was
   removed; the Marketplace shows the actual fixed-license price, supports a same-origin account
@@ -203,7 +231,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |
 | §6 / P09 provider training | PARTIAL | Imported model lifecycle exists; provider training submission is disabled pending a verified API/contract. Dataset consent, provenance, deletion, evaluation and rollback are also incomplete; provider enablement is externally gated but local lifecycle work is not thereby complete. |
-| §7 / P24 publisher lifecycle trust | PARTIAL | Signed extension releases, publisher revocation and rollback exist. Installed dependency/artifact/runtime provenance, key rotation and compromise response, running-work drain, permission expansion review and restore-time verification remain. |
+| §7 / P24 publisher lifecycle trust | PARTIAL | Code `415ba199` scopes rollback to an exact installation/current pin, checks target publisher trust against current D1 state, and requires approval for added permissions/capabilities on rollback and supported upgrades. SpaceDO rejects incomplete publisher metadata; existing execution and template paths verify host attestations/artifact digests and recheck publisher registry state. Focused suites **67/67**, Spaces/Shell typechecks, diff check. Remaining: no transitive dependency resolver/closure, no cross-Space extension artifact transfer on blueprint restore, incomplete Worker/R2 lost-response acceptance, manual key rotation/compromise notice, no scan or uninstall purge policy, and no drain/termination receipt for already-running work. No live or deployed acceptance. |
 | §9 voice routing, rates and scoped knowledge | PARTIAL | Owner voice sessions/tickets and Telnyx media bridge are real local paths. Versioned provider-rate calculator, shared-number business/person disambiguation, scoped knowledge and complete extension-owned voice products remain. Zimbabwe availability/rates and selected carrier terms need account-specific evidence; illustrative US prices are not Naelao quotes. |
 | §10 shared-Space coordination | PARTIAL | Workspace Coordinator, shared task ledger, duplicate detection, blackboard routing and member/Project access controls exist. Separating coordination facts from private project knowledge, configurable policies, assignment/conflict UX, extension-owned task visibility and SDK lifecycle remain incomplete. |
 
