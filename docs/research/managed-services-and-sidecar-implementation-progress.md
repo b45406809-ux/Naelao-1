@@ -2,6 +2,26 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; public card discovery is Space-scoped)
+
+- Code `fb988c26` is pushed to `origin/Mcbt5s-Backup-2`. The bounded Blackboard project page no longer
+  returns `public` cards to an authenticated product user outside that Space. Direct Space membership
+  is required for the public-project branch; project members, Space owner/admin and inherited parent
+  administrators retain their existing access paths. The route test includes a same-tenant outsider
+  and asserts no public card summary is returned.
+- Current coordination lifecycle codes `1b9146f1`, `6d5f442c` and `307c8445` retire pending or
+  project-linked state on unpublish/archive; `52f52e16` verifies active project ACL checks on direct
+  reads and mutations. The focused four-file Spaces suite passes **10/10**, typecheck and
+  `git diff --check` pass. These are local SQLite/Worker tests; no deployed D1 or live multi-user
+  acceptance ran.
+- §10 remains PARTIAL for configurable posture and approval, publication of private-project facts,
+  extension/resource dependency lifecycle, uniqueness/reservation policy, expiry and broad
+  non-disclosure acceptance. Accepted proposal retention and the exact authorization effect of
+  acceptance remain policy questions; no access grant is claimed.
+- Exact next task: verify accepted proposals remain advisory and do not create project membership or
+  extension authority, then continue owner-configurable §10 policy gaps. Preserve the managed-service
+  partial gates and `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; coordination retirement and access revocation)
 
 - Project lifecycle codes `1b9146f1`, `6d5f442c`, `307c8445` and access test `52f52e16` are pushed

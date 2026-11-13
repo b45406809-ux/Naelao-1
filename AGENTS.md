@@ -2,21 +2,19 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §10 project coordination lifecycle codes `1b9146f1`,
-`6d5f442c`, `307c8445` and access test `52f52e16` are pushed to `origin/Mcbt5s-Backup-2`. New
-requests are inserted only while the target card remains published; unpublishing atomically removes
-its card, policy state and pending incoming requests/events. Both project deletion and the ordinary
-owner/admin `PATCH status=archived` route retire linked coordination state. A failed D1 retirement
-leaves the project archived and returns retryable 503; deletion also stops before workspace cleanup.
-Event deletion cascades read receipts, delivery rows and wake records under the actual migration
-foreign keys. The Worker-to-SpaceDO test removes a former member from a private project and verifies
-card/request/event reads, request creation/transition and unpublish all deny without disclosing the
-saved summary or request ID. Focused Spaces tests **10/10**, typecheck and `git diff --check` pass;
-these are local SQLite/Worker tests, not deployed D1. Broader retention, sharing, uniqueness and
-cross-service transaction policy remain unresolved.
-Exact next task: verify that an accepted blackboard proposal remains advisory and does not grant
-project membership or extension authority, then continue owner-configurable §10 policy gaps without
-inventing defaults.
+Current continuation checkpoint (2026-11-13): §10 codes `1b9146f1`, `6d5f442c`, `307c8445`,
+`52f52e16` and `fb988c26` are pushed to `origin/Mcbt5s-Backup-2`. New requests require a still-
+published target card; unpublish and both project archive callers retire linked blackboard state,
+with retryable errors after archival. Event deletion cascades receipts, delivery and wake rows. A
+Worker-to-SpaceDO test confirms former private-project members immediately lose card/request/event
+reads and mutations without response leaks. Bounded discovery now limits public cards to Space
+members; project members and authorized administrators retain their own permitted visibility. The
+focused four-file Spaces suite passes **10/10**, Spaces typecheck and `git diff --check` pass. These
+are local SQLite/Worker tests, not deployed D1. Broader retention, sharing, uniqueness and
+cross-service policy remain unresolved.
+Exact next task: verify accepted blackboard proposals remain advisory and do not grant project
+membership or extension authority, then continue owner-configurable §10 policy gaps without inventing
+defaults.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
