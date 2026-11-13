@@ -2,6 +2,19 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after §9.5 voice-dashboard code `ec6453f8` was pushed to
+`origin/Mcbt5s-Backup-2`. The signed Assistant Voice microapp declares per-installation settings and
+saves a host-validated draft with optimistic revisions; an explicit apply action updates Space
+Assistant defaults through the existing approved-voice API. Extension settings now accept both
+versions of the shared declarative contract, with v2 condition and localization validation. The UI
+explicitly says this does not create a customer voice agent or start a call. Local/mock evidence: SDK
+suites **40/40**, Spaces extension-settings/gadget routes **15/15**, SDK/Spaces/Shell typechecks and
+`git diff --check`. No deployed worker, voice provider, live call, cloning or provider acceptance was
+exercised. §9.5 remains PARTIAL for a customer voice-agent runtime, provider catalog and previews,
+test/publish/operation flows, provider receipts, rate estimates and remaining dashboard requirements.
+Next task: continue §10 by adding a privacy-preserving owners/admins audience option to explicit
+coordination facts, while preserving legacy all-member rows and filtering within keyset pagination.
+
 Updated 2026-11-13 after §5 installation receipt/status code `5c7ba416` was pushed to
 `origin/Mcbt5s-Backup-2`. Migration 118 pins selected Marketplace listing and setup schema version
 for new installs; activation forwards the exact listing ID. Owner/admin-only status reads show pinned

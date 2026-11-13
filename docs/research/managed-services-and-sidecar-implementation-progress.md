@@ -2,6 +2,14 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §9.5 per-installation voice dashboard draft `ec6453f8` pushed)
+
+- The first-party Assistant Voice microapp declares a settings schema and uses the host's per-installation, optimistic-revision settings API for draft configuration. Save and apply are distinct: applying revalidates against the approved Space Assistant voice catalog and updates Space-level defaults only after an explicit confirmation. The UI says it does not create a customer voice agent or start a call.
+- Agent SDK extension settings now accept schema v1 and v2; v2 reuses the Template equality-condition/localization validator. The Spaces host persists values by installation ID and still checks declared capability/permission and owner/admin write authority.
+- Local/mock evidence: Agent SDK extension/setup suites **40/40**, Spaces extension-settings/gadget-route suites **15/15**, SDK/Spaces/Shell typechecks and `git diff --check`. No deployed service, provider voice call or live acceptance ran.
+- §9.5 remains PARTIAL for customer voice-agent runtime and lifecycle, provider catalogs/preview, test/publish/operations, receipts/rates, plus other dashboard requirements. This is a reference settings dashboard, not Vapi/HeyGen support or a voice-agent product.
+- S2–S9/U01–U12 status is unchanged. Exact next task: extend §10's advisory coordination facts with an owner-selected restricted audience (`space_admins`) while retaining existing `space_members` behavior. Filter audience in host-side keyset queries and verify the filtered pages/cursors do not leak hidden entries; do not add service-use authority or infer facts from project content.
+
 ### Active continuation (2026-11-13; §5 installation receipt/status `5c7ba416` pushed)
 
 - Migration 118 adds `listing_id` and `setup_schema_version` to `space_blueprint_installations`. The activation caller passes the exact Marketplace listing ID; new receipts pin the artifact SHA-256, listing and declared setup schema version. Existing legacy listing attribution remains null rather than being guessed.

@@ -2,26 +2,26 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): §5 installed-template provenance and owner status
-code `5c7ba416` is pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`.
-Migration 118 persists the selected Marketplace listing and setup schema version with new install
-receipts; activation carries the exact selected listing into SpaceDO. A no-store owner/admin route
-and Shell modal show status, artifact digest, listing, schema revision, required extensions, project
-IDs and failure code while excluding setup values. Legacy receipts with no listing remain explicitly
-unknown. Local/mock evidence: Spaces activation/runtime/migration suites **25/25**, Router product
-path **42/42**, Spaces/Shell typechecks, and `git diff --check`. No deployed DO, Marketplace payment
-or live provider was exercised. §5 remains PARTIAL for update/schema migration, permission/pricing
-review, rollback, revocation/uninstall, complete rates and end-to-end acceptance; no safe update or
-uninstall contract exists for generated project data or retained provider resources.
+Current continuation checkpoint (2026-11-13): §9.5 voice-dashboard configuration code
+`ec6453f8` is pushed to `origin/Mcbt5s-Backup-2`. The existing Assistant Voice microapp now stores
+its host-validated configuration draft per extension installation using the revisioned settings API;
+applying that draft is a separate, explicitly confirmed write to Space Assistant preferences. Extension
+settings now support both versions of the shared declarative setup-field contract, including v2
+conditions/localization validation. The dashboard states it does not create a customer voice agent or
+start a call. Local/mock evidence: SDK setup/extension suites **40/40**, Spaces extension-settings and
+gadget-route suites **15/15**, SDK/Spaces/Shell typechecks and `git diff --check`. No deployed runtime,
+provider call, voice cloning or live acceptance was exercised. §9.5 remains PARTIAL for customer
+voice-agent runtime, provider-backed voice selection/preview, call test/publish/operations, provider
+receipts, rate estimates and the rest of its dashboard requirements.
 
-Earlier guided-template checkpoints `f5050258` and `b9ad2c83` add encrypted setup drafts, resume,
-conditional/localized fields and usage assumptions; dollar totals remain unknown without verified
-rates. S2–S9/U01–U12 classifications remain in the managed-services ledger. Keep unsupported U05/U06
-runtime contracts, product/policy decisions, absent external receipts and deployed/live acceptance
-distinct. Rollouts stay disabled. Exact next task: reconcile §9.5's package-owned voice dashboard
-against current signed microapp, settings and host APIs. Implement only a source-proven scoped,
-versioned configuration gap; label voice runtime/provider actions unavailable unless their host
-contract and callers exist. Then continue §10 and remaining S2–S9/U01–U12 code gaps.
+The §5 install status checkpoint `5c7ba416` and its record `eaef6f90` are pushed. That read-only
+owner/admin view pins listing/schema/artifact provenance without exposing setup values. S2–S9/U01–U12
+status remains in the managed-services ledger; U05/U06 runtime contracts, product/policy decisions,
+absent external receipts and deployed/live acceptance remain distinct. Rollouts stay disabled. Exact
+next task: continue §10 with a privacy-preserving, explicitly owner-selected coordination-fact
+audience. Keep the existing all-member audience as its legacy/default behavior, support only a narrower
+owners/admins audience until broader collaboration policy is approved, and filter inside the paged
+host query so hidden facts do not affect member-visible results or cursors.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable
 receipts track that action. Owner/admin Settings lists archives/restore records and can resume partial
