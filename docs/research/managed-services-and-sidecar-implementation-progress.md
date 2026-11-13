@@ -2,32 +2,32 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; signed Space-shared package install `249c7930` pushed)
+### Active continuation (2026-11-13; Telnyx extension cost join `90b6ddd7` pushed)
 
-- Code `249c79305b4f7aeb88a0476f369b5b98ada19708` is pushed to `origin/Mcbt5s-Backup-2`; branch
-  `autonomous-managed-services-20261111` matches the remote. Preserve unrelated untracked
-  `infra/scripts/__pycache__/`.
-- The generic Shell shared-app catalog/install path now accepts the exact Space-local release only
-  when its host attestation is valid and its publisher key remains active. It validates the package
-  profile, schema, capabilities and bounded artifact bytes/digest, stages the shared installation,
-  initializes its Canvas/Gadget actors, rechecks publisher trust, then activates. Shared runtime,
-  settings, voice and template access rechecks active installation/release/key state and is denied
-  after pause, removal, revocation or invalid release. This is Space-local installation, not a public
-  Marketplace listing, package authoring, upgrade or rollback.
-- Local/mock evidence: SpaceDO install, signed package and gadget suites **42/42**, Spaces and Shell
-  typechecks, `git diff --check`. No deployed DB, provider, deployment or live acceptance ran.
-- S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9 and U01–U12 retain their row statuses;
-  U05/U06's trusted runtime observation and pinned writer-admission/drain/handoff contract is not a
-  credential blocker. P01/P02 still fail closed on actual resource separation/ownership, missing
-  read-only receipts and operator-attested D1 baselines. Invoices, billed idle/CPU-size feeds, policy
-  decisions and deployed/live acceptance remain distinct gates. §5/§9.5/§10 remain PARTIAL; rollouts
-  stay disabled.
-- Exact next action: join admitted Telnyx call-cost receipts to the 50 recent extension-call rows
-  without storing raw call-control IDs. Add a binding-scoped hash in an additive migration, bounded
-  receipt aggregation in the owner-authorized status caller, and UI labels that identify provider-
-  reported cost and distinguish missing from zero. Test webhook idempotency/conflicts, scope and UI;
-  then resume §9.5 publish/operations and remaining independent gaps. Do not repeat completed audits
-  without new source evidence.
+- Code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` is pushed to `origin/Mcbt5s-Backup-2` and matches
+  fetched remote `Mcbt5s-Backup-2`; implementation branch is `autonomous-managed-services-20261111`.
+  Preserve `infra/scripts/__pycache__/`.
+- Migration 0237 stores a binding-scoped hash of admitted call-control IDs; owner status joins at most
+  50 recent extension calls and bounded receipt legs. Missing receipts remain unknown, unsafe or
+  mixed-currency totals are unavailable, and Shell identifies amounts as provider-reported rather
+  than invoices or customer charges. Raw call-control IDs are not returned. The prior `249c7930`
+  checkpoint installs exact Space-local signed packages and initializes Canvas/Gadget actors after
+  publisher and scope checks.
+- Verification: Agents phone + Telnyx webhook tests **40/40**, Agents/Shell typechecks, release and
+  deployment-manifest validators, and `git diff --check` pass. Signed package/SpaceDO/Gadget suites
+  passed **42/42** with Spaces/Shell typechecks. These are local/mock results; no provider account,
+  deployed DB, deployment or live acceptance was exercised.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. U01–U04/U09–U12 have local supported code with
+  row-specific external evidence/policy gaps; U05/U06 still lack trusted runtime observation and the
+  pinned writer-admission/drain/handoff contract, which is not a credential blocker. S3–S9 remain
+  partial per the requirement matrix. P01/P02 fail closed on real resource separation/ownership,
+  missing read-only receipts and operator-attested D1 baselines. Invoices, billed-idle/CPU-size feeds,
+  policy decisions and deployed/live acceptance remain distinct. Rollouts stay disabled.
+- Exact next action: add durable metadata-only actor-attributed audit events for generic signed-
+  extension settings `PATCH`, atomic with optimistic revision updates. Record installation and scope,
+  actor/role, old/new revision, schema version, changed field IDs and time; never setting values.
+  Verify authenticated actor, authorization, conflicts, Space/Project/Project_User isolation, uninstall
+  and erasure cleanup. Then continue remaining §5/§9.5/§10 and S2–S9/U01–U12 source-supported gaps.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

@@ -12,16 +12,17 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `249c79305b4f7aeb88a0476f369b5b98ada19708` is pushed to
-`origin/Mcbt5s-Backup-2`; local branch `autonomous-managed-services-20261111` is synchronized. The
-only untracked work is the preserved `infra/scripts/__pycache__/`. A generic Shell shared-app catalog
-and install path now accepts exact, host-attested signed extension releases from an active Space
-publisher key, initializes their Space-scoped Canvas/Gadget artifacts, and checks the signed shared
-runtime and publisher status on every request. This does not create a public Marketplace, visual
-authoring, upgrades or rollback. Local/mock evidence: SpaceDO/shared package/gadget suites **42/42**,
-Spaces and Shell typechecks, and `git diff --check`. Earlier phone simulation remains locally verified
-at Agents **40/40** with Agents/Shell typechecks. No provider egress, deployed database, deployment,
-or live acceptance was exercised.
+Current checkpoint (2026-11-13): code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` is pushed to
+`origin/Mcbt5s-Backup-2`; local branch `autonomous-managed-services-20261111` matches the fetched
+remote. Preserve the only untracked work, `infra/scripts/__pycache__/`. Code `249c7930` added generic
+Space-local installation of exact host-attested signed extension packages with Canvas/Gadget actor
+initialization and runtime publisher rechecks. Code `90b6ddd7` adds a binding-scoped hash to admitted
+Telnyx call-cost receipts, joins bounded provider-reported totals to recent extension calls, and labels
+them as provider observations rather than invoices; absent receipts remain unknown. Verification for
+`90b6ddd7`: Agents phone and Telnyx webhook suites **40/40**, Agents and Shell typechecks, release and
+deployment-manifest validators pass, and `git diff --check`. Earlier signed-package suites passed
+**42/42**, with Spaces/Shell typechecks. These are local/mock checks; no provider account, deployed DB,
+deployment or live acceptance was exercised.
 
 The detailed S2–S9/U01–U12 ledger already reconciles U11/U12 for supported local callers/toolchain;
 actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence remain. Do not repeat
@@ -30,14 +31,16 @@ U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTI
 actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
 product, policy, runtime contract and live acceptance gates remain in both progress records.
 
-Exact next action: add a privacy-preserving join from admitted Telnyx call-cost receipts to the 50
-recent extension-call rows in the owner phone panel. Add a binding-scoped hash of the call-control ID
-to the durable receipt via an additive migration; return bounded per-call provider-reported totals,
-never infer zero when no receipt exists, and label them as provider observations rather than invoices.
-Cover duplicate/corrected webhook receipts, tenant/binding scoping and Shell rendering. Then continue
-§9.5 publish/operations and the remaining §5/§10 plus S2–S9/U01–U12 gaps. After compaction,
-interruption, or a new session, read both plans and both progress records, inspect the actual worktree,
-branch and dirty state, and resume from that exact action.
+Exact next action: add durable, metadata-only actor-attributed audit events for the existing generic
+signed-extension settings `PATCH`, atomically with its optimistic revision update. Record installation
+and project/Space scope, actor and role, prior/new revision, schema version, changed field IDs and time;
+never store setting values. Enforce authenticated actor identity, test authorization and revision
+conflicts, project/user isolation, and align event cleanup with existing installation removal and
+Space-erasure paths. Then continue the platform plan's guided-template, voice dashboard and
+Shared-Space requirements alongside the remaining S2–S9/U01–U12 matrix. After compaction,
+interruption or a new session, read both plans, both progress records and this runbook; inspect the
+actual worktree, branch and dirty state; resume from that exact action. The older next-action notes
+below are historical; this checkpoint and the two progress records govern continuation.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing

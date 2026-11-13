@@ -2,23 +2,22 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `249c79305b4f7aeb88a0476f369b5b98ada19708` was pushed to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The generic Shell shared-app list
-and install path now accepts the exact Space-local signed package release after host attestation,
-active-publisher, schema/capability, artifact and scope checks; it initializes Canvas/Gadget actors and
-rechecks publisher trust before activation and at runtime. This is not public Marketplace listing,
-visual package authoring, release upgrade or rollback.
+Updated 2026-11-13 after code `90b6ddd78ec8dfcafc513085deafdee6d09b4f27` was pushed to
+`origin/Mcbt5s-Backup-2`; implementation branch `autonomous-managed-services-20261111` matches the
+fetched remote. Code `249c7930` installs exact Space-local signed package releases with Canvas/Gadget
+artifact initialization and active publisher checks. Code `90b6ddd7` adds a binding-scoped hash to
+admitted Telnyx cost receipts, joins bounded totals to recent extension calls, and shows explicit
+provider-reported, non-invoice labels; missing costs remain unknown. Preserve untracked
+`infra/scripts/__pycache__/`.
 
-Local/mock evidence: SpaceDO/shared package/gadget suites **42/42**, Spaces and Shell typechecks, and
-`git diff --check`. The previous owner phone simulation remains locally verified at Agents **40/40**
-with Agents/Shell typechecks. No provider egress, deployed DB, deployment, Marketplace acceptance or
-live call was exercised. Preserve untracked `infra/scripts/__pycache__/`.
-
-The older “U11 next” note is stale; the managed-services matrix already reconciles U11/U12 for
-supported local callers/toolchain. Invoices, billed idle and CPU/size measurements, approved policies
-and live acceptance remain gates. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12
-retain their row-level gaps. P01/P02 remain fail-closed on resource separation, `naelao-calls`, missing
-receipts and operator-attested D1 baselines. Rollouts remain disabled.
+Local/mock evidence: Agents phone and Telnyx webhook tests **40/40**, Agents/Shell typechecks, release
+and deployment-manifest validators, and `git diff --check`; earlier signed package/SpaceDO/Gadget
+suites **42/42**, Spaces/Shell typechecks. No provider account, deployed DB, deployment, Marketplace
+acceptance or live call was exercised. U11/U12 are locally implemented for supported callers/toolchain;
+invoices, billed-idle/CPU-size feeds, approved policies and live acceptance remain gates. S2 is
+IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain their row-level gaps. P01/P02 remain
+fail-closed on resource separation, ownership, `naelao-calls`, missing receipts and operator-attested
+D1 baselines. Rollouts remain disabled.
 
 **§5 — PARTIAL.** Signed source/provenance, encrypted draft/resume, localized/conditional fields,
 expected usage, owner forms, installation settings/status and setup-only schema migration are local.
@@ -27,23 +26,23 @@ lifecycle, verified rates, visual authoring and live acceptance remain uncoded o
 contracts.
 
 **§9.5 — PARTIAL.** Per-installation settings, signed handler discovery, masked owner call history,
-non-persistent text simulation, and generic installation of Space-local signed packages with
-Canvas/Gadget artifact initialization are local. Provider-reported call-cost receipts are persisted,
-but are not yet joined to owner-visible recent call rows. Voice/model catalogs and verified rates,
-publish/version/rollback, richer operations and composition remain. Streaming is unavailable; keypad
-behavior remains. No provider/account acceptance is claimed.
+non-persistent text simulation, generic installation of Space-local signed packages, and provider-
+reported cost joins to recent owner-visible call rows are local. Settings writes lack a durable,
+metadata-only actor audit. Voice/model catalogs and verified rates, publish/version/rollback, richer
+operations and composition remain. Streaming is unavailable; keypad behavior remains. No
+provider/account acceptance is claimed.
 
 **§10 — PARTIAL.** Audience-filtered facts, receipts, amendments/revocation, published cards/proposals
 and access rechecks have local code. Configurable posture/defaults, private publication/request
 authority, extension/dependency ownership, reservations, expiry/concurrency policy and broad
 non-disclosure acceptance remain.
 
-Exact next action: add a binding-scoped hash for admitted Telnyx call-control IDs in the durable call
-cost receipt, join bounded receipts to owner-visible recent extension calls, and show provider-reported
-amounts with explicit missing/unknown and non-invoice labels. Cover the webhook, authorization scope,
-and UI callers. Then continue §9.5 publish/operations and remaining §5/§10 plus S2–S9/U01–U12 gaps.
-After compaction, interruption, or a new session, reread both plans, both progress records, AGENTS.md,
-and inspect the actual worktree and branch before resuming from this action.
+Exact next action: add durable metadata-only actor-attributed audit events for generic signed-extension
+settings `PATCH`, atomically with optimistic revision updates. Record installation/scope, actor/role,
+prior/new revision, schema version, changed field IDs and time; never setting values. Test authorization,
+conflicts, scope isolation, uninstall and erasure cleanup, then continue the remaining requirements in
+dependency order. After compaction, interruption or a new session, read both plans, both progress
+records and AGENTS.md; inspect the actual worktree and branch; resume from this action.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
