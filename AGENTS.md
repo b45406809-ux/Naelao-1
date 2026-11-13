@@ -3,19 +3,19 @@
 ## Active mission and checkpoint
 
 Current continuation checkpoint (2026-11-13): §10 codes `1b9146f1`, `6d5f442c`, `307c8445`,
-`52f52e16`, `fb988c26` and `82e36d16` are pushed to `origin/Mcbt5s-Backup-2`. Public cards are
-Space-scoped: direct Space members can read them, while outsiders cannot enumerate them; project
-members and authorized administrators retain their permitted access. Public reads permit a member to
-request collaboration, but accepting a proposal does not add project membership or grant edit rights.
-Unpublish and both project archive callers retire linked blackboard state, with retryable errors after
-archival; event deletion cascades receipts, delivery and wake rows. The Worker-to-SpaceDO suite also
-proves former private-project members immediately lose card/request/event reads and mutations without
-response leaks. Focused four-file Spaces tests pass **10/10**, typecheck and `git diff --check` pass.
-These are local SQLite/Worker tests, not deployed D1. Broader retention, sharing, uniqueness and
-cross-service policy remain unresolved.
-Exact next task: implement an owner/admin-only, expected-version-fenced amendment operation for
-coordination facts that preserves host approval and repeats explicit audience disclosure; then expose
-it through the SDK/Router and the existing owner settings surface.
+`52f52e16`, `fb988c26`, `82e36d16` and `bfc22ce6` are pushed to `origin/Mcbt5s-Backup-2`. Public
+cards are Space-scoped; members can request collaboration, but accepting a proposal does not grant
+project membership or edit rights. Project unpublish/archive retires related blackboard state, and
+current private-project ACLs are rechecked on reads and mutations. The owner/admin amendment API now
+uses explicit audience confirmation and expected-version CAS, preserves author/provenance, and stamps
+the new approver. The SDK, Router, and existing Settings panel reach this operation. Local evidence:
+Spaces coordination/deletion/privacy suites **19/19**, SDK contract **4/4**, Router product-path
+tests **45/45**, Spaces/SDK/Shell/Router typechecks, and `git diff --check`. No deployed D1 or live
+multi-user acceptance ran. Collaboration defaults, expiry/dependency rules, uniqueness, cross-service
+transaction policy and broad non-disclosure acceptance remain open.
+Exact next task: add a durable `last_confirmed_at` receipt to coordination facts, set it only on
+explicit publish/amend confirmation, expose the timestamp without the confirming user's ID, and test
+legacy backfill. Then continue the remaining §10 lifecycle and policy gaps without inventing defaults.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete

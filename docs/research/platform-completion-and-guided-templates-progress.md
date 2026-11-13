@@ -2,6 +2,17 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after code `bfc22ce6` was pushed to `origin/Mcbt5s-Backup-2`. The v2 host route,
+SDK, Router allowlist and owner Settings form support amendment of existing facts with a fresh
+disclosure preview, explicit confirmation, expected-version fencing, version increment and a new
+approver stamp; the original author/provenance remains. Stale revisions return 409. Local checks:
+Spaces focused suite **19/19**, SDK **4/4**, Router **45/45**, Spaces/SDK/Shell/Router typechecks and
+`git diff --check`. No deployed DO or live acceptance occurred. §10 remains PARTIAL for policy,
+private publication approvals, extension/dependency lifecycle, reservations, expiry and
+non-disclosure. Exact next task: add durable `last_confirmed_at` on explicit publish/amend, expose the
+timestamp without the confirmer ID and backfill older explicitly approved facts; then continue
+remaining §10 lifecycle/policy gaps without inventing defaults.
+
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
 it does not grant project membership or card-edit authority. An outsider receives no public card

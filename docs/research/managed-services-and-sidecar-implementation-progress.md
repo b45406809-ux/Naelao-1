@@ -2,6 +2,25 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; versioned owner/admin fact amendments)
+
+- Code `bfc22ce6` is pushed to `origin/Mcbt5s-Backup-2`. Owner/admins can amend a v1 or v2 registry
+  fact through the v2 route after previewing and explicitly confirming the selected audience. The
+  host validates the draft, compares `expected_version`, increments the version, stamps the new
+  approver, and preserves original `created_by` and provenance. Stale writes return 409. SDK and
+  Router path authorization reach the owner Settings form's Edit flow; the panel refreshes the row
+  using the returned revision.
+- Local evidence: Spaces coordination/deletion/privacy suite **19/19**, SDK contract **4/4**, Router
+  product-path suite **45/45**, Spaces/SDK/Shell/Router typechecks, and `git diff --check`. No deployed
+  DO, live multi-user or production D1 acceptance ran.
+- §10 remains PARTIAL for posture/default/inheritance decisions, private-project publication approvals,
+  extension/resource dependency lifecycle, uniqueness and reservation rules, expiry and broad
+  non-disclosure. Amendments do not change access rights and cannot create an enforced singleton.
+- Exact next task: persist `last_confirmed_at` on explicit publish/amend, expose that timestamp without
+  exposing the confirmer ID, and backfill existing entries from their initial explicitly approved
+  creation; then continue the remaining §10 lifecycle and policy gaps. Preserve all managed-service
+  gates and `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
 - Code `82e36d16` is pushed to `origin/Mcbt5s-Backup-2`. Public-project read now requires direct
