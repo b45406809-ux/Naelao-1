@@ -7277,9 +7277,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   ): Response {
     const spaceId = params.get("space_id") ?? "";
     const userId = params.get("user_id") ?? "";
-    const project = queryOne<{ space_id: string; status: string }>(
+    const project = queryOne<{ space_id: string; status: string; visibility: string }>(
       this.ctx.storage.sql as never,
-      "SELECT space_id, status FROM projects WHERE id = ?",
+      "SELECT space_id, status, visibility FROM projects WHERE id = ?",
       projectId
     );
     if (
@@ -7294,12 +7294,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const role = this.getProjectMemberRole(projectId, userId);
     const readable = params.get("access") === "read";
+    const publicSpaceMember = readable && project.visibility === "public" && Boolean(queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT 1 AS member FROM space_members WHERE space_id=? AND user_id=?",
+      project.space_id,
+      userId,
+    ));
     const allowed =
       params.get("space_manager") === "1" ||
       this.isSpaceOwnerOrAdmin(userId, project.space_id) ||
       role === "owner" ||
       role === "editor" ||
-      (readable && role === "viewer");
+      (readable && role === "viewer") ||
+      publicSpaceMember;
     if (!allowed)
       return Response.json(
         {

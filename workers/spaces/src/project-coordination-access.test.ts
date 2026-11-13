@@ -19,6 +19,7 @@ describe("project coordination access after membership revocation", () => {
     ]);
     platformDb.db.exec(`INSERT INTO spaces VALUES('space-a','tenant-a','active');
       INSERT INTO space_members VALUES('space-a','user-a','member',NULL);
+      INSERT INTO space_members VALUES('space-a','owner-b','member',NULL);
       INSERT INTO space_blackboard_cards VALUES('tenant-a','space-a','project-a','private service summary','[]','[]','2026-11-13T00:00:00.000Z');
       INSERT INTO space_blackboard_cards VALUES('tenant-a','space-a','public-a','Space public card','[]','[]','2026-11-13T00:00:00.000Z');
       INSERT INTO space_blackboard_requests VALUES('tenant-a','space-a','request-a','source-a','project-a','review','scoped response',NULL,'pending',NULL,'user-a','2026-11-13T00:00:00.000Z','2026-11-13T00:00:00.000Z');
@@ -34,8 +35,8 @@ describe("project coordination access after membership revocation", () => {
             ('public-a','space-a',NULL,'Public project','public','active'),
             ('source-a','space-a',NULL,'Requesting project','private','active')`);
     storage.sql.exec(`INSERT INTO project_members(project_id,user_id,role) VALUES
-      ('project-a','user-a','viewer'),('source-a','user-a','editor')`);
-    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('space-a','user-a','member')");
+      ('project-a','user-a','viewer'),('source-a','user-a','editor'),('public-a','owner-b','owner')`);
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('space-a','user-a','member'),('space-a','owner-b','member')");
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
     const env = {
       ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: platformDb,
@@ -54,6 +55,25 @@ describe("project coordination access after membership revocation", () => {
     await expect(visibleCard.json()).resolves.toMatchObject({ card: { summary: "private service summary" } });
     expect((await call("/internal/spaces/space-a/blackboard/requests/project-a")).status).toBe(200);
     expect((await call("/internal/spaces/space-a/blackboard/events/project-a")).status).toBe(200);
+    const publicCard = await call("/internal/spaces/space-a/blackboard/cards/public-a");
+    expect(publicCard.status).toBe(200);
+    await expect(publicCard.json()).resolves.toMatchObject({ card: { summary: "Space public card" } });
+
+    const proposal = await call("/internal/spaces/space-a/blackboard/requests", "POST", {
+      id: "public-proposal", source_project_id: "source-a", target_project_id: "public-a",
+      objective: "Request scoped use", expected_result: "Owner review",
+    });
+    expect(proposal.status).toBe(200);
+    const accepted = await callAs("owner-b", "/internal/spaces/space-a/blackboard/requests/public-proposal/transition", "POST", {
+      project_id: "public-a", action: "accept",
+    });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({ id: "public-proposal", status: "accepted" });
+    const stillCannotManage = await call("/internal/spaces/space-a/blackboard/cards/public-a", "PUT", {
+      summary: "Changed without grant", capabilities: [], evidence: [],
+    });
+    expect(stillCannotManage.status).toBe(403);
+    expect(storage.sql.exec("SELECT user_id FROM project_members WHERE project_id='public-a' AND user_id='user-a'").toArray()).toEqual([]);
 
     const outsiderCards = await callAs("outsider", "/internal/spaces/space-a/blackboard/cards");
     expect(outsiderCards.status).toBe(200);
