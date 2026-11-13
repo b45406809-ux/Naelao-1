@@ -2,18 +2,18 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P03/P20 commercial-status code commit
-`41996f29` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
-`autonomous-managed-services-20261111` branch. Dashboard Settings now displays provider-reported
-subscription status and offers eligible owners/admins a validated HTTPS billing-portal action.
-Marketplace listing pages show audited, tenant-scoped buyer/creator refund status from the durable
-case journal without provider order IDs or license/earning mutations. Marketplace route tests pass
-**5/5**, Router proxy tests **4/4**, Marketplace Web, Dashboard, Marketplace Worker and Router
-typechecks pass, and `git diff --check` passes. These are local checks only. P03 remains PARTIAL for
-unapproved grace/restriction/escalation policy and live provider delivery. P20 remains PARTIAL for
-refund/dispute/author-accounting policy and a separately authenticated operator identity/UI; the
-existing dedicated-secret list API still accepts a caller-supplied operator ID. Preserve the
-unrelated `infra/scripts/__pycache__/`.
+Current continuation checkpoint (2026-11-13): guided-template code commit `46f38eea` is pushed to
+`origin/Mcbt5s-Backup-2` from the preserved `autonomous-managed-services-20261111` branch. New Spaces
+retain the exact selected Marketplace listing; activation preview and activation bind to that same
+listing. The owner review shows a recorded paid license or current zero-price listing as a known
+one-time cost, leaves the total null, and lists unknown model, channel, runtime, storage, tax, regional
+and account-specific costs. Targeted Spaces tests pass **63/63**, Spaces and Shell typechecks pass,
+and `git diff --check` passes. These are local checks only; expected-usage inputs, complete
+provider/runtime rates, deployed installation and live provider checks remain absent. §5 remains
+PARTIAL. P03/P20 caller code `41996f29` is also pushed: subscription status/portal and audited
+buyer/creator refund status are reachable; grace/restriction and refund/dispute/author-accounting
+policy plus independent operator identity/UI remain unresolved. Preserve the unrelated
+`infra/scripts/__pycache__/`.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
@@ -73,10 +73,11 @@ and receipt coverage outside the Product auth outbox; see
 remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
 in the two progress ledgers. The managed-services progress source already reconciles S2–S9/U01–U12;
 in particular, U11 and U12 were audited and have no remaining ordinary caller/toolchain gap. Exact
-next task: continue the integrated platform plan at §5, Developer-authored guided template
-installation. Reconcile the old-checkout findings against current authoring, installation, cost
-estimate, and activation callers, then implement the next independent gap. P01/P02 remain fail-closed
-on recorded external resource and baseline evidence gates. P17 remains partial for the
+next task: define a bounded, versioned declarative setup-field contract for a real template; validate
+schema and submitted values on the host, persist approved values per installation, and render only
+supported field types. Do not add arbitrary executable form logic or treat template fields as
+permission to handle provider secrets. P01/P02 remain fail-closed on recorded external resource and
+baseline evidence gates. P17 remains partial for the
 Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
 P01/P02
 remain fail-closed on actual

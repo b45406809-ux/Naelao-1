@@ -2,7 +2,26 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P03/P20 caller status `41996f29` pushed)
+### Active continuation (2026-11-13; §5 guided-template cost disclosure `46f38eea` pushed)
+
+- Code `46f38eea` is pushed to `origin/Mcbt5s-Backup-2`. Space creation retains the exact selected
+  `template_listing_id`; preview and activation bind to that same tenant fork/listing. Owner preview
+  reports the actual recorded license purchase or a current zero-price listing when verifiable. It
+  does not invent a total: model/tool usage, channel/provider charges, runtime/storage, tax, regional
+  terms and optional future provisioning remain explicitly unestimated.
+- Local evidence: focused Spaces blueprint/cost/create-record tests **63/63**, Spaces and Shell
+  typechecks, and `git diff --check`. These are local fixtures/typechecks; no deployed D1, Marketplace
+  payment, provider quote or live installation was exercised.
+- This is the first implementation slice for plan §5 and remains PARTIAL. It adds selected-listing
+  persistence and honest known-cost disclosure; it does not provide template-authored setup fields,
+  expected usage inputs, provider/runtime rate coverage or a complete estimate.
+- Exact next task: define a bounded, versioned declarative setup-field contract in the signed Space
+  Template package, validate schema and submitted values on the host, persist approved values per
+  Space installation, and render only supported fields in the owner setup flow. Do not add arbitrary
+  executable form logic or treat template fields as permission to handle provider secrets. Preserve
+  `infra/scripts/__pycache__/`; keep rollouts disabled.
+
+### Prior checkpoint (2026-11-13; P03/P20 caller status `41996f29` pushed)
 
 - Code `41996f29` is pushed to `origin/Mcbt5s-Backup-2`. Dashboard Settings now reads the current
   subscription status and period/cancellation fields; eligible owners/admins can open the existing
@@ -18,15 +37,11 @@
   independently authenticated operator identity/UI. The existing operator list route uses a shared
   secret plus caller-supplied operator ID; do not expose the secret to a browser or present the
   supplied ID as authenticated identity.
-- The managed-services matrix already reconciles S2–S9/U01–U12. In particular, U11's supported
-  metering, cost-budget, alert and push callers and U12's pinned esbuild/toolchain callers were
-  audited in the historical entries below; their remaining limits are explicit unsupported feeds,
-  policy or live evidence, not an unfinished repeated audit. Exact next task: continue the integrated
-  platform plan at §5, Developer-authored guided template installation. Reconcile current authoring,
-  install, cost-estimate and activation callers with the old-checkout findings, then implement the
-  next independent gap. Preserve `infra/scripts/__pycache__/`; keep rollouts disabled.
+- The managed-services matrix already reconciles S2–S9/U01–U12. U11's supported metering,
+  cost-budget, alert and push callers and U12's pinned esbuild/toolchain callers were already audited;
+  their remaining limits are explicit unsupported feeds, policy or live evidence.
 
-### Active continuation (2026-11-13; P04 object recovery `937fbdd5` pushed)
+### Prior checkpoint (2026-11-13; P04 object recovery `937fbdd5` pushed)
 
 - P24 code `415ba199` is pushed to `origin/Mcbt5s-Backup-2`. Publisher trust now fails closed when
   publisher metadata is partial and applies the active D1 publisher-key registry to installation
@@ -54,12 +69,8 @@
 - P01/P02 release and isolation validators remain fail-closed on shared configured IDs, missing
   ownership/receipts and operator-attested D1 baselines. Their code is already recorded; don't repeat
   that audit absent a source/configuration change. P03/P20 recovery policies remain decision gates.
-- Exact next task: continue P03/P20 commercial recovery by tracing current dunning, operator identity,
-  refund triage and author accounting callers; close independent UI/authorization gaps using current
-  ledgers without inventing grace, restriction, refund, dispute or payout policy. Then return to
-  remaining managed-services S2–S9/U01–U12 code gaps before guided templates, voice extension
-  dashboards and Shared-Space coordination.
-  Preserve `infra/scripts/__pycache__/`; keep all rollouts disabled.
+- P03/P20 caller work is recorded in the later `41996f29` checkpoint; policy and independent
+  operator-identity gaps remain unresolved.
 
 ### Prior checkpoint (2026-11-13; P17 code `91f17842` pushed)
 

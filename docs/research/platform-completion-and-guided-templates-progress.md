@@ -2,7 +2,21 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P03/P20 independent caller code commit `41996f29` was pushed to
+Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
+`origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a
+template; preview and activation bind to that same tenant fork/listing. Owner review reports an
+actual recorded license purchase or a verified current zero-price listing as a known one-time cost,
+while keeping total operating cost null and listing model/tool, channel/provider, runtime/storage,
+tax, regional and account-specific costs as not estimated. Local evidence: focused Spaces blueprint,
+cost-estimate and create-record tests **63/63**, Spaces and Shell typechecks, and `git diff --check`.
+No deployed install, Marketplace payment or provider call was exercised. There are no expected-usage
+inputs or complete provider/runtime rates; §5 remains PARTIAL for authored setup fields, host-side
+value validation/persistence, dynamic estimates and full lifecycle acceptance. Exact next task:
+define a bounded, versioned declarative setup-field contract in the signed template package, validate
+schema and values on the host, persist per installation, and render only supported fields. Exclude
+arbitrary executable form logic and implicit provider-secret access.
+
+Prior checkpoint — updated 2026-11-13 after P03/P20 independent caller code commit `41996f29` was pushed to
 `origin/Mcbt5s-Backup-2`. Dashboard Settings presents the provider-reported subscription status and
 a validated provider portal action for eligible owners/admins. Marketplace listing pages show
 buyer/creator refund-case state from the existing durable review journal through the signed Router
@@ -14,11 +28,9 @@ PARTIAL for refund/dispute/access and author-accounting policy and independently
 operator resolution; the existing list API uses a shared secret and caller-supplied ID, and no safe
 operator UI exists without an identity contract. The managed-services matrix already reconciles
 S2–S9/U01–U12, including completed U11/U12 caller audits; see that ledger instead of repeating them.
-Exact next task: continue at §5, Developer-authored guided template installation. Compare current
-authoring, installation, cost-estimate and activation callers with the older-checkout research, then
-implement the next independent gap.
+Do not repeat those audits absent new evidence.
 
-Updated 2026-11-13 after P04 code commit `937fbdd5` was pushed to
+Prior checkpoint — updated 2026-11-13 after P04 code commit `937fbdd5` was pushed to
 `origin/Mcbt5s-Backup-2`. New full archives place
 bounded workspace object bytes and SHA-256 checksums inside the existing encrypted archive; restore
 can conditionally recreate missing objects, verifies read-back checksums, and records partial
@@ -32,11 +44,8 @@ evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact resto
 acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy, supply
 chain scanning and drain receipts for work already admitted at revocation. P01/P02 protections
 remain fail-closed on shared resources, missing ownership/receipts and operator-attested migration
-baselines. Exact next task: continue P03/P20 commercial recovery by tracing the existing operator
-identity, refund triage and dunning callers, then close independent UI/authorization gaps without
-choosing unapproved grace, refund, dispute or payout policy. Continue through guided templates, voice
-extension dashboards and Shared-Space coordination; reuse existing ledgers and avoid repeating
-completed audits without changed source or specific evidence.
+baselines. P03/P20 caller work is recorded in the subsequent `41996f29` checkpoint; policy and
+operator-identity gaps remain open.
 
 ### Prior checkpoint — P24 publisher/package trust (`415ba199`)
 
@@ -345,6 +354,34 @@ complete installation. Refund-to-license revocation, author earning/payout recov
 policy remain unresolved under P20, and provider/live acceptance remains separate. Do not represent
 the listing as installed merely because checkout returned or a fork row exists.
 
+### §5 — developer-authored guided template installation: PARTIAL
+
+The old-checkout research described the guided customer-service installation as missing. Current
+source already provides a Marketplace-backed Space Template picker, selected listing identity through
+Space creation, signed/certified blueprint preview, server-side dependency/runtime readiness, human
+approval, shared-filesystem permission selection, resumable pending-template review, and idempotent
+activation/retry through the existing Space and extension journals. Managed AgentMail is offered as a
+post-setup separately quoted owner action; template selection does not provision it. Publisher trust
+and exact installed-release checks are recorded under P24.
+
+Code `46f38eea` closes a selection and disclosure gap. The exact `template_listing_id` persists in the
+Space configuration and constrains preview/activation to that tenant fork. Owner preview reports a
+recorded paid license or verified current zero-price listing; no total is fabricated. Local evidence:
+Spaces blueprint/cost/create-record tests **63/63**, Spaces/Shell typechecks and `git diff --check`.
+
+§5 remains PARTIAL. `SpaceBlueprint.requiredCredentials` contains descriptive prompts but there is
+no bounded author-declared setup schema for typed values, conditionals, validation, localization or
+safe persistence. Preview does not collect settings such as supported language, business hours,
+escalation policy or expected usage. Current costs omit usage-based model/tool, channel/provider,
+runtime/storage, regional/tax and account-specific charges; a complete total and visual template
+editor are absent. These are code/product-surface gaps; actual rates and provider eligibility need
+reviewed sources and account-specific evidence.
+
+Exact next task: define a bounded, versioned declarative setup-field contract in the signed template
+package, validate schema and submitted values on the host, persist approved values per Space, and
+render only supported field types in the owner flow. Do not add arbitrary executable form logic or
+imply that a field grants access to raw provider secrets.
+
 ### P24 — publisher and package trust: PARTIAL, scoped rollback and key-registry checks implemented
 
 Code `415ba199` applies the current D1 publisher-key registry to installed pins, release listing,
@@ -385,10 +422,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    product contracts; advance only independent code while they are unresolved.
 3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
    in pushed code `937fbdd5`; the focused SQLite/R2-mock suite passes **9/9**. P03/P20 independent
-   customer/creator status callers are implemented in pushed code `41996f29`. Grace/restriction and
-   refund/dispute/payout policies plus authenticated operator identity remain unresolved. Resume the
-   managed-services audit at U11, then audit U12 and reconcile S2–S9/U01–U12 before continuing the
-   remaining platform-plan requirements. P22's
+   customer/creator status callers are implemented in pushed code `41996f29`; grace/restriction and
+   refund/dispute/payout policies plus authenticated operator identity remain unresolved. The
+   managed-services ledger reconciles S2–S9/U01–U12, including U11/U12 caller audits; do not repeat
+   those without new evidence. Continue §5 at the exact next task above. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
