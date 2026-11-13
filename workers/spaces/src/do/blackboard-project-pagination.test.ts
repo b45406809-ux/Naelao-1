@@ -26,6 +26,7 @@ describe("bounded Space Blackboard project discovery", () => {
     addProject("p-06", "private");
     addProject("p-07", "public", null, "archived");
     storage.sql.exec("INSERT INTO project_members(project_id,user_id,role) VALUES('p-02','viewer','viewer'),('p-03','viewer','viewer')");
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('root','viewer','member')");
     storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('department','viewer','admin')");
 
     const page = async (after = "") => {
@@ -44,6 +45,11 @@ describe("bounded Space Blackboard project discovery", () => {
     expect([...first.project_ids, ...second.project_ids]).not.toContain("p-06");
     expect([...first.project_ids, ...second.project_ids]).not.toContain("p-05");
     expect([...first.project_ids, ...second.project_ids]).not.toContain("p-07");
+
+    const outsiderPage = await space.fetch(new Request(
+      "http://space/projects/blackboard-visible-page?space_id=root&viewer_id=outsider&limit=10"));
+    expect(outsiderPage.status).toBe(200);
+    await expect(outsiderPage.json()).resolves.toMatchObject({ project_ids: [], truncated: false });
 
     storage.sql.exec("INSERT INTO projects(id,space_id,subspace_id,name,visibility,status) VALUES(?,?,?,?,?,?)",
       "child-private", "department", null, "Child private", "private", "active");

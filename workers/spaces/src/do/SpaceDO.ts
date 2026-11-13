@@ -6482,7 +6482,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const rows = queryAll<{ id: string }>(this.ctx.storage.sql as never, `
       SELECT p.id FROM projects p INDEXED BY idx_projects_space_id
       WHERE p.space_id=? AND p.subspace_id IS NULL AND p.id>? AND p.status!='archived' AND (
-        p.visibility='public' OR ?=1 OR
+        (p.visibility='public' AND EXISTS (SELECT 1 FROM space_members public_member WHERE public_member.space_id=p.space_id AND public_member.user_id=?)) OR ?=1 OR
         EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?) OR
         EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id=p.space_id AND sm.user_id=? AND sm.role IN ('owner','admin')) OR
         EXISTS (
@@ -6492,7 +6492,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             AND parent_member.user_id=? AND parent_member.role IN ('owner','admin')
         )
       ) ORDER BY p.id LIMIT ?`,
-      spaceId, after, manager ? 1 : 0, viewerId, viewerId, viewerId, requestedLimit + 1);
+      spaceId, after, viewerId, manager ? 1 : 0, viewerId, viewerId, viewerId, requestedLimit + 1);
     const truncated = rows.length > requestedLimit;
     const page = rows.slice(0, requestedLimit);
     return Response.json({ project_ids: page.map((row) => row.id),

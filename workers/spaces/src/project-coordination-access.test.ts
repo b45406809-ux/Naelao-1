@@ -20,6 +20,7 @@ describe("project coordination access after membership revocation", () => {
     platformDb.db.exec(`INSERT INTO spaces VALUES('space-a','tenant-a','active');
       INSERT INTO space_members VALUES('space-a','user-a','member',NULL);
       INSERT INTO space_blackboard_cards VALUES('tenant-a','space-a','project-a','private service summary','[]','[]','2026-11-13T00:00:00.000Z');
+      INSERT INTO space_blackboard_cards VALUES('tenant-a','space-a','public-a','Space public card','[]','[]','2026-11-13T00:00:00.000Z');
       INSERT INTO space_blackboard_requests VALUES('tenant-a','space-a','request-a','source-a','project-a','review','scoped response',NULL,'pending',NULL,'user-a','2026-11-13T00:00:00.000Z','2026-11-13T00:00:00.000Z');
       INSERT INTO space_blackboard_events VALUES('tenant-a','space-a','request-a:pending','project-a','request-a','request.pending','2026-11-13T00:00:00.000Z');`);
 
@@ -30,26 +31,33 @@ describe("project coordination access after membership revocation", () => {
       VALUES('space-a',NULL,'Space','launchpad','team',0,'active','{}',?)`, now);
     storage.sql.exec(`INSERT INTO projects(id,space_id,subspace_id,name,visibility,status)
       VALUES('project-a','space-a',NULL,'Private project','private','active'),
+            ('public-a','space-a',NULL,'Public project','public','active'),
             ('source-a','space-a',NULL,'Requesting project','private','active')`);
     storage.sql.exec(`INSERT INTO project_members(project_id,user_id,role) VALUES
       ('project-a','user-a','viewer'),('source-a','user-a','editor')`);
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('space-a','user-a','member')");
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
     const env = {
       ENVIRONMENT: "test", PLATFORM_SECRET: secret, PLATFORM_DB: platformDb,
       SPACE_DO: { idFromName: (name: string) => name, get: () => space },
     } as never;
     const token = await mintInternalToken(secret, "tenant-a");
-    const call = async (path: string, method = "GET", body?: unknown) => worker.fetch(new Request(`https://spaces.test${path}`, {
-      method, headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-a",
+    const callAs = async (userId: string, path: string, method = "GET", body?: unknown) => worker.fetch(new Request(`https://spaces.test${path}`, {
+      method, headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": userId,
         "x-naelao-role": "product_end_user", "x-naelao-internal-token": token },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env, {} as ExecutionContext);
+    const call = (path: string, method = "GET", body?: unknown) => callAs("user-a", path, method, body);
 
     const visibleCard = await call("/internal/spaces/space-a/blackboard/cards/project-a");
     expect(visibleCard.status).toBe(200);
     await expect(visibleCard.json()).resolves.toMatchObject({ card: { summary: "private service summary" } });
     expect((await call("/internal/spaces/space-a/blackboard/requests/project-a")).status).toBe(200);
     expect((await call("/internal/spaces/space-a/blackboard/events/project-a")).status).toBe(200);
+
+    const outsiderCards = await callAs("outsider", "/internal/spaces/space-a/blackboard/cards");
+    expect(outsiderCards.status).toBe(200);
+    await expect(outsiderCards.json()).resolves.toMatchObject({ cards: [] });
 
     storage.sql.exec("DELETE FROM project_members WHERE project_id='project-a' AND user_id='user-a'");
 
