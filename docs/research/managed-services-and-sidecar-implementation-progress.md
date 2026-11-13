@@ -2,26 +2,25 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; owner-scoped keypad phone dashboard `53e6970a2744519fae5c6073a500813076ea534d` pushed)
+### Active continuation (2026-11-13; owner-safe keypad simulator `c1d56baeb4f57a32875b4c81257b12000a437a74` pushed)
 
-- Code `53e6970a2744519fae5c6073a500813076ea534d` is pushed to `origin/Mcbt5s-Backup-2` after
-  fetching and confirming the remote was an ancestor. The signed keypad package now reads line state
-  and bounded recent-call history only for its exact active signed installation. The host requires
-  owner/admin authority and `assistant.phone.read`, filters calls by that installation's binding IDs,
-  masks phone/caller identifiers, uses no-store responses, and labels Telnyx amounts as provider
-  observations rather than invoices. Local/mock evidence: SDK package **4/4**, Spaces package/route/
-  runtime suites **43/43**, Agents phone status **37/37**, four typechecks and `git diff --check`. The
-  pnpm wrapper aborted on its noninteractive modules-purge guard before modifying dependencies;
-  verification used existing local binaries. No package publication, provider, deployment or live call
-  occurred. Preserve `infra/scripts/__pycache__/`.
-- §9.5/P06 remains PARTIAL. This closes one operational dashboard gap only; a customer voice-agent
-  package lifecycle, richer test/publish/rollback operations, streaming, managed billing and live
-  acceptance remain. Rollouts stay disabled.
-- Exact next action: add an owner-only server-backed keypad simulation for this package, resolving
-  its exact active signed installation and phone binding before invoking the existing synthetic
-  `phone-handler-test` route. Declare a separate simulation capability and test role, release,
-  binding and input denial. The flow must remain synthetic and issue no carrier operation. Then
-  continue uncoded §5/P10 lifecycle work and the remaining S/U/P requirements.
+- Code `c1d56baeb4f57a32875b4c81257b12000a437a74` is pushed to `origin/Mcbt5s-Backup-2` after
+  fetching and confirming the remote was an ancestor. The signed keypad dashboard now invokes the
+  exact active installed handler through the existing synthetic `phone-handler-test` path. A separate
+  `assistant.phone.simulate` declaration gates this owner/admin route; the host rechecks the active
+  signed release, requires one active line bound to that installation, and rejects stale release,
+  unauthorized role, malformed input, ambiguous line and cross-installation cases. It uses saved
+  settings and creates no carrier call/session. Local/mock evidence: SDK package **4/4**, Spaces
+  package/route/runtime suites **44/44**, Agents synthetic simulation/phone suites **44/44**,
+  SDK/Spaces/Agents/Shell typechecks and `git diff --check`. Spaces' first typecheck caught a decoder
+  option mismatch; fixed and rerun. No package publication, provider, deployment or live call occurred.
+- §9.5/P06 remains PARTIAL: package publishing, conversational runtime, provider billing, broader
+  lifecycle and live acceptance remain. Rollouts stay disabled.
+- Exact next action: continue §5/P10 with a read-only owner/admin review for updates to signed
+  Space-shared packages. Resolve one exact installation/version pin; verify the candidate signed
+  publisher release; return a bounded version, authority, dependency, schema and price/terms diff.
+  Test stale pin, wrong Space, revoked publisher and added authority. Keep preview mutation-free;
+  implement activation only after safe migration, rollback and active-work behavior are verified.
 
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 

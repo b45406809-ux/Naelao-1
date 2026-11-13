@@ -12,22 +12,23 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `53e6970a2744519fae5c6073a500813076ea534d` is pushed to
+Current checkpoint (2026-11-13): code `c1d56baeb4f57a32875b4c81257b12000a437a74` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. The signed keypad
-package now has a read-only owner/admin phone operations view scoped to its exact active signed
-installation. It filters to that installation's lines and bound Telnyx calls, masks numbers/callers,
-and labels provider cost observations as non-invoice data. It has no carrier action, provisioning,
-streaming or rollout path. Local evidence: Agent SDK package **4/4**, Spaces signed-package/route/
-runtime suites **43/43**, Agents phone status **37/37**, SDK/Spaces/Agents/Shell typechecks and
-`git diff --check`. The pnpm wrapper aborted before changing dependencies because it attempted a
-noninteractive modules purge; checks used existing local binaries. No package publication, provider,
+package now has an owner-only server-backed synthetic handler test. It requires the separate
+`assistant.phone.simulate` capability, an active signed package and exactly one active binding from
+that installation, then invokes the existing `phone-handler-test` contract with saved settings and
+synthetic input. It creates no carrier call or call session. Local/mock evidence: SDK package **4/4**,
+Spaces route/runtime/package suites **44/44**, Agents handler simulation/phone suites **44/44**,
+SDK/Spaces/Agents/Shell typechecks and `git diff --check`. The first Spaces typecheck caught a
+`TextDecoder` option mismatch; fixed and rerun successfully. No package publication, provider,
 deployment or live call was exercised. Preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: add an owner-only, server-backed simulated keypad test in the package dashboard.
-Resolve its exact signed installation and active phone binding, call the existing synthetic
-`phone-handler-test` path, and use a distinct declared test capability; verify stale release,
-wrong-installation, role and malformed-input denials. The simulator must stay synthetic and issue no
-carrier operation. Then continue the uncoded §5/P10 package update lifecycle and remaining plan gaps.
+Exact next action: continue §5/P10 by adding a read-only owner/admin update review for the signed
+Space-shared package catalog. Bind the preview to the exact current installation and release pin;
+verify the candidate publisher/signature and show version, requested permissions/capabilities,
+dependencies, schema changes and any known price terms. Test stale-pin, cross-Space, revoked-key and
+authority-expansion handling. Do not mutate the active Canvas or installation during preview; only
+add an apply path after compatibility, rollback and active-work behavior are demonstrably safe.
 After compaction, interruption, or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from the exact next action. Keep rollout
 disabled; do not deploy, purchase, reset, clean, switch branches or force-push. The user has authorized

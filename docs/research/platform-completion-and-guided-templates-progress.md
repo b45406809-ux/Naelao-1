@@ -2,21 +2,22 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after owner-scoped phone dashboard code `53e6970a2744519fae5c6073a500813076ea534d` was
-pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestor verification. The signed keypad dashboard
-reads only its exact active installation's line state and bounded Telnyx calls through an
-owner/admin-only host route. The route rechecks the signed release and `assistant.phone.read`, filters
-by installation binding, masks numbers/callers, returns no-store data, and labels provider amounts as
-non-invoice observations. Local/mock evidence: SDK **4/4**, Spaces package/route/runtime **43/43**,
-Agents phone status **37/37**, SDK/Spaces/Agents/Shell typechecks and `git diff --check`. The pnpm
-wrapper aborted at its noninteractive modules-purge guard; existing local binaries completed checks.
-No Marketplace publication, provider, deployment or live call was exercised.
+Updated 2026-11-13 after owner-safe keypad simulator code `c1d56baeb4f57a32875b4c81257b12000a437a74` was
+pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestor verification. The signed package's
+`assistant.phone.simulate` capability gates an owner/admin host route that resolves the exact active
+signed install, requires a single active phone binding for that install, and invokes the existing
+synthetic handler test with saved settings. Cross-install, ambiguous, stale-release, role and invalid
+input paths fail closed. There is no carrier call, billing, or call-session write. Local/mock evidence:
+SDK **4/4**, Spaces route/runtime/package **44/44**, Agents synthetic phone **44/44**, four typechecks
+and `git diff --check`. A Spaces typecheck initially caught a decoder options type issue; fixed and
+rerun. No package publication, provider, deployment or live call was exercised.
 
-§9.5/P06 remains PARTIAL. Exact next action: add an owner-only server-backed keypad simulation that
-resolves this signed package to its exact active phone binding and invokes the existing synthetic
-`phone-handler-test` path. Use a distinct declared simulation capability and test stale release,
-cross-install, role and malformed-input denial. Keep it data-only and carrier-free; after this slice,
-resume §5/P10 package lifecycle gaps before further optional voice work.
+§9.5/P06 remains PARTIAL. Exact next action: continue §5/P10 with a read-only, owner/admin review of
+updates to signed Space-shared packages. Bind the review to one exact installation/current pin and a
+verified candidate publisher release; show a bounded version, authority, dependency, schema and
+price/terms diff. Cover stale pins, wrong Space, revoked publisher and authority expansion. Do not
+change the active install during preview. Add an apply path only after compatibility, rollback and
+active-work behavior are safe.
 
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
