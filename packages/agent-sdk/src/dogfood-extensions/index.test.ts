@@ -7,6 +7,11 @@ describe("dogfooded enterprise extensions", () => {
     for (const manifest of DOGFOOD_EXTENSIONS) expect(validateExtensionManifest(manifest, { gatekeeperCapabilities: manifest.capabilityRequirements })).toEqual(manifest);
     const voiceDashboard = DOGFOOD_EXTENSION_CANVASES.ext_assistant_voice_dashboard ?? "";
     expect(voiceDashboard).toContain("/api/assistant-voice");
+    expect(voiceDashboard).toContain("/api/settings");
+    expect(voiceDashboard).toContain("Save installation draft");
+    expect(voiceDashboard).toContain("Apply draft to Space Assistant");
+    expect(DOGFOOD_EXTENSIONS.find(manifest => manifest.id === "ext_assistant_voice_dashboard")?.settingsSchema)
+      .toMatchObject({ schemaVersion: 1, fields: expect.arrayContaining([expect.objectContaining({ id: "voice_profile_id" })]) });
     const script = voiceDashboard.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(script).toBeTruthy();
     expect(() => new Function(script!)).not.toThrow();

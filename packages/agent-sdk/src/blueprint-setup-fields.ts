@@ -140,7 +140,9 @@ export function validateSetupFieldDefinitions(raw: unknown, options: { schemaVer
     if (ids.has(field.id)) throw new Error(`Duplicate setup field id: ${field.id}`);
     ids.add(field.id);
   }
-  return structuredClone(raw) as BlueprintSetupField[];
+  const definitions = structuredClone(raw) as BlueprintSetupField[];
+  if ((options.schemaVersion ?? 1) === 2) validateVisibilityConditions(definitions);
+  return definitions;
 }
 
 function validateVisibilityConditions(fields: readonly BlueprintSetupField[]): void {

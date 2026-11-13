@@ -55,11 +55,26 @@ describe("immutable extension kernel", () => {
     expect(() => validateExtensionSettingsValues(manifest, { greeting: "Hello", extra: true })).toThrow("Unknown setup field");
     expect(() => validateExtensionManifest({ ...valid, settingsSchema: schema })).toThrow("settings_read_capability_required");
     expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"], capabilityRequirements: ["repo.read", "extension.settings.read"],
-      settingsSchema: { schemaVersion: 2, fields: [] } })).toThrow("unsupported_settings_schema_version");
+      settingsSchema: { schemaVersion: 3, fields: [] } })).toThrow("unsupported_settings_schema_version");
     expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"], capabilityRequirements: ["repo.read", "extension.settings.read"],
       settingsSchema: { schemaVersion: 1, fields: [{ id: "api_key", type: "text", label: "Provider access" }] } })).toThrow("cannot request provider credentials");
     expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
       capabilityRequirements: ["repo.read", "extension.settings.read", "extension.settings.configure"], settingsSchema: schema })).toThrow("settings_configure_permission_required");
+  });
+  it("reuses versioned Template conditions and localization in per-installation settings", () => {
+    const manifest = validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
+      capabilityRequirements: ["repo.read", "extension.settings.read"], settingsSchema: { schemaVersion: 2, fields: [
+        { id: "enabled", type: "boolean", label: "Enabled", defaultValue: false },
+        { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80,
+          visibleWhen: { fieldId: "enabled", equals: true }, localization: { label: { en: "Greeting", fr: "Salutation" } } },
+      ] } });
+    expect(manifest.settingsSchema?.schemaVersion).toBe(2);
+    expect(validateExtensionSettingsValues(manifest, { enabled: true, greeting: "Hello" })).toEqual({ enabled: true, greeting: "Hello" });
+    expect(validateExtensionSettingsValues(manifest, { enabled: false, greeting: "Ignored" })).toEqual({ enabled: false });
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
+      capabilityRequirements: ["repo.read", "extension.settings.read"], settingsSchema: { schemaVersion: 2, fields: [
+        { id: "greeting", type: "text", label: "Greeting", visibleWhen: { fieldId: "missing", equals: true } },
+      ] } })).toThrow("visibility must reference an earlier field");
   });
   it("requires read and configure grants for the Template setup runtime API", () => {
     const readOnly = validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "template.setup.read"],

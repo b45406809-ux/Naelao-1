@@ -5,7 +5,7 @@ import { validateSetupFieldDefinitions, validateSetupFieldValues } from "./bluep
 import type { BlueprintSetupValue } from "./blueprint-setup-fields.js";
 import type { BlueprintSetupField } from "./types.js";
 
-export interface ExtensionSettingsSchema { schemaVersion: 1; fields: BlueprintSetupField[] }
+export interface ExtensionSettingsSchema { schemaVersion: 1 | 2; fields: BlueprintSetupField[] }
 export interface ExtensionSettingsSnapshot {
   schema: ExtensionSettingsSchema;
   settings: Partial<Record<string, BlueprintSetupValue>>;
@@ -150,8 +150,8 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(raw.settingsSchema !== null && typeof raw.settingsSchema === "object" && !Array.isArray(raw.settingsSchema), "invalid_settings_schema");
     const schema = raw.settingsSchema as Record<string, unknown>;
     assert(Object.keys(schema).every(key => key === "schemaVersion" || key === "fields"), "unknown_settings_schema_field");
-    assert(schema.schemaVersion === 1, "unsupported_settings_schema_version");
-    try { settingsSchema = { schemaVersion: 1, fields: validateSetupFieldDefinitions(schema.fields) }; }
+    assert(schema.schemaVersion === 1 || schema.schemaVersion === 2, "unsupported_settings_schema_version");
+    try { settingsSchema = { schemaVersion: schema.schemaVersion, fields: validateSetupFieldDefinitions(schema.fields, { schemaVersion: schema.schemaVersion }) }; }
     catch (error) { throw new Error(`invalid_extension_manifest:invalid_settings_schema:${error instanceof Error ? error.message : "invalid"}`); }
     assert((raw.capabilityRequirements as string[]).includes("extension.settings.read")
       && (raw.declaredPermissions as string[]).includes("extension.settings.read"), "settings_read_capability_required");
@@ -266,7 +266,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
 }
 
 export function validateExtensionSettingsValues(manifest: Pick<ExtensionManifest, "settingsSchema">, raw: unknown, options: { allowIncomplete?: boolean } = {}): Record<string, BlueprintSetupValue> {
-  if (!manifest.settingsSchema || manifest.settingsSchema.schemaVersion !== 1) throw new Error("extension_settings_schema_unavailable");
+  if (!manifest.settingsSchema || (manifest.settingsSchema.schemaVersion !== 1 && manifest.settingsSchema.schemaVersion !== 2)) throw new Error("extension_settings_schema_unavailable");
   return validateSetupFieldValues(manifest.settingsSchema.fields, raw, options);
 }
 

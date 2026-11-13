@@ -11,9 +11,11 @@ describe("Space-shared extension settings", () => {
       id: "ext_voice_dashboard", type: "extension", declaredPermissions: ["extension.settings.read", "extension.settings.configure", "assistant.voice.read", "assistant.voice.configure"],
       capabilityRequirements: ["extension.settings.read", "extension.settings.configure", "assistant.voice.read", "assistant.voice.configure"],
       gadgets: [{ id: "voice_dashboard", name: "Voice Dashboard", viewportComponent: "./voice.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
-      daemons: [], commands: [], settingsSchema: { schemaVersion: 1, fields: [
+      daemons: [], commands: [], settingsSchema: { schemaVersion: 2, fields: [
         { id: "language", type: "select", label: "Language", options: [{ value: "en", label: "English" }, { value: "fr", label: "French" }], defaultValue: "en" },
-        { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80 },
+        { id: "enabled", type: "boolean", label: "Enabled", defaultValue: false },
+        { id: "greeting", type: "text", label: "Greeting", required: true, minLength: 2, maxLength: 80,
+          visibleWhen: { fieldId: "enabled", equals: true }, localization: { label: { en: "Greeting", fr: "Salutation" } } },
       ] },
     } as const;
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -28,13 +30,13 @@ describe("Space-shared extension settings", () => {
     }));
     const initial = await request("GET");
     expect(initial.headers.get("cache-control")).toContain("no-store");
-    expect(await initial.json()).toMatchObject({ revision: 0, settings: { language: "en" }, schema: { schemaVersion: 1 } });
-    expect((await request("PATCH", "member", { settings: { greeting: "Hello" }, revision: 0 })).status).toBe(403);
-    expect((await request("PATCH", "admin", { settings: { greeting: "H" }, revision: 0 })).status).toBe(400);
-    const saved = await request("PATCH", "admin", { settings: { greeting: "Hello" }, revision: 0 });
-    expect(await saved.json()).toMatchObject({ revision: 1, settings: { language: "en", greeting: "Hello" } });
-    expect((await request("PATCH", "admin", { settings: { greeting: "Changed" }, revision: 0 })).status).toBe(409);
-    expect(await (await request("GET")).json()).toMatchObject({ revision: 1, settings: { language: "en", greeting: "Hello" } });
+    expect(await initial.json()).toMatchObject({ revision: 0, settings: { language: "en", enabled: false }, schema: { schemaVersion: 2 } });
+    expect((await request("PATCH", "member", { settings: { enabled: true, greeting: "Hello" }, revision: 0 })).status).toBe(403);
+    expect((await request("PATCH", "admin", { settings: { enabled: true, greeting: "H" }, revision: 0 })).status).toBe(400);
+    const saved = await request("PATCH", "admin", { settings: { enabled: true, greeting: "Hello" }, revision: 0 });
+    expect(await saved.json()).toMatchObject({ revision: 1, settings: { language: "en", enabled: true, greeting: "Hello" } });
+    expect((await request("PATCH", "admin", { settings: { enabled: true, greeting: "Changed" }, revision: 0 })).status).toBe(409);
+    expect(await (await request("GET")).json()).toMatchObject({ revision: 1, settings: { language: "en", enabled: true, greeting: "Hello" } });
     expect((await request("GET", "admin", undefined, "wrong_app")).status).toBe(404);
 
     const voiceRequest = (method: "GET" | "PATCH", role = "admin", body?: unknown, appId = "voice_dashboard") => space.fetch(new Request(`http://space/extension-assistant-voice?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: appId })}`, {
