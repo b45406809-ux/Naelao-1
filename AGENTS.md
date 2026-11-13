@@ -14,7 +14,7 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 Current checkpoint (2026-11-13): P05 visual setup-field authoring code `b3feecb5` is pushed to
 `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`; the prior progress/runbook
-checkpoint is `19a59bdb`. The P05 Foundry Canvas now authors optional v1/v2 declarative fields,
+checkpoint is `e8e2b945`. The P05 Foundry Canvas now authors optional v1/v2 declarative fields,
 localization and simple visibility conditions and sends them through the owner-only export route.
 The route binds fields to the selected exported project, uses the SDK schema validator before
 artifact creation, revalidates after sanitization, and retains the declarations in the conformance
@@ -57,11 +57,14 @@ U11/U12 supported callers/build wiring are locally implemented, while invoices, 
 feeds and live evidence remain open. P01/P02 still require real resource separation, ownership, 158
 read-only receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/
 author-accounting policies remain unresolved and must not be guessed. Do not repeat completed audits
-without new evidence. Exact next action: add an explicit `call.received`/`call.digits` input to the
-owner-authorized local keypad simulator and route its response through the existing host validator
-and renderer without issuing carrier commands. Test role denial and DTMF preview. Then continue
-remaining S4–S9/U01–U12 and platform §5/§9/§10 gaps while preserving all external and unsupported-
-contract gates.
+without new evidence. The previously recorded local keypad simulator task is already implemented in
+the current owner phone panel, exact-installation Space route and Agents host validator/renderer.
+Focused Agents tests pass **46/46**, the Space route tests **18/18**, and Agents/Spaces/Shell typechecks
+pass. These are local tests only; no carrier call occurred. Exact next action: reconcile P17 catalog,
+marketplace listing identity/freshness, purchase/license, refund/revocation, author settlement and
+onboarding callers against current source, then implement an independent reachable identity or
+availability gap without duplicating existing ledgers. Continue remaining S4–S9/U01–U12 and both
+plans' gaps afterward.
 After compaction, interruption or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
 purchase, reset, clean, switch branches or force-push.

@@ -2,6 +2,21 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; existing keypad simulator path verified)
+
+- The previously recorded local keypad simulator action already existed in source: the owner phone
+  panel sends synthetic call-start/DTMF events; the Space route resolves exactly one active line for
+  the exact installed package; Agents validates input and sends it to the isolated handler simulator;
+  the Shell renders spoken actions/hangup as text. No carrier command is sent and no call session is
+  saved. No duplicate implementation was added.
+- Fresh local evidence: Agents phone/route/SpaceDO suites **46/46**, Spaces shared-extension route
+  suite **18/18**, Agents/Spaces/Shell typechecks. No carrier, provider account, deployment or live
+  acceptance ran.
+- Exact next action: reconcile P17 catalog, marketplace listing identity/freshness, purchase/license,
+  refund/revocation, author settlement and onboarding callers against current source; implement an
+  independent reachable identity or availability gap without duplicating existing ledgers. Then
+  continue remaining S4–S9/U01–U12 and both plans' independent code gaps.
+
 ### Active continuation (2026-11-13; P05 visual setup authoring `b3feecb5` pushed)
 
 - Code `b3feecb5` is pushed to `origin/Mcbt5s-Backup-2` after fetch confirmed the remote tip was an

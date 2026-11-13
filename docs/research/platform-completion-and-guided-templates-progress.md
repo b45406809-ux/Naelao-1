@@ -2,6 +2,15 @@
 
 ## Active checkpoint
 
+Current continuation (2026-11-13): the prior local keypad simulator gap was already implemented in
+`AssistantPhonePanel`, the exact-installation Space phone-simulate route and the Agents host simulator.
+It accepts synthetic `call.received` and normalized `call.digits`, validates and renders bounded
+response actions, and performs no carrier request or saved-session write. Fresh local evidence:
+Agents suites **46/46**, Space route suite **18/18**, Agents/Spaces/Shell typechecks. No carrier,
+deployment or live test ran. Exact next action: continue the platform plan's commercial-integrity
+queue at P17 catalog/marketplace source-to-caller reconciliation; avoid redoing already verified
+purchase/refund or settlement ledgers.
+
 Updated 2026-11-13 after P05 visual setup authoring code `b3feecb5` was fetched and pushed to
 `origin/Mcbt5s-Backup-2`. Foundry Template Studio now authors optional v1/v2 declarative setup
 fields, defaults, required state, bounds, English/Spanish labels/help and simple visibility conditions.
@@ -112,7 +121,8 @@ Permission/price changes, general upgrade/rollback/uninstall, project/provider-r
 lifecycle, verified rates and live acceptance remain uncoded or lack approved contracts.
 
 **§9.5 — PARTIAL.** Per-installation settings with durable metadata-only actor audit, signed handler
-discovery, masked owner call history, non-persistent text simulation, generic installation of
+discovery, masked owner call history, a non-persistent owner simulator for synthetic call-start,
+DTMF and supported speech events, generic installation of
 Space-local signed packages, provider-reported cost joins, and host catalog details/list-rate
 estimates are local. The reference microapp configures Space Assistant preferences only. A customer
 voice-agent package/microapp, verified rates, publish/version/rollback, richer operations and
