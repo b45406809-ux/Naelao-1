@@ -1658,6 +1658,12 @@ export interface SpaceSharedExtensionInstallReview {
     | { resolved: false; error: string };
   ready_to_install: boolean; review_token?: string; review_expires_at?: number; mutates_installation: false;
 }
+export interface SpaceSharedExtensionImportReview {
+  source_space_id: string; destination_space_id: string; extension_id: string; version: string; expires_at: number; review_token: string;
+  packages: Array<{ extension_id: string; version: string; manifest_sha256: string; artifact_sha256: string;
+    publisher_id: string; publisher_key_id: string; publisher_signature_verified: true }>;
+  mutates_storage: false;
+}
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
 }
@@ -1678,6 +1684,20 @@ export function previewSpaceSharedExtensionInstall(spaceId: string, extensionId:
 }
 export function installSpaceSharedExtension(spaceId: string, extensionId: string, session: SessionCredentials, approvedSharedFilesystem: SharedFilesystemGrant[] = [], version?: string, reviewToken?: string) {
   return apiFetch<{ extension_id: string; installation_id: string; dependency_installations: Array<{ extensionId: string; version: string; installationId: string }>; scope: "SPACE_SHARED" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extensions/${encodeURIComponent(extensionId)}/install`, { method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, ...(version ? { version } : {}), ...(reviewToken ? { dependency_review_token: reviewToken } : {}) }) });
+}
+export function previewSpaceSharedExtensionImport(destinationSpaceId: string, sourceSpaceId: string, extensionId: string,
+  version: string, session: SessionCredentials) {
+  return apiFetch<SpaceSharedExtensionImportReview>(`/v1/spaces/${encodeURIComponent(destinationSpaceId)}/shared-extension-imports/review`, {
+    method: "POST", session, body: JSON.stringify({ source_space_id: sourceSpaceId, extension_id: extensionId, version }),
+  });
+}
+export function importSpaceSharedExtension(destinationSpaceId: string, review: SpaceSharedExtensionImportReview, session: SessionCredentials) {
+  return apiFetch<{ imported: true; source_space_id: string; destination_space_id: string; root_extension_id: string; root_version: string;
+    completed_packages: Array<{ extension_id: string; version: string; copied_artifacts: number; reused_artifacts: number; metadata_imported: boolean }>;
+    next_action: "review_and_install_in_destination" }>(`/v1/spaces/${encodeURIComponent(destinationSpaceId)}/shared-extension-imports`, {
+    method: "POST", session, body: JSON.stringify({ source_space_id: review.source_space_id, extension_id: review.extension_id,
+      version: review.version, review_token: review.review_token }),
+  });
 }
 export function updateSpaceSharedExtensionFilesystemGrants(spaceId: string, installationId: string, session: SessionCredentials, grants: SharedFilesystemGrant[]) {
   return apiFetch<{ instance_id: string; approved_shared_filesystem: SharedFilesystemGrant[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/filesystem-grants`, { method: "PATCH", session, body: JSON.stringify({ grants }) });

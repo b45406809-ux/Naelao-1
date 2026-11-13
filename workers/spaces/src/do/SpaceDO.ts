@@ -43,6 +43,7 @@ import { captureSpaceArchiveObject, decodeSpaceArchiveObjectSnapshot, decodeSpac
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
+import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -3810,6 +3811,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-releases" && method === "GET") return await this.listExtensionReleases(url.searchParams.get("extension_id") ?? "");
       if (url.pathname === "/extension-package-catalog" && method === "GET") return await this.listExtensionPackageCatalog();
       if (url.pathname === "/extension-package-release" && method === "GET") return await this.getExtensionPackageRelease(url.searchParams);
+      if (url.pathname === "/extension-package-release/import" && method === "POST") return await this.importExtensionPackageRelease(request);
       if (url.pathname === "/extension-publisher-revoke" && method === "POST") return this.revokeExtensionPublisher(url.searchParams.get("key_id") ?? "");
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
@@ -13514,6 +13516,58 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       artifact_sha256: row.artifact_sha256, publisher: { id: row.publisher_id, key_id: row.publisher_key_id,
         signature: row.publisher_signature, payload_sha256: row.publisher_payload_sha256 }, created_at: row.created_at } },
       { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async importExtensionPackageRelease(request: Request): Promise<Response> {
+    type ImportBody = { tenantId?: unknown; spaceId?: unknown; importedBy?: unknown; extensionId?: unknown; version?: unknown;
+      manifestJson?: unknown; artifactSha256?: unknown; publisherId?: unknown; publisherKeyId?: unknown; publisherSignature?: unknown;
+      publisherPayloadSha256?: unknown };
+    const body: ImportBody = await request.json<ImportBody>().catch((): ImportBody => ({}));
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || body.tenantId !== tenantId || typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.spaceId)
+      || typeof body.importedBy !== "string" || !/^[A-Za-z0-9._:@-]{1,160}$/.test(body.importedBy)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (typeof body.extensionId !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(body.extensionId)
+      || typeof body.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.version)
+      || typeof body.manifestJson !== "string" || body.manifestJson.length > 2_000_000
+      || typeof body.artifactSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.artifactSha256)
+      || typeof body.publisherId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.publisherId)
+      || typeof body.publisherKeyId !== "string" || !/^[a-f0-9]{64}$/.test(body.publisherKeyId)
+      || typeof body.publisherSignature !== "string" || body.publisherSignature.length > 1024
+      || typeof body.publisherPayloadSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.publisherPayloadSha256))
+      return Response.json({ error_code: "extension_package_import_invalid" }, { status: 400 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(body.manifestJson), { gatekeeperCapabilities: [...SPACE_SHARED_PACKAGE_CAPABILITIES] }); }
+    catch { return Response.json({ error_code: "extension_package_manifest_invalid" }, { status: 400 }); }
+    if (!manifest.bundle || JSON.stringify(manifest) !== body.manifestJson || manifest.id !== body.extensionId
+      || manifest.bundle.id !== body.extensionId || manifest.bundle.version !== body.version)
+      return Response.json({ error_code: "extension_package_manifest_pin_mismatch" }, { status: 409 });
+    if (!publisherReleaseFieldsValid({ publisher_id: body.publisherId, publisher_key_id: body.publisherKeyId,
+      publisher_signature: body.publisherSignature, publisher_payload_sha256: body.publisherPayloadSha256, publisher_revoked_at: null }))
+      return Response.json({ error_code: "extension_package_publisher_attestation_invalid" }, { status: 409 });
+    const sql = this.ctx.storage.sql as never;
+    const existing = queryOne<{ manifest_json: string; artifact_sha256: string; publisher_id: string | null; publisher_key_id: string | null;
+      publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(sql,
+      `SELECT manifest_json,artifact_sha256,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at
+         FROM extension_releases WHERE extension_id=? AND version=?`, body.extensionId, body.version);
+    if (existing) {
+      if (existing.publisher_revoked_at) return Response.json({ error_code: "extension_package_release_revoked_at_destination" }, { status: 409 });
+      if (existing.manifest_json !== body.manifestJson || existing.artifact_sha256 !== body.artifactSha256
+        || existing.publisher_id !== body.publisherId || existing.publisher_key_id !== body.publisherKeyId
+        || existing.publisher_signature !== body.publisherSignature || existing.publisher_payload_sha256 !== body.publisherPayloadSha256)
+        return Response.json({ error_code: "extension_package_release_immutable_conflict" }, { status: 409 });
+      return Response.json({ imported: false, extension_id: body.extensionId, version: body.version, artifact_sha256: body.artifactSha256 });
+    }
+    const hostSignature = await this.signExtensionRelease(body.extensionId, body.version, body.manifestJson, body.artifactSha256);
+    try {
+      this.ctx.storage.transactionSync(() => execute(sql,
+        `INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at,
+          publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`, body.extensionId, body.version, body.manifestJson, body.artifactSha256, hostSignature,
+        body.importedBy, new Date().toISOString(), body.publisherId, body.publisherKeyId, body.publisherSignature, body.publisherPayloadSha256));
+    } catch { return Response.json({ error_code: "extension_package_release_immutable_conflict" }, { status: 409 }); }
+    return Response.json({ imported: true, extension_id: body.extensionId, version: body.version, artifact_sha256: body.artifactSha256 }, { status: 201 });
   }
 
   private async machineAuthority(request: Request): Promise<Response> {

@@ -573,6 +573,38 @@ describe("runtime extension installation", () => {
     expect(release.hostSignature).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("imports publisher-attested release metadata idempotently and rejects immutable conflicts", async () => {
+    const storage = createDOStorage(), secret = "cross-space-package-import-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=destination"));
+    const manifest = validateExtensionManifest({ id: "ext_imported_package", type: "extension", declaredPermissions: [],
+      capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0",
+        kind: "extension_bundle", id: "ext_imported_package", version: "1.0.0", primitives: [{ schemaVersion: "1.0", kind: "canvas",
+          id: "dashboard", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, component: "./dashboard.html",
+          layout: "CanvasMount", dynamicPage: false }] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    const manifestJson = JSON.stringify(manifest), artifactSha256 = "a".repeat(64), token = await mintInternalToken(secret, "tenant");
+    const importRequest = (overrides: Record<string, unknown> = {}, authToken = token) => space.fetch(new Request("http://space/extension-package-release/import", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": authToken },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "destination", importedBy: "owner", extensionId: manifest.id, version: "1.0.0",
+        manifestJson, artifactSha256, publisherId: "pub_example", publisherKeyId: "b".repeat(64), publisherSignature: "publisher-signature",
+        publisherPayloadSha256: "c".repeat(64), ...overrides }),
+    }));
+    expect((await importRequest({}, "invalid-token")).status).toBe(403);
+    const first = await importRequest();
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({ imported: true, extension_id: manifest.id, version: "1.0.0", artifact_sha256: artifactSha256 });
+    expect(await (await importRequest()).json()).toMatchObject({ imported: false, extension_id: manifest.id });
+    const conflict = await importRequest({ artifactSha256: "d".repeat(64) });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ error_code: "extension_package_release_immutable_conflict" });
+    const release = await space.fetch(new Request(`http://space/extension-package-release?extension_id=${manifest.id}&version=1.0.0`));
+    expect(await release.json()).toMatchObject({ release: { extension_id: manifest.id, version: "1.0.0", manifest_json: manifestJson,
+      artifact_sha256: artifactSha256,
+      publisher: { id: "pub_example", key_id: "b".repeat(64), signature: "publisher-signature", payload_sha256: "c".repeat(64) } } });
+    expect(storage.sql.exec("SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, "1.0.0")
+      .toArray()[0]?.host_signature).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);

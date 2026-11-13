@@ -6,10 +6,11 @@ import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { callSpaceExtensionSettingsAudit, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, previewSpaceSharedExtensionInstall,
+import { callSpaceExtensionSettingsAudit, importSpaceSharedExtension, installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog,
+  previewSpaceSharedExtensionImport, previewSpaceSharedExtensionInstall,
   previewSpaceSharedExtensionUpdate, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants,
   type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry, type SpaceSharedExtensionInstallReview,
-  type SpaceSharedExtensionInstallReviewPackage, type SpaceSharedExtensionUpdateReview } from "@/lib/api";
+  type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReviewPackage, type SpaceSharedExtensionUpdateReview } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -24,6 +25,13 @@ export default function ExtensionsPage() {
   const credentials = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const [installReviews, setInstallReviews] = React.useState<Record<string, SpaceSharedExtensionInstallReview>>({});
   const [reviewingInstall, setReviewingInstall] = React.useState<string | null>(null);
+  const [importSourceSpaceId, setImportSourceSpaceId] = React.useState("");
+  const [importExtensionId, setImportExtensionId] = React.useState("");
+  const [importVersion, setImportVersion] = React.useState("");
+  const [importReview, setImportReview] = React.useState<SpaceSharedExtensionImportReview | null>(null);
+  const [reviewingImport, setReviewingImport] = React.useState(false);
+  const [importingPackage, setImportingPackage] = React.useState(false);
+  const [importCompleted, setImportCompleted] = React.useState<string[] | null>(null);
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
     setLoading(true); setError(null);
@@ -78,6 +86,26 @@ export default function ExtensionsPage() {
     try { await installSpaceSharedExtension(activeSpaceId, entry.id, credentials, selectedGrants[entry.id] ?? [], entry.version, review?.review_token); await refresh(); }
     catch (cause) { await refresh(); setError(cause instanceof Error ? cause.message : "Could not install extension; completed dependencies remain installed and can be resumed after review."); }
     finally { setInstalling(null); }
+  }
+  async function reviewImport() {
+    if (!credentials) return;
+    setReviewingImport(true); setError(null); setImportCompleted(null);
+    try {
+      const review = await previewSpaceSharedExtensionImport(activeSpaceId, importSourceSpaceId.trim(), importExtensionId.trim(), importVersion.trim(), credentials);
+      setImportReview(review);
+    } catch (cause) { setImportReview(null); setError(cause instanceof Error ? cause.message : "Could not verify this package for the destination Space."); }
+    finally { setReviewingImport(false); }
+  }
+  async function importReviewedPackage() {
+    if (!credentials || !importReview || importReview.expires_at <= Date.now()) return;
+    setImportingPackage(true); setError(null); setImportCompleted(null);
+    try {
+      const result = await importSpaceSharedExtension(activeSpaceId, importReview, credentials);
+      setImportCompleted(result.completed_packages.map(item => `${item.extension_id}@${item.version}`));
+      setImportReview(null);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Import paused. Completed package releases can be resumed by refreshing the review and retrying."); }
+    finally { setImportingPackage(false); }
   }
   async function saveGrants(app: SpaceSharedExtensionApp) {
     if (!credentials) return;
@@ -218,6 +246,27 @@ export default function ExtensionsPage() {
         </div>}
       </Card>;
     })}</div></section> : null}
+    {!active && !loading && <section style={{ marginTop: 24, padding: 16, border: "1px solid var(--border, #ddd)", borderRadius: 10 }}>
+      <h2>Import a signed package from another Space</h2>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>An owner or admin in both Spaces can copy a verified release and its exact dependency closure. The destination must already trust each active publisher key. Import does not install or grant access.</p>
+      <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
+        <label>Source Space ID<input value={importSourceSpaceId} onChange={event => { setImportSourceSpaceId(event.target.value); setImportReview(null); }} /></label>
+        <label>Extension ID<input value={importExtensionId} onChange={event => { setImportExtensionId(event.target.value); setImportReview(null); }} placeholder="ext_example" /></label>
+        <label>Release version<input value={importVersion} onChange={event => { setImportVersion(event.target.value); setImportReview(null); }} placeholder="1.2.3" /></label>
+        <Button variant="secondary" disabled={reviewingImport || importingPackage || !importSourceSpaceId.trim() || !importExtensionId.trim() || !importVersion.trim()}
+          onClick={() => void reviewImport()}>{reviewingImport ? "Verifying source package…" : importReview ? "Refresh import review" : "Review import"}</Button>
+      </div>
+      {importReview && <div role="status" style={{ marginTop: 12, padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8, fontSize: 12 }}>
+        <strong>Verified release closure · {importReview.source_space_id} → {importReview.destination_space_id}</strong>
+        <p>Review is read only. Every package signature and artifact digest was checked; destination trust was checked for each exact active publisher key. Nothing has been copied yet.</p>
+        {importReview.packages.map(pkg => <p key={`${pkg.extension_id}@${pkg.version}`}>{pkg.extension_id}@{pkg.version} · publisher {pkg.publisher_id} · key {pkg.publisher_key_id} · manifest SHA-256 {pkg.manifest_sha256} · artifact SHA-256 {pkg.artifact_sha256}</p>)}
+        <p>Import copies release artifacts and immutable release metadata. It does not install packages, enable them, or grant shared-folder access. Installation remains a separate review and approval step.</p>
+        <Button disabled={importingPackage || importReview.expires_at <= Date.now()} onClick={() => void importReviewedPackage()}>
+          {importingPackage ? "Copying verified packages…" : "Import reviewed package closure"}
+        </Button>
+      </div>}
+      {importCompleted && <p role="status">Imported package releases: {importCompleted.join(", ")}. Review and install them from Available Space extensions.</p>}
+    </section>}
     {!active && !loading && !error && !apps.length && !catalog.length ? <Card><CardTitle>No Space extensions available</CardTitle><CardDesc>Extensions included by an installed Space Template appear here. Each extension runs in its own scoped storage and receives only the host APIs it declares.</CardDesc></Card> : null}
   </div>;
 }

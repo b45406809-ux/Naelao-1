@@ -231,6 +231,84 @@ async function installReviewHarness(options: { failNextRootInitialization?: bool
   return { env, spaceRequests, microAppRequests, installedRows, rootRelease, dependencyRelease, dependencyManifest, dependencyDigest, rootManifest };
 }
 
+async function crossSpaceImportHarness(options: { destinationTrust?: boolean; sourceRole?: string } = {}) {
+  const dependencyManifest = validateExtensionManifest({ ...manifest, id: "ext_calendar", channels: undefined,
+    bundle: { ...manifest.bundle!, id: "ext_calendar", version: "1.0.0", primitives: manifest.bundle!.primitives.map((primitive, index) => ({
+      ...primitive, id: index === 0 ? "calendar_dashboard" : "calendar_handler", version: "1.0.0" })) } });
+  const dependencyDigest = await digestExtensionManifest(dependencyManifest);
+  const rootManifest = validateExtensionManifest({ ...manifest, dependencies: [{ extensionId: "ext_calendar", version: "1.0.0", manifestSha256: dependencyDigest }] });
+  const keyPair = await generateExtensionPublisherKeyPair();
+  const publicKey = await exportExtensionPublisherPublicKey(keyPair.publicKey);
+  const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
+  const makeRelease = async (packageManifest: ReturnType<typeof validateExtensionManifest>) => {
+    const manifestJson = JSON.stringify(packageManifest);
+    const entries = Object.entries(artifacts).sort(([left], [right]) => left.localeCompare(right));
+    const publisherSignature = await signExtensionPublisherRelease({ privateKey: keyPair.privateKey, publicKey: keyPair.publicKey, manifestJson, artifacts });
+    return { extension_id: packageManifest.id, version: packageManifest.bundle!.version, manifest: packageManifest, manifest_json: manifestJson,
+      artifact_sha256: await digest(JSON.stringify(entries)), publisher: { id: "pub_voice", key_id: publisherSignature.keyId,
+        signature: publisherSignature.signature, payload_sha256: await digest(extensionPublisherSigningPayload(manifestJson, artifacts)) } };
+  };
+  const releases = new Map<string, Awaited<ReturnType<typeof makeRelease>>>();
+  const dependencyRelease = await makeRelease(dependencyManifest), rootRelease = await makeRelease(rootManifest);
+  releases.set(`${dependencyRelease.extension_id}@${dependencyRelease.version}`, dependencyRelease);
+  releases.set(`${rootRelease.extension_id}@${rootRelease.version}`, rootRelease);
+  const objects = new Map<string, Uint8Array>();
+  for (const release of releases.values()) for (const [path, source] of Object.entries(artifacts))
+    objects.set(`spaces/source/extensions/${release.extension_id}/${release.version}/${path.slice(2)}`, new TextEncoder().encode(source));
+  const destinationReleases = new Map<string, string>();
+  const sourceStub = { fetch: vi.fn(async (request: Request) => {
+    const url = new URL(request.url), release = releases.get(`${url.searchParams.get("extension_id")}@${url.searchParams.get("version")}`);
+    return release ? Response.json({ release }) : Response.json({ error_code: "not_found" }, { status: 404 });
+  }) };
+  const destinationStub = { fetch: vi.fn(async (request: Request) => {
+    if (new URL(request.url).pathname !== "/extension-package-release/import") return Response.json({ error_code: "unexpected_route" }, { status: 404 });
+    const body = await request.clone().json() as { extensionId: string; version: string; manifestJson: string };
+    const key = `${body.extensionId}@${body.version}`;
+    const prior = destinationReleases.get(key);
+    if (prior && prior !== body.manifestJson) return Response.json({ error_code: "extension_package_release_immutable_conflict" }, { status: 409 });
+    const imported = !prior;
+    destinationReleases.set(key, body.manifestJson);
+    return Response.json({ imported, extension_id: body.extensionId, version: body.version });
+  }) };
+  const tenants = new Map([["source", "tenant-a"], ["destination", "tenant-a"]]);
+  const trusted = new Set(["source"]);
+  if (options.destinationTrust !== false) trusted.add("destination");
+  const roles = new Map([["source", options.sourceRole ?? "admin"], ["destination", "admin"]]);
+  let failRootArtifactOnce = true;
+  const db = { prepare: (sql: string) => ({ bind: (...params: unknown[]) => ({
+    first: async () => {
+      if (sql.includes("FROM spaces WHERE id")) return tenants.get(String(params[0])) === params[1]
+        ? { name: String(params[0]), spacetype_id: "space", config_json: "{}" } : null;
+      if (sql.includes("JOIN space_members")) return roles.get(String(params[0])) ? { role: roles.get(String(params[0])) } : null;
+      if (sql.includes("FROM extension_publisher_keys")) return trusted.has(String(params[1]))
+        ? { publisher_id: "pub_voice", public_key_b64url: publicKey } : null;
+      return null;
+    }, all: async () => ({ results: [] }),
+  }) }) };
+  const bucket = {
+    get: async (key: string) => {
+      const bytes = objects.get(key);
+      if (!bytes) return null;
+      const copy = bytes.slice();
+      return { size: copy.byteLength, arrayBuffer: async () => copy.buffer };
+    },
+    put: async (key: string, value: Uint8Array) => {
+      if (key.includes(`/${rootManifest.id}/`) && key.endsWith("/handler.ts") && failRootArtifactOnce) {
+        failRootArtifactOnce = false;
+        return null;
+      }
+      if (objects.has(key)) return null;
+      objects.set(key, value.slice());
+      return { key };
+    },
+  };
+  const spaceRequests: Request[] = [];
+  const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
+    SPACE_DO: { idFromName: (name: string) => name, get: (id: string) => id.endsWith(":space:source") ? sourceStub : destinationStub },
+    SCRIPTS_R2: bucket } as never;
+  return { env, objects, destinationReleases, spaceRequests, rootManifest, dependencyManifest, rootRelease, dependencyRelease };
+}
+
 describe("signed Space-shared extension packages", () => {
   it("reviews every exact dependency and requires a fresh owner receipt before installation", async () => {
     const h = await installReviewHarness({ failNextRootInitialization: true });
@@ -438,5 +516,66 @@ describe("signed Space-shared package update review", () => {
     expect(wrongCandidate.status).toBe(409);
     expect(await wrongCandidate.json()).toMatchObject({ error_code: "extension_update_review_candidate_not_current" });
     expect(h.spaceRequests.every(request => request.method === "GET")).toBe(true);
+  });
+});
+
+describe("owner-authorized cross-Space package import", () => {
+  const reviewPath = "/spaces/destination/shared-extension-imports/review";
+  const importPath = "/spaces/destination/shared-extension-imports";
+  const body = { source_space_id: "source", extension_id: "ext_customer_voice", version: "1.2.0" };
+
+  it("reviews without writes, resumes a partial dependency closure, and preserves immutable artifacts", async () => {
+    const h = await crossSpaceImportHarness();
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", body), h.env);
+    expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
+    const review = await reviewResponse.json() as { review_token: string; packages: Array<{ extension_id: string }> };
+    expect(review.packages.map(item => item.extension_id)).toEqual(["ext_calendar", "ext_customer_voice"]);
+    expect(h.destinationReleases.size).toBe(0);
+    expect([...h.objects.keys()].every(key => key.startsWith("spaces/source/"))).toBe(true);
+
+    const importBody = { ...body, review_token: review.review_token };
+    const interrupted = await spacesWorker.fetch(await signedRequest(importPath, "POST", importBody), h.env);
+    expect(interrupted.status).toBe(503);
+    expect(await interrupted.json()).toMatchObject({ error_code: "extension_package_destination_artifact_write_conflict", retryable: true,
+      completed_packages: [{ extension_id: "ext_calendar", metadata_imported: true }] });
+    expect(h.destinationReleases.has("ext_calendar@1.0.0")).toBe(true);
+    expect(h.destinationReleases.has("ext_customer_voice@1.2.0")).toBe(false);
+    expect(h.objects.has("spaces/destination/extensions/ext_customer_voice/1.2.0/dashboard.html")).toBe(true);
+    expect(h.objects.has("spaces/destination/extensions/ext_customer_voice/1.2.0/handler.ts")).toBe(false);
+
+    const resumed = await spacesWorker.fetch(await signedRequest(importPath, "POST", importBody), h.env);
+    expect(resumed.status, JSON.stringify(await resumed.clone().json())).toBe(200);
+    expect(await resumed.json()).toMatchObject({ imported: true, source_space_id: "source", destination_space_id: "destination",
+      next_action: "review_and_install_in_destination", completed_packages: [
+        { extension_id: "ext_calendar", version: "1.0.0", copied_artifacts: 0, reused_artifacts: 2, metadata_imported: false },
+        { extension_id: "ext_customer_voice", version: "1.2.0", copied_artifacts: 1, reused_artifacts: 1, metadata_imported: true },
+      ] });
+    expect(h.destinationReleases.size).toBe(2);
+    expect([...h.objects.keys()].filter(key => key.startsWith("spaces/destination/")).length).toBe(4);
+  });
+
+  it("requires source and destination admin membership and an already trusted destination key", async () => {
+    const sourceDenied = await crossSpaceImportHarness({ sourceRole: "member" });
+    const memberRequest = await signedRequest(reviewPath, "POST", body, "product_end_user");
+    const memberResponse = await spacesWorker.fetch(memberRequest, sourceDenied.env);
+    expect(memberResponse.status).toBe(403);
+    expect(await memberResponse.json()).toMatchObject({ error_code: "source_and_destination_space_admin_required" });
+
+    const untrusted = await crossSpaceImportHarness({ destinationTrust: false });
+    const keyResponse = await spacesWorker.fetch(await signedRequest(reviewPath, "POST", body), untrusted.env);
+    expect(keyResponse.status).toBe(403);
+    expect(await keyResponse.json()).toMatchObject({ error_code: "extension_package_publisher_key_untrusted_or_revoked" });
+    expect(untrusted.destinationReleases.size).toBe(0);
+  });
+
+  it("does not expose another tenant's source Space", async () => {
+    const h = await crossSpaceImportHarness();
+    const request = new Request(`https://spaces.test${reviewPath}`, { method: "POST", headers: {
+      "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-b"),
+      "x-naelao-tenant-id": "tenant-b", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner",
+    }, body: JSON.stringify(body) });
+    const response = await spacesWorker.fetch(request, h.env);
+    expect(response.status).toBe(404);
+    expect(h.destinationReleases.size).toBe(0);
   });
 });
