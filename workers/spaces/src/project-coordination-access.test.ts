@@ -69,6 +69,8 @@ describe("project coordination access after membership revocation", () => {
     });
     expect(accepted.status).toBe(200);
     await expect(accepted.json()).resolves.toMatchObject({ id: "public-proposal", status: "accepted" });
+    const extensionLifecycle = await call("/spaces/space-a/projects/public-a/extension-installations/untrusted-instance/lifecycle", "PATCH", { action: "disable" });
+    expect(extensionLifecycle.status).toBe(403);
     const stillCannotManage = await call("/internal/spaces/space-a/blackboard/cards/public-a", "PUT", {
       summary: "Changed without grant", capabilities: [], evidence: [],
     });
