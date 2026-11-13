@@ -35,13 +35,13 @@ export interface AttachmentDescriptor {
   sizeBytes: number;
 }
 
-export type AttachmentAction = "not_needed" | "inspect" | "copy" | "read" | "ocr" | "describe" | "transcribe" | "uncertain";
+export type AttachmentAction = "not_needed" | "inspect" | "copy" | "read" | "ocr" | "describe" | "describe_video" | "transcribe" | "uncertain";
 
 /** A metadata-only recommendation. It can suggest a tool/skill, but never authorizes execution. */
 export interface AttachmentClassification {
   status: "not_needed" | "candidate_tool" | "uncertain";
   action: AttachmentAction;
-  candidateTool?: "attachment.inspect" | "attachment.copy" | "attachment.read" | "attachment.ocr" | "attachment.describe" | "attachment.transcribe";
+  candidateTool?: "attachment.inspect" | "attachment.copy" | "attachment.read" | "attachment.ocr" | "attachment.describe" | "attachment.describe_video" | "attachment.transcribe";
   candidateAttachmentId?: string;
   candidateSkill?: "attachment-routing" | "attachment-readers";
   confidence: number;
@@ -446,19 +446,20 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       mimeType: attachment.mimeType.slice(0, 100),
       sizeBytes: Number.isSafeInteger(attachment.sizeBytes) && attachment.sizeBytes >= 0 ? Math.min(attachment.sizeBytes, 1_000_000_000) : 0,
     }));
-    const tools = new Set(input.availableTools ?? ["attachment.inspect", "attachment.copy", "attachment.read", "attachment.ocr", "attachment.describe", "attachment.transcribe"]);
+    const tools = new Set(input.availableTools ?? ["attachment.inspect", "attachment.copy", "attachment.read", "attachment.ocr", "attachment.describe", "attachment.describe_video", "attachment.transcribe"]);
     const actionTool: Partial<Record<AttachmentAction, NonNullable<AttachmentClassification["candidateTool"]>>> = {
-      inspect: "attachment.inspect", copy: "attachment.copy", read: "attachment.read", ocr: "attachment.ocr", describe: "attachment.describe", transcribe: "attachment.transcribe",
+      inspect: "attachment.inspect", copy: "attachment.copy", read: "attachment.read", ocr: "attachment.ocr", describe: "attachment.describe", describe_video: "attachment.describe_video", transcribe: "attachment.transcribe",
     };
     const criteria: Record<string, SystemOneInstructions | null> = {
       not_needed: "The request only asks to preserve, move, forward, or attach a file, or explicitly says not to inspect its contents. Select this even when a storage copy tool is unavailable.",
-      uncertain: "The request is ambiguous, asks for unsupported video interpretation, or the matching reader is unavailable. Ask the planner to decide or clarify; do not guess.",
+      uncertain: "The request is ambiguous, asks for unsupported or full-video interpretation, or the matching reader is unavailable. Ask the planner to decide or clarify; do not guess.",
     };
-    const mimeByAction = (action: "read" | "ocr" | "describe" | "transcribe", mime: string): boolean => {
+    const mimeByAction = (action: "read" | "ocr" | "describe" | "describe_video" | "transcribe", mime: string): boolean => {
       const normalized = mime.toLowerCase().split(";")[0]!.trim();
       if (action === "read") return normalized.startsWith("text/") || ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/json", "application/xml"].includes(normalized);
       if (action === "ocr") return normalized.startsWith("image/") || normalized === "application/pdf";
       if (action === "describe") return ["image/png", "image/jpeg"].includes(normalized);
+      if (action === "describe_video") return ["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"].includes(normalized);
       return normalized.startsWith("audio/") || ["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"].includes(normalized);
     };
     const actionDescriptions = {
@@ -467,6 +468,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       read: "The answer depends on text in this attachment's supported text, DOCX, or text-bearing PDF content.",
       ocr: "The answer depends on visible text in this image or scanned PDF. OCR does not interpret non-text visuals.",
       describe: "The answer depends on non-text visual content in this image (such as objects, layout, or a chart). Use image description, not OCR alone.",
+      describe_video: "The answer depends on visual content in a supported video. Use only the explicit bounded sampled-frame action; it samples at most three frames in the first 30 seconds, requires a separate owner opt-in at execution, and does not analyze motion or the full video.",
       transcribe: "The answer depends on spoken words in this audio attachment, or the audio track of a supported video. Video frames are not interpreted.",
     } as const;
     for (let index = 0; index < attachments.length; index++) {
@@ -474,7 +476,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       for (const action of Object.keys(actionDescriptions) as Array<keyof typeof actionDescriptions>) {
         const tool = actionTool[action];
         if (!tool || !tools.has(tool)) continue;
-        if ((action === "read" || action === "ocr" || action === "describe" || action === "transcribe") && !mimeByAction(action, attachment.mimeType)) continue;
+        if ((action === "read" || action === "ocr" || action === "describe" || action === "describe_video" || action === "transcribe") && !mimeByAction(action, attachment.mimeType)) continue;
         criteria[`${action}_${index}`] = `Attachment index ${index} (the listed opaque id) is the best match. ${actionDescriptions[action]}`;
       }
     }

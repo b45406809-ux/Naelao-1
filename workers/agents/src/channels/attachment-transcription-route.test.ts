@@ -3,7 +3,8 @@ import { mintInternalToken } from "@naelao/http";
 import { app } from "../index.js";
 
 const secret = "transcription-route-secret";
-function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean } = {}) {
+const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x08, 0x08, 0x00, 0x02, 0x00, 0x03, 0x01, 0xff, 0xda, 0x00, 0x3f, 0x00, 0xff, 0xd9]);
+function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean; videoFramesEnabled?: boolean; frameCount?: number; malformedFrame?: boolean; oversizedAttachment?: boolean; quotaAllowed?: boolean } = {}) {
   let reads = 0;
   let mediaCalls = 0;
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
@@ -11,15 +12,15 @@ function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; 
     PLATFORM_SECRET: secret,
     PLATFORM_DB: { prepare(sql: string) { return { bind(...values: unknown[]) { return { async first() {
       if (sql.includes("SELECT s.id FROM spaces s WHERE")) return options.active === false ? null : { id: "space-a" };
-      if (sql.includes("SELECT status,config_json FROM spaces")) return { status: "active", config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true } } }) };
-      if (sql.includes("SELECT config_json FROM spaces")) return { config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true } } }) };
+      if (sql.includes("SELECT status,config_json FROM spaces")) return { status: "active", config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true }, attachmentVideoFrameAnalysis: { enabled: options.videoFramesEnabled ?? false } } }) };
+      if (sql.includes("SELECT config_json FROM spaces")) return { config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true }, attachmentVideoFrameAnalysis: { enabled: options.videoFramesEnabled ?? false } } }) };
       if (sql.includes("FROM channel_attachments")) {
         expect(values.slice(0, 4)).toEqual(["attachment-1", "tenant-a", "space-a", "task-a"]);
-        return options.owned === false ? null : { object_key: "private/key", mime_type: options.mime ?? "audio/ogg", size_bytes: options.mime?.startsWith("image/") ? 24 : 3 };
+        return options.owned === false ? null : { object_key: "private/key", mime_type: options.mime ?? "audio/ogg", size_bytes: options.oversizedAttachment ? 6 * 1024 * 1024 + 1 : options.mime?.startsWith("image/") ? 24 : 3 };
       }
-      if (sql.includes("INSERT INTO email_attachment_ocr_usage")) return { meta: { changes: 1 } };
+      if (sql.includes("INSERT INTO email_attachment_ocr_usage")) return { meta: { changes: options.quotaAllowed === false ? 0 : sql.includes("WITH requested") ? Number(values[6]) : 1 } };
       throw new Error(`unexpected SQL: ${sql}`);
-    }, async run() { return { meta: { changes: 1 } }; } }; } }; } },
+    }, async run() { return { meta: { changes: options.quotaAllowed === false ? 0 : sql.includes("WITH requested") ? Number(values[6]) : 1 } }; } }; } }; } },
     SCRIPTS_R2: { async get(key: string) { reads++; expect(key).toBe("private/key"); return { size: (options.mime?.startsWith("image/") ? 24 : 3) + (options.mismatchedR2Size ? 1 : 0), async arrayBuffer() {
       if (options.mime?.startsWith("image/")) { const png = new Uint8Array(24); png.set([137,80,78,71,13,10,26,10], 0); png.set([73,72,68,82], 12); png[19] = 5; png[23] = 5; return png.buffer; }
       return new Uint8Array([1, 2, 3]).buffer;
@@ -27,9 +28,15 @@ function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; 
     MEDIA_SANDBOX: { idFromName: (name: string) => name, get: (id: string) => ({ async fetch(request: Request) {
       mediaCalls++;
       expect(id).toBe("attachment-media:space-a:_assistant");
-      expect(new URL(request.url).pathname).toBe("/media/extract-audio");
+      const path = new URL(request.url).pathname;
       const input = await request.json() as { tenantId: string; spaceId: string; taskId: string; videoBase64: string };
       expect(input).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", videoBase64: "AQID" });
+      if (path === "/media/extract-video-frames") {
+        const timestamps = Array.from({ length: options.frameCount ?? 3 }, (_, index) => [0, 10, 20, 30][index] ?? 30);
+        return Response.json({ frames: timestamps.map((timestampSeconds, index) => ({ timestampSeconds,
+          jpegBase64: options.malformedFrame && index === 0 ? btoa("not a jpeg") : btoa(String.fromCharCode(...jpeg)) })) });
+      }
+      expect(path).toBe("/media/extract-audio");
       if (options.oversizedMediaResponse) {
         let chunks = 0;
         return new Response(new ReadableStream<Uint8Array>({
@@ -60,6 +67,14 @@ async function describeImage(value: never, options: { owned?: boolean; question?
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
     body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1", question: options.question ?? "What is shown?" }),
+  }, value);
+}
+
+async function describeVideo(value: never, options: { question?: string } = {}) {
+  return app.request("/internal/attachments/describe-video", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", id: "attachment-1", question: options.question ?? "What happens?" }),
   }, value);
 }
 
@@ -148,5 +163,62 @@ describe("task-scoped audio transcription route", () => {
     const foreign = env({ mime: "image/png", owned: false });
     expect((await describeImage(foreign.value)).status).toBe(404);
     expect(foreign.reads()).toBe(0);
+  });
+
+  it("keeps video frame analysis separately disabled unless the Space owner enables it", async () => {
+    const disabled = env({ mime: "video/mp4", videoFramesEnabled: false });
+    const response = await describeVideo(disabled.value);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "attachment_video_frame_analysis_not_enabled" });
+    expect(disabled.reads()).toBe(0);
+    expect(disabled.mediaCalls()).toBe(0);
+    expect(disabled.ai.run).not.toHaveBeenCalled();
+
+    const airGapped = env({ mime: "video/mp4", videoFramesEnabled: true, airGapped: true });
+    expect((await describeVideo(airGapped.value)).status).toBe(403);
+    expect(airGapped.reads()).toBe(0);
+    expect(airGapped.mediaCalls()).toBe(0);
+  });
+
+  it("analyzes only task-owned bounded video frames and labels timestamps and incomplete coverage", async () => {
+    const state = env({ mime: "video/mp4", videoFramesEnabled: true });
+    const response = await describeVideo(state.value);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      task: "describe_video", source_media: "sampled_video_frames", analyzed_video_window_seconds: 30,
+      frames: [{ timestamp_seconds: 0, width: 3, height: 2 }, { timestamp_seconds: 10 }, { timestamp_seconds: 20 }],
+      text: expect.stringContaining("motion, events between frames, and content outside the first 30 seconds may be missed"),
+    });
+    expect(state.mediaCalls()).toBe(1);
+    expect(state.ai.run).toHaveBeenCalledTimes(3);
+    expect(state.ai.run).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ task: "query", question: expect.stringContaining("sampled video time 10 seconds") }), expect.any(Object));
+
+    const foreign = env({ mime: "video/mp4", videoFramesEnabled: true, owned: false });
+    expect((await describeVideo(foreign.value)).status).toBe(404);
+    expect(foreign.reads()).toBe(0);
+    expect(foreign.mediaCalls()).toBe(0);
+  });
+
+  it("does not call Workers AI when the shared per-Space model-call quota is exhausted", async () => {
+    const state = env({ mime: "video/mp4", videoFramesEnabled: true, quotaAllowed: false });
+    const response = await describeVideo(state.value);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({ error_code: "attachment_visual_analysis_daily_limit_reached", max_model_calls_per_rolling_day: 20 });
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized input and invalid or excessive sandbox frames before model calls", async () => {
+    const oversized = env({ mime: "video/mp4", videoFramesEnabled: true, oversizedAttachment: true });
+    expect((await describeVideo(oversized.value)).status).toBe(413);
+    expect(oversized.reads()).toBe(0);
+    expect(oversized.mediaCalls()).toBe(0);
+
+    const malformed = env({ mime: "video/mp4", videoFramesEnabled: true, malformedFrame: true });
+    expect((await describeVideo(malformed.value)).status).toBe(422);
+    expect(malformed.ai.run).not.toHaveBeenCalled();
+
+    const excessive = env({ mime: "video/mp4", videoFramesEnabled: true, frameCount: 4 });
+    expect((await describeVideo(excessive.value)).status).toBe(413);
+    expect(excessive.ai.run).not.toHaveBeenCalled();
   });
 });

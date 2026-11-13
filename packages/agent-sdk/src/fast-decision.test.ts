@@ -375,6 +375,22 @@ describe("typed fast decisions", () => {
     });
   });
 
+  it("classifies bounded video frame questions separately from audio transcription", async () => {
+    const client = new SystemOneDecisionClient({ fetch: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, string> } } };
+      const criteria = body.questions.decision.criteria;
+      expect(criteria).toHaveProperty("describe_video_0");
+      expect(criteria).not.toHaveProperty("describe_1");
+      expect(criteria).not.toHaveProperty("transcribe_0");
+      return Response.json({ model: CLEF_FLASH_MODEL, answers: { decision: { type: "choice", choice: "describe_video_0", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "describe_video_0" ? 1 : 0])), confidence: 0.95 } }, usage: { input_tokens: 4, output_tokens: 1 } });
+    } });
+    await expect(client.classifyAttachments!({ message: "What appears in the clip?", attachments: [
+      { id: "video-1", filename: "clip.mp4", mimeType: "video/mp4", sizeBytes: 900 },
+    ], availableTools: ["attachment.describe_video"] })).resolves.toMatchObject({
+      action: "describe_video", candidateTool: "attachment.describe_video", candidateAttachmentId: "video-1", candidateSkill: "attachment-readers",
+    });
+  });
+
   it("distinguishes visual image understanding from OCR", async () => {
     const client = new SystemOneDecisionClient({ fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };

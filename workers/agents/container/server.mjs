@@ -258,7 +258,7 @@ const DISPLAY_ROUTES = new Set([
 const SESSION_ROUTES = new Set(["/shell"]);
 const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
 const PDF_ROUTES = new Set(["/pdf/render"]);
-const MEDIA_ROUTES = new Set(["/media/extract-audio"]);
+const MEDIA_ROUTES = new Set(["/media/extract-audio", "/media/extract-video-frames"]);
 let artifactFs;
 let shuttingDown = false;
 let controlToken;
@@ -362,6 +362,56 @@ createServer((req, res) => {
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result)); return;
       }
       if (isMediaRoute) {
+        if (path.endsWith("/media/extract-video-frames")) {
+          const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
+          const MAX_FRAME_BYTES = 1024 * 1024;
+          const MAX_TOTAL_FRAME_BYTES = 3 * MAX_FRAME_BYTES;
+          const FRAME_TIMESTAMPS_SECONDS = [0, 10, 20];
+          let directory;
+          try {
+            if (typeof parsed.videoBase64 !== "string" || parsed.videoBase64.length > Math.ceil(MAX_VIDEO_BYTES * 4 / 3) + 8
+              || !/^[A-Za-z0-9+/]+={0,2}$/.test(parsed.videoBase64)) throw new Error("video_input_invalid");
+            const video = Buffer.from(parsed.videoBase64, "base64");
+            if (!video.length || video.length > MAX_VIDEO_BYTES) throw new Error("video_input_limit");
+            directory = await mkdtemp(join(tmpdir(), "naelao-video-frames-"));
+            await chown(directory, 10001, 10001); await chmod(directory, 0o700);
+            const inputPath = join(directory, "input-video");
+            await writeFile(inputPath, video);
+            await chown(inputPath, 10001, 10001); await chmod(inputPath, 0o600);
+            const frames = [];
+            let outputBytes = 0;
+            for (const timestampSeconds of FRAME_TIMESTAMPS_SECONDS) {
+              const outputPath = join(directory, `frame-${timestampSeconds}.jpg`);
+              const result = await runGuest("/usr/bin/ffmpeg", [
+                "-nostdin", "-v", "error", "-threads", "1", "-protocol_whitelist", "file,pipe", "-ss", String(timestampSeconds), "-i", inputPath,
+                "-map", "0:v:0", "-an", "-frames:v", "1", "-vf", "scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease",
+                "-pix_fmt", "yuvj420p", "-q:v", "5", "-fs", String(MAX_FRAME_BYTES + 1), "-f", "image2", outputPath,
+              ], { ...execution, id: `${execution.id}-frame-${timestampSeconds}`, cwd: directory,
+                timeoutMs: Math.min(execution.timeoutMs, 12_000) });
+              if (result.status !== 0) throw new Error("video_frame_extract_failed");
+              let metadata;
+              try { metadata = await stat(outputPath); }
+              catch { continue; } // A shorter video has no frame at this sample timestamp.
+              if (!metadata.isFile() || metadata.size < 4 || metadata.size > MAX_FRAME_BYTES) throw new Error("video_frame_output_limit");
+              const bytes = await readFile(outputPath);
+              if (bytes.length !== metadata.size || bytes.subarray(0, 2).toString("hex") !== "ffd8" || bytes.subarray(-2).toString("hex") !== "ffd9") {
+                throw new Error("video_frame_output_invalid");
+              }
+              outputBytes += bytes.length;
+              if (outputBytes > MAX_TOTAL_FRAME_BYTES) throw new Error("video_frame_output_limit");
+              frames.push({ timestampSeconds, jpegBase64: bytes.toString("base64") });
+            }
+            if (frames.length === 0) throw new Error("video_frame_extract_empty");
+            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ frames, outputBytes })); return;
+          } catch (error) {
+            rethrowGuestCleanupFailure(error);
+            const code = String(error?.message ?? error).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 120);
+            const status = code.includes("limit") ? 413 : code.includes("invalid") ? 415 : 422;
+            res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: code || "video_frame_extract_failed" })); return;
+          } finally {
+            if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
+          }
+        }
         const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
         const MAX_AUDIO_BYTES = 1024 * 1024;
         let directory;

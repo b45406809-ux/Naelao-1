@@ -314,21 +314,25 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     });
   });
 
-  it("requires the authenticated attachment reader scope for video media extraction", async () => {
+  it("requires the authenticated attachment reader scope for audio and frame extraction", async () => {
     const { sandbox, mockContainer } = await createTestSandbox({ actorId: "attachment-reader", runId: "task-a" });
     const forwardsBefore = mockContainer.getTcpPort.mock.calls.length;
-    const invalid = await sandbox.fetch(new Request("https://sandbox/media/extract-audio", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "other-task", videoBase64: "AQID" }),
-    }));
-    expect(invalid.status).toBe(403);
-    expect(mockContainer.getTcpPort).toHaveBeenCalledTimes(forwardsBefore);
+    let validForwarded = 0;
+    for (const path of ["/media/extract-audio", "/media/extract-video-frames"]) {
+      const invalid = await sandbox.fetch(new Request(`https://sandbox${path}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "other-task", videoBase64: "AQID" }),
+      }));
+      expect(invalid.status).toBe(403);
+      expect(mockContainer.getTcpPort).toHaveBeenCalledTimes(forwardsBefore + validForwarded);
 
-    const valid = await sandbox.fetch(new Request("https://sandbox/media/extract-audio", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "task-a", videoBase64: "AQID" }),
-    }));
-    expect(valid.status).toBe(200);
+      const valid = await sandbox.fetch(new Request(`https://sandbox${path}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "task-a", videoBase64: "AQID" }),
+      }));
+      expect(valid.status).toBe(200);
+      validForwarded++;
+    }
     expect(mockContainer.getTcpPort).toHaveBeenCalled();
   });
 

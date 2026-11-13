@@ -1866,6 +1866,14 @@ export async function updateAttachmentOcrSettings(spaceId: string, session: Sess
   return apiFetch(`/v1/spaces/${spaceId}/assistant/attachment-ocr`, { method: "PATCH", body: JSON.stringify({ enabled }), session });
 }
 
+export async function getVideoFrameAnalysisSettings(spaceId: string, session: SessionCredentials): Promise<{ enabled: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/video-frame-analysis`, { session });
+}
+
+export async function updateVideoFrameAnalysisSettings(spaceId: string, session: SessionCredentials, enabled: boolean): Promise<{ enabled: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/video-frame-analysis`, { method: "PATCH", body: JSON.stringify({ enabled }), session });
+}
+
 // item 79: a business admin can now change their OWN business's guided/autonomous policy — this
 // was previously a builder-dashboard-only write (the route 403'd every product_end_user caller
 // outright). Not exposed for a plain member — the caller composing the request enforces that in

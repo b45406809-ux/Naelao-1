@@ -3,6 +3,7 @@ export const EMAIL_OCR_MAX_BYTES = 1_048_576;
 export const EMAIL_OCR_MAX_PIXELS = 20_000_000;
 export const EMAIL_OCR_MAX_TEXT_CHARS = 12_000;
 export const EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY = 20;
+export const VIDEO_FRAME_ANALYSIS_MAX_FRAMES = 3;
 
 type OcrUsageStatement = { bind(...values: unknown[]): { run(): Promise<{ meta?: { changes?: number } }> } };
 type OcrUsageDb = { prepare(sql: string): OcrUsageStatement };
@@ -21,6 +22,28 @@ export async function reserveEmailOcrAttempt(db: OcrUsageDb, input: {
     input.tenantId, input.spaceId, dayAgo,
   ).run();
   return (result.meta?.changes ?? 0) === 1;
+}
+
+const OCR_BATCH_ADMISSION_SQL = `WITH requested(id,slot) AS (VALUES (?,1),(?,2),(?,3))
+  INSERT INTO email_attachment_ocr_usage(id,tenant_id,space_id,created_at)
+  SELECT requested.id,?,?,? FROM requested
+  WHERE requested.slot<=?
+    AND (SELECT COUNT(*) FROM email_attachment_ocr_usage WHERE tenant_id=? AND space_id=? AND created_at>=?) + ? <= ${EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY}`;
+
+/** Atomically reserve one to three model-call slots before a bounded video analysis. */
+export async function reserveEmailOcrAttempts(db: OcrUsageDb, input: {
+  ids: string[]; tenantId: string; spaceId: string; now: Date;
+}): Promise<boolean> {
+  if (input.ids.length < 1 || input.ids.length > VIDEO_FRAME_ANALYSIS_MAX_FRAMES) return false;
+  const createdAt = input.now.toISOString();
+  const dayAgo = new Date(input.now.getTime() - 86_400_000).toISOString();
+  const ids = [...input.ids, ...Array.from({ length: VIDEO_FRAME_ANALYSIS_MAX_FRAMES - input.ids.length }, () => crypto.randomUUID())];
+  const result = await db.prepare(OCR_BATCH_ADMISSION_SQL).bind(
+    ...ids,
+    input.tenantId, input.spaceId, createdAt, input.ids.length,
+    input.tenantId, input.spaceId, dayAgo, input.ids.length,
+  ).run();
+  return (result.meta?.changes ?? 0) === input.ids.length;
 }
 
 export class EmailOcrError extends Error {

@@ -46,6 +46,17 @@ describe("task-scoped attachment CLI operations", () => {
     expect(state.calls).toHaveLength(1);
   });
 
+  it("routes bounded task-owned video frame questions through a separately authorized operation", async () => {
+    const state = context({ response: { task: "describe_video", frames: [{ timestamp_seconds: 0, text: "A person enters." }] } });
+    await expect(attachments.operations["attachment.describe_video"]!({ id: "opaque-video", question: "What changes?" }, state.ctx))
+      .resolves.toMatchObject({ task: "describe_video", frames: [{ timestamp_seconds: 0 }] });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/describe-video");
+    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-video", question: "What changes?" });
+    await expect(attachments.operations["attachment.describe_video"]!({ id: "opaque-video", question: "x".repeat(501) }, state.ctx))
+      .rejects.toThrow("attachment_question_too_long");
+    expect(state.calls).toHaveLength(1);
+  });
+
   it("inspects an attachment using a metadata-only scoped endpoint", async () => {
     const state = context({ response: { attachment: { id: "opaque-1", mime_type: "image/png", size_bytes: 100 } } });
     await expect(attachments.operations["attachment.inspect"]!({ id: "opaque-1" }, state.ctx)).resolves.toMatchObject({

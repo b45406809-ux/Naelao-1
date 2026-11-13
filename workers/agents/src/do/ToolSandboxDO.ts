@@ -262,7 +262,7 @@ export class ToolSandboxDO extends DurableObject {
     }
     if (path === "/output") return this.enqueueSerialized(() => this.output(request));
     if (path === "/cancel") return this.cancel(request);
-    return this.enqueueSerialized(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
+    return this.enqueueSerialized(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", "/media/extract-video-frames", ...WORKSPACE_ROUTES].includes(path)
       ? this.executeScoped(request) : (async () => {
         try { await this.authenticatedScope(request); }
         catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
@@ -1513,7 +1513,7 @@ export class ToolSandboxDO extends DurableObject {
       if (!containerScope || body.spaceId !== containerScope.spaceId || (body.projectId ?? undefined) !== containerScope.projectId) {
         return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
       }
-    } else if (url.pathname === "/media/extract-audio" && request.method === "POST") {
+    } else if ((url.pathname === "/media/extract-audio" || url.pathname === "/media/extract-video-frames") && request.method === "POST") {
       const body = await request.clone().json<{ tenantId?: string; spaceId?: string; projectId?: string | null; taskId?: string }>()
         .catch((): { tenantId?: string; spaceId?: string; projectId?: string | null; taskId?: string } => ({}));
       const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;

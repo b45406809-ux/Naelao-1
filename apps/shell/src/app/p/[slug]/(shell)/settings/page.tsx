@@ -32,6 +32,7 @@ import { SpaceCoordinationPanel } from "@/components/SpaceCoordinationPanel";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
 import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
+import { VideoFrameAnalysisSettings } from "@/components/VideoFrameAnalysisSettings";
 import {
   getMe,
   updateMe,
@@ -202,6 +203,7 @@ export default function SettingsPage() {
             onChanged={(p) => setPolicy(p)}
           /></div>
           {isChildSpace && <AttachmentOcrSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
+          {isChildSpace && <VideoFrameAnalysisSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
           {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
           </>
         )}

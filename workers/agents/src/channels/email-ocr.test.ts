@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
-import { EMAIL_OCR_ADMISSION_SQL, EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY, EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MAX_TEXT_CHARS, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, rasterImageDimensions, reserveEmailOcrAttempt } from "./email-ocr.js";
+import { EMAIL_OCR_ADMISSION_SQL, EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY, EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MAX_TEXT_CHARS, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, rasterImageDimensions, reserveEmailOcrAttempt, reserveEmailOcrAttempts } from "./email-ocr.js";
 
 function png(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -74,5 +74,29 @@ describe("explicit email image OCR", () => {
     await expect(reserveEmailOcrAttempt(db as never, {
       id: "other-space", tenantId: "tenant-1", spaceId: "space-2", now,
     })).resolves.toBe(true);
+  });
+
+  it("reserves all sampled video-frame calls atomically against the shared OCR quota", async () => {
+    const storage = createDOStorage();
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0100_email_attachment_ocr_usage.sql"), "utf8"));
+    const db = { prepare(sql: string) { return { bind(...values: unknown[]) {
+      return { run: async () => ({ meta: { changes: storage.sql.exec(sql, ...values).rowsWritten } }) };
+    } }; } };
+    const now = new Date("2026-10-15T12:00:00.000Z");
+    for (let attempt = 0; attempt < EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY - 2; attempt++) {
+      await expect(reserveEmailOcrAttempt(db as never, {
+        id: `existing-${attempt}`, tenantId: "tenant-1", spaceId: "space-1", now,
+      })).resolves.toBe(true);
+    }
+    await expect(reserveEmailOcrAttempts(db as never, {
+      ids: ["frame-a", "frame-b", "frame-c"], tenantId: "tenant-1", spaceId: "space-1", now,
+    })).resolves.toBe(false);
+    expect(storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM email_attachment_ocr_usage WHERE space_id='space-1'").toArray()[0]!.count)
+      .toBe(EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY - 2);
+    await expect(reserveEmailOcrAttempts(db as never, {
+      ids: ["frame-a", "frame-b"], tenantId: "tenant-1", spaceId: "space-1", now,
+    })).resolves.toBe(true);
+    expect(storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM email_attachment_ocr_usage WHERE space_id='space-1'").toArray()[0]!.count)
+      .toBe(EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY);
   });
 });
