@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, type SpaceTemplateActivationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
@@ -106,9 +106,26 @@ export default function SpacesPage() {
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const [openingPendingTemplate, setOpeningPendingTemplate] = React.useState<string | null>(null);
+  const [templateStatusSpace, setTemplateStatusSpace] = React.useState<SpaceSummary | null>(null);
+  const [templateStatusRecords, setTemplateStatusRecords] = React.useState<SpaceTemplateInstallationRecord[]>([]);
+  const [templateStatusLoading, setTemplateStatusLoading] = React.useState(false);
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
+
+  async function openTemplateStatus(space: SpaceSummary) {
+    if (!creds) return;
+    setTemplateStatusSpace(space);
+    setTemplateStatusRecords([]);
+    setTemplateStatusLoading(true);
+    try {
+      const result = await listSpaceTemplateInstallations(space.id, creds);
+      setTemplateStatusRecords(result.installations);
+    } catch (error) {
+      show(`Template status unavailable: ${error instanceof Error ? error.message : "request failed"}`);
+      setTemplateStatusSpace(null);
+    } finally { setTemplateStatusLoading(false); }
+  }
 
   async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
     if (!creds) return;
@@ -432,6 +449,21 @@ export default function SpacesPage() {
         </div>
       </div>}
 
+      {visibleSpaces.some(space => space.role === "owner" || space.role === "admin") && <div style={{ marginTop: 20 }}>
+        <div className="section-label">Installed Space Templates</div>
+        <div className="settings-block">
+          {visibleSpaces.filter(space => space.role === "owner" || space.role === "admin").map(space => <div key={`template-status:${space.id}`} className="settings-row">
+            <div style={{ minWidth: 0 }}>
+              <div className="settings-row-label">{space.name}</div>
+              <div className="settings-row-sub">Review the pinned installed artifact and setup record.</div>
+            </div>
+            <Button variant="secondary" disabled={!creds || templateStatusLoading} onClick={() => void openTemplateStatus(space)}>
+              {templateStatusLoading && templateStatusSpace?.id === space.id ? "Loading…" : "Template status"}
+            </Button>
+          </div>)}
+        </div>
+      </div>}
+
       <div className="section-label" style={{ marginTop: 26 }}>Model benchmarks</div>
       <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
         Model strengths and costs based on measured Naelao runs where available, otherwise published estimates.
@@ -582,6 +614,30 @@ export default function SpacesPage() {
             {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}
           </div>}
         </form>
+      </Modal>
+      <Modal open={templateStatusSpace !== null} onClose={() => setTemplateStatusSpace(null)} title={`Template status · ${templateStatusSpace?.name ?? "Space"}`} width={760}
+        footer={<Button variant="secondary" onClick={() => setTemplateStatusSpace(null)}>Close</Button>}>
+        {templateStatusLoading ? <p role="status">Loading installation records…</p> : templateStatusRecords.length === 0
+          ? <p>No Space Template installation records are available for this Space.</p>
+          : <div style={{ display: "grid", gap: 12 }}>
+            {templateStatusRecords.map(record => <section key={`${record.blueprint_id}:${record.created_at}`} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                <strong>{record.blueprint_id}</strong>
+                <Badge color={record.status === "installed" ? "green" : record.status === "failed" ? "amber" : "blue"}>{record.status}</Badge>
+              </div>
+              <dl style={{ display: "grid", gridTemplateColumns: "minmax(130px,auto) minmax(0,1fr)", gap: "4px 12px", fontSize: 12, overflowWrap: "anywhere" }}>
+                <dt>Artifact SHA-256</dt><dd style={{ margin: 0, fontFamily: "monospace" }}>{record.artifact_sha256}</dd>
+                <dt>Marketplace listing</dt><dd style={{ margin: 0 }}>{record.listing_id ?? "Unknown for this legacy installation"}</dd>
+                <dt>Setup schema / revision</dt><dd style={{ margin: 0 }}>{record.setup_schema_version ?? "Not recorded"} / {record.setup_revision}</dd>
+                <dt>Required extensions</dt><dd style={{ margin: 0 }}>{record.required_extension_ids.length ? record.required_extension_ids.join(", ") : "None recorded"}</dd>
+                <dt>Generated projects</dt><dd style={{ margin: 0 }}>{record.project_ids.length ? record.project_ids.join(", ") : "None recorded"}</dd>
+                <dt>Created</dt><dd style={{ margin: 0 }}>{new Date(record.created_at).toLocaleString()}</dd>
+                <dt>Updated</dt><dd style={{ margin: 0 }}>{new Date(record.updated_at).toLocaleString()}</dd>
+                {record.error_code && <><dt>Failure code</dt><dd style={{ margin: 0 }}>{record.error_code}</dd></>}
+              </dl>
+            </section>)}
+            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>This is the recorded installed artifact. Latest source and update availability have not been checked. No automatic update or uninstall has been performed.</p>
+          </div>}
       </Modal>
       <Toast toast={toast} />
     </div>

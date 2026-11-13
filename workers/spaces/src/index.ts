@@ -742,6 +742,23 @@ app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {
   return forwardToSpaceDO(stub,`/artifact-validation/${action}`,"POST",JSON.stringify({...body,space_id:spaceId}));
 });
 
+app.get("/spaces/:spaceId/blueprints/installations", async c => {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId ?? "", spaceId = c.req.param("spaceId");
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'")
+    .bind(spaceId, tenantId).first<{ id: string }>();
+  if (!owned) throw notFound("Space");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId });
+  const response = await stub.fetch(new Request(`http://space-do/blueprint-installations?${query}`, {
+    headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  return new Response(response.body, { status: 200, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
 app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c => {
   const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
@@ -976,7 +993,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, setup_values: setupValues }),
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id, listing_id: listingId, setup_values: setupValues }),
   }));
   if (!response.ok) {
     const rollbackFailures = await rollbackNewDependencies();

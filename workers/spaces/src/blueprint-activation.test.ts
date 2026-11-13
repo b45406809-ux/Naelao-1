@@ -68,6 +68,33 @@ describe("Space Template activation preview", () => {
     expect(await serviceOnly.json()).toMatchObject({ error_code: "human_activation_required" });
   });
 
+  it("exposes only the Space Template installation receipt to its owner or administrator", async () => {
+    const secret = "template-installation-status-secret";
+    const stub = { fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe("/blueprint-installations");
+      expect(url.searchParams.get("tenant_id")).toBe("tenant-status");
+      expect(url.searchParams.get("space_id")).toBe("space-status");
+      expect(await verifyInternalToken(request.headers.get("x-naelao-internal-token"), "tenant-status", secret)).toBe(true);
+      return Response.json({ installations: [{ blueprint_id: "tpl-status", artifact_sha256: "a".repeat(64), listing_id: "listing-status",
+        setup_schema_version: 2, setup_revision: 3, required_extension_ids: ["ext_support"], project_ids: ["project-a"], status: "installed",
+        error_code: null, created_at: "2026-11-13T00:00:00.000Z", updated_at: "2026-11-13T00:01:00.000Z" }] });
+    } };
+    const env = { PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-status" }) }) }) },
+      SPACE_DO: { idFromName: () => "space-status-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-status", "x-naelao-user-id": "owner-status", "x-naelao-role": "owner",
+      "x-naelao-internal-token": await mintInternalToken(secret, "tenant-status") };
+    const response = await worker.fetch(new Request("https://spaces/spaces/space-status/blueprints/installations", { headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toMatchObject({ installations: [{ blueprint_id: "tpl-status", listing_id: "listing-status", setup_schema_version: 2 }] });
+    const member = await worker.fetch(new Request("https://spaces/spaces/space-status/blueprints/installations", {
+      headers: { ...headers, "x-naelao-role": "member" },
+    }), env, {} as ExecutionContext);
+    expect(member.status).toBe(403);
+  });
+
   it("binds setup draft reads and writes to the pending signed listing and schema", async () => {
     const secret = "template-setup-draft-route-secret";
     const artifact = blueprint({ id: "tpl_draft", setupSchemaVersion: 1, projects: [{ id: "support", name: "Support", kind: "DualPane", templateMode: "cowork_studio",
@@ -199,23 +226,26 @@ describe("Space Template activation preview", () => {
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `fresh-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-fresh");
     if (!certificate) throw new Error("test_certificate_not_issued");
-    let activationCount = 0;
+    let activationCount = 0, activationBody: Record<string, unknown> | null = null;
+    let spaceConfig = "{}";
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/extension-installations") return Response.json({ installations: [] });
-      if (url.pathname === "/blueprints/instantiate") { activationCount++; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
+      if (url.pathname === "/blueprints/instantiate") { activationCount++; activationBody = await request.json() as Record<string, unknown>; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
       return new Response("not found", { status: 404 });
     } };
-    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "fresh-space" }), run: async () => ({ success: true }) }) }) },
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "fresh-space", config_json: spaceConfig }), run: async () => ({ success: true }) }) }) },
       SCRIPTS_R2: { get: async (key: string) => key === `blueprints/tenant-fresh/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
       SPACE_DO: { idFromName: () => "fresh-space-do", get: () => stub } } as never;
     const headers = { "x-naelao-tenant-id": "tenant-fresh", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-fresh") };
     const preview = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
     expect(preview.status).toBe(200);
     expect(await preview.json()).toMatchObject({ ready: true, target_space_id: "fresh-space", requires_human_activation: true });
+    spaceConfig = JSON.stringify({ template_listing_id: "listing-selected" });
     const activation = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
     expect(activation.status).toBe(201);
     expect(activationCount).toBe(1);
+    expect(activationBody).toMatchObject({ listing_id: "listing-selected", blueprint: { id: artifact.id } });
   });
 
   it("cannot bypass required runtime blockers by calling activation directly", async () => {

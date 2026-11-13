@@ -31,13 +31,22 @@ describe("Space Template setup runtime API", () => {
       "b".repeat(64), "encrypted-test-envelope", 1, "owner", "now", "now");
     const activated = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
-      body: JSON.stringify({ blueprint, target_space_id: targetSpaceId, activation_key: blueprint.id, setup_values: { support: { greeting: "Welcome" } } }) }));
+      body: JSON.stringify({ blueprint, target_space_id: targetSpaceId, activation_key: blueprint.id, listing_id: "listing-template", setup_values: { support: { greeting: "Welcome" } } }) }));
     expect(activated.status).toBe(201);
     expect(storage.sql.exec("SELECT blueprint_id FROM space_template_setup_drafts WHERE tenant_id=? AND space_id=?", "tenant", targetSpaceId).toArray()).toEqual([]);
     expect(storage.sql.exec("SELECT setup_schema_json,setup_revision FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id).toArray()[0])
       .toMatchObject({ setup_schema_json: expect.stringContaining("support"), setup_revision: 1 });
 
     const token = await mintInternalToken(secret, "tenant");
+    const statusUrl = `http://space/blueprint-installations?tenant_id=tenant&space_id=${encodeURIComponent(targetSpaceId)}`;
+    expect((await space.fetch(new Request(statusUrl))).status).toBe(403);
+    const status = await space.fetch(new Request(statusUrl, { headers: { "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token } }));
+    expect(status.headers.get("cache-control")).toContain("no-store");
+    const statusBody = await status.json() as { installations: Array<Record<string, unknown>> };
+    expect(statusBody.installations).toMatchObject([{ blueprint_id: blueprint.id, listing_id: "listing-template", setup_schema_version: 1,
+      setup_revision: 1, status: "installed", required_extension_ids: [manifest.id] }]);
+    expect(statusBody.installations[0]).not.toHaveProperty("setup_values_json");
+    expect(statusBody.installations[0]).not.toHaveProperty("setup_schema_json");
     const request = (method: "GET" | "PATCH", appId = "support_setup", role = "admin", body?: unknown, projectId = "support") => {
       const query = new URLSearchParams({ tenant_id: "tenant", space_id: targetSpaceId, app_id: appId, blueprint_id: blueprint.id, project_id: projectId });
       return space.fetch(new Request(`http://space/extension-template-setup?${query}`, { method,

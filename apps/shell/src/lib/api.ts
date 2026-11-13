@@ -2530,6 +2530,24 @@ export function saveSpaceTemplateSetupDraft(spaceId: string, blueprintId: string
   });
 }
 
+export interface SpaceTemplateInstallationRecord {
+  blueprint_id: string;
+  artifact_sha256: string;
+  listing_id: string | null;
+  setup_schema_version: 1 | 2 | null;
+  setup_revision: number;
+  required_extension_ids: string[];
+  project_ids: string[];
+  status: "installing" | "installed" | "failed";
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listSpaceTemplateInstallations(spaceId: string, session: SessionCredentials): Promise<{ installations: SpaceTemplateInstallationRecord[] }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/installations`, { session, cache: "no-store" });
+}
+
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   setup_schema_version: 1 | 2 | null;

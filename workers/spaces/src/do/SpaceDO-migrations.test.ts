@@ -181,11 +181,13 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(117);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(118);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_archive_restores')").toArray().map(column => column.name)).toContain("safety_actions_json");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_template_setup_drafts')").toArray().map(column => column.name)).toContain("setup_values_ciphertext");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_blueprint_installations')").toArray().map(column => column.name)).toContain("listing_id");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_blueprint_installations')").toArray().map(column => column.name)).toContain("setup_schema_version");
   });
 });
