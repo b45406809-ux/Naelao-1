@@ -9,13 +9,9 @@ events for publish/amend/revoke, owner/admin-only paged reads and a Settings his
 coordination **4/4**, Spaces coordination/route/migration **20/20**, SDK/Spaces/Shell typechecks and
 `git diff --check`; these are local Worker/SQLite checks, with no deployed multi-user acceptance.
 
-§10 remains PARTIAL for collaboration posture/private-project authority, extension maintenance grants,
-singleton reservations/concurrency and broad non-disclosure acceptance. The source audit found the
-member Space-extension page omits runtime primitive, installation ID and dependency pins; the existing
-permission-checked assistant workflow inventory omits explicit scope/status and dependency pins. Exact
-next action: add accurate scope/runtime/instance/version/status/dependency details to these existing
-human and assistant inventories without broadening authorization, then continue §10.1 maintenance
-authority and remaining uncoded requirements. Keep rollout disabled.
+Code `e97a28417f77edf2e40ebd27c710515e91e743d5` is pushed after fetch and ancestry check. The member-authorized Space-shared extension page displays runtime primitive, exact installation ID/key, version, scope, status and declared dependency pins. The assistant's project-grant-checked workflow inventory now returns runtime, installation, version, scope, status and dependency pins. Local evidence: Agents **4/4**, Spaces **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`; no deployed or live acceptance.
+
+§10 remains PARTIAL for collaboration posture/private-project authority, maintenance grants/proposals, singleton reservations/concurrency and broad non-disclosure acceptance. Source review found the assistant inventory still discards project extensions with no workflow primitive. Exact next action: include every valid active project-bound/shared package in this existing permission-checked assistant inventory, returning primitive details and an empty workflow list where needed; keep other-project, user-private and Space-shared installs outside this project-only caller. Then continue §10.1 maintenance authority and other uncoded gaps. Keep rollout disabled.
 
 ## Previous checkpoint details
 

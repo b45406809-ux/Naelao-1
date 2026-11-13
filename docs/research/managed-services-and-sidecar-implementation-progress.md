@@ -12,12 +12,9 @@ SDK/Spaces/Shell typechecks and `git diff --check`; no deployed or live multi-us
 
 S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their ledgered code,
 platform, policy or live-evidence gaps; U05/U06 runtime producers/contracts are not credential gates.
-Platform §10 remains PARTIAL. Source audit found the member Space-extension inventory omits runtime
-primitive, visible installation ID and dependency pins; the permission-checked assistant workflow
-inventory omits explicit scope/status and dependency pins. Exact next action: add these details to the
-existing authorized human and assistant inventory callers without widening visibility or grants,
-then continue §10.1 maintenance authority and other uncoded requirements. Preserve the Python cache;
-keep rollouts disabled.
+Platform §10 remains PARTIAL. Code `e97a28417f77edf2e40ebd27c710515e91e743d5` is pushed to `origin/Mcbt5s-Backup-2` after fetch and ancestry check. The member-visible Space-shared extension UI now shows primitive runtime, installation ID/key and declared exact dependency pins. The actor/project-grant-checked assistant workflow inventory now shows Cloudflare Workflow runtime, active status, scope, exact instance/version and dependency pins. Focused evidence: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`; local checks only.
+
+S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain PARTIAL at their row-level code, runtime, external policy/feed and live-evidence gaps. §10 remains PARTIAL. Source audit found the assistant inventory still includes only packages containing a workflow; valid active project Canvas/Gadget/channel packages are omitted. Exact next action: include all valid active `PROJECT_BOUND`/`PROJECT_SHARED` packages with primitive metadata and empty workflow lists as applicable, while retaining the existing actor/project authorization and excluding Space-shared and other-project records. Preserve the Python cache; keep rollouts disabled.
 
 ## Prior checkpoint details
 

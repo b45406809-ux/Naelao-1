@@ -23,14 +23,9 @@ Verification: SDK coordination **4/4**, Spaces coordination/route/migration **20
 Shell typechecks and `git diff --check`. Local SQLite/Worker checks only; no deployed multi-user or
 live acceptance. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Source reconciliation for §10.1: the member-authorized Space extensions page lists only `SPACE_SHARED`
-apps and displays version/scope/status, but not runtime primitive, installation ID or dependency
-pins. The assistant's existing `workflow.extensions` tool rechecks the actor's project grant and
-lists active project workflows with package/instance details, but omits explicit scope/status and
-dependency pins. Exact next action: extend these already permission-checked human and assistant
-inventories with accurate runtime, instance, version, scope, status and dependency details, then
-continue §10.1 maintenance authority and remaining uncoded requirements. Do not add grants or infer
-private-project visibility.
+Code `e97a2841` is pushed. The member-authorized human page now shows its Space-shared app's runtime primitive, installation ID, instance key and declared exact dependency pins; the assistant workflow inventory now shows runtime, instance, version, scope, active status and dependency pins after rechecking the actor's project grant. Local verification: Agents workflow inventory **4/4**, Spaces extension-settings **3/3**, Agents/Spaces/Shell typechecks and `git diff --check`.
+
+Source reconciliation: the assistant `workflow.extensions` caller still drops active project packages unless they contain at least one workflow (`workflows.length` filter), so assistants cannot discover project Canvas/Gadget/channel packages through that inventory. Exact next action: include all valid active `PROJECT_BOUND`/`PROJECT_SHARED` packages in the existing project-authorized assistant inventory, with their primitive list and an empty workflow list when applicable; preserve the current project filter and add tests that Space-shared, other-project and malformed records remain excluded. Do not add grants or infer private-project visibility.
 
 ## Recent completed-work record
 
