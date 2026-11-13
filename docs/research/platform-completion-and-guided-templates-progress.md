@@ -2,16 +2,16 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after code `fb988c26` was pushed to `origin/Mcbt5s-Backup-2`. Bounded Space
-Blackboard discovery now requires direct Space membership for its public-project branch; project
-members, direct administrators and inherited parent administrators keep their existing access paths.
-An outsider route fixture confirms no public card summary is returned. Alongside lifecycle codes
-`1b9146f1`, `6d5f442c`, `307c8445` and revocation test `52f52e16`, the focused four-file suite passes
-**10/10**, Spaces typecheck and `git diff --check` pass. These are local SQLite/Worker tests, not
-deployed D1 or live acceptance. §10 remains PARTIAL for policy, private publication, lifecycle links,
-reservations, expiry, concurrency and non-disclosure. Exact next task: verify accepted proposals remain
-advisory and do not create project membership or extension authority; then continue configurable §10
-policy gaps without inventing defaults.
+Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
+Space members can read published public-project cards and submit a collaboration proposal; accepting
+it does not grant project membership or card-edit authority. An outsider receives no public card
+summary. Codes `1b9146f1`, `6d5f442c`, `307c8445` retire state on unpublish/archive and `52f52e16`
+tests immediate project ACL revocation. The focused four-file suite passes **10/10**, Spaces
+typecheck and `git diff --check` pass. These are local SQLite/Worker results, not deployed D1 or live
+acceptance. §10 remains PARTIAL for policy, private publication, lifecycle links, reservations,
+expiry, concurrency and non-disclosure. Exact next task: implement owner/admin-only, expected-version-
+fenced amendment of coordination facts with explicit audience disclosure, then wire the SDK/Router and
+owner settings caller; leave expiry and singleton defaults unimplemented pending policy decisions.
 
 Updated 2026-11-13 after project coordination lifecycle codes `1b9146f1`, `6d5f442c`, `307c8445` and
 access test `52f52e16` were pushed. Request creation requires a still-published target card in the D1

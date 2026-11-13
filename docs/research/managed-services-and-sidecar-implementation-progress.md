@@ -2,6 +2,26 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; public read and proposal authority boundary)
+
+- Code `82e36d16` is pushed to `origin/Mcbt5s-Backup-2`. Public-project read now requires direct
+  Space membership or another explicit project/administrator grant; request creation can target a
+  published public project from a Space member's authorized source. The local Worker-to-SpaceDO test
+  confirms an accepted proposal does not add project membership or allow the requester to publish or
+  edit the target card.
+- Combined with `fb988c26`, bounded card listing also excludes public cards from product users
+  outside the Space. Current lifecycle cleanup is in `1b9146f1`, `6d5f442c` and `307c8445`; dynamic
+  private-project access revocation is tested in `52f52e16`. Four focused Spaces test files pass
+  **10/10**, Spaces typecheck and `git diff --check` pass. Evidence is local SQLite/Worker only; no
+  deployed D1 or live multi-user acceptance ran.
+- §10 remains PARTIAL for owner-configurable defaults/policy, private publication approval, extension
+  dependencies/transfers, reservation/cardinality, expiry and broad non-disclosure. Accepted request
+  history behavior is not an approved retention policy.
+- Exact next task: add owner/admin-only, expected-version-fenced amendment of coordination entries
+  with explicit audience disclosure, then wire its SDK/Router and owner settings caller. Do not add
+  expiry, singleton enforcement or publication defaults without a decided policy. Preserve the
+  managed-service gates and `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; public card discovery is Space-scoped)
 
 - Code `fb988c26` is pushed to `origin/Mcbt5s-Backup-2`. The bounded Blackboard project page no longer

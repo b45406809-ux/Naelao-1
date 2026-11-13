@@ -3,18 +3,19 @@
 ## Active mission and checkpoint
 
 Current continuation checkpoint (2026-11-13): §10 codes `1b9146f1`, `6d5f442c`, `307c8445`,
-`52f52e16` and `fb988c26` are pushed to `origin/Mcbt5s-Backup-2`. New requests require a still-
-published target card; unpublish and both project archive callers retire linked blackboard state,
-with retryable errors after archival. Event deletion cascades receipts, delivery and wake rows. A
-Worker-to-SpaceDO test confirms former private-project members immediately lose card/request/event
-reads and mutations without response leaks. Bounded discovery now limits public cards to Space
-members; project members and authorized administrators retain their own permitted visibility. The
-focused four-file Spaces suite passes **10/10**, Spaces typecheck and `git diff --check` pass. These
-are local SQLite/Worker tests, not deployed D1. Broader retention, sharing, uniqueness and
+`52f52e16`, `fb988c26` and `82e36d16` are pushed to `origin/Mcbt5s-Backup-2`. Public cards are
+Space-scoped: direct Space members can read them, while outsiders cannot enumerate them; project
+members and authorized administrators retain their permitted access. Public reads permit a member to
+request collaboration, but accepting a proposal does not add project membership or grant edit rights.
+Unpublish and both project archive callers retire linked blackboard state, with retryable errors after
+archival; event deletion cascades receipts, delivery and wake rows. The Worker-to-SpaceDO suite also
+proves former private-project members immediately lose card/request/event reads and mutations without
+response leaks. Focused four-file Spaces tests pass **10/10**, typecheck and `git diff --check` pass.
+These are local SQLite/Worker tests, not deployed D1. Broader retention, sharing, uniqueness and
 cross-service policy remain unresolved.
-Exact next task: verify accepted blackboard proposals remain advisory and do not grant project
-membership or extension authority, then continue owner-configurable §10 policy gaps without inventing
-defaults.
+Exact next task: implement an owner/admin-only, expected-version-fenced amendment operation for
+coordination facts that preserves host approval and repeats explicit audience disclosure; then expose
+it through the SDK/Router and the existing owner settings surface.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete
