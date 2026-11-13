@@ -4829,15 +4829,14 @@ app.on(["GET", "POST"], "/spaces/:spaceId/projects/:projectId/extension-provider
   const tenantId = getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
   const body = c.req.method === "POST"
-    ? await c.req.json<{ installation_id?: string; connection_id?: string }>().catch(() => ({} as { installation_id?: string; connection_id?: string }))
+    ? await c.req.json<{ operation_id?: string }>().catch(() => ({} as { operation_id?: string }))
     : {};
-  if (c.req.method === "POST" && (!body.installation_id || !body.connection_id)) return c.json({ error_code: "provider_revocation_scope_invalid" }, 400);
+  if (c.req.method === "POST" && !body.operation_id) return c.json({ error_code: "provider_cleanup_scope_invalid" }, 400);
   const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/provider-revocations", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ spaceId, projectId, action: c.req.method === "POST" ? "retry" : "list",
-      ...(body.installation_id ? { installationId: body.installation_id } : {}),
-      ...(body.connection_id ? { connectionId: body.connection_id } : {}) }),
+      ...(body.operation_id ? { operationId: body.operation_id } : {}) }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
 });

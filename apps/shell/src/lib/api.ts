@@ -2145,6 +2145,8 @@ export async function saveExtensionSlackRoutes(spaceId: string, projectId: strin
 }
 
 export interface ExtensionProviderRevocationAttempt {
+  operation_id: string;
+  installation_id: string;
   connection_id: string;
   provider: string;
   status: "pending" | "complete" | "not_supported";
@@ -2320,6 +2322,7 @@ export async function removeChannelExtension(spaceId: string, projectId: string,
 }
 
 export interface ExtensionProviderRevocationOutcome {
+  operation_id: string;
   installation_id: string;
   connection_id: string;
   provider: string;
@@ -2337,9 +2340,9 @@ export async function listExtensionProviderRevocations(spaceId: string, projectI
   return result.outcomes ?? [];
 }
 
-export async function retryExtensionProviderRevocation(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ outcome: ExtensionProviderRevocationOutcome }> {
+export async function retryExtensionProviderRevocation(spaceId: string, projectId: string, operationId: string, session: SessionCredentials): Promise<{ outcome: ExtensionProviderRevocationOutcome }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-provider-revocations`, {
-    method: "POST", session, body: JSON.stringify({ installation_id: installationId, connection_id: connectionId }),
+    method: "POST", session, body: JSON.stringify({ operation_id: operationId }),
   });
 }
 

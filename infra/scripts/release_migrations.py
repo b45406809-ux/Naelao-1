@@ -394,6 +394,17 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     extension_call_expected = {"extension_installation_id", "handler_sha256"}
     if not extension_call_expected.issubset(extension_call_columns):
         raise ReleaseError("required schema check failed for assistant_telnyx_extension_calls")
+    cleanup_operation_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('extension_provider_cleanup_operations')")
+        if isinstance(row.get("name"), str)
+    }
+    cleanup_operation_expected = {
+        "operation_id", "tenant_id", "space_id", "project_id", "installation_id", "connection_id",
+        "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status",
+    }
+    if not cleanup_operation_expected.issubset(cleanup_operation_columns):
+        raise ReleaseError("required schema check failed for extension_provider_cleanup_operations")
     d1.execute_file(
         f"INSERT INTO {META_TABLE}(key,value) VALUES('current_schema_version',{sql_quote(manifest['requiredSchemaVersion'])}) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value;\n"

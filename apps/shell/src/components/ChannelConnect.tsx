@@ -182,6 +182,7 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
       const outcome = result.providerRevocation;
       if (outcome?.action_code === "slack_token_revoked") setNotice("Local access was removed and Slack confirmed that its token was revoked.");
       else if (outcome?.action_code === "telegram_webhook_deleted") setNotice("Local access was removed and Telegram's webhook was deleted. Revoke the bot token in BotFather if it should no longer be usable.");
+      else if (outcome?.action_code === "shared_telegram_webhook_retained") setNotice("Local access was removed. The Telegram webhook remains active for another connection using this bot.");
       else if (outcome?.action_code === "whatsapp_subscription_removed") setNotice("Local access was removed and the WhatsApp app subscription was deleted. Revoke the access token in Meta if it should no longer be usable.");
       else if (outcome?.action_code === "shared_whatsapp_subscription_retained") setNotice("Local access was removed. The WhatsApp app subscription remains for another active connection.");
       else if (outcome?.status === "pending") setNotice("Local access was removed. External provider cleanup is pending and can be retried below.");
@@ -846,11 +847,11 @@ export function ChannelConnect({
 
   async function retryProviderRevocation(outcome: ExtensionProviderRevocationOutcome) {
     if (!projectId || retryingProviderRevocation) return;
-    const key = `${outcome.installation_id}:${outcome.connection_id}`;
+    const key = outcome.operation_id;
     setRetryingProviderRevocation(key); setError(null);
     try {
-      const result = await retryExtensionProviderRevocation(spaceId, projectId, outcome.installation_id, outcome.connection_id, session);
-      setProviderRevocations(previous => previous.map(item => item.installation_id === outcome.installation_id && item.connection_id === outcome.connection_id ? result.outcome : item));
+      const result = await retryExtensionProviderRevocation(spaceId, projectId, outcome.operation_id, session);
+      setProviderRevocations(previous => previous.map(item => item.operation_id === outcome.operation_id ? result.outcome : item));
     } catch (err) { setError(err instanceof Error ? err.message : "Provider cleanup status is unavailable."); }
     finally { setRetryingProviderRevocation(null); }
   }
@@ -965,7 +966,7 @@ export function ChannelConnect({
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Provider cleanup after uninstall ({providerRevocations.length})</summary>
         <p style={{ fontSize: 11, color: "var(--text3)" }}>Local extension access is already removed. These receipts track external cleanup and credential deletion. A pending result retains its encrypted credential only for retry. Telegram webhook deletion and WhatsApp subscription removal do not invalidate provider tokens; those outcomes require manual token revocation.</p>
         {providerRevocations.map(outcome => {
-          const key = `${outcome.installation_id}:${outcome.connection_id}`;
+          const key = outcome.operation_id;
           return <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <span>{outcome.provider} · {outcome.status === "not_supported" ? `manual provider cleanup required (${outcome.last_error_code ?? outcome.action_code ?? "unsupported"})` : [outcome.action_code, outcome.last_error_code].filter(Boolean).join(" · ") || "provider cleanup pending"} · {outcome.attempt_count} attempt(s)</span>
             {outcome.status === "pending" && <button type="button" className="btn-ghost" disabled={!!retryingProviderRevocation} onClick={() => void retryProviderRevocation(outcome)}>

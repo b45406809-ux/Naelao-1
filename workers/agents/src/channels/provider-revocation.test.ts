@@ -36,6 +36,8 @@ describe("extension provider revocation outcomes", () => {
     const shared = vi.fn();
     await expect(revokeExtensionProviderAccess({ provider: "whatsapp", token: "secret", egressDenied: false,
       whatsappAccountStillUsed: true, fetcher: shared })).resolves.toEqual({ status: "complete", actionCode: "shared_whatsapp_subscription_retained" });
+    await expect(revokeExtensionProviderAccess({ provider: "telegram", token: "bot-token", egressDenied: false,
+      telegramBotStillUsed: true, fetcher: shared })).resolves.toEqual({ status: "complete", actionCode: "shared_telegram_webhook_retained" });
     expect(shared).not.toHaveBeenCalled();
   });
 

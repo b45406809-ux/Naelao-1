@@ -15,10 +15,14 @@ export async function revokeExtensionProviderAccess(input: {
   whatsappBusinessAccountId?: string;
   whatsappApiVersion?: string;
   whatsappAccountStillUsed?: boolean;
+  telegramBotStillUsed?: boolean;
   fetcher?: typeof fetch;
 }): Promise<ProviderRevocationResult> {
   if (input.provider === "whatsapp" && input.whatsappAccountStillUsed) {
     return { status: "complete", actionCode: "shared_whatsapp_subscription_retained" };
+  }
+  if (input.provider === "telegram" && input.telegramBotStillUsed) {
+    return { status: "complete", actionCode: "shared_telegram_webhook_retained" };
   }
   if (!["slack", "telegram", "whatsapp"].includes(input.provider)) {
     return { status: "not_supported", actionCode: "provider_cleanup_not_supported", errorCode: "provider_revocation_not_supported" };

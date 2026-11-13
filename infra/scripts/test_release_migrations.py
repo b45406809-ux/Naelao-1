@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -38,6 +39,10 @@ class MemoryD1:
         )
         self.gdpr_request_columns = ("id", "tenant_id", "request_type", "cache_cleanup_status")
         self.extension_call_columns = ("extension_installation_id", "handler_sha256")
+        self.cleanup_operation_columns = (
+            "operation_id", "tenant_id", "space_id", "project_id", "installation_id", "connection_id",
+            "provider", "account_id", "credential_name", "webhook_secret_name", "routing_keys_json", "status",
+        )
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -69,6 +74,8 @@ class MemoryD1:
             return [{"name": name} for name in self.gdpr_request_columns]
         if sql.startswith("PRAGMA table_info('assistant_telnyx_extension_calls')"):
             return [{"name": name} for name in self.extension_call_columns]
+        if sql.startswith("PRAGMA table_info('extension_provider_cleanup_operations')"):
+            return [{"name": name} for name in self.cleanup_operation_columns]
         return []
 
     def execute_file(self, sql):
@@ -195,6 +202,31 @@ class ReleaseMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "product_auth_email_outbox"):
             release._required_schema_check(d1, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
+    def test_cleanup_generation_migration_preserves_history_without_replaying_unknown_legacy_credentials(self):
+        root = Path(__file__).resolve().parents[2]
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.executescript((root / "infra/migrations/0240_extension_provider_revocation_outcomes.sql").read_text())
+            connection.execute("""INSERT INTO extension_provider_revocation_outcomes
+                (tenant_id,space_id,project_id,installation_id,connection_id,provider,requested_by,status,attempt_count,
+                 last_attempt_at,action_code,last_error_code,created_at,updated_at,completed_at)
+                VALUES ('tenant-a','space-a','project-a','instance-a','connection-a','telegram','owner-a','pending',2,
+                        '2026-11-12T00:00:00Z',NULL,'provider_revoke_outcome_unknown','2026-11-12T00:00:00Z',
+                        '2026-11-12T00:00:00Z',NULL)""")
+            connection.execute("""INSERT INTO extension_provider_revocation_outcomes
+                (tenant_id,space_id,project_id,installation_id,connection_id,provider,requested_by,status,attempt_count,
+                 action_code,last_error_code,created_at,updated_at,completed_at)
+                VALUES ('tenant-a','space-a','project-a','instance-b','connection-b','slack','owner-a','complete',1,
+                        'slack_token_revoked',NULL,'2026-11-12T00:00:00Z','2026-11-12T00:00:00Z','2026-11-12T00:00:00Z')""")
+            connection.executescript((root / "infra/migrations/0241_extension_provider_cleanup_generations.sql").read_text())
+            pending = connection.execute("SELECT operation_id,status,credential_name,action_code,last_error_code FROM extension_provider_cleanup_operations WHERE installation_id='instance-a'").fetchone()
+            completed = connection.execute("SELECT status,action_code,last_error_code FROM extension_provider_cleanup_operations WHERE installation_id='instance-b'").fetchone()
+            self.assertEqual(pending, ("legacy:tenant-a:space-a:instance-a:connection-a", "not_supported", "", "legacy_generation_unknown", "legacy_cleanup_generation_unknown"))
+            self.assertEqual(completed, ("complete", "slack_token_revoked", None))
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM extension_provider_revocation_outcomes").fetchone()[0], 2)
+        finally:
+            connection.close()
+
     def test_required_schema_probe_checks_dunning_provider_outcome_storage(self):
         required = self.entries[-1]["filename"]
         ledger = {required: {**self.entries[-1], "status": "applied"}}
@@ -242,6 +274,14 @@ class ReleaseMigrationTests(unittest.TestCase):
         incomplete = MemoryD1()
         incomplete.extension_call_columns = ("id", "binding_id")
         with self.assertRaisesRegex(release.ReleaseError, "assistant_telnyx_extension_calls"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_generation_scoped_provider_cleanup_receipts(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        incomplete = MemoryD1()
+        incomplete.cleanup_operation_columns = ("operation_id", "status", "credential_name")
+        with self.assertRaisesRegex(release.ReleaseError, "extension_provider_cleanup_operations"):
             release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_interrupted_run_resumes_from_next_atomic_migration(self):
