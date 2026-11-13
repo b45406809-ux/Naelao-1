@@ -129,6 +129,7 @@ import {
 import { EMAIL_PDF_MAX_BYTES, EMAIL_PDF_MAX_PAGES, EMAIL_PDF_MAX_TEXT_BYTES, EmailPdfError, extractEmailPdfText } from "./channels/email-pdf.js";
 import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES, EMAIL_DOCX_MAX_TEXT_BYTES, EmailDocxError, extractEmailDocxText } from "./channels/email-docx.js";
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, VIDEO_FRAME_ANALYSIS_MAX_FRAMES, EmailOcrError, extractEmailImageOcr, queryEmailImage, rasterImageDimensions, reserveEmailOcrAttempt, reserveEmailOcrAttempts } from "./channels/email-ocr.js";
+import { revokeExtensionProviderAccess } from "./channels/provider-revocation.js";
 import { handleChannelSessionQueue, type ChannelSessionQueueMessage, type ProviderEventReferenceQueueMessage } from "./channels/session-queue.js";
 import { stableChannelSessionId as createStableChannelSessionId } from "./channels/channel-session-id.js";
 import { providerEventRuntimeAgentId } from "./channels/agentport-event-subscription.js";
@@ -4339,15 +4340,18 @@ async function deleteConnectorCredentialByName(
   tenantId: string,
   spaceId: string,
   name: string,
-): Promise<void> {
-  if (!env.CREDENTIALS_WORKER) return;
+): Promise<boolean> {
+  if (!env.CREDENTIALS_WORKER) return false;
   const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": "extension-system", "x-naelao-role": "admin",
     "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) };
   const list = await env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/spaces/${encodeURIComponent(spaceId)}/credentials`, { headers }));
-  if (!list.ok) return;
-  const body = await list.json<{ credentials?: Array<{ id?: string; name?: string }> }>().catch(() => ({} as { credentials?: Array<{ id?: string; name?: string }> }));
+  if (!list.ok) return false;
+  const body = await list.json<{ credentials?: Array<{ id?: string; name?: string }> }>().catch(() => null);
+  if (!body || !Array.isArray(body.credentials)) return false;
   const credential = body.credentials?.find(item => item.name === name && item.id);
-  if (credential?.id) await env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/spaces/${encodeURIComponent(spaceId)}/credentials/${encodeURIComponent(credential.id)}`, { method: "DELETE", headers }));
+  if (!credential?.id) return true;
+  const deleted = await env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/spaces/${encodeURIComponent(spaceId)}/credentials/${encodeURIComponent(credential.id)}`, { method: "DELETE", headers }));
+  return deleted.ok || deleted.status === 404;
 }
 
 async function resolveConnectorCredential(
@@ -5536,36 +5540,28 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
   const { userId, role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may disconnect an extension provider");
-  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id,webhook_secret_name,routing_keys_json FROM extension_provider_connections
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`)
-    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string; webhook_secret_name: string | null; routing_keys_json: string }>();
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string }>();
   if (!row) return c.json({ removed: false });
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(tenantId, spaceId, installationId, connectionId),
     c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`).bind(now, now, tenantId, spaceId, projectId, installationId, connectionId),
+    c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_revocation_outcomes
+      (tenant_id,space_id,project_id,installation_id,connection_id,provider,requested_by,status,attempt_count,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,CASE WHEN ? IN ('slack','telegram','whatsapp') THEN 'pending' ELSE 'not_supported' END,0,?,?)
+      ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO NOTHING`)
+      .bind(tenantId, spaceId, projectId, installationId, connectionId, row.provider, userId, row.provider, now, now),
   ]);
-  const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
-  const egressDenied = await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId);
-  if (row.provider === "slack") {
-    if (token && !egressDenied) {
-      try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
-    }
-  } else if (row.provider === "telegram" && token && !egressDenied) {
-    try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
-  } else if (row.provider === "whatsapp" && token && !egressDenied) {
-    let wabaId = "";
-    try { const saved = JSON.parse(row.routing_keys_json) as unknown; if (Array.isArray(saved) && typeof saved[0] === "string") wabaId = saved[0]; } catch { /* local revocation remains authoritative */ }
-    const activeRows = await c.env.PLATFORM_DB.prepare(`SELECT routing_keys_json FROM extension_provider_connections WHERE provider='whatsapp' AND status='active'`).all<{ routing_keys_json: string }>();
-    const stillUsed = (activeRows.results ?? []).some(active => { try { return (JSON.parse(active.routing_keys_json) as unknown[]).includes(wabaId); } catch { return false; } });
-    if (wabaId && !stillUsed && c.env.WHATSAPP_GRAPH_API_VERSION) try {
-      await fetch(`https://graph.facebook.com/${c.env.WHATSAPP_GRAPH_API_VERSION}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "DELETE", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
-    } catch { /* local revocation remains authoritative */ }
+  let providerRevocation: Awaited<ReturnType<typeof attemptSavedExtensionProviderRevocation>>;
+  try {
+    providerRevocation = await attemptSavedExtensionProviderRevocation(c.env, { tenantId, spaceId, projectId, installationId, connectionId });
+  } catch {
+    providerRevocation = { connection_id: connectionId, provider: row.provider, status: "pending", action_code: null, last_error_code: "provider_revocation_processing_failed" };
   }
-  await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.credential_name);
-  if (row.webhook_secret_name) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.webhook_secret_name);
-  return c.json({ removed: true });
+  return c.json({ removed: true, providerRevocation });
 });
 // Tenant BYO-OAuth: custom connector client configuration and tokens are space-scoped vault
 // values. The browser receives only the authorize URL; the client secret and tokens never appear
@@ -8432,11 +8428,143 @@ app.post("/internal/workflow-extensions/compile", async c => {
   }
 });
 
+async function attemptSavedExtensionProviderRevocation(env: AgentsEnv, input: {
+  tenantId: string; spaceId: string; projectId: string; installationId: string; connectionId: string;
+}): Promise<{ connection_id: string; provider: string; status: string; action_code: string | null; last_error_code: string | null }> {
+  const row = await env.PLATFORM_DB.prepare(`SELECT provider,credential_name,webhook_secret_name,routing_keys_json
+    FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='revoked'`)
+    .bind(input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId)
+    .first<{ provider: string; credential_name: string; webhook_secret_name: string | null; routing_keys_json: string }>();
+  const receipt = await env.PLATFORM_DB.prepare(`SELECT status,action_code,last_error_code FROM extension_provider_revocation_outcomes
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+    .bind(input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId)
+    .first<{ status: string; action_code: string | null; last_error_code: string | null }>();
+  if (!row || !receipt) throw new Error("provider_revocation_receipt_not_found");
+  if (receipt.status === "pending" && receipt.last_error_code === "credential_cleanup_pending" && receipt.action_code) {
+    const completedStatus = ["slack_token_revoked", "shared_whatsapp_subscription_retained"].includes(receipt.action_code)
+      ? "complete" : "not_supported";
+    const finalErrorCode = receipt.action_code === "telegram_webhook_deleted" ? "telegram_token_revocation_manual"
+      : receipt.action_code === "whatsapp_subscription_removed" ? "whatsapp_token_revocation_manual"
+        : completedStatus === "not_supported" ? "provider_revocation_not_supported" : null;
+    try {
+      const credentialDeleted = await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.credential_name);
+      const webhookDeleted = !row.webhook_secret_name || await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.webhook_secret_name);
+      if (!credentialDeleted || !webhookDeleted) throw new Error("credential_cleanup_pending");
+      const finishedAt = new Date().toISOString();
+      await env.PLATFORM_DB.prepare(`UPDATE extension_provider_revocation_outcomes SET status=?,last_error_code=?,updated_at=?,completed_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='pending' AND last_error_code='credential_cleanup_pending'`)
+        .bind(completedStatus, finalErrorCode, finishedAt, finishedAt, input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId).run();
+      return { connection_id: input.connectionId, provider: row.provider, status: completedStatus, action_code: receipt.action_code, last_error_code: finalErrorCode };
+    } catch {
+      return { connection_id: input.connectionId, provider: row.provider, status: "pending", action_code: receipt.action_code, last_error_code: "credential_cleanup_pending" };
+    }
+  }
+  if (receipt.status !== "pending") {
+    if (receipt.status === "complete" || receipt.status === "not_supported") {
+      try {
+        const credentialDeleted = await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.credential_name);
+        const webhookDeleted = !row.webhook_secret_name || await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.webhook_secret_name);
+        if (!credentialDeleted || !webhookDeleted) throw new Error("credential_cleanup_pending");
+        return { connection_id: input.connectionId, provider: row.provider, status: receipt.status, action_code: receipt.action_code, last_error_code: receipt.last_error_code };
+      } catch {
+        const failedAt = new Date().toISOString();
+        await env.PLATFORM_DB.prepare(`UPDATE extension_provider_revocation_outcomes SET status='pending',last_error_code='credential_cleanup_pending',updated_at=?,completed_at=NULL
+          WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+          .bind(failedAt, input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId).run();
+        return { connection_id: input.connectionId, provider: row.provider, status: "pending", action_code: receipt.action_code, last_error_code: "credential_cleanup_pending" };
+      }
+    }
+    return { connection_id: input.connectionId, provider: row.provider, status: receipt.status, action_code: receipt.action_code, last_error_code: receipt.last_error_code };
+  }
+  const now = new Date().toISOString();
+  await env.PLATFORM_DB.prepare(`UPDATE extension_provider_revocation_outcomes SET attempt_count=attempt_count+1,last_attempt_at=?,updated_at=?
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='pending'`)
+    .bind(now, now, input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId).run();
+  let whatsappBusinessAccountId: string | undefined;
+  try {
+    const routes = JSON.parse(row.routing_keys_json) as unknown;
+    if (Array.isArray(routes) && typeof routes[0] === "string") whatsappBusinessAccountId = routes[0];
+  } catch { /* the provider helper will preserve a pending outcome without a valid id */ }
+  let whatsappAccountStillUsed = false;
+  if (row.provider === "whatsapp" && whatsappBusinessAccountId) {
+    const activeRows = await env.PLATFORM_DB.prepare(`SELECT routing_keys_json FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND provider='whatsapp' AND status='active'`)
+      .bind(input.tenantId, input.spaceId).all<{ routing_keys_json: string }>();
+    whatsappAccountStillUsed = (activeRows.results ?? []).some(active => {
+      try { return (JSON.parse(active.routing_keys_json) as unknown[]).includes(whatsappBusinessAccountId); }
+      catch { return false; }
+    });
+  }
+  const providerSupported = ["slack", "telegram", "whatsapp"].includes(row.provider);
+  let token: string | null = null;
+  if (providerSupported) {
+    try { token = await resolveConnectorCredential(env, input.tenantId, input.spaceId, row.credential_name); }
+    catch { /* preserve the encrypted secret and report an unavailable credential */ }
+  }
+  const outcome = await revokeExtensionProviderAccess({
+    provider: row.provider, token, egressDenied: providerSupported && await isSpaceNetworkEgressDenied(env.PLATFORM_DB, input.spaceId),
+    ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
+    ...(env.WHATSAPP_GRAPH_API_VERSION ? { whatsappApiVersion: env.WHATSAPP_GRAPH_API_VERSION } : {}),
+    whatsappAccountStillUsed,
+  });
+  if (outcome.status !== "pending") {
+    try {
+      const credentialDeleted = await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.credential_name);
+      const webhookDeleted = !row.webhook_secret_name || await deleteConnectorCredentialByName(env, input.tenantId, input.spaceId, row.webhook_secret_name);
+      if (!credentialDeleted || !webhookDeleted) throw new Error("credential_cleanup_pending");
+    } catch {
+      const failedAt = new Date().toISOString();
+      await env.PLATFORM_DB.prepare(`UPDATE extension_provider_revocation_outcomes SET action_code=?,last_error_code='credential_cleanup_pending',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+        .bind(outcome.actionCode ?? null, failedAt, input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId).run();
+      return { connection_id: input.connectionId, provider: row.provider, status: "pending", action_code: outcome.actionCode ?? null, last_error_code: "credential_cleanup_pending" };
+    }
+  }
+  const finishedAt = new Date().toISOString();
+  await env.PLATFORM_DB.prepare(`UPDATE extension_provider_revocation_outcomes SET status=?,action_code=?,last_error_code=?,updated_at=?,completed_at=?
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+    .bind(outcome.status, outcome.actionCode ?? null, outcome.errorCode ?? null, finishedAt, outcome.status === "pending" ? null : finishedAt,
+      input.tenantId, input.spaceId, input.projectId, input.installationId, input.connectionId).run();
+  return { connection_id: input.connectionId, provider: row.provider, status: outcome.status, action_code: outcome.actionCode ?? null, last_error_code: outcome.errorCode ?? null };
+}
+
+app.post("/internal/channel-extensions/provider-revocations", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; installationId?: string; connectionId?: string; action?: string }>()
+    .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; connectionId?: string; action?: string }));
+  if (!body.spaceId || !body.projectId || !["list", "retry"].includes(String(body.action))) return c.json({ error_code: "provider_revocation_scope_invalid" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
+  if (body.action === "retry") {
+    if (!body.installationId || !body.connectionId) return c.json({ error_code: "provider_revocation_scope_invalid" }, 400);
+    try {
+      await attemptSavedExtensionProviderRevocation(c.env, {
+        tenantId, spaceId: body.spaceId, projectId: body.projectId, installationId: body.installationId, connectionId: body.connectionId,
+      });
+      const persisted = await c.env.PLATFORM_DB.prepare(`SELECT installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
+        FROM extension_provider_revocation_outcomes WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+        .bind(tenantId, body.spaceId, body.projectId, body.installationId, body.connectionId)
+        .first<{ installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
+          last_attempt_at: string | null; action_code: string | null; last_error_code: string | null; updated_at: string }>();
+      if (!persisted) return c.json({ error_code: "provider_revocation_receipt_unavailable" }, 503);
+      return c.json({ outcome: persisted });
+    } catch { return c.json({ error_code: "provider_revocation_retry_unavailable" }, 503); }
+  }
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT installation_id,connection_id,provider,status,attempt_count,last_attempt_at,action_code,last_error_code,updated_at
+    FROM extension_provider_revocation_outcomes WHERE tenant_id=? AND space_id=? AND project_id=? AND status!='complete'
+    ORDER BY updated_at DESC LIMIT 100`)
+    .bind(tenantId, body.spaceId, body.projectId).all<{
+      installation_id: string; connection_id: string; provider: string; status: string; attempt_count: number;
+      last_attempt_at: string | null; action_code: string | null; last_error_code: string | null; updated_at: string;
+    }>();
+  return c.json({ outcomes: rows.results ?? [] });
+});
+
 app.post("/internal/channel-extensions/session-state", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
-  const body = await c.req.json<{ spaceId?: string; projectId?: string; installationId?: string; action?: string }>()
-    .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; action?: string }));
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; installationId?: string; requestedBy?: string; action?: string }>()
+    .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; requestedBy?: string; action?: string }));
   if (!body.spaceId || !body.projectId || !body.installationId || !["summary", "clear", "uninstall"].includes(String(body.action))) return c.json({ error_code: "channel_session_scope_invalid" }, 400);
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
   const uninstalling = body.action === "uninstall";
@@ -8451,24 +8579,29 @@ app.post("/internal/channel-extensions/session-state", async c => {
   if (!instance || !allowedStatus || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
     return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
   if (body.action === "uninstall") {
-    const connections = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,webhook_secret_name FROM extension_provider_connections
+    const connections = await c.env.PLATFORM_DB.prepare(`SELECT connection_id,provider FROM extension_provider_connections
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status IN ('active','error','expired')`)
-      .bind(tenantId, body.spaceId, body.projectId, body.installationId).all<{ provider: string; credential_name: string; webhook_secret_name: string | null }>();
+      .bind(tenantId, body.spaceId, body.projectId, body.installationId).all<{ connection_id: string; provider: string }>();
     const revokedAt = new Date().toISOString();
-    await c.env.PLATFORM_DB.batch([
+    const requestedBy = body.requestedBy && body.requestedBy.length <= 128 ? body.requestedBy : "internal";
+    const statements = [
       c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=?`).bind(tenantId, body.spaceId, body.installationId),
       c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
         WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status IN ('active','error','expired')`).bind(revokedAt, revokedAt, tenantId, body.spaceId, body.projectId, body.installationId),
-    ]);
+    ];
+    for (const connection of connections.results ?? []) statements.push(c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_revocation_outcomes
+      (tenant_id,space_id,project_id,installation_id,connection_id,provider,requested_by,status,attempt_count,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,CASE WHEN ? IN ('slack','telegram','whatsapp') THEN 'pending' ELSE 'not_supported' END,0,?,?)
+      ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO NOTHING`)
+      .bind(tenantId, body.spaceId, body.projectId, body.installationId, connection.connection_id, connection.provider,
+        requestedBy, connection.provider, revokedAt, revokedAt));
+    await c.env.PLATFORM_DB.batch(statements);
+    const providerRevocations = [];
     for (const connection of connections.results ?? []) {
-      const token = await resolveConnectorCredential(c.env, tenantId, body.spaceId, connection.credential_name);
-      if (connection.provider === "slack" && token) {
-        try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local connection is already revoked */ }
-      } else if (connection.provider === "telegram" && token) {
-        try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local connection is already revoked */ }
-      }
-      await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.credential_name);
-      if (connection.webhook_secret_name) await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.webhook_secret_name);
+      try { providerRevocations.push(await attemptSavedExtensionProviderRevocation(c.env, {
+        tenantId, spaceId: body.spaceId, projectId: body.projectId, installationId: body.installationId, connectionId: connection.connection_id,
+      })); }
+      catch { providerRevocations.push({ connection_id: connection.connection_id, provider: connection.provider, status: "pending", last_error_code: "provider_revocation_processing_failed" }); }
     }
     const result = await c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL
       WHERE space_id=? AND tenant_id=? AND project_id=? AND extension_instance_id=?`)
@@ -8477,7 +8610,7 @@ app.post("/internal/channel-extensions/session-state", async c => {
     const sessionUrl = `http://agent-do/channels/extensions/session-state?${new URLSearchParams({ project_id: body.projectId, installation_id: body.installationId })}`;
     const cleared = await stub.fetch(new Request(sessionUrl, { method: "DELETE" }));
     if (!cleared.ok) return c.json({ error_code: "channel_session_cleanup_failed" }, 503);
-    return c.json({ unboundChannels: result.meta?.changes ?? 0, deletedConversations: (await cleared.json<{ deletedConversations?: number }>()).deletedConversations ?? 0 });
+    return c.json({ unboundChannels: result.meta?.changes ?? 0, deletedConversations: (await cleared.json<{ deletedConversations?: number }>()).deletedConversations ?? 0, providerRevocations });
   }
   const stub = await getAgentDOForSpace(c.env, tenantId, body.spaceId, "naelao-agent", c.get("requestId"));
   const method = body.action === "clear" ? "DELETE" : "GET";

@@ -17,8 +17,8 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionProviderRevocationOutcome, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listExtensionProviderRevocations, retryExtensionProviderRevocation, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -131,9 +131,9 @@ function ExtensionSessionControls({ spaceId, projectId, session, installation }:
   </div>;
 }
 
-function ExtensionConnectionControls({ spaceId, projectId, session, installation, connection, canManage }: {
+function ExtensionConnectionControls({ spaceId, projectId, session, installation, connection, canManage, onProviderRevocationsChanged }: {
   spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation;
-  connection: NonNullable<ChannelExtensionInstallation["connections"]>[number]; canManage: boolean;
+  connection: NonNullable<ChannelExtensionInstallation["connections"]>[number]; canManage: boolean; onProviderRevocationsChanged: () => Promise<void>;
 }) {
   const [status, setStatus] = React.useState<ExtensionProviderConnection | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -176,7 +176,18 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
   async function disconnect() {
     if (!window.confirm(`Disconnect ${status?.account_label ?? "this Slack workspace"} from ${installation.name}?`)) return;
     setBusy(true); setError(null);
-    try { await disconnectExtensionProvider(spaceId, projectId, installation.instance_id, connection.id, session); await refresh(); }
+    try {
+      const result = await disconnectExtensionProvider(spaceId, projectId, installation.instance_id, connection.id, session);
+      await refresh(); await onProviderRevocationsChanged();
+      const outcome = result.providerRevocation;
+      if (outcome?.action_code === "slack_token_revoked") setNotice("Local access was removed and Slack confirmed that its token was revoked.");
+      else if (outcome?.action_code === "telegram_webhook_deleted") setNotice("Local access was removed and Telegram's webhook was deleted. Revoke the bot token in BotFather if it should no longer be usable.");
+      else if (outcome?.action_code === "whatsapp_subscription_removed") setNotice("Local access was removed and the WhatsApp app subscription was deleted. Revoke the access token in Meta if it should no longer be usable.");
+      else if (outcome?.action_code === "shared_whatsapp_subscription_retained") setNotice("Local access was removed. The WhatsApp app subscription remains for another active connection.");
+      else if (outcome?.status === "pending") setNotice("Local access was removed. External provider cleanup is pending and can be retried below.");
+      else if (outcome?.status === "not_supported") setNotice("Local access was removed. Complete the provider cleanup shown below in the provider console.");
+      else setNotice("Local access was removed.");
+    }
     catch (err) { setError(err instanceof Error ? err.message : "Couldn't disconnect this provider."); }
     finally { setBusy(false); }
   }
@@ -503,6 +514,8 @@ export function ChannelConnect({
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
   const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
+  const [providerRevocations, setProviderRevocations] = React.useState<ExtensionProviderRevocationOutcome[]>([]);
+  const [retryingProviderRevocation, setRetryingProviderRevocation] = React.useState<string | null>(null);
   const [publisherRevocations, setPublisherRevocations] = React.useState<Record<string, Pick<ExtensionPublisherRevocationReceipt, "status" | "active_work_count" | "updated_at">>>({});
   const [publisherNotice, setPublisherNotice] = React.useState<string | null>(null);
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
@@ -563,15 +576,16 @@ export function ChannelConnect({
   }, [canvasManifestDraft]);
 
   React.useEffect(() => {
-    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setPublisherKeys([]); setPublisherRevocations({}); setExtensionLoadError(null); setExtensionsLoading(false); return; }
+    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setPublisherKeys([]); setPublisherRevocations({}); setProviderRevocations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
     let cancelled = false;
     setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]);
     setExtensionsLoading(true);
     setExtensionLoadError(null);
-    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true), listExtensionPublisherKeys(spaceId, session)])
-      .then(([items, installed, publishers]) => {
+    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true), listExtensionPublisherKeys(spaceId, session), listExtensionProviderRevocations(spaceId, projectId, session)])
+      .then(([items, installed, publishers, revocations]) => {
         if (cancelled) return;
         setExtensionInstallations(items);
+        setProviderRevocations(revocations);
         setPublisherKeys(publishers.publishers);
         setPublisherRevocations({});
         const revokedKeys = publishers.publishers.filter(key => key.status === "revoked").slice(0, 50);
@@ -806,18 +820,39 @@ export function ChannelConnect({
   }
 
   async function uninstallChannelExtension(instanceId: string) {
-    if (!projectId || removingExtension || !window.confirm("Uninstall this extension instance? Any channel binding will be removed and its saved conversation state will be deleted.")) return;
+    if (!projectId || removingExtension || !window.confirm("Uninstall this extension instance? Local channel access and saved conversation state will be removed. External provider cleanup can remain pending; some providers require manual token revocation.")) return;
     setRemovingExtension(instanceId); setError(null);
     try {
       await removeChannelExtension(spaceId, projectId, instanceId, session);
-      const [channels, installed] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
+      const [channels, installed, revocations] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true), listExtensionProviderRevocations(spaceId, projectId, session)]);
       setExtensionInstallations(channels);
+      setProviderRevocations(revocations);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
         && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       onChanged();
-    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't uninstall this channel handler."); }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't uninstall this channel handler.");
+      try { setProviderRevocations(await listExtensionProviderRevocations(spaceId, projectId, session)); } catch { /* retain the last visible receipt state */ }
+    }
     finally { setRemovingExtension(null); }
+  }
+
+  async function refreshProviderRevocations() {
+    if (!projectId) return;
+    try { setProviderRevocations(await listExtensionProviderRevocations(spaceId, projectId, session)); }
+    catch { setError("Provider cleanup status could not be refreshed."); }
+  }
+
+  async function retryProviderRevocation(outcome: ExtensionProviderRevocationOutcome) {
+    if (!projectId || retryingProviderRevocation) return;
+    const key = `${outcome.installation_id}:${outcome.connection_id}`;
+    setRetryingProviderRevocation(key); setError(null);
+    try {
+      const result = await retryExtensionProviderRevocation(spaceId, projectId, outcome.installation_id, outcome.connection_id, session);
+      setProviderRevocations(previous => previous.map(item => item.installation_id === outcome.installation_id && item.connection_id === outcome.connection_id ? result.outcome : item));
+    } catch (err) { setError(err instanceof Error ? err.message : "Provider cleanup status is unavailable."); }
+    finally { setRetryingProviderRevocation(null); }
   }
 
   async function changeProjectExtensionLifecycle(instanceId: string, enabled: boolean) {
@@ -919,12 +954,25 @@ export function ChannelConnect({
             </div>
             {installation.status === "disabled" && <div style={{ color: "var(--text3)", fontSize: 11 }}>New handler invocations are paused. Existing work may finish; data and grants are retained.</div>}
             {installation.channels.some(channel => channel.attachment_access) && <div style={{ color: "var(--text3)", fontSize: 11 }}>This package may request host-extracted text from supported attachments on its exact inbound message. Extracted content is untrusted and limited to the declared file and byte caps.</div>}
-            {installation.status === "active" && <>{installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} />)}
+            {installation.status === "active" && <>{installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} onProviderRevocationsChanged={refreshProviderRevocations} />)}
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} /></>}
           </div>)}
         </div>
+      </details>}
+      {projectId && canManage && providerRevocations.length > 0 && <details open style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Provider cleanup after uninstall ({providerRevocations.length})</summary>
+        <p style={{ fontSize: 11, color: "var(--text3)" }}>Local extension access is already removed. These receipts track external cleanup and credential deletion. A pending result retains its encrypted credential only for retry. Telegram webhook deletion and WhatsApp subscription removal do not invalidate provider tokens; those outcomes require manual token revocation.</p>
+        {providerRevocations.map(outcome => {
+          const key = `${outcome.installation_id}:${outcome.connection_id}`;
+          return <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
+            <span>{outcome.provider} · {outcome.status === "not_supported" ? `manual provider cleanup required (${outcome.last_error_code ?? outcome.action_code ?? "unsupported"})` : [outcome.action_code, outcome.last_error_code].filter(Boolean).join(" · ") || "provider cleanup pending"} · {outcome.attempt_count} attempt(s)</span>
+            {outcome.status === "pending" && <button type="button" className="btn-ghost" disabled={!!retryingProviderRevocation} onClick={() => void retryProviderRevocation(outcome)}>
+              {retryingProviderRevocation === key ? "Retrying…" : "Retry provider cleanup"}
+            </button>}
+          </div>;
+        })}
       </details>}
       {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a project Canvas/Gadget extension</summary>

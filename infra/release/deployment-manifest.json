@@ -7,7 +7,7 @@
   },
   "schema": {
     "manifest": "infra/release/schema-manifest.json",
-    "requiredSchemaVersion": "0239_telnyx_extension_call_installation_pin",
+    "requiredSchemaVersion": "0240_extension_provider_revocation_outcomes",
     "migrationExecution": "infra/scripts/release_migrations.py",
     "compatibilityPolicy": "expand_contract_required",
     "rollbackPolicy": "never reverse an applied schema migration; deploy compatible code or use a reviewed forward repair"

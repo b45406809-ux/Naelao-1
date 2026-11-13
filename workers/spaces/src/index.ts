@@ -4792,7 +4792,16 @@ app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId"
   const pause = await stub.fetch(new Request("http://space-do/project-extension-lifecycle", { method: "PATCH",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: "disable", drainTimeoutMs: 10_000 }) }));
-  if (!pause.ok) return new Response(pause.body, { status: pause.status, headers: { "content-type": "application/json" } });
+  if (!pause.ok) {
+    if (pause.status === 404) {
+      const persisted = await stub.fetch(new Request(`http://space-do/workflow-installation?${new URLSearchParams({
+        instance_id: instanceId, tenant_id: tenantId, space_id: spaceId, include_removed: "1",
+      })}`));
+      const result = persisted.ok ? await readBoundedResponseJson<{ instance?: { project_id?: string | null; status?: string } }>(persisted, 2 * 1024 * 1024).catch(() => null) : null;
+      if (result?.instance?.project_id === projectId && result.instance.status === "removed") return c.json({ removed: true, already_removed: true });
+    }
+    return new Response(pause.body, { status: pause.status, headers: { "content-type": "application/json" } });
+  }
   const drain = await readBoundedResponseJson<{ drained?: unknown; active_work_count?: unknown }>(pause, 8 * 1024)
     .catch(() => ({} as { drained?: unknown; active_work_count?: unknown }));
   if (drain.drained !== true) return c.json({ error_code: "extension_runtime_work_not_drained",
@@ -4801,13 +4810,36 @@ app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId"
   const cleanup = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/session-state", {
     method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
-    body: JSON.stringify({ spaceId, projectId, installationId: instanceId, action: "uninstall" }),
+    body: JSON.stringify({ spaceId, projectId, installationId: instanceId, requestedBy: identity.userId, action: "uninstall" }),
   }));
   if (!cleanup.ok) return new Response(cleanup.body, { status: cleanup.status, headers: { "content-type": "application/json" } });
   const removed = await stub.fetch(new Request("http://space-do/extension-installation?" + new URLSearchParams({
     instance_id: instanceId, tenant_id: tenantId, space_id: spaceId, project_id: projectId,
   }), { method: "DELETE" }));
   return new Response(removed.body, { status: removed.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/extension-provider-revocations", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/extension-provider-revocations", requireSpaceMembership({ GET: "admin", POST: "admin" }));
+app.on(["GET", "POST"], "/spaces/:spaceId/projects/:projectId/extension-provider-revocations", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "provider_revocation_status_unavailable" }, 503);
+  const tenantId = getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = c.req.method === "POST"
+    ? await c.req.json<{ installation_id?: string; connection_id?: string }>().catch(() => ({} as { installation_id?: string; connection_id?: string }))
+    : {};
+  if (c.req.method === "POST" && (!body.installation_id || !body.connection_id)) return c.json({ error_code: "provider_revocation_scope_invalid" }, 400);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/provider-revocations", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ spaceId, projectId, action: c.req.method === "POST" ? "retry" : "list",
+      ...(body.installation_id ? { installationId: body.installation_id } : {}),
+      ...(body.connection_id ? { connectionId: body.connection_id } : {}) }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/lifecycle", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

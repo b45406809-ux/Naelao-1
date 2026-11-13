@@ -3910,9 +3910,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ...(installationId ? { installationId } : {}), ...(publisherKeyId ? { publisherKeyId } : {}) });
       }
       if (url.pathname === "/workflow-installation" && method === "GET") {
-        const statusFilter = url.searchParams.get("include_disabled") === "1"
-          ? "i.status IN ('active','disabled')"
-          : "i.status='active'";
+        const statusFilter = url.searchParams.get("include_removed") === "1"
+          ? "i.status IN ('active','disabled','removed')"
+          : url.searchParams.get("include_disabled") === "1"
+            ? "i.status IN ('active','disabled')"
+            : "i.status='active'";
         const rows = queryAll<{ instance_id: string; tenant_id: string; space_id: string; scope: string; project_id: string | null; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
           `SELECT i.* FROM extension_installation_manifests i WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
           url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));

@@ -27,6 +27,7 @@ describe("product session routes for composed project extensions", () => {
     "/spaces/s/projects/p/channel-extensions/install-a/inbox/delete-conversation",
     "/spaces/s/projects/p/channel-extensions/install-a/inbox/reply",
     "/spaces/s/projects/p/channel-extensions/install-a/inbox/export",
+    "/spaces/s/projects/p/extension-provider-revocations",
     "/spaces/s/assistant/channel-extensions",
     "/spaces/s/assistant/channel-capabilities",
     "/spaces/s/projects/p/workflows/plan",

@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0239_telnyx_extension_call_installation_pin",
+  "requiredSchemaVersion": "0240_extension_provider_revocation_outcomes",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -959,6 +959,10 @@
     {
       "filename": "0239_telnyx_extension_call_installation_pin.sql",
       "sha256": "68ed999450fc260483f6fbaeb9ed8d686d621b0f427d510187d8592fca1fd46d"
+    },
+    {
+      "filename": "0240_extension_provider_revocation_outcomes.sql",
+      "sha256": "881ed26e72ac89f66042f384cead3b710854922526abbe276ba6b15f19dcfc5f"
     }
   ]
 }

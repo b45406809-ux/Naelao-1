@@ -677,6 +677,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions\/([^/]+)(?:\/(?:session-state|inbox(?:\/(?:sla|notes|assign|takeover|delete-conversation|reply|export))?))?$/,
+  // Owners/admins can review and retry exact provider cleanup receipts after channel removal;
+  // the Spaces worker enforces both Space-admin and project-management authorization.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-provider-revocations$/,
   /^\/spaces\/([^/]+)\/assistant\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,

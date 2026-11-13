@@ -2144,7 +2144,15 @@ export async function saveExtensionSlackRoutes(spaceId: string, projectId: strin
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/routes`, { method: "PUT", session, body: JSON.stringify({ channel_ids: channelIds }) });
 }
 
-export async function disconnectExtensionProvider(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ removed: boolean }> {
+export interface ExtensionProviderRevocationAttempt {
+  connection_id: string;
+  provider: string;
+  status: "pending" | "complete" | "not_supported";
+  action_code: string | null;
+  last_error_code: string | null;
+}
+
+export async function disconnectExtensionProvider(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ removed: boolean; providerRevocation?: ExtensionProviderRevocationAttempt }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE", session });
 }
 
@@ -2309,6 +2317,30 @@ export async function clearChannelExtensionSessionState(spaceId: string, project
 
 export async function removeChannelExtension(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<{ removed: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}`, { method: "DELETE", session });
+}
+
+export interface ExtensionProviderRevocationOutcome {
+  installation_id: string;
+  connection_id: string;
+  provider: string;
+  status: "pending" | "complete" | "not_supported";
+  attempt_count: number;
+  last_attempt_at: string | null;
+  action_code: string | null;
+  last_error_code: string | null;
+  updated_at: string;
+}
+
+export async function listExtensionProviderRevocations(spaceId: string, projectId: string, session: SessionCredentials): Promise<ExtensionProviderRevocationOutcome[]> {
+  const result = await apiFetch<{ outcomes: ExtensionProviderRevocationOutcome[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-provider-revocations`, { session });
+  return result.outcomes ?? [];
+}
+
+export async function retryExtensionProviderRevocation(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ outcome: ExtensionProviderRevocationOutcome }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-provider-revocations`, {
+    method: "POST", session, body: JSON.stringify({ installation_id: installationId, connection_id: connectionId }),
+  });
 }
 
 export async function listChannelExtensionInstallations(
