@@ -356,6 +356,18 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if not dunning_attempt_expected.issubset(dunning_attempt_columns):
         raise ReleaseError("required schema check failed for dunning_notification_attempts")
+    notification_delivery_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('notification_delivery_attempts')")
+        if isinstance(row.get("name"), str)
+    }
+    notification_delivery_expected = {
+        "tenant_id", "notification_id", "channel", "provider", "outcome", "attempt_count",
+        "queue_attempts", "last_http_status", "provider_receipt_id", "failure_code",
+        "first_attempt_at", "last_attempt_at", "accepted_at", "updated_at",
+    }
+    if not notification_delivery_expected.issubset(notification_delivery_columns):
+        raise ReleaseError("required schema check failed for notification_delivery_attempts")
     deletion_columns = {
         row.get("name")
         for row in d1.query("PRAGMA table_info('kb_document_deletion_operations')")

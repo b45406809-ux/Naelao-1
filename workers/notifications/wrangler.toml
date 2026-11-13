@@ -16,6 +16,13 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-notifications-dlq"
 
+[[queues.consumers]]
+queue = "naelao-notifications-dlq"
+max_batch_size = 10
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 10
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -45,6 +52,13 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-notifications-dlq-staging"
 
+[[env.staging.queues.consumers]]
+queue = "naelao-notifications-dlq-staging"
+max_batch_size = 10
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 10
+
 
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"
@@ -62,7 +76,14 @@ max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
-dead_letter_queue = "naelao-notifications-dlq"
+dead_letter_queue = "naelao-notifications-dlq-production"
+
+[[env.production.queues.consumers]]
+queue = "naelao-notifications-dlq-production"
+max_batch_size = 10
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 10
 
 
 [[env.production.d1_databases]]

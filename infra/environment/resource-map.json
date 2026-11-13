@@ -68,7 +68,7 @@
     },
     {
       "path": "workers/notifications/wrangler.toml",
-      "sha256": "8775dbeb54495d5bdd8d7e5a0b2be7e70fec987a205fe586bef38382b706d6c9"
+      "sha256": "98fa5b86bdbbf41b822ad1b1a4b6821a86a6773639477add47452b83682ae145"
     },
     {
       "path": "workers/portal-router/wrangler.toml",
@@ -1410,7 +1410,7 @@
             ]
           },
           {
-            "id_or_name": "naelao-notifications-dlq",
+            "id_or_name": "naelao-notifications-dlq-production",
             "workers": [
               "workers/notifications/wrangler.toml"
             ]
@@ -1466,6 +1466,12 @@
             ]
           },
           {
+            "id_or_name": "naelao-notifications-dlq-staging",
+            "workers": [
+              "workers/notifications/wrangler.toml"
+            ]
+          },
+          {
             "id_or_name": "naelao-notifications-queue-staging",
             "workers": [
               "workers/notifications/wrangler.toml"
@@ -1513,6 +1519,12 @@
             "id_or_name": "naelao-events-production",
             "workers": [
               "workers/workflows/wrangler.toml"
+            ]
+          },
+          {
+            "id_or_name": "naelao-notifications-dlq-production",
+            "workers": [
+              "workers/notifications/wrangler.toml"
             ]
           },
           {
@@ -4550,7 +4562,7 @@
     {
       "kind": "queue",
       "environment": "production",
-      "id_or_name": "naelao-notifications-dlq",
+      "id_or_name": "naelao-notifications-dlq-production",
       "status": "unverified"
     },
     {

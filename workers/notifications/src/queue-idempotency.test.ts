@@ -28,7 +28,10 @@ describe("notification queue idempotency", () => {
     expect(prepare).toHaveBeenCalledWith(expect.stringContaining("INSERT OR IGNORE INTO notifications"));
     expect(runs.filter(([sql]) => String(sql).includes("INSERT OR IGNORE INTO notifications")).map(([, id]) => id))
       .toEqual(["in-app:message-11", "in-app:message-11"]);
-    expect(run).toHaveBeenCalledTimes(2); // D1's INSERT OR IGNORE safely absorbs the replay.
+    const outcomes = runs.filter(([sql]) => String(sql).includes("INSERT INTO notification_delivery_attempts"));
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.every(([, , , , , outcome]) => outcome === "persisted")).toBe(true);
+    expect(run).toHaveBeenCalledTimes(4); // in-app rows dedupe in D1; independent outcome rows retain both attempts.
     expect(firstAck).toHaveBeenCalledOnce();
     expect(retryAck).toHaveBeenCalledOnce();
   });
@@ -51,7 +54,8 @@ describe("notification queue idempotency", () => {
 
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO notification_delivery_attempts"));
+    expect(run).toHaveBeenCalledOnce(); // Records a scoped non-send outcome; no provider call occurs.
     expect(fetch).not.toHaveBeenCalled();
   });
 

@@ -84,4 +84,99 @@ describe("stable notification retry identities", () => {
     expect(receipt?.args.slice(0, 6)).toEqual(["org-1", notificationId, "platform_subscription", "attempt_ambiguous", null, null]);
     expect(message.retry).toHaveBeenCalledOnce();
   });
+
+  it("persists non-PII provider acceptance for general email queue messages", async () => {
+    const { writes, db } = setup();
+    const notificationId = "account-alert:operation-42";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ id: "email_general_42" })));
+    const message = {
+      id: "queue-general-1", attempts: 1,
+      body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId, subject: "Notice", html: "Body" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ queue: "naelao-notifications-queue", messages: [message] } as never, env);
+    const outcome = writes.find((write) => write.sql.includes("INSERT INTO notification_delivery_attempts"));
+    expect((outcome?.sql.match(/\?/g) ?? []).length).toBe(outcome?.args.length);
+    expect(outcome?.args).toEqual([
+      "org-1", notificationId, "email", "resend", "provider_accepted", 1, 200, "email_general_42", null,
+      expect.any(String), expect.any(String), expect.any(String), expect.any(String),
+    ]);
+    expect(JSON.stringify(outcome)).not.toContain("owner@example.test");
+    expect(JSON.stringify(outcome)).not.toContain("Body");
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  });
+
+  it("persists a general provider rejection before asking the queue to retry", async () => {
+    const { writes, db } = setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited", { status: 429 })));
+    const message = {
+      id: "queue-general-rejected", attempts: 2,
+      body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId: "account-alert:rejected", subject: "Notice", html: "Body" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ queue: "naelao-notifications-queue", messages: [message] } as never, env);
+    const outcome = writes.find((write) => write.sql.includes("INSERT INTO notification_delivery_attempts"));
+    expect(outcome?.args).toContain("provider_rejected");
+    expect(outcome?.args).toContain(2);
+    expect(outcome?.args).toContain(429);
+    expect(outcome?.args).toContain("provider_rejected");
+    expect(message.retry).toHaveBeenCalledOnce();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
+  it("records an ambiguous general provider request and retains its stable retry identity", async () => {
+    const { writes, db } = setup();
+    const notificationId = "account-alert:ambiguous";
+    const outbound = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBe(notificationId);
+      throw new Error("network timeout");
+    });
+    vi.stubGlobal("fetch", outbound);
+    const message = {
+      id: "queue-general-ambiguous", attempts: 3,
+      body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId, subject: "Notice", html: "Body" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const env = { PLATFORM_DB: db, RESEND_API_KEY: "test", RESEND_API_URL: "https://mail.test" } as unknown as NotificationsEnv;
+    await queue({ queue: "naelao-notifications-queue", messages: [message] } as never, env);
+    const outcome = writes.find((write) => write.sql.includes("INSERT INTO notification_delivery_attempts"));
+    expect(outcome?.args).toContain("attempt_ambiguous");
+    expect(outcome?.args).toContain("provider_request_ambiguous");
+    expect(message.retry).toHaveBeenCalledOnce();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
+  it("records dead-letter status without sending the message again", async () => {
+    const { writes, db } = setup();
+    const message = {
+      id: "queue-dead-1", attempts: 4,
+      body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId: "account-alert:operation-dead", subject: "Notice", html: "Body" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    await queue({ queue: "naelao-notifications-dlq", messages: [message] } as never, { PLATFORM_DB: db } as unknown as NotificationsEnv);
+    const outcome = writes.find((write) => write.sql.includes("INSERT INTO notification_delivery_attempts"));
+    expect(outcome?.args).toContain("dead_lettered");
+    expect(outcome?.args).toContain("queue_dead_lettered");
+    expect(outbound).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledOnce();
+  });
+
+  it("records terminal billing-notice dead letters without replacing the dunning attempt ledger", async () => {
+    const { writes, db } = setup();
+    const message = {
+      id: "queue-dunning-dead", attempts: 4,
+      body: { type: "email", tenantId: "org-1", email: "owner@example.test", notificationId: `dunning-${"d".repeat(64)}`,
+        subscriptionScope: "platform_subscription", subject: "Payment failed", html: "Body" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    await queue({ queue: "naelao-notifications-dlq", messages: [message] } as never, { PLATFORM_DB: db } as unknown as NotificationsEnv);
+    expect(writes.some((write) => write.sql.includes("INSERT INTO notification_delivery_attempts") && write.args.includes("dead_lettered"))).toBe(true);
+    expect(writes.some((write) => write.sql.includes("INSERT INTO dunning_notification_attempts"))).toBe(false);
+    expect(message.ack).toHaveBeenCalledOnce();
+  });
 });

@@ -320,6 +320,49 @@ interface NotificationMessage {
   deviceToken?: string; // explicit token (optional — can also look up via SpaceDO)
 }
 
+type NotificationDeliveryOutcome = "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
+type NotificationDeliveryProvider = "resend" | "internal" | "webhook" | "apns" | "web_push";
+function notificationProvider(type: NotificationMessage["type"]): NotificationDeliveryProvider {
+  return type === "email" ? "resend" : type === "in_app" ? "internal" : type === "push" ? "apns" : type;
+}
+
+/** Durable, non-PII status for general notification channels. Dunning provider attempts remain in
+ * their existing scoped ledger; this table adds only its terminal queue dead-letter state. A status
+ * write failure never causes an already accepted external notification to be sent a second time. */
+async function recordNotificationDeliveryAttempt(
+  env: NotificationsEnv,
+  message: NotificationMessage,
+  notificationId: string,
+  provider: NotificationDeliveryProvider,
+  outcome: NotificationDeliveryOutcome,
+  queueAttempts: number,
+  details: { httpStatus?: number; providerReceiptId?: string; failureCode?: string } = {},
+): Promise<void> {
+  if ((message.subscriptionScope && outcome !== "dead_lettered") || !/^[A-Za-z0-9_-]{1,128}$/.test(message.tenantId)
+    || !/^[A-Za-z0-9._:-]{1,200}$/.test(notificationId)) return;
+  const now = new Date().toISOString();
+  const receipt = details.providerReceiptId && /^[A-Za-z0-9_-]{1,128}$/.test(details.providerReceiptId)
+    ? details.providerReceiptId : null;
+  try {
+    await env.PLATFORM_DB.prepare(`INSERT INTO notification_delivery_attempts (
+        tenant_id,notification_id,channel,provider,outcome,attempt_count,queue_attempts,
+        last_http_status,provider_receipt_id,failure_code,first_attempt_at,last_attempt_at,accepted_at,updated_at
+      ) VALUES(?,?,?,?,?,1,?,?,?,?,?,?,?,?)
+      ON CONFLICT(tenant_id,notification_id,channel,provider) DO UPDATE SET
+        outcome=excluded.outcome,attempt_count=notification_delivery_attempts.attempt_count+1,
+        queue_attempts=excluded.queue_attempts,last_http_status=excluded.last_http_status,
+        provider_receipt_id=COALESCE(excluded.provider_receipt_id,notification_delivery_attempts.provider_receipt_id),
+        failure_code=excluded.failure_code,last_attempt_at=excluded.last_attempt_at,
+        accepted_at=COALESCE(notification_delivery_attempts.accepted_at,excluded.accepted_at),updated_at=excluded.updated_at`)
+      .bind(message.tenantId, notificationId, message.type, provider, outcome,
+        Math.max(1, Number.isSafeInteger(queueAttempts) ? queueAttempts : 1), details.httpStatus ?? null, receipt,
+        details.failureCode?.slice(0, 80) ?? null, now, now, outcome === "provider_accepted" || outcome === "persisted" ? now : null, now)
+      .run();
+  } catch (error) {
+    console.warn("[notifications/queue] delivery outcome persistence unavailable", safeErrorName(error));
+  }
+}
+
 // ── G-P11: APNs JWT generation with correct DER→P1363 ECDSA conversion ──────
 // Web Crypto returns DER-encoded ECDSA signatures. APNs requires raw P1363
 // format: R || S (two 32-byte big-endian integers, 64 bytes total).
@@ -647,7 +690,7 @@ async function sendEmailNow(
       .run();
   }
 
-  return { ok: true, from, ...(providerReceiptId ? { providerReceiptId } : {}) };
+  return { ok: true, from, status: res.status, ...(providerReceiptId ? { providerReceiptId } : {}) };
 }
 
 // ── Queue consumer ────────────────────────────────────────────────────────────
@@ -656,32 +699,52 @@ export async function queue(
   batch: MessageBatch<NotificationMessage>,
   env: NotificationsEnv
 ): Promise<void> {
+  const deadLetterBatch = typeof batch.queue === "string" && /-dlq(?:-|$)/i.test(batch.queue);
   for (const message of batch.messages) {
     const msg = message.body;
+    const notificationId = msg.notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.notificationId)
+      ? msg.notificationId
+      : `${msg.type === "in_app" ? "in-app" : msg.type}:${message.id}`.slice(0, 200);
+    if (deadLetterBatch) {
+      await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "dead_lettered", message.attempts, {
+        failureCode: "queue_dead_lettered",
+      });
+      message.ack();
+      continue;
+    }
     try {
-      const notificationId = msg.notificationId && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.notificationId)
-        ? msg.notificationId
-        : undefined;
       const tenant = msg.tenantId
         ? await env.PLATFORM_DB.prepare("SELECT status FROM orgs WHERE id = ?").bind(msg.tenantId).first<{ status: string }>()
         : null;
       if (tenant?.status !== "active") {
         console.warn(`[notifications/queue] dropped delivery for inactive or unknown tenant ${msg.tenantId || "(missing)"}`);
+        await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "not_sent", message.attempts, {
+          failureCode: tenant ? "tenant_inactive" : "tenant_unavailable",
+        });
         message.ack();
         continue;
       }
       if (msg.type !== "in_app" && msg.spaceId && await isSpaceNetworkEgressDenied(env.PLATFORM_DB, msg.spaceId)) {
         console.warn(`[notifications/queue] blocked ${msg.type} egress for air-gapped space ${msg.spaceId}`);
+        await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "not_sent", message.attempts, {
+          failureCode: "space_egress_blocked",
+        });
         message.ack();
         continue;
       }
       if (msg.type === "webhook" && !msg.spaceId) {
         console.warn("[notifications/queue] scoped webhook missing spaceId; denying egress");
+        await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "not_sent", message.attempts, {
+          failureCode: "webhook_space_required",
+        });
         message.ack();
         continue;
       }
       if (msg.type === "web_push" && !msg.spaceId) {
         console.warn("[notifications/queue] browser push missing spaceId; denying egress");
+        await recordNotificationDeliveryAttempt(env, msg, notificationId, notificationProvider(msg.type), "not_sent", message.attempts, {
+          failureCode: "web_push_space_required",
+        });
         message.ack();
         continue;
       }
@@ -689,19 +752,39 @@ export async function queue(
         case "email": {
           if (!msg.email) {
             console.warn("[notifications/queue] email message missing email address, acking");
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "resend", "not_sent", message.attempts, {
+              failureCode: "email_recipient_missing",
+            });
             message.ack();
             break;
           }
 
-          const result = await sendEmailNow(env, msg, notificationId ?? `email:${message.id}`);
+          let result: Awaited<ReturnType<typeof sendEmailNow>>;
+          try {
+            result = await sendEmailNow(env, msg, notificationId);
+          } catch {
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "resend", "attempt_ambiguous", message.attempts, {
+              failureCode: "provider_request_ambiguous",
+            });
+            message.retry();
+            break;
+          }
           if (!result.ok) {
             console.error(
-              `[notifications/queue] Resend API error ${result.status ?? "unknown"} notification=${notificationId ?? message.id}`
+              `[notifications/queue] Resend API error ${result.status ?? "unknown"} notification=${notificationId}`
             );
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "resend", "provider_rejected", message.attempts, {
+              ...(result.status === undefined ? {} : { httpStatus: result.status }),
+              failureCode: "provider_rejected",
+            });
             message.retry();
             break;
           }
 
+          await recordNotificationDeliveryAttempt(env, msg, notificationId, "resend", "provider_accepted", message.attempts, {
+            ...(result.status === undefined ? {} : { httpStatus: result.status }),
+            ...(result.providerReceiptId ? { providerReceiptId: result.providerReceiptId } : {}),
+          });
           message.ack();
           break;
         }
@@ -709,6 +792,9 @@ export async function queue(
         case "in_app": {
           if (!msg.userId) {
             console.warn("[notifications/queue] in_app message missing userId, acking");
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "internal", "not_sent", message.attempts, {
+              failureCode: "in_app_user_missing",
+            });
             message.ack();
             break;
           }
@@ -725,6 +811,7 @@ export async function queue(
             )
             .run();
 
+          await recordNotificationDeliveryAttempt(env, msg, notificationId, "internal", "persisted", message.attempts);
           message.ack();
           break;
         }
@@ -732,6 +819,9 @@ export async function queue(
         case "webhook": {
           if (!msg.webhookUrl) {
             console.warn("[notifications/queue] webhook message missing webhookUrl, acking");
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "webhook", "not_sent", message.attempts, {
+              failureCode: "webhook_url_missing",
+            });
             message.ack();
             break;
           }
@@ -740,6 +830,9 @@ export async function queue(
           const ssrfCheck = await checkSsrf(msg.webhookUrl);
           if (ssrfCheck.blocked) {
             console.warn(`[notifications/queue] webhook blocked by SSRF guard: ${ssrfCheck.reason}`);
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "webhook", "not_sent", message.attempts, {
+              failureCode: "webhook_target_blocked",
+            });
             message.ack();
             break;
           }
@@ -750,28 +843,44 @@ export async function queue(
           const signature = await hmacSha256Hex(body, env.WEBHOOK_SIGNING_SECRET);
           const signedEnvelope = await hmacSha256Hex(`${sentAt}.${eventId}.${body}`, env.WEBHOOK_SIGNING_SECRET);
 
-          const res = await fetch(msg.webhookUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Naelao-Signature": signature,
-              "X-Naelao-Signature-Version": "2",
-              "X-Naelao-Signature-V2": `v1=${signedEnvelope}`,
-              "X-Naelao-Event-Id": eventId,
-              "X-Naelao-Sent-At": sentAt,
-              "Idempotency-Key": eventId,
-            },
-            body,
-            redirect: "error",
-            signal: AbortSignal.timeout(10_000),
-          });
-
-          if (!res.ok) {
-            console.error(`[notifications/queue] webhook delivery failed status=${res.status}`);
+          let res: Response;
+          try {
+            res = await fetch(msg.webhookUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Naelao-Signature": signature,
+                "X-Naelao-Signature-Version": "2",
+                "X-Naelao-Signature-V2": `v1=${signedEnvelope}`,
+                "X-Naelao-Event-Id": eventId,
+                "X-Naelao-Sent-At": sentAt,
+                "Idempotency-Key": eventId,
+              },
+              body,
+              redirect: "error",
+              signal: AbortSignal.timeout(10_000),
+            });
+          } catch {
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "webhook", "attempt_ambiguous", message.attempts, {
+              failureCode: "provider_request_ambiguous",
+            });
             message.retry();
             break;
           }
 
+          if (!res.ok) {
+            console.error(`[notifications/queue] webhook delivery failed status=${res.status}`);
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "webhook", "provider_rejected", message.attempts, {
+              httpStatus: res.status,
+              failureCode: "provider_rejected",
+            });
+            message.retry();
+            break;
+          }
+
+          await recordNotificationDeliveryAttempt(env, msg, notificationId, "webhook", "provider_accepted", message.attempts, {
+            httpStatus: res.status,
+          });
           message.ack();
           break;
         }
@@ -780,6 +889,9 @@ export async function queue(
           // G-P11/G-P12: APNs push notification with correct DER→P1363 signature
           if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY_BASE64 || !env.APNS_BUNDLE_ID) {
             console.warn("[notifications/queue] APNs not configured, skipping push notification");
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "apns", "not_sent", message.attempts, {
+              failureCode: "provider_not_configured",
+            });
             message.ack();
             break;
           }
@@ -787,6 +899,9 @@ export async function queue(
           const deviceToken = msg.deviceToken;
           if (!deviceToken) {
             console.warn("[notifications/queue] push message missing deviceToken, acking");
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "apns", "not_sent", message.attempts, {
+              failureCode: "device_token_missing",
+            });
             message.ack();
             break;
           }
@@ -798,9 +913,15 @@ export async function queue(
               msg.title ?? "Notification",
               msg.body ?? ""
             );
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "apns", "provider_accepted", message.attempts);
             message.ack();
           } catch (pushErr) {
             console.error(`[notifications/queue] APNs push failed (${safeErrorName(pushErr)})`);
+            const status = pushErr instanceof Error ? Number(pushErr.message.match(/^APNs push failed: (\d{3})/)?.[1]) : NaN;
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "apns", Number.isFinite(status) ? "provider_rejected" : "attempt_ambiguous", message.attempts, {
+              ...(Number.isFinite(status) ? { httpStatus: status } : {}),
+              failureCode: Number.isFinite(status) ? "provider_rejected" : "provider_request_ambiguous",
+            });
             message.retry();
           }
           break;
@@ -808,10 +929,16 @@ export async function queue(
 
         case "web_push": {
           try {
-            await sendBrowserPush(env, msg);
+            const delivered = await sendBrowserPush(env, msg);
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "web_push", delivered > 0 ? "provider_accepted" : "not_sent", message.attempts, {
+              ...(delivered > 0 ? {} : { failureCode: "no_active_subscriptions" }),
+            });
             message.ack();
           } catch (pushErr) {
             console.error(`[notifications/queue] browser push failed (${safeErrorName(pushErr)})`);
+            await recordNotificationDeliveryAttempt(env, msg, notificationId, "web_push", "attempt_ambiguous", message.attempts, {
+              failureCode: "provider_request_ambiguous",
+            });
             message.retry();
           }
           break;

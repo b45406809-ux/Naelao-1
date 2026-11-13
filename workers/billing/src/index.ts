@@ -220,7 +220,37 @@ app.get("/billing/dunning-notifications", async (c) => {
     last_attempt_at: string;
     accepted_at: string | null;
   }>();
-  return c.json({ data: result.results ?? [] });
+  return c.json({ data: result.results ?? [] }, 200, { "cache-control": "private, no-store" });
+});
+
+// Owner/admin-only, tenant-scoped outcomes for the general Notifications queue. Message bodies,
+// recipients, webhook URLs and device tokens are never retained or returned here.
+app.get("/billing/notification-deliveries", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!isOrgBillingAdmin(c.req.header("x-naelao-role"))) {
+    return c.json({ error_code: "forbidden", message: "Only organization owners and admins can review notification outcomes" }, 403);
+  }
+  const result = await c.env.PLATFORM_DB.prepare(`
+    SELECT notification_id,channel,provider,outcome,attempt_count,queue_attempts,last_http_status,
+           provider_receipt_id,failure_code,last_attempt_at,accepted_at
+    FROM notification_delivery_attempts
+    WHERE tenant_id=?
+    ORDER BY last_attempt_at DESC,notification_id DESC LIMIT 50
+  `).bind(orgId).all<{
+    notification_id: string;
+    channel: "email" | "in_app" | "webhook" | "push" | "web_push";
+    provider: string;
+    outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
+    attempt_count: number;
+    queue_attempts: number;
+    last_http_status: number | null;
+    provider_receipt_id: string | null;
+    failure_code: string | null;
+    last_attempt_at: string;
+    accepted_at: string | null;
+  }>();
+  return c.json({ data: result.results ?? [] }, 200, { "cache-control": "private, no-store" });
 });
 
 // ── POST /billing/checkout ────────────────────────────────────────────────────

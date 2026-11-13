@@ -43,7 +43,7 @@ describe("browser Web Push", () => {
             return {
               all: async () => ({ results: [{ endpoint_hash: "hash-1", encrypted_subscription: encrypted }] }),
               first: async () => sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" },
-              run: async () => { deleted.push(args); return { meta: { changes: 1 } }; },
+              run: async () => { if (sql.startsWith("DELETE FROM web_push_subscriptions")) deleted.push(args); return { meta: { changes: 1 } }; },
             };
           },
         };

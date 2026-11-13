@@ -8,7 +8,9 @@ function database() {
       return { bind(...args: unknown[]) {
         queries.push({ sql, args });
         return { async all() {
-          return { results: [{ notification_id: `dunning-${"a".repeat(64)}`, provider_outcome: "provider_accepted", attempt_count: 2 }] };
+          return { results: [sql.includes("notification_delivery_attempts")
+            ? { notification_id: "account-alert:operation-42", outcome: "provider_accepted", attempt_count: 2 }
+            : { notification_id: `dunning-${"a".repeat(64)}`, provider_outcome: "provider_accepted", attempt_count: 2 }] };
         } };
       } };
     },
@@ -16,8 +18,8 @@ function database() {
   return { db, queries };
 }
 
-async function request(db: D1Database, headers: Record<string, string> = {}) {
-  return worker.fetch!(new Request("https://billing.test/billing/dunning-notifications", { headers }), {
+async function request(db: D1Database, headers: Record<string, string> = {}, path = "/billing/dunning-notifications") {
+  return worker.fetch!(new Request(`https://billing.test${path}`, { headers }), {
     PLATFORM_SECRET: "test-secret", PLATFORM_DB: db,
   } as never, {} as ExecutionContext);
 }
@@ -37,11 +39,34 @@ describe("owner billing notice status", () => {
     const context = database();
     const response = await request(context.db, { "x-naelao-tenant-id": "org-1", "x-naelao-role": "owner" });
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toMatchObject({ data: [{ provider_outcome: "provider_accepted", attempt_count: 2 }] });
     expect(context.queries).toHaveLength(1);
     expect(context.queries[0]?.sql).toContain("subscription_scope='platform_subscription'");
     expect(context.queries[0]?.sql).toContain("WHERE tenant_id=?");
     expect(context.queries[0]?.args).toEqual(["org-1"]);
     expect(context.queries[0]?.sql).toContain("LIMIT 50");
+  });
+});
+
+describe("owner general notification delivery status", () => {
+  it("scopes recent non-PII channel outcomes to an owner/admin tenant", async () => {
+    const context = database();
+    const response = await request(context.db, { "x-naelao-tenant-id": "org-1", "x-naelao-role": "owner" }, "/billing/notification-deliveries");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toMatchObject({ data: [{ notification_id: expect.any(String), outcome: "provider_accepted" }] });
+    expect(context.queries).toHaveLength(1);
+    expect(context.queries[0]?.sql).toContain("FROM notification_delivery_attempts");
+    expect(context.queries[0]?.sql).toContain("WHERE tenant_id=?");
+    expect(context.queries[0]?.args).toEqual(["org-1"]);
+    expect(context.queries[0]?.sql).toContain("LIMIT 50");
+  });
+
+  it("does not query delivery outcomes for members", async () => {
+    const context = database();
+    const response = await request(context.db, { "x-naelao-tenant-id": "org-1", "x-naelao-role": "member" }, "/billing/notification-deliveries");
+    expect(response.status).toBe(403);
+    expect(context.queries).toHaveLength(0);
   });
 });

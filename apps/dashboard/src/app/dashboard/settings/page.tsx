@@ -1,6 +1,6 @@
 "use client";
 
-import { createBillingPortal, getBillingDunningNotificationAttempts, getBillingSubscription, getMyPreferences, updateMyPreferences, type BillingDunningNotificationAttempt } from "@/lib/api";
+import { createBillingPortal, getBillingDunningNotificationAttempts, getBillingNotificationDeliveries, getBillingSubscription, getMyPreferences, updateMyPreferences, type BillingDunningNotificationAttempt, type BillingNotificationDelivery } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -41,6 +41,9 @@ export default function SettingsPage() {
   const [dunningAttempts, setDunningAttempts] = useState<BillingDunningNotificationAttempt[]>([]);
   const [dunningAttemptsLoading, setDunningAttemptsLoading] = useState(false);
   const [dunningAttemptsError, setDunningAttemptsError] = useState(false);
+  const [notificationDeliveries, setNotificationDeliveries] = useState<BillingNotificationDelivery[]>([]);
+  const [notificationDeliveriesLoading, setNotificationDeliveriesLoading] = useState(false);
+  const [notificationDeliveriesError, setNotificationDeliveriesError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -57,11 +60,16 @@ export default function SettingsPage() {
       setDunningAttempts([]);
       setDunningAttemptsLoading(false);
       setDunningAttemptsError(false);
+      setNotificationDeliveries([]);
+      setNotificationDeliveriesLoading(false);
+      setNotificationDeliveriesError(false);
       return;
     }
     let active = true;
     setDunningAttemptsLoading(true);
     setDunningAttemptsError(false);
+    setNotificationDeliveriesLoading(true);
+    setNotificationDeliveriesError(false);
     void getBillingDunningNotificationAttempts().then((rows) => {
       if (active) setDunningAttempts(rows);
     }).catch(() => {
@@ -71,6 +79,16 @@ export default function SettingsPage() {
       }
     }).finally(() => {
       if (active) setDunningAttemptsLoading(false);
+    });
+    void getBillingNotificationDeliveries().then((rows) => {
+      if (active) setNotificationDeliveries(rows);
+    }).catch(() => {
+      if (active) {
+        setNotificationDeliveries([]);
+        setNotificationDeliveriesError(true);
+      }
+    }).finally(() => {
+      if (active) setNotificationDeliveriesLoading(false);
     });
     return () => { active = false; };
   }, [claims?.role]);
@@ -175,6 +193,19 @@ export default function SettingsPage() {
                 </p>
                 <p className="text-xs text-gray-500 mt-1">{attempt.attempt_count} recorded attempt{attempt.attempt_count === 1 ? "" : "s"} · last provider attempt {new Date(attempt.last_attempt_at).toLocaleString()}</p>
                 {attempt.provider_receipt_id && <p className="text-xs text-gray-500 mt-1">Provider receipt: <code>{attempt.provider_receipt_id}</code></p>}
+              </li>)}
+            </ul>}
+          </div>}
+          {(claims?.role === "owner" || claims?.role === "admin") && (notificationDeliveriesLoading || notificationDeliveries.length > 0 || notificationDeliveriesError) && <div className="border-t border-gray-200 pt-3">
+            <h3 className="text-sm font-semibold text-gray-900">Recent notification queue outcomes</h3>
+            <p className="text-xs text-gray-500 mt-1">Provider acceptance does not confirm delivery to a recipient. In-app acceptance means the notification was saved. Dead-lettered items exhausted the queue&apos;s configured retries.</p>
+            {notificationDeliveriesLoading ? <p className="text-sm text-gray-500 mt-2">Loading recent outcomes…</p> : <ul className="mt-2 space-y-2">
+              {notificationDeliveriesError && <li role="status" className="text-sm text-gray-600">Notification outcome status is unavailable right now.</li>}
+              {notificationDeliveries.map((item) => <li key={`${item.notification_id}:${item.channel}:${item.provider}`} className="rounded-lg border border-gray-200 p-3 text-sm">
+                <p className="font-medium text-gray-900">{item.channel.replace(/_/g, " ")} · {item.outcome === "persisted" ? "saved in app" : item.outcome.replace(/_/g, " ")}{item.last_http_status ? ` (HTTP ${item.last_http_status})` : ""}</p>
+                <p className="text-xs text-gray-500 mt-1">{item.provider} · {item.attempt_count} recorded attempt{item.attempt_count === 1 ? "" : "s"} · queue attempt {item.queue_attempts} · last attempted {new Date(item.last_attempt_at).toLocaleString()}</p>
+                {item.failure_code && <p className="text-xs text-gray-500 mt-1">Reason: {item.failure_code.replace(/_/g, " ")}</p>}
+                {item.provider_receipt_id && <p className="text-xs text-gray-500 mt-1">Provider receipt: <code>{item.provider_receipt_id}</code></p>}
               </li>)}
             </ul>}
           </div>}

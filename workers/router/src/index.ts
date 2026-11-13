@@ -1503,6 +1503,7 @@ api.all("/billing/subscription", proxyBilling);
 api.all("/billing/checkout", proxyBilling);
 api.all("/billing/portal", proxyBilling);
 api.all("/billing/dunning-notifications", proxyBilling);
+api.all("/billing/notification-deliveries", proxyBilling);
 // Owner-only runtime distribution evidence. The analytics worker performs a second role and
 // platform-secret check before querying the private agent-event dataset.
 api.get("/analytics/runtime-economics", async (c) => {

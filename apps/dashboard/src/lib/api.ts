@@ -395,6 +395,25 @@ export async function getBillingDunningNotificationAttempts(): Promise<BillingDu
   return result.data ?? [];
 }
 
+export interface BillingNotificationDelivery {
+  notification_id: string;
+  channel: "email" | "in_app" | "webhook" | "push" | "web_push";
+  provider: string;
+  outcome: "provider_accepted" | "provider_rejected" | "attempt_ambiguous" | "not_sent" | "dead_lettered" | "persisted";
+  attempt_count: number;
+  queue_attempts: number;
+  last_http_status: number | null;
+  provider_receipt_id: string | null;
+  failure_code: string | null;
+  last_attempt_at: string;
+  accepted_at: string | null;
+}
+
+export async function getBillingNotificationDeliveries(): Promise<BillingNotificationDelivery[]> {
+  const result = await apiFetch<{ data: BillingNotificationDelivery[] }>("/billing/notification-deliveries");
+  return result.data ?? [];
+}
+
 export async function createBillingPortal(): Promise<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }> {
   const result = await apiFetch<{ portal_url: string; provider?: "lemon_squeezy" | "whop" }>("/billing/portal", { method: "POST" });
   let target: URL;
