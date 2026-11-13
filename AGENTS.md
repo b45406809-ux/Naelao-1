@@ -12,32 +12,34 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): code `b4cf52146aac2c53184fa89622cd4060748652f2` is pushed to
-`origin/Mcbt5s-Backup-2` and fetch-confirmed. It completes owner-authorized cross-Space signed package
-closure import: source and destination admin checks, source plus exact destination publisher-key
-trust (same key bytes), verified closure/artifact copy with create-only R2 writes and readback,
-immutable host-signed destination release rows, durable per-object/per-package retry, and an explicit
-Shell review/import caller. Trust keys never copy; import does not install or grant package access.
-The earlier dependency review/install recovery (`5f94c924`) and same-Space encrypted archive artifact
-restore (`61642261`) remain in place. No migration was needed.
+Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` matches fetched
+`origin/Mcbt5s-Backup-2` at code `b2d4ac0f71992a8d66fc5ad9c6a9cc7b28235dc2`; preceding P04 code is
+`849bf78a54af5921dbf33c7d807f16eff61153a5`. P06 migration 0239 binds each new Telnyx extension
+call to the exact active installation and handler hash with an insert-time assignment recheck. The
+owner status API returns those pins without raw provider call IDs; Shell groups bounded call and
+provider-reported cost observations by installation. Historical calls remain unpinned. The release
+manifest now includes existing migration 0238 and new migration 0239, requires 0239, and probes the
+new columns. Local evidence: Agents phone suites **41/41**, Agents/Shell typechecks, release migration
+runner **13/13**, release inventory/deployment-manifest validators and `git diff --check`.
 
-Local evidence: cross-Space package plus SpaceDO runtime suites **38/38**, Spaces/Shell typechecks and
-`git diff --check`. The tests cover a mid-transfer interruption/retry, immutable release rows,
-source-role denial, missing destination trust and tenant isolation. These are local Worker/SQLite/R2
-mocks only; no deployed Space, D1/R2, provider or live acceptance ran. P24 remains PARTIAL for update
-and schema migration, active-work drain, publisher compromise notices, scanning and retention/purge
-rules. P04 remains PARTIAL for archive caps, merge policy and isolated/live recovery drills. P01/P02
-local controls are implemented; actual operator-attested D1 baselines, distinct Cloudflare resources,
-ownership and read-only receipts remain external gates. S2–S9/U01–U12 status is otherwise unchanged.
-Rollouts remain disabled. Preserve unrelated untracked `infra/scripts/__pycache__/`.
+P04 code `849bf78a` previews exact additive SQLite merge insert/skip counts in a rolled-back
+transaction, rechecks on apply, persists skipped counts and shows them in Settings. Archive tests
+**18/18**, Spaces/Shell typechecks and diff check pass. Both checkpoints use local mocks/static checks;
+no provider, deployed D1/R2, deployed worker, live call or recovery drill ran. P04 remains PARTIAL for
+limits, cross-service coverage, point-in-time/overwrite policy, key/legal/jurisdiction rules and
+isolated/live acceptance. P06 remains PARTIAL for customer voice lifecycle, streaming, complete
+invoice reconciliation and live carrier/region acceptance. P01/P02 actual resource separation,
+ownership, 158 read-only receipts and operator-attested D1 baselines remain external gates. Preserve
+untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
 
-Exact next action: continue recovery at P04 by tracing the current full Space archive preview/restore
-caller and implementing the next non-destructive recovery gap with explicit collision/partial-state
-visibility; preserve merge-only restore semantics while overwrite/deletion policy is undecided. Then
-continue remaining commercial/recovery, guided-template, voice and Shared-Space requirements. P01/P02
-have no newly found independent code gap; do not invent baselines or resource receipts. After
-compaction, interruption or a new session, read both plans, both progress records and this runbook;
-inspect the actual worktree and resume from that exact action. Do not deploy, purchase, reset, clean,
+Exact next action: continue P10/P24 general signed package update lifecycle. The owner UI reaches the
+review API, but apply remains explicitly unsupported because active-work drain and safe update/rollback
+are uncoded. Trace all shared-package invocation paths, add durable per-installation activity
+admission/drain and an atomic update receipt, then enable only a narrowly reviewed compatible update.
+Keep schema, permission, dependency, provider-connection and price changes gated behind their own
+migration/approval paths. This is implementation work, not a credential blocker. After compaction,
+interruption or a new session, read both plans, both progress records and this runbook; inspect the
+actual worktree and branch; resume from this exact action. Do not deploy, purchase, reset, clean,
 switch branches or force-push.
 The user authorized normal commits and pushes of each coherent checkpoint to `Mcbt5s-Backup-2`:
 fetch before each push, safely incorporate remote advances, and never rewrite remote history.
