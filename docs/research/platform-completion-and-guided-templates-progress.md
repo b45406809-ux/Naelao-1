@@ -2,7 +2,21 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
+Updated 2026-11-13 after keypad draft-preview code `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` was pushed to
+`origin/Mcbt5s-Backup-2` following fetch and ancestor verification. The signed keypad package dashboard
+previews the current draft's call-start greeting and DTMF responses for keys 1, 2 and invalid input.
+It uses the data-only response contract and labels the result simulated; it does not invoke a carrier,
+publish configuration or persist a call session. Local evidence: Agent SDK package tests **4/4**,
+including parity with handler responses, SDK typecheck and `git diff --check`. No Marketplace release,
+provider, deployment or live call was exercised.
+
+§9.5 remains PARTIAL. The next exact action is a read-only owner-authorized operational view in the
+signed keypad package dashboard, scoped on the server to its exact active phone installation and
+limited to that installation's line state and bounded history. Cross-tenant, role, signed-release and
+cross-installation denial need focused tests. Provider-reported amounts must remain labeled as
+non-invoice observations. Keep carrier actions, streaming, provisioning and rollout disabled.
+
+Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
 packages can declare bounded text attachment access, which requires explicit owner/admin approval.
 Ingress persists project/installation/provider-connection scope; dispatch returns opaque metadata for
@@ -469,8 +483,12 @@ D1, eleven shared KV IDs, unresolved `naelao-calls` ownership, missing account/t
 Neither staging nor production has an operator-attested baseline file or verified applied-history/data
 inspection. The release runner therefore stops before mutation. There is no isolated migration
 rehearsal, automatic rollback or live health acceptance. No independent P01/P02 code gap was found in
-the current runner and map; do not create a baseline from source-only evidence. Next code task is P23's
-synchronous `/internal/notify` outcome integration, followed by P03/P12/P20 policy-safe recovery work.
+the current runner and map; do not create a baseline from source-only evidence. The earlier P23
+synchronous `/internal/notify` handoff is already implemented in code `27683db1`, which records stable
+operation IDs and accepted/rejected/ambiguous/not-sent outcomes; do not repeat it. P03/P12/P20 retain
+the policy, identity, retention and provider acceptance gaps recorded in their sections. Continue
+independent recovery work only where current source shows a codeable caller gap; do not invent business
+policy.
 
 ### P02 — isolated environments: PARTIAL, fail-closed
 
@@ -751,7 +769,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archive, checksum-checked object restore and partial-retry receipts exist; restore limits, merge semantics, policy and drills remain. |
 | P05 | PARTIAL | Code `5e0c6501` adds owner-approved, per-installation opaque handles for bounded text extraction from supported files on the exact inbound message, with active-binding rechecks, expiry/scope/MIME/byte enforcement and a grounded-answer caller. Binary/image/audio extension reads, richer outbound responses, complete provider journeys and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Customer voice package lifecycle, public streaming, managed voice billing and live provider acceptance remain unavailable. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview whose outputs match the handler. The per-install operations view, customer voice package lifecycle, public streaming, managed voice billing and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Private/local/custom routing keeps its isolation behavior; independent worker-model selection for those routes is not implemented. |
 | P08 | PARTIAL | Audio-track transcription exists; bounded authorized video-frame understanding is uncoded. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |

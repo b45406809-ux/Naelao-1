@@ -2,7 +2,25 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
+### Active continuation (2026-11-13; keypad package draft preview `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` pushed)
+
+- Code `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` is pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was
+  an ancestor. The signed bounded keypad package now previews its current unsaved greeting, choices,
+  configured responses and invalid-key fallback using the supported data-only phone response
+  contract. It is explicitly local/simulated and does not run a carrier call, publish settings or
+  persist a session. Local evidence: Agent SDK package suite **4/4**, including preview parity with
+  the actual handler for call start, keys 1/2 and fallback; SDK typecheck and `git diff --check`.
+  No package publication, provider traffic or live call occurred.
+- §9.5 remains PARTIAL; the preview closes a usability gap only. It does not supply a customer voice
+  agent, provider provisioning, speech/streaming, publish/version/rollback, invoice reconciliation,
+  call operations or live acceptance. Keep rollout disabled.
+- Exact next action: add a read-only owner-authorized operational view to the signed keypad package
+  dashboard. Resolve the app to its exact active phone installation; expose only its assigned line
+  state and bounded call history through an authenticated host route. Cover tenant, role, release and
+  cross-installation denial; label provider-reported cost as a non-invoice observation. Do not invoke
+  carriers or enable streaming/provisioning/rollout.
+
+### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
 
 - Code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` is pushed to `origin/Mcbt5s-Backup-2` after
   fetch confirmed the remote was an ancestor. Preserve `infra/scripts/__pycache__/`.
@@ -849,7 +867,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
 | §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Native Space templates, setup questions, bootstrap, assistant channel/voice panels and extension connection flows exist. General declarative package setup schema, server validation, resumable package installation, explainable cost service, catalog identity/freshness through onboarding, and visual authoring remain uncoded. P17 current-caller reconciliation is next. |
 | §6 / P05 and P16 extension media | PARTIAL | Code `5e0c6501` adds explicit owner-approved, per-channel `read_text` opt-in, scope-bound attachment rows, opaque metadata in the exact message event and host revalidation before grounded text extraction. It supports declared text/CSV/Markdown/JSON/XML, PDF and DOCX within 3-file/2-MiB bounds; no provider URL, key or raw bytes reaches guest code. Migration 0238 and ingress, SDK, install approval, runtime, answer and Shell callers are wired. Agents **18/18**, Spaces **36/36**, SDK **29/29**, affected typechecks and `git diff --check` pass locally. P16 Discord non-ephemeral retrieval remains unsupported; image/audio/raw binary access, richer multi-message responses and provider/deployed acceptance remain open. |
-| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants, bounded text simulation, signed handler discovery and provider-cost observations are local. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated published list rates and an explicitly incomplete estimate. A customer voice-agent package, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain unavailable. Carrier/region/billing acceptance is a separate live gate. |
+| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad extension interactions, phone journals/grants, bounded test simulation, signed handler discovery and provider-cost observations are local. Code `b2140aaf` adds a draft-only preview to the signed keypad package dashboard; preview results match the handler contract and are labeled simulated. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated published list rates and an explicitly incomplete estimate. A customer voice-agent package, per-install operations view, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain unavailable. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | UNCODED | Video audio-track transcription exists; frame extraction/visual analysis is not implemented. Keep audio-only behavior accurately described until an authorized bounded frame pipeline exists. |
 | §6 / P09 provider training | PARTIAL | Imported model lifecycle exists; provider training submission is disabled pending a verified API/contract. Dataset consent, provenance, deletion, evaluation and rollback are also incomplete; provider enablement is externally gated but local lifecycle work is not thereby complete. |

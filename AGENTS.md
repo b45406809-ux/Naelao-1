@@ -12,25 +12,32 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P05 scoped text attachment access code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9`
-is pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor.
-Preserve the untracked `infra/scripts/__pycache__/`. Channel packages may opt into text extraction
-with an owner/admin approval; opaque handles are tied to the exact tenant, Space, project,
-installation, provider connection, channel, provider message and expiry. The host rechecks active
-installation/binding before list/read, enforces file/byte/MIME limits, reads only private R2 objects,
-and passes selected extracted text to the existing grounded-answer path as untrusted sources. No
-provider URL, credential, object key or raw bytes reach extension code. Legacy non-extension IDs and
-object paths remain stable. P05/P16 remain PARTIAL for binary/image/audio media, richer responses,
-remaining provider journeys and live acceptance. Local evidence: Agents focused suites **18/18**,
-Spaces migration/runtime/install-route suites **36/36**, SDK extension suite **29/29**; Agents,
-Spaces, Shell and SDK typechecks; `git diff --check`. No deployed DB, provider traffic or live
-acceptance occurred.
+Current checkpoint (2026-11-13): keypad package draft preview code `b2140aaf45654a19e5f97ba4cb4e1c4e215924c5` is pushed to
+`origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
+untracked `infra/scripts/__pycache__/`. The signed keypad dashboard now previews the call-start
+greeting and all supported DTMF branches from unsaved settings as data-only `gather`/`say`/`hangup`
+responses. It is labeled simulated; it does not contact a carrier, publish the draft or persist a
+call session. Local evidence: Agent SDK package tests **4/4**, including preview/handler response
+parity for call start, digits 1/2 and fallback; SDK typecheck and `git diff --check`. No package was
+published and no provider or live call was exercised.
 
-Exact next action: continue §9.5 voice package dashboards from the supported keypad package and
-existing owner phone status/test APIs. Implement the next customer-visible per-install configuration
-or operational view with local caller coverage; clearly mark simulated results and keep streaming,
-provider provisioning and rollout disabled. Then continue the remaining S2–S9/U01–U12 and platform
-requirements from both ledgers; do not repeat completed audits without new source evidence.
+Earlier code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` adds P05 scoped text attachment access.
+Channel packages may opt into text extraction with owner/admin approval; opaque handles are tied to
+the exact tenant, Space, project, installation, provider connection, channel, provider message and
+expiry. The host rechecks the active signed installation/binding before list/read, enforces file/byte/
+MIME limits, reads private R2 objects and passes selected text to grounded answers as untrusted
+sources. No provider URL, credential, object key or raw bytes reach extension code. Legacy
+non-extension IDs and object paths remain stable. P05/P16 remain PARTIAL for binary/image/audio media,
+richer responses, remaining provider journeys and live acceptance. Local evidence: Agents focused
+suites **18/18**, Spaces migration/runtime/install-route suites **36/36**, SDK extension suite **29/29**;
+Agents, Spaces, Shell and SDK typechecks. No deployed DB, provider traffic or live acceptance occurred.
+
+Exact next action: add a read-only, owner-authorized phone operations view to the signed keypad
+package dashboard. Resolve the app to its exact active phone installation, and return only that
+installation's assigned line state and bounded call history through the host. Test tenant, role,
+release and cross-installation denial; label provider-reported amounts as non-invoice observations.
+Do not invoke carriers, expose credentials, or enable streaming/provisioning/rollout. Then continue
+the remaining requirements from both ledgers.
 
 Prior keypad-package checkpoint (2026-11-13): code `b4c0100f1d5c898ddde137ebf88fea294f99d386` is pushed to
 `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Preserve the
