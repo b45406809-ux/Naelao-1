@@ -83,4 +83,13 @@ describe("Space Template activation and shared-extension lifecycle routing", () 
   ])("resolves product session identity for %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
   });
+
+  it("allows only the exact template setup runtime API through product-session resolution", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/apps/support_app/api/template-setup"))).toBe(true);
+    for (const path of [
+      "/spaces/s/apps/support_app/api/template-setup/admin",
+      "/spaces/s/apps/support_app/api/settings",
+      "/spaces/s/apps/support_app/api/template-setup/secret",
+    ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
+  });
 });

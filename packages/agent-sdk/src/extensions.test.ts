@@ -61,6 +61,15 @@ describe("immutable extension kernel", () => {
     expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "extension.settings.read"],
       capabilityRequirements: ["repo.read", "extension.settings.read", "extension.settings.configure"], settingsSchema: schema })).toThrow("settings_configure_permission_required");
   });
+  it("requires read and configure grants for the Template setup runtime API", () => {
+    const readOnly = validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "template.setup.read"],
+      capabilityRequirements: ["repo.read", "template.setup.read"] });
+    expect(readOnly.capabilityRequirements).toContain("template.setup.read");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "template.setup.configure"],
+      capabilityRequirements: ["repo.read", "template.setup.configure"] })).toThrow("template_setup_read_capability_required");
+    expect(() => validateExtensionManifest({ ...valid, declaredPermissions: ["repo.read", "template.setup.read"],
+      capabilityRequirements: ["repo.read", "template.setup.read", "template.setup.configure"] })).toThrow("template_setup_configure_permission_required");
+  });
   it.each([{ systemPromptLayers: ["replace"] }, { replLoopStepBounds: 999 }, { bypassWriteGuard: true }, { unsandboxedTools: ["bash"] }])("rejects kernel mutation %#", attack => expect(() => validateExtensionManifest({ ...valid, ...attack })).toThrow("invalid_extension_manifest"));
   it("accepts all four ownership scopes while preserving legacy names", () => {
     const scopes = ["PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"] as const;

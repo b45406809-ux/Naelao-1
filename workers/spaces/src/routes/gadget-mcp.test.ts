@@ -131,6 +131,30 @@ describe("gadget MCP host adapter", () => {
     expect(spaceFetch).toHaveBeenCalledTimes(3);
   });
 
+  it("forwards the exact Template setup project query and restricts writes to administrators", async () => {
+    const spaceFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname,
+      blueprint_id: new URL(request.url).searchParams.get("blueprint_id"), project_id: new URL(request.url).searchParams.get("project_id"),
+      method: request.method, body: request.method === "PATCH" ? await request.json() : undefined }));
+    const microAppGet = vi.fn();
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? (args[2] === "active-member" ? { 1: 1 } : null) : { 1: 1 } }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: spaceFetch }) },
+      MICRO_APP_DO: { idFromName: vi.fn(), get: microAppGet },
+    } as never;
+    const path = "/spaces/s/apps/support_app/api/template-setup?blueprint_id=template-one&project_id=support";
+    const memberRead = await app.request(path, { headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
+    expect(await memberRead.json()).toMatchObject({ path: "/extension-template-setup", blueprint_id: "template-one", project_id: "support", method: "GET" });
+    const memberWrite = await app.request(path, { method: "PATCH", headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member", "content-type": "application/json" }),
+      body: JSON.stringify({ values: { greeting: "Hello" }, revision: 1 }) }, env);
+    expect(memberWrite.status).toBe(403);
+    const adminWrite = await app.request(path, { method: "PATCH", headers: await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" }),
+      body: JSON.stringify({ values: { greeting: "Hello" }, revision: 1 }) }, env);
+    expect(await adminWrite.json()).toMatchObject({ method: "PATCH", body: { values: { greeting: "Hello" }, revision: 1 } });
+    expect(spaceFetch).toHaveBeenCalledTimes(2);
+    expect(microAppGet).not.toHaveBeenCalled();
+  });
+
   it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));

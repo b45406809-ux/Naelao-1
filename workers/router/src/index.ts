@@ -683,6 +683,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/assistant-communications$/,
   /^\/spaces\/([^/]+)\/assistant-channels$/,
   /^\/spaces\/([^/]+)\/assistant-voice$/,
+  // Only this exact member-readable template setup path is available to product sessions;
+  // owner/admin writes and installation/capability checks remain in the Spaces host.
+  /^\/spaces\/([^/]+)\/apps\/([^/]+)\/api\/template-setup$/,
   /^\/spaces\/([^/]+)\/website-connections$/,
   /^\/spaces\/([^/]+)\/website-browser$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activate$/,

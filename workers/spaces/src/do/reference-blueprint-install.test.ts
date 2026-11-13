@@ -144,6 +144,8 @@ describe("reference Space Templates on fresh Space scopes", () => {
     expect(first.status).toBe(201);
     expect(storage.sql.exec("SELECT setup_values_json FROM space_blueprint_installations WHERE space_id='setup-space'").toArray()[0]?.setup_values_json)
       .toBe(JSON.stringify({ assistant: { greeting: "Welcome", language: "en" } }));
+    expect(storage.sql.exec("SELECT setup_schema_json,setup_revision FROM space_blueprint_installations WHERE space_id='setup-space'").toArray()[0])
+      .toMatchObject({ setup_schema_json: expect.stringContaining("assistant"), setup_revision: 1 });
     expect((await install({ assistant: { greeting: "Changed" } })).status).toBe(409);
     expect((await install({ assistant: { greeting: "Welcome" } })).status).toBe(200);
   });

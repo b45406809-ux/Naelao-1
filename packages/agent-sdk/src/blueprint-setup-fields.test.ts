@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateBlueprintSetupSchema, validateBlueprintSetupValues } from "./blueprint-setup-fields.js";
+import { validateBlueprintSetupGroups, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema } from "./blueprint-setup-fields.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const blueprint: SpaceBlueprint = {
@@ -41,5 +41,13 @@ describe("versioned Space Template setup fields", () => {
     expect(() => validateBlueprintSetupValues(blueprint, { support: { greeting: "OK", hours: 8.5 } })).toThrow("Invalid setup value");
     expect(() => validateBlueprintSetupValues(blueprint, { support: { greeting: "OK", language: "de" } })).toThrow("Invalid setup value");
     expect(() => validateBlueprintSetupValues(blueprint, { support: { greeting: "OK" }, other: { field: true } })).toThrow("Unknown setup project");
+  });
+
+  it("revalidates persisted schema groups and updates one project without dropping others", () => {
+    const groups = validateBlueprintSetupGroups(validateBlueprintSetupSchema(blueprint));
+    expect(validateBlueprintSetupValuesForSchema(groups, { support: { greeting: "Hello", language: "fr" } })).toMatchObject({
+      support: { greeting: "Hello", hours: 8, enabled: false, language: "fr" },
+    });
+    expect(() => validateBlueprintSetupGroups([{ project_id: "support", project_name: "Support", fields: [], executable: "run()" }])).toThrow("unsupported property");
   });
 });

@@ -156,17 +156,37 @@ export function validateBlueprintSetupSchema(blueprint: SpaceBlueprint): Bluepri
     if (total > MAX_FIELDS_TOTAL) throw new Error("Space Template setup schema exceeds the field limit");
     groups.push({ project_id: project.id, project_name: project.name, fields: checkedFields });
   }
-  return groups;
+  return validateBlueprintSetupGroups(groups);
 }
 
-/** Validates user values against the signed schema and supplies declared defaults. */
-export function validateBlueprintSetupValues(blueprint: SpaceBlueprint, raw: unknown): BlueprintSetupValues {
-  const groups = validateBlueprintSetupSchema(blueprint);
+/** Validates persisted setup schema data before it is used by a runtime consumer. */
+export function validateBlueprintSetupGroups(raw: unknown): BlueprintSetupFieldGroup[] {
+  if (!Array.isArray(raw) || raw.length > MAX_FIELDS_TOTAL) throw new Error("Invalid setup schema groups");
+  const projectIds = new Set<string>();
+  let total = 0;
+  return raw.map(value => {
+    if (!isRecord(value)) throw new Error("Invalid setup schema group");
+    rejectUnknownKeys(value, ["project_id", "project_name", "fields"], "setup schema group");
+    if (typeof value.project_id !== "string" || !PROJECT_ID_PATTERN.test(value.project_id) || projectIds.has(value.project_id))
+      throw new Error("Setup schema groups require unique stable project ids");
+    if (!boundedText(value.project_name, 1, 120, "setup project name")) throw new Error("Invalid setup project name");
+    const fields = validateSetupFieldDefinitions(value.fields);
+    if (!fields.length) throw new Error("Setup schema groups must contain fields");
+    total += fields.length;
+    if (total > MAX_FIELDS_TOTAL) throw new Error("Space Template setup schema exceeds the field limit");
+    projectIds.add(value.project_id);
+    return { project_id: value.project_id, project_name: value.project_name, fields };
+  });
+}
+
+/** Validates values against an already validated setup schema and supplies declared defaults. */
+export function validateBlueprintSetupValuesForSchema(groups: readonly BlueprintSetupFieldGroup[], raw: unknown): BlueprintSetupValues {
+  const checkedGroups = validateBlueprintSetupGroups(groups);
   if (!isRecord(raw)) throw new Error("Setup values must be an object");
-  const byProject = new Map(groups.map(group => [group.project_id, group]));
+  const byProject = new Map(checkedGroups.map(group => [group.project_id, group]));
   for (const projectId of Object.keys(raw)) if (!byProject.has(projectId)) throw new Error(`Unknown setup project: ${projectId}`);
   const normalized: BlueprintSetupValues = Object.create(null) as BlueprintSetupValues;
-  for (const group of groups) {
+  for (const group of checkedGroups) {
     const submitted = raw[group.project_id];
     if (submitted !== undefined && !isRecord(submitted)) throw new Error(`Setup values for ${group.project_id} must be an object`);
     const values = validateSetupFieldValues(group.fields, submitted ?? {});
@@ -174,4 +194,9 @@ export function validateBlueprintSetupValues(blueprint: SpaceBlueprint, raw: unk
   }
   if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > MAX_VALUE_BYTES) throw new Error("Setup values exceed the byte limit");
   return normalized;
+}
+
+/** Validates user values against the signed schema and supplies declared defaults. */
+export function validateBlueprintSetupValues(blueprint: SpaceBlueprint, raw: unknown): BlueprintSetupValues {
+  return validateBlueprintSetupValuesForSchema(validateBlueprintSetupSchema(blueprint), raw);
 }

@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupValues, validateSpaceCoordinationDraft, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2426,6 +2426,12 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_space_coordination_active
       ON space_coordination_entries(tenant_id, space_id, status, created_at, entry_id);`,
   },
+  {
+    version: 115,
+    description: "persist versioned Space Template setup schemas for installation-scoped runtime access",
+    up: `ALTER TABLE space_blueprint_installations ADD COLUMN setup_schema_json TEXT;
+      ALTER TABLE space_blueprint_installations ADD COLUMN setup_revision INTEGER NOT NULL DEFAULT 0 CHECK (setup_revision >= 0);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3561,6 +3567,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/extension-settings" && (method === "GET" || method === "PATCH")) return this.extensionSettings(request, url);
+      if (url.pathname === "/extension-template-setup" && (method === "GET" || method === "PATCH")) return this.extensionTemplateSetup(request, url);
       if (url.pathname === "/extension-assistant-voice" && (method === "GET" || method === "PATCH")) return this.extensionAssistantVoiceSettings(request, url);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
@@ -4699,14 +4706,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   /** Serialize host activation retries per target Space and exact blueprint artifact. */
   private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string, tenantId = "", rawSetupValues: unknown = {}): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
+    const setupSchema = validateBlueprintSetupSchema(blueprint);
+    const setupSchemaJson = JSON.stringify(setupSchema);
     const setupValues = validateBlueprintSetupValues(blueprint, rawSetupValues);
     const setupValuesJson = JSON.stringify(setupValues);
     const artifactHash = await sha256Hex(JSON.stringify(blueprint));
-    const existing = queryOne<{ artifact_sha256: string; setup_values_json: string | null; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
-      "SELECT artifact_sha256,setup_values_json,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    const ensureExistingSchema = (record: { artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string }): void => {
+      if (record.setup_schema_json === setupSchemaJson) return;
+      if (record.setup_schema_json !== null) throw new Error("blueprint_setup_schema_changed");
+      const backfilled = this.ctx.storage.sql.exec(`UPDATE space_blueprint_installations SET setup_schema_json=?,setup_revision=CASE WHEN setup_revision=0 THEN 1 ELSE setup_revision END,updated_at=?
+        WHERE space_id=? AND blueprint_id=? AND artifact_sha256=? AND status=? AND setup_schema_json IS NULL AND setup_values_json=?`,
+      setupSchemaJson, new Date().toISOString(), targetSpaceId, blueprint.id, artifactHash, record.status, setupValuesJson).rowsWritten;
+      if (backfilled !== 1) throw new Error("blueprint_setup_schema_changed");
+    };
+    const existing = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
     if (existing) {
       if (existing.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (JSON.stringify(JSON.parse(existing.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+      ensureExistingSchema(existing);
       if (existing.status === "installed" && existing.result_json) return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
       if (existing.status === "failed") throw new Error(existing.error_code ?? "blueprint_install_previous_attempt_failed");
       throw new Error("blueprint_install_in_progress");
@@ -4714,22 +4732,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     let acquired = false;
     this.ctx.storage.transactionSync(() => {
-      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,required_extensions_json,setup_values_json,status,created_at,updated_at)
-        VALUES(?,?,?,?,?,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash,
-        JSON.stringify([...new Set(blueprint.requiredExtensions ?? [])].sort()), setupValuesJson, now, now).rowsWritten === 1;
+      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,required_extensions_json,setup_values_json,setup_schema_json,setup_revision,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,1,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash,
+        JSON.stringify([...new Set(blueprint.requiredExtensions ?? [])].sort()), setupValuesJson, setupSchemaJson, now, now).rowsWritten === 1;
     });
     if (!acquired) {
-      const concurrent = queryOne<{ artifact_sha256: string; setup_values_json: string | null; status: string; result_json: string | null }>(this.ctx.storage.sql as never,
-        "SELECT artifact_sha256,setup_values_json,status,result_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+      const concurrent = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null }>(this.ctx.storage.sql as never,
+        "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
       if (concurrent?.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
       if (JSON.stringify(JSON.parse(concurrent.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+      ensureExistingSchema(concurrent);
       if (concurrent?.status === "installed" && concurrent.result_json) return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
       throw new Error("blueprint_install_in_progress");
     }
-    const claim = queryOne<{ artifact_sha256: string; setup_values_json: string | null; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
-      "SELECT artifact_sha256,setup_values_json,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    const claim = queryOne<{ artifact_sha256: string; setup_values_json: string | null; setup_schema_json: string | null; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,setup_values_json,setup_schema_json,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
     if (!claim || claim.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
     if (JSON.stringify(JSON.parse(claim.setup_values_json ?? "{}")) !== setupValuesJson) throw new Error("blueprint_setup_values_changed");
+    ensureExistingSchema(claim);
     if (claim.status !== "installing" || claim.result_json) {
       if (claim.status === "installed" && claim.result_json) return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
       throw new Error("blueprint_install_in_progress");
@@ -12038,6 +12058,110 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
     if (outcome !== "ok") return Response.json({ error_code: "extension_settings_revision_conflict" }, { status: 409, headers: { "cache-control": "private, no-store" } });
     return Response.json({ schema, settings, revision: body.revision! + 1, updated_at: updatedAt }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  /** Expose one approved Template project group only to its active, required extension installation. */
+  private async extensionTemplateSetup(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
+    const appId = url.searchParams.get("app_id") ?? "", blueprintId = url.searchParams.get("blueprint_id") ?? "";
+    const projectId = url.searchParams.get("project_id") ?? "";
+    const headers = { "cache-control": "private, no-store" };
+    const json = (value: unknown, status = 200) => Response.json(value, { status, headers });
+    if (!tenantId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)
+      || !/^[A-Za-z0-9._:-]{1,160}$/.test(blueprintId) || !/^[a-z][a-z0-9_-]{0,63}$/.test(projectId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return json({ error_code: "forbidden" }, 403);
+    const role = request.headers.get("x-naelao-role") ?? "";
+    if (request.method === "PATCH" && role !== "owner" && role !== "admin") return json({ error_code: "forbidden" }, 403);
+    const extensionRows = queryAll<{ instance_id: string; extension_id: string; instance_key: string | null; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT i.instance_id,i.extension_id,i.instance_key,i.manifest_json FROM extension_installation_manifests i
+       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'`, tenantId, spaceId);
+    const matches = extensionRows.flatMap(row => {
+      try {
+        const raw = JSON.parse(row.manifest_json) as ExtensionManifest;
+        const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
+        const appIds = [
+          ...(manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3).map(gadget => gadget.id),
+          ...(manifest.bundle?.primitives ?? []).filter(primitive => primitive.kind === "canvas").map(primitive => primitive.id),
+        ];
+        const prefix = row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_` : "";
+        return appIds.some(id => `${prefix}${id}` === appId) ? [{ row, manifest }] : [];
+      } catch { return []; }
+    });
+    if (matches.length !== 1) return json({ error_code: matches.length ? "extension_app_ambiguous" : "template_setup_unavailable" }, matches.length ? 409 : 404);
+    const { row: extension, manifest } = matches[0]!;
+    const needed = request.method === "GET" ? "template.setup.read" : "template.setup.configure";
+    if (!manifest.capabilityRequirements.includes("template.setup.read") || !manifest.declaredPermissions.includes("template.setup.read")
+      || !manifest.capabilityRequirements.includes(needed) || !manifest.declaredPermissions.includes(needed))
+      return json({ error_code: "template_setup_capability_not_declared" }, 403);
+
+    type Installation = { required_extensions_json: string; setup_schema_json: string | null; setup_values_json: string; setup_revision: number; status: string };
+    const readInstallation = () => queryOne<Installation>(this.ctx.storage.sql as never,
+      `SELECT required_extensions_json,setup_schema_json,setup_values_json,setup_revision,status
+       FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?`, spaceId, blueprintId);
+    const installation = readInstallation();
+    if (!installation || installation.status !== "installed") return json({ error_code: "template_setup_installation_unavailable" }, 404);
+    let requiredExtensions: unknown, groups: ReturnType<typeof validateBlueprintSetupGroups>, values: Record<string, Record<string, string | number | boolean>>;
+    try {
+      requiredExtensions = JSON.parse(installation.required_extensions_json);
+      if (!Array.isArray(requiredExtensions) || !requiredExtensions.includes(extension.extension_id))
+        return json({ error_code: "template_setup_extension_not_required" }, 403);
+      if (!installation.setup_schema_json) return json({ error_code: "template_setup_migration_required" }, 409);
+      groups = validateBlueprintSetupGroups(JSON.parse(installation.setup_schema_json));
+      const group = groups.find(candidate => candidate.project_id === projectId);
+      if (!group) return json({ error_code: "template_setup_project_unavailable" }, 404);
+      values = validateBlueprintSetupValuesForSchema(groups, JSON.parse(installation.setup_values_json));
+    } catch (error) {
+      return json({ error_code: "template_setup_record_invalid", message: (error as Error).message.slice(0, 200) }, 409);
+    }
+    const group = groups.find(candidate => candidate.project_id === projectId)!;
+    if (request.method === "GET") return json({ schema: group, values: values[projectId] ?? {}, revision: installation.setup_revision });
+
+    let body: { values?: unknown; revision?: number };
+    try {
+      const bytes = await readBoundedRequestBytes(request, 64 * 1024);
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
+      if (!body || Object.keys(body).some(key => key !== "values" && key !== "revision")
+        || !Number.isSafeInteger(body.revision) || Number(body.revision) < 0 || Number(body.revision) >= Number.MAX_SAFE_INTEGER)
+        throw new Error("invalid_template_setup_revision");
+    } catch { return json({ error_code: "template_setup_invalid" }, 400); }
+
+    let submitted: Record<string, string | number | boolean>;
+    try {
+      const checked = validateBlueprintSetupValuesForSchema(groups, { [projectId]: body.values });
+      submitted = checked[projectId] ?? {};
+    } catch (error) {
+      return json({ error_code: "template_setup_invalid", message: (error as Error).message.slice(0, 200) }, 400);
+    }
+    if (typeof this.ctx.storage.transactionSync !== "function") return json({ error_code: "template_setup_storage_unavailable" }, 503);
+    const updatedAt = new Date().toISOString();
+    const outcome = this.ctx.storage.transactionSync(() => {
+      const active = queryOne<{ instance_id: string }>(this.ctx.storage.sql as never,
+        `SELECT instance_id FROM extension_instances WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=?
+         AND scope='SPACE_SHARED' AND status='active'`, extension.instance_id, extension.extension_id, tenantId, spaceId);
+      if (!active) return "extension_inactive";
+      const current = readInstallation();
+      if (!current || current.status !== "installed" || !current.setup_schema_json) return "installation_unavailable";
+      if (current.setup_revision !== body.revision) return "revision_conflict";
+      let currentRequired: unknown, currentGroups: ReturnType<typeof validateBlueprintSetupGroups>, currentValues: Record<string, Record<string, string | number | boolean>>;
+      try {
+        currentRequired = JSON.parse(current.required_extensions_json);
+        if (!Array.isArray(currentRequired) || !currentRequired.includes(extension.extension_id)) return "extension_not_required";
+        currentGroups = validateBlueprintSetupGroups(JSON.parse(current.setup_schema_json));
+        currentValues = validateBlueprintSetupValuesForSchema(currentGroups, JSON.parse(current.setup_values_json));
+        const currentGroup = currentGroups.find(candidate => candidate.project_id === projectId);
+        if (!currentGroup) return "project_unavailable";
+        const merged = validateBlueprintSetupValuesForSchema(currentGroups, { ...currentValues, [projectId]: submitted });
+        const result = this.ctx.storage.sql.exec(`UPDATE space_blueprint_installations
+          SET setup_values_json=?,setup_revision=setup_revision+1,updated_at=?
+          WHERE space_id=? AND blueprint_id=? AND status='installed' AND setup_revision=?`,
+        JSON.stringify(merged), updatedAt, spaceId, blueprintId, body.revision!).rowsWritten;
+        return result === 1 ? "ok" : "revision_conflict";
+      } catch { return "record_invalid"; }
+    });
+    if (outcome === "revision_conflict") return json({ error_code: "template_setup_revision_conflict" }, 409);
+    if (outcome !== "ok") return json({ error_code: `template_setup_${outcome}` }, outcome === "extension_inactive" || outcome === "extension_not_required" ? 403 : 409);
+    return json({ schema: group, values: submitted, revision: body.revision! + 1, updated_at: updatedAt });
   }
 
   private async extensionAssistantVoiceSettings(request: Request, url: URL): Promise<Response> {

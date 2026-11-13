@@ -1,6 +1,7 @@
 import type { ProjectKind, ViewportConfiguration } from "./types.js";
 import type { ExtensionSettingsSnapshot } from "./extensions.js";
 import { createAssistantVoiceClient, type VoiceCapability } from "./assistant-voice.js";
+import type { BlueprintSetupFieldGroup, BlueprintSetupValue } from "./blueprint-setup-fields.js";
 
 /** The two first-party shells are deliberately layout contracts, not vertical products. */
 export const CANVAS_LAYOUTS = ["DualPane.Document", "DualPane.DataGrid"] as const;
@@ -279,6 +280,80 @@ export function createExtensionSettingsClient(options: { window?: CanvasBridgeWi
       disposed = true;
       target.removeEventListener("message", receive);
       for (const request of pending.values()) { target.clearTimeout(request.timer); request.reject(new Error("extension settings client disposed")); }
+      pending.clear();
+    },
+  };
+}
+
+export type TemplateSetupCapability = "template.setup.read" | "template.setup.configure";
+export interface ExtensionTemplateSetupSnapshot {
+  schema: BlueprintSetupFieldGroup;
+  values: Record<string, BlueprintSetupValue>;
+  revision: number;
+  updated_at?: string;
+}
+export interface ExtensionTemplateSetupClient {
+  getSetup(): Promise<ExtensionTemplateSetupSnapshot>;
+  updateValues(values: Record<string, BlueprintSetupValue>, revision: number): Promise<ExtensionTemplateSetupSnapshot>;
+  dispose(): void;
+}
+
+/** Narrow bridge to the active installed Template's one authorized project setup group. */
+export function createExtensionTemplateSetupClient(options: {
+  spaceId: string;
+  blueprintId: string;
+  projectId: string;
+  capabilities: readonly TemplateSetupCapability[];
+  window?: CanvasBridgeWindow;
+  timeoutMs?: number;
+}): ExtensionTemplateSetupClient {
+  const target = options.window ?? globalThis as unknown as CanvasBridgeWindow;
+  if (target.parent === target) throw new Error("template setup client must run in a hosted frame");
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(options.blueprintId) || !/^[a-z][a-z0-9_-]{0,63}$/.test(options.projectId))
+    throw new Error("invalid template setup identity");
+  if (!options.capabilities.includes("template.setup.read")) throw new Error("template setup read capability required");
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("invalid template setup timeout");
+  let sequence = 0, disposed = false;
+  const prefix = `t${crypto.randomUUID().replaceAll("-", "")}`;
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: number }>();
+  const receive = (event: CanvasBridgeMessageEvent) => {
+    if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
+    const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+    if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id); target.clearTimeout(request.timer);
+    if (message.ok === true) request.resolve(message.result);
+    else request.reject(new Error(typeof message.error === "string" ? message.error.slice(0, 300) : "Template setup request failed"));
+  };
+  target.addEventListener("message", receive);
+  const send = (method: "GET" | "PATCH", body?: { values: Record<string, BlueprintSetupValue>; revision: number }) => {
+    if (disposed) return Promise.reject(new Error("template setup client disposed"));
+    if (method === "PATCH" && !options.capabilities.includes("template.setup.configure"))
+      return Promise.reject(new Error("template setup configure capability required"));
+    if (body) {
+      if (!Number.isSafeInteger(body.revision) || body.revision < 0 || body.revision >= Number.MAX_SAFE_INTEGER
+        || Object.keys(body.values).length > 32 || Object.entries(body.values).some(([key, value]) => !/^[a-z][a-z0-9_-]{0,47}$/.test(key)
+          || !["string", "number", "boolean"].includes(typeof value) || typeof value === "number" && !Number.isFinite(value)
+          || typeof value === "string" && value.length > 2_000)
+        || new TextEncoder().encode(JSON.stringify(body)).byteLength > 64_000) return Promise.reject(new Error("invalid template setup update"));
+    }
+    const id = `${prefix}_${++sequence}`;
+    return new Promise<ExtensionTemplateSetupSnapshot>((resolve, reject) => {
+      const timer = target.setTimeout(() => { pending.delete(id); reject(new Error("Template setup request timed out")); }, timeoutMs);
+      pending.set(id, { resolve: value => resolve(value as ExtensionTemplateSetupSnapshot), reject, timer });
+      target.parent.postMessage({ type: "naelao.extension.rpc", id, method, path: "/api/template-setup",
+        query: { blueprint_id: options.blueprintId, project_id: options.projectId }, ...(body ? { body } : {}) }, "*");
+    });
+  };
+  return {
+    getSetup: () => send("GET"),
+    updateValues: (values, revision) => send("PATCH", { values, revision }),
+    dispose() {
+      if (disposed) return;
+      disposed = true; target.removeEventListener("message", receive);
+      for (const item of pending.values()) { target.clearTimeout(item.timer); item.reject(new Error("template setup client disposed")); }
       pending.clear();
     },
   };

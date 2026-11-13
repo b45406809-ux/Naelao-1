@@ -160,6 +160,14 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   assert(!hasSettingsCapability || settingsSchema !== undefined, "settings_schema_required");
   if ((raw.capabilityRequirements as string[]).includes("extension.settings.configure"))
     assert((raw.declaredPermissions as string[]).includes("extension.settings.configure"), "settings_configure_permission_required");
+  const templateSetupCapabilities = raw.capabilityRequirements as string[];
+  const templateSetupPermissions = raw.declaredPermissions as string[];
+  const hasTemplateSetupCapability = templateSetupCapabilities.some(capability => capability.startsWith("template.setup."));
+  if (hasTemplateSetupCapability) {
+    assert(templateSetupCapabilities.includes("template.setup.read") && templateSetupPermissions.includes("template.setup.read"), "template_setup_read_capability_required");
+  }
+  if (templateSetupCapabilities.includes("template.setup.configure"))
+    assert(templateSetupPermissions.includes("template.setup.configure"), "template_setup_configure_permission_required");
   let widgetSubscriptions: ExtensionWidgetSubscription[] | undefined;
   if (raw.widgetSubscriptions !== undefined) {
     assert(Array.isArray(raw.widgetSubscriptions) && raw.widgetSubscriptions.length <= 32, "invalid_widget_subscriptions");

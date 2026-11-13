@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, createExtensionAssistantVoiceClient, createExtensionSettingsClient, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
+import { CANVAS_LAYOUTS, CANVAS_VIEWPORTS, createExtensionAssistantVoiceClient, createExtensionSettingsClient, createExtensionTemplateSetupClient, isCanvasMountDescriptor, parseCanvasMessage, validateWithBoundedCorrections } from "./canvas-runtime.js";
 
 describe("polymorphic canvas descriptors", () => {
   it("exposes the maintained shells and a generic third-party mount socket", () => {
@@ -70,5 +70,35 @@ describe("extension settings host client", () => {
     expect(sent.map(message => [message.method, message.path])).toEqual([["GET", "/api/assistant-voice"], ["PATCH", "/api/assistant-voice"]]);
     expect(sent[1]?.body).toEqual({ preferences: { language: "fr" }, revision: 0 });
     client.dispose();
+  });
+});
+
+describe("extension Template setup client", () => {
+  it("pins requests to one Template project and requires the configure grant for writes", async () => {
+    const sent: Record<string, unknown>[] = [];
+    let listener: ((event: { source: unknown; data: unknown }) => void) | undefined;
+    const parent = { postMessage(message: unknown) {
+      const rpc = message as Record<string, unknown>; sent.push(rpc);
+      const revision = sent.length - 1;
+      queueMicrotask(() => listener?.({ source: parent, data: { type: "naelao.extension.rpc.result", id: rpc.id, ok: true, result: {
+        schema: { project_id: "support", project_name: "Support", fields: [{ id: "greeting", type: "text", label: "Greeting" }] },
+        values: { greeting: revision ? "Hello there" : "Hello" }, revision,
+      } } }));
+    } };
+    const target = { parent, addEventListener: (_: "message", receive: typeof listener) => { listener = receive; },
+      removeEventListener: () => { listener = undefined; }, setTimeout: () => 1, clearTimeout: () => undefined };
+    const client = createExtensionTemplateSetupClient({ spaceId: "space-a", blueprintId: "template-a", projectId: "support",
+      capabilities: ["template.setup.read", "template.setup.configure"], window: target as never });
+    await expect(client.getSetup()).resolves.toMatchObject({ schema: { project_id: "support" }, values: { greeting: "Hello" }, revision: 0 });
+    await expect(client.updateValues({ greeting: "Hello there" }, 0)).resolves.toMatchObject({ values: { greeting: "Hello there" }, revision: 1 });
+    expect(sent.map(message => [message.method, message.path])).toEqual([ ["GET", "/api/template-setup"], ["PATCH", "/api/template-setup"] ]);
+    expect(sent[0]?.query).toEqual({ blueprint_id: "template-a", project_id: "support" });
+    expect(sent[1]?.body).toEqual({ values: { greeting: "Hello there" }, revision: 0 });
+    client.dispose();
+
+    const readOnly = createExtensionTemplateSetupClient({ spaceId: "space-a", blueprintId: "template-a", projectId: "support",
+      capabilities: ["template.setup.read"], window: target as never });
+    await expect(readOnly.updateValues({ greeting: "no" }, 0)).rejects.toThrow("template setup configure capability required");
+    readOnly.dispose();
   });
 });
