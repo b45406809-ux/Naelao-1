@@ -4408,6 +4408,23 @@ app.post("/spaces/:spaceId/extension-publishers", async c => {
     VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,key_id) DO NOTHING`).bind(tenantId, spaceId, body.publisher_id, keyId, body.public_key_b64url, identity.userId).run();
   return c.json({ registered: true, publisher_id: body.publisher_id, key_id: keyId, algorithm: "ECDSA_P256_SHA256" }, { status: 201 });
 });
+app.use("/spaces/:spaceId/extension-publishers/:keyId/revocation", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/extension-publishers/:keyId/revocation", requireSpaceMembership({ GET: "admin" }));
+app.get("/spaces/:spaceId/extension-publishers/:keyId/revocation", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), keyId = c.req.param("keyId");
+  if (!tenantId || !/^[a-f0-9]{64}$/.test(keyId)) return c.json({ error_code: "publisher_key_id_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, key_id: keyId });
+  const response = await stub.fetch(new Request(`http://space-do/extension-publisher-revocation?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+  if (response.status === 404) return c.json({ error_code: "publisher_revocation_receipt_not_found" }, 404);
+  if (!response.ok) return c.json({ error_code: "publisher_revocation_receipt_unavailable" }, 503);
+  const result = await response.json<{ receipt?: unknown }>().catch(() => null);
+  if (!result?.receipt) return c.json({ error_code: "publisher_revocation_receipt_unavailable" }, 503);
+  c.header("cache-control", "private, no-store");
+  return c.json(result);
+});
 app.use("/spaces/:spaceId/extension-publishers/:keyId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/extension-publishers/:keyId", requireSpaceMembership({ DELETE: "admin" }));
 app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
@@ -4426,6 +4443,7 @@ app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
   if (!receipt || receipt.revoked !== true || receipt.key_id !== keyId || !["draining", "drained"].includes(String(receipt.state)))
     return c.json({ error_code: "publisher_revocation_receipt_unavailable" }, 503);
   const status: 200 | 202 = invalidated.status === 202 ? 202 : 200;
+  c.header("cache-control", "private, no-store");
   return c.json({ ...receipt, changed: receipt.changed === true || (result.meta?.changes ?? 0) > 0 }, status);
 });
 

@@ -17,8 +17,8 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
-import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelMediaCapabilities, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionPublisherRevocationReceipt, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { callProjectExtensionSettingsAudit, updateAssistantChannel, pairAssistantChannel, getChannelMediaCapabilities, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, getExtensionPublisherRevocation, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -503,6 +503,7 @@ export function ChannelConnect({
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
   const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
+  const [publisherRevocations, setPublisherRevocations] = React.useState<Record<string, Pick<ExtensionPublisherRevocationReceipt, "status" | "active_work_count" | "updated_at">>>({});
   const [publisherNotice, setPublisherNotice] = React.useState<string | null>(null);
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
@@ -562,7 +563,7 @@ export function ChannelConnect({
   }, [canvasManifestDraft]);
 
   React.useEffect(() => {
-    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
+    if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]); setPublisherKeys([]); setPublisherRevocations({}); setExtensionLoadError(null); setExtensionsLoading(false); return; }
     let cancelled = false;
     setExtensionInstallations([]); setOtherProjectInstallations([]); setSettingsOnlyInstallations([]);
     setExtensionsLoading(true);
@@ -572,6 +573,14 @@ export function ChannelConnect({
         if (cancelled) return;
         setExtensionInstallations(items);
         setPublisherKeys(publishers.publishers);
+        setPublisherRevocations({});
+        const revokedKeys = publishers.publishers.filter(key => key.status === "revoked").slice(0, 50);
+        void Promise.all(revokedKeys.map(async (key): Promise<[string, ExtensionPublisherRevocationReceipt] | null> => {
+          try { return [key.key_id, await getExtensionPublisherRevocation(spaceId, session, key.key_id)]; }
+          catch { return null; }
+        })).then(receipts => {
+          if (!cancelled) setPublisherRevocations(Object.fromEntries(receipts.filter((item): item is [string, ExtensionPublisherRevocationReceipt] => item !== null)));
+        });
         const channelInstances = new Set(items.map(item => item.instance_id));
         setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
           && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
@@ -758,10 +767,41 @@ export function ChannelConnect({
       const result = await listExtensionPublisherKeys(spaceId, session);
       setPublisherKeys(result.publishers);
       if (canvasPublisherKeyId === keyId) { setCanvasPublisherKeyId(""); setCanvasPublisherSignature(""); }
+      setPublisherRevocations(previous => ({ ...previous, [keyId]: { status: receipt.state,
+        active_work_count: receipt.active_work_count, updated_at: receipt.revoked_at } }));
       setPublisherNotice(receipt.state === "draining"
         ? `Publisher revoked. New work is denied; ${receipt.active_work_count} already admitted operation(s) may finish.`
         : "Publisher revoked. New work is denied and no admitted operations remain.");
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't revoke this publisher key."); }
+    finally { setBusy(false); }
+  }
+
+  async function refreshPublisherRevocation(keyId: string) {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      const receipt = await getExtensionPublisherRevocation(spaceId, session, keyId);
+      setPublisherRevocations(previous => ({ ...previous, [keyId]: receipt }));
+      setPublisherNotice(receipt.status === "draining"
+        ? `Publisher revocation is draining; ${receipt.active_work_count} already admitted operation(s) may finish.`
+        : "Publisher revocation is drained. No admitted operations remain.");
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't refresh publisher revocation status."); }
+    finally { setBusy(false); }
+  }
+
+  async function retryPublisherRevocation(keyId: string) {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      const receipt = await revokeExtensionPublisherKey(spaceId, session, keyId);
+      setPublisherRevocations(previous => ({ ...previous, [keyId]: { status: receipt.state,
+        active_work_count: receipt.active_work_count, updated_at: receipt.revoked_at } }));
+      const result = await listExtensionPublisherKeys(spaceId, session);
+      setPublisherKeys(result.publishers);
+      setPublisherNotice(receipt.state === "draining"
+        ? `Revocation synchronized; ${receipt.active_work_count} already admitted operation(s) may finish.`
+        : "Revocation synchronized. No admitted operations remain.");
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't retry publisher revocation."); }
     finally { setBusy(false); }
   }
 
@@ -899,8 +939,14 @@ export function ChannelConnect({
             <button type="submit" className="btn-ghost" disabled={busy || !newPublisherPublicKey.trim()}>{busy ? "Saving…" : "Trust publisher key"}</button>
           </form>
           {publisherKeys.map(key => <div key={key.key_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 10.5, borderTop: "1px solid var(--border)", padding: "5px 0" }}>
-            <span>{key.publisher_id} · {key.key_id.slice(0, 12)}… · {key.status}</span>
+            <span>{key.publisher_id} · {key.key_id.slice(0, 12)}… · {key.status}{key.status === "revoked" && publisherRevocations[key.key_id]
+              ? ` · ${publisherRevocations[key.key_id]?.status}${publisherRevocations[key.key_id]?.status === "draining" ? ` (${publisherRevocations[key.key_id]?.active_work_count} active)` : ""}`
+              : key.status === "revoked" ? " · drain status unavailable" : ""}</span>
             {key.status === "active" && <button type="button" className="btn-ghost" disabled={busy} onClick={() => void revokePublisherKey(key.key_id)}>Revoke</button>}
+            {key.status === "revoked" && <button type="button" className="btn-ghost" disabled={busy}
+              onClick={() => void (publisherRevocations[key.key_id] ? refreshPublisherRevocation(key.key_id) : retryPublisherRevocation(key.key_id))}>
+              {publisherRevocations[key.key_id] ? "Refresh drain status" : "Retry revocation"}
+            </button>}
           </div>)}
           {publisherKeys.length === 0 && <div style={{ fontSize: 10.5, color: "var(--text3)" }}>No trusted publisher keys.</div>}
         </section>

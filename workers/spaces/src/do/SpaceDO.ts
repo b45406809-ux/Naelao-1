@@ -3914,6 +3914,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-package-release" && method === "GET") return await this.getExtensionPackageRelease(url.searchParams);
       if (url.pathname === "/extension-package-release/import" && method === "POST") return await this.importExtensionPackageRelease(request);
       if (url.pathname === "/extension-publisher-revoke" && method === "POST") return this.revokeExtensionPublisher(request);
+      if (url.pathname === "/extension-publisher-revocation" && method === "GET") return this.getExtensionPublisherRevocation(request, url.searchParams);
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
       if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
@@ -13898,6 +13899,43 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       disabled_installation_count: disabledInstallationCount, active_work_count: activeWorkCount, state,
       new_work_denied: true, admitted_work_policy: "allowed_to_finish" },
     { status: activeWorkCount > 0 ? 202 : 200, headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async getExtensionPublisherRevocation(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "", keyId = params.get("key_id") ?? "";
+    if (!tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[a-f0-9]{64}$/.test(keyId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const now = new Date().toISOString();
+    let receipt: { tenant_id: string; space_id: string; key_id: string; revoked_by: string; revoked_at: string;
+      release_count: number; disabled_installation_count: number; active_work_count: number; status: "draining" | "drained"; updated_at: string } | null = null;
+    this.ctx.storage.transactionSync(() => {
+      const exists = queryOne<{ key_id: string }>(this.ctx.storage.sql as never,
+        "SELECT key_id FROM extension_publisher_revocation_receipts WHERE tenant_id=? AND space_id=? AND key_id=?",
+        tenantId, spaceId, keyId);
+      if (!exists) return;
+      this.ctx.storage.sql.exec(`UPDATE extension_runtime_work_leases SET status='expired',updated_at=?
+        WHERE tenant_id=? AND space_id=? AND status='active' AND expires_at<=?
+          AND EXISTS (SELECT 1 FROM extension_instances i JOIN extension_releases r
+            ON r.extension_id=i.extension_id AND r.version=i.release_version
+            WHERE i.instance_id=extension_runtime_work_leases.installation_id AND i.tenant_id=? AND i.space_id=?
+              AND r.publisher_key_id=?)`, now, tenantId, spaceId, now, tenantId, spaceId, keyId);
+      const activeWorkCount = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+        `SELECT COUNT(*) AS count FROM extension_runtime_work_leases l
+         JOIN extension_instances i ON i.instance_id=l.installation_id AND i.tenant_id=l.tenant_id AND i.space_id=l.space_id
+         JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+         WHERE l.tenant_id=? AND l.space_id=? AND l.status='active' AND l.expires_at>? AND r.publisher_key_id=?`,
+        tenantId, spaceId, now, keyId)?.count ?? 0;
+      const status = activeWorkCount > 0 ? "draining" : "drained";
+      this.ctx.storage.sql.exec(`UPDATE extension_publisher_revocation_receipts SET active_work_count=?,status=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND key_id=?`, activeWorkCount, status, now, tenantId, spaceId, keyId);
+      receipt = queryOne<typeof receipt>(this.ctx.storage.sql as never,
+        `SELECT tenant_id,space_id,key_id,revoked_by,revoked_at,release_count,disabled_installation_count,
+          active_work_count,status,updated_at FROM extension_publisher_revocation_receipts
+         WHERE tenant_id=? AND space_id=? AND key_id=?`, tenantId, spaceId, keyId);
+    });
+    return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })
+      : Response.json({ error_code: "publisher_revocation_receipt_not_found" }, { status: 404, headers: { "cache-control": "private, no-store" } });
   }
 
   private async listExtensionReleases(extensionId: string): Promise<Response> {

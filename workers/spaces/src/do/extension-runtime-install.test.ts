@@ -269,6 +269,15 @@ describe("runtime extension installation", () => {
     expect(await afterRevoke.json()).toMatchObject({ error_code: "extension_installation_inactive" });
     expect(await (await install()).json()).toMatchObject({ error: "extension_publisher_key_revoked" });
     expect(await (await work("release", "before-revoke")).json()).toMatchObject({ released: true, status: "released" });
+    const receiptRead = (spaceId: string, tokenValue = token) => space.fetch(new Request(`http://space/extension-publisher-revocation?${new URLSearchParams({
+      tenant_id: "tenant", space_id: spaceId, key_id: "a".repeat(64),
+    })}`, { headers: { "x-naelao-internal-token": tokenValue } }));
+    expect((await receiptRead("space", await mintInternalToken(secret, "other-tenant"))).status).toBe(403);
+    expect((await receiptRead("other-space")).status).toBe(404);
+    const readback = await receiptRead("space");
+    expect(readback.status).toBe(200);
+    expect(await readback.json()).toMatchObject({ receipt: { tenant_id: "tenant", space_id: "space", key_id: "a".repeat(64),
+      status: "drained", active_work_count: 0, revoked_by: "owner" } });
     const drained = await revokeRequest();
     expect(drained.status).toBe(200);
     expect(await drained.json()).toMatchObject({ changed: false, state: "drained", active_work_count: 0, revoked_release_count: 1,

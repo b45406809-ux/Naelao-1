@@ -2144,6 +2144,19 @@ export interface ExtensionPublisherKey {
   revoked_at: string | null;
 }
 
+export interface ExtensionPublisherRevocationReceipt {
+  tenant_id: string;
+  space_id: string;
+  key_id: string;
+  revoked_by: string;
+  revoked_at: string;
+  release_count: number;
+  disabled_installation_count: number;
+  active_work_count: number;
+  status: "draining" | "drained";
+  updated_at: string;
+}
+
 export function listExtensionPublisherKeys(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ publishers: ExtensionPublisherKey[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers`, { session, cache: "no-store" });
 }
@@ -2159,6 +2172,12 @@ export function revokeExtensionPublisherKey(spaceId: string, session: SessionCre
     revoked_release_count: number; disabled_installation_count: number; active_work_count: number;
     state: "draining" | "drained"; new_work_denied: true; admitted_work_policy: "allowed_to_finish" }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers/${encodeURIComponent(keyId)}`, { method: "DELETE", session, body: "{}" });
+}
+
+export async function getExtensionPublisherRevocation(spaceId: string, session: SessionCredentials, keyId: string): Promise<ExtensionPublisherRevocationReceipt> {
+  const result = await apiFetch<{ receipt: ExtensionPublisherRevocationReceipt }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers/${encodeURIComponent(keyId)}/revocation`, { session, cache: "no-store" });
+  return result.receipt;
 }
 
 export async function listProjectExtensionReleases(spaceId: string, projectId: string, extensionId: string, session: SessionCredentials): Promise<ExtensionRelease[]> {
