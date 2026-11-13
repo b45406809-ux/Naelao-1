@@ -12,8 +12,9 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` is pushed through
-`c7412170` on `origin/Mcbt5s-Backup-2`; runtime-work admission/drain is in `15a04f7e`. P10/P24 now
+Current checkpoint (2026-11-13): the latest progress/runbook commit `19a59bdb` and P10/P24 code commit
+`c7412170` are pushed to `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
+runtime-work admission/drain is in `15a04f7e`. P10/P24 now
 allow an owner-reviewed same-publisher release update for version-only manifest changes to static
 Canvas and channel-handler code packages with unchanged authority/configuration. The host verifies
 the signed artifact; review reads active runtime-work leases for active or paused installs and withholds
