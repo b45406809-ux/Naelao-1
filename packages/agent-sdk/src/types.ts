@@ -236,16 +236,28 @@ export interface BlueprintProject {
   executionTier?: number;
 }
 
-/** Version 1 supports only bounded primitive values; it has no executable visibility logic. */
+export interface BlueprintSetupFieldLocalization {
+  label?: Record<string, string>;
+  helpText?: Record<string, string>;
+  optionLabels?: Record<string, Record<string, string>>;
+}
+export interface BlueprintSetupVisibilityCondition {
+  /** A stable field ID earlier in the same project group. */
+  fieldId: string;
+  /** Only exact primitive equality is supported; no expressions or executable predicates. */
+  equals: string | number | boolean;
+}
+
+/** Version 1 is a primitive form; version 2 adds bounded localization and one equality condition. */
 export type BlueprintSetupField =
-  | { id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number }
-  | { id: string; type: "number"; label: string; helpText?: string; required?: boolean; defaultValue?: number; minimum?: number; maximum?: number; integer?: boolean }
-  | { id: string; type: "boolean"; label: string; helpText?: string; required?: boolean; defaultValue?: boolean }
-  | { id: string; type: "select"; label: string; helpText?: string; required?: boolean; defaultValue?: string; options: Array<{ value: string; label: string }> };
+  | ({ id: string; type: "text"; label: string; helpText?: string; required?: boolean; defaultValue?: string; minLength?: number; maxLength?: number } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
+  | ({ id: string; type: "number"; label: string; helpText?: string; required?: boolean; defaultValue?: number; minimum?: number; maximum?: number; integer?: boolean } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
+  | ({ id: string; type: "boolean"; label: string; helpText?: string; required?: boolean; defaultValue?: boolean } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition })
+  | ({ id: string; type: "select"; label: string; helpText?: string; required?: boolean; defaultValue?: string; options: Array<{ value: string; label: string }> } & { localization?: BlueprintSetupFieldLocalization; visibleWhen?: BlueprintSetupVisibilityCondition });
 
 export interface SpaceBlueprint {
   /** Required when any project declares setupFields. */
-  setupSchemaVersion?: 1;
+  setupSchemaVersion?: 1 | 2;
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
   id: string;
   schemaVersion: "2.0";

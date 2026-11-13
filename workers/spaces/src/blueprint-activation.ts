@@ -28,7 +28,7 @@ export interface BlueprintActivationPreview {
     description: string;
     required: boolean;
   }>;
-  setup_schema_version: 1 | null;
+  setup_schema_version: 1 | 2 | null;
   setup_fields: ReturnType<typeof validateBlueprintSetupSchema>;
   blockers: string[];
   requires_human_activation: true;

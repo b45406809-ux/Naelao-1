@@ -54,7 +54,7 @@ import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseSpaceDomainProviders } from "./space-domain-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
-import { loadTemplateCostEstimate, selectedTemplateListingId } from "./template-cost-estimate.js";
+import { loadTemplateCostEstimate, selectedTemplateListingId, validateTemplateExpectedUsage } from "./template-cost-estimate.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
 import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
@@ -777,7 +777,15 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const rows = await result.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; publisher_key_id?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
   const trustedInstallations = await trustedExtensionInstallations(c.env, tenantId, spaceId, rows.installations ?? []);
   const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedInstallations), await installableSpaceExtensionPins(), runtimeReadiness);
-  const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId);
+  const conversationsPerMonth = c.req.query("conversations_per_month"), interactionsPerConversation = c.req.query("interactions_per_conversation");
+  let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
+  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined) {
+    try {
+      if (conversationsPerMonth === undefined || interactionsPerConversation === undefined) throw new Error("Both expected usage values are required");
+      expectedUsage = validateTemplateExpectedUsage({ conversations_per_month: Number(conversationsPerMonth), interactions_per_conversation: Number(interactionsPerConversation) });
+    } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
+  }
+  const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);
   return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },

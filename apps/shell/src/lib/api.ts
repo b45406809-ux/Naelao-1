@@ -2532,7 +2532,7 @@ export function saveSpaceTemplateSetupDraft(spaceId: string, blueprintId: string
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
-  setup_schema_version: 1 | null;
+  setup_schema_version: 1 | 2 | null;
   setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
   dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
     primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
@@ -2564,11 +2564,21 @@ export interface SpaceTemplateActivationPreview {
     }>;
     not_estimated: string[];
     total_estimate_cents: null;
+    expected_monthly_usage: null | {
+      basis: "customer_entered_assumption";
+      conversations: number;
+      interactions_per_conversation: number;
+      projected_interactions: number;
+      estimated_cost_cents: null;
+    };
     reason?: "selected_listing_not_recorded" | "listing_price_unavailable";
   };
 }
-export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<SpaceTemplateActivationPreview> {
-  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview`, { session, cache: "no-store" });
+export interface SpaceTemplateExpectedUsageV1 { conversations_per_month: number; interactions_per_conversation: number }
+export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials,
+  expectedUsage?: SpaceTemplateExpectedUsageV1): Promise<SpaceTemplateActivationPreview> {
+  const query = expectedUsage ? `?${new URLSearchParams({ conversations_per_month: String(expectedUsage.conversations_per_month), interactions_per_conversation: String(expectedUsage.interactions_per_conversation) })}` : "";
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview${query}`, { session, cache: "no-store" });
 }
 
 export interface SpaceAnalytics {

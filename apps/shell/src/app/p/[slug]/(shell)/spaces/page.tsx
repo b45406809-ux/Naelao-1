@@ -5,9 +5,9 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, type SpaceTemplateActivationPreview, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, type SpaceTemplateActivationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
-import type { BlueprintSetupField } from "@naelao/agent-sdk";
+import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { modelLabel } from "@/components/ModelSelector";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
@@ -28,7 +28,8 @@ interface SpaceActivity {
 function defaultSetupValues(preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
   const values: SpaceTemplateSetupValues = {};
   for (const group of preview.setup_fields) {
-    const fields = Object.fromEntries(group.fields.flatMap(field => field.defaultValue === undefined ? [] : [[field.id, field.defaultValue]]));
+    const fields: Record<string, SpaceTemplateSetupValue> = {};
+    for (const field of group.fields) if (isBlueprintSetupFieldVisible(group.fields, field, fields) && field.defaultValue !== undefined) fields[field.id] = field.defaultValue;
     if (Object.keys(fields).length) values[group.project_id] = fields;
   }
   return values;
@@ -36,13 +37,18 @@ function defaultSetupValues(preview: SpaceTemplateActivationPreview): SpaceTempl
 
 function rebaseSetupValues(current: SpaceTemplateSetupValues, preview: SpaceTemplateActivationPreview): SpaceTemplateSetupValues {
   const values = defaultSetupValues(preview);
-  for (const group of preview.setup_fields) for (const field of group.fields) {
-    const existing = current[group.project_id]?.[field.id];
-    if (existing === undefined) continue;
-    if ((field.type === "text" && typeof existing === "string") || (field.type === "number" && typeof existing === "number")
-      || (field.type === "boolean" && typeof existing === "boolean") || (field.type === "select" && typeof existing === "string")) {
-      values[group.project_id] = { ...values[group.project_id], [field.id]: existing };
+  for (const group of preview.setup_fields) {
+    const projectValues = { ...(values[group.project_id] ?? {}) };
+    for (const field of group.fields) {
+      if (!isBlueprintSetupFieldVisible(group.fields, field, projectValues)) continue;
+      const existing = current[group.project_id]?.[field.id];
+      if (existing === undefined) continue;
+      if ((field.type === "text" && typeof existing === "string") || (field.type === "number" && typeof existing === "number")
+        || (field.type === "boolean" && typeof existing === "boolean") || (field.type === "select" && typeof existing === "string")) {
+        projectValues[field.id] = existing;
+      }
     }
+    if (Object.keys(projectValues).length) values[group.project_id] = projectValues;
   }
   return values;
 }
@@ -52,13 +58,16 @@ function TemplateSetupInput({ projectId, field, value, onChange }: {
   onChange: (value: SpaceTemplateSetupValue | undefined) => void;
 }) {
   const inputId = `template-${projectId}-${field.id}`;
+  const locale = typeof navigator === "undefined" ? "en" : navigator.language;
+  const label = resolveBlueprintSetupFieldLabel(field, locale);
+  const helpText = resolveBlueprintSetupFieldHelpText(field, locale);
   return <label htmlFor={inputId} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(180px,1fr)", alignItems: "center", gap: 8, marginTop: 8 }}>
-    <span>{field.label}{field.required ? " *" : ""}{field.helpText && <small style={{ display: "block", color: "var(--text3)" }}>{field.helpText}</small>}</span>
+    <span>{label}{field.required ? " *" : ""}{helpText && <small style={{ display: "block", color: "var(--text3)" }}>{helpText}</small>}</span>
     {field.type === "boolean" ? <select id={inputId} required={field.required} value={typeof value === "boolean" ? String(value) : ""} onChange={event => onChange(event.target.value === "" ? undefined : event.target.value === "true")}>
         <option value="">Choose…</option><option value="true">Yes</option><option value="false">No</option>
       </select>
       : field.type === "select" ? <select id={inputId} required={field.required} value={typeof value === "string" ? value : ""} onChange={event => onChange(event.target.value || undefined)}>
-        <option value="">Choose…</option>{field.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        <option value="">Choose…</option>{field.options.map(option => <option key={option.value} value={option.value}>{resolveBlueprintSetupOptionLabel(field, option.value, locale)}</option>)}
       </select>
       : field.type === "number" ? <input id={inputId} type="number" required={field.required} min={field.minimum} max={field.maximum} step={field.integer ? 1 : "any"} value={typeof value === "number" ? value : ""} onChange={event => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
       : <input id={inputId} type="text" required={field.required} minLength={field.minLength} maxLength={field.maxLength} value={typeof value === "string" ? value : ""} onChange={event => onChange(event.target.value)} />}
@@ -90,6 +99,10 @@ export default function SpacesPage() {
   const [setupDraftNeedsReplacement, setSetupDraftNeedsReplacement] = React.useState(false);
   const [setupDraftStatus, setSetupDraftStatus] = React.useState("");
   const [savingSetupDraft, setSavingSetupDraft] = React.useState(false);
+  const [expectedConversations, setExpectedConversations] = React.useState("");
+  const [expectedInteractions, setExpectedInteractions] = React.useState("");
+  const [updatingUsageEstimate, setUpdatingUsageEstimate] = React.useState(false);
+  const [usageEstimateError, setUsageEstimateError] = React.useState("");
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const [openingPendingTemplate, setOpeningPendingTemplate] = React.useState<string | null>(null);
@@ -99,6 +112,7 @@ export default function SpacesPage() {
 
   async function loadTemplateSetupDraft(spaceId: string, blueprintId: string, preview: SpaceTemplateActivationPreview, restoreValues: boolean) {
     if (!creds) return;
+    if (restoreValues) { setExpectedConversations(""); setExpectedInteractions(""); setUsageEstimateError(""); }
     setSetupDraftRevision(0);
     setSetupDraftNeedsReplacement(false);
     try {
@@ -129,6 +143,25 @@ export default function SpacesPage() {
     } catch (error) {
       setSetupDraftStatus(`Setup draft was not saved: ${error instanceof Error ? error.message : "save failed"}`);
     } finally { setSavingSetupDraft(false); }
+  }
+
+  async function updateExpectedUsageEstimate() {
+    if (!creds || !activationReview || updatingUsageEstimate) return;
+    const usage: SpaceTemplateExpectedUsageV1 = {
+      conversations_per_month: Number(expectedConversations),
+      interactions_per_conversation: Number(expectedInteractions),
+    };
+    if (!Number.isSafeInteger(usage.conversations_per_month) || usage.conversations_per_month < 1 || usage.conversations_per_month > 1_000_000
+      || !Number.isSafeInteger(usage.interactions_per_conversation) || usage.interactions_per_conversation < 1 || usage.interactions_per_conversation > 500) {
+      setUsageEstimateError("Enter 1–1,000,000 conversations per month and 1–500 interactions per conversation.");
+      return;
+    }
+    setUpdatingUsageEstimate(true); setUsageEstimateError("");
+    try {
+      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds, usage);
+      setActivationReview(current => current ? { ...current, preview } : current);
+    } catch (error) { setUsageEstimateError(`Usage estimate was not refreshed: ${error instanceof Error ? error.message : "request failed"}`); }
+    finally { setUpdatingUsageEstimate(false); }
   }
 
   const refresh = React.useCallback(async () => {
@@ -233,7 +266,10 @@ export default function SpacesPage() {
     if (!creds || !activationReview || refreshingPreview) return;
     setRefreshingPreview(true); setCreateError(null);
     try {
-      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
+      const usage = expectedConversations && expectedInteractions ? {
+        conversations_per_month: Number(expectedConversations), interactions_per_conversation: Number(expectedInteractions),
+      } : undefined;
+      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds, usage);
       setSetupValues(current => rebaseSetupValues(current, preview));
       await loadTemplateSetupDraft(activationReview.spaceId, activationReview.blueprintId, preview, false);
       setActivationReview({ ...activationReview, preview });
@@ -508,10 +544,11 @@ export default function SpacesPage() {
               {setupDraftStatus && <p role="status" style={{ color: setupDraftNeedsReplacement ? "#b45309" : "var(--text3)" }}>{setupDraftStatus}</p>}
               {activationReview.preview.setup_fields.map(group => <fieldset key={group.project_id} style={{ border: 0, padding: 0, margin: "10px 0" }}>
                 <legend style={{ fontWeight: 600 }}>{group.project_name}</legend>
-                {group.fields.map(field => <TemplateSetupInput key={`${group.project_id}:${field.id}`} projectId={group.project_id} field={field}
+                {group.fields.filter(field => isBlueprintSetupFieldVisible(group.fields, field, setupValues[group.project_id] ?? {})).map(field => <TemplateSetupInput key={`${group.project_id}:${field.id}`} projectId={group.project_id} field={field}
                   value={setupValues[group.project_id]?.[field.id]} onChange={value => setSetupValues(current => {
                     const projectValues = { ...current[group.project_id] };
                     if (value === undefined) delete projectValues[field.id]; else projectValues[field.id] = value;
+                    for (const candidate of group.fields) if (!isBlueprintSetupFieldVisible(group.fields, candidate, projectValues)) delete projectValues[candidate.id];
                     const next = { ...current };
                     if (Object.keys(projectValues).length) next[group.project_id] = projectValues; else delete next[group.project_id];
                     return next;
@@ -529,6 +566,17 @@ export default function SpacesPage() {
               Template license: {new Intl.NumberFormat(undefined, { style: "currency", currency: activationReview.preview.cost_estimate.currency }).format(cost.amount_cents / 100)}
               {cost.already_paid && cost.paid_at ? ` · recorded as paid ${new Date(cost.paid_at).toLocaleDateString()}` : cost.basis === "current_zero_price_listing" ? ` · current listing price as of ${new Date(activationReview.preview.cost_estimate.as_of).toLocaleDateString()}` : ""}
             </li>)}</ul> : <p>{activationReview.preview.cost_estimate.reason === "selected_listing_not_recorded" ? "This older Space has no saved Marketplace listing ID, so its template license price cannot be matched." : "No exact template license price is available for this installation."}</p>}
+            <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Expected monthly usage</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>Enter your planning assumptions. Interactions are not billable units; one interaction can use multiple model or provider operations.</p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
+                <label>Customer conversations per month<input aria-label="Expected conversations per month" type="number" min={1} max={1_000_000} step={1} value={expectedConversations} onChange={event => setExpectedConversations(event.target.value)} /></label>
+                <label>Interactions per conversation<input aria-label="Expected interactions per conversation" type="number" min={1} max={500} step={1} value={expectedInteractions} onChange={event => setExpectedInteractions(event.target.value)} /></label>
+              </div>
+              <Button variant="secondary" onClick={() => void updateExpectedUsageEstimate()} disabled={updatingUsageEstimate}>{updatingUsageEstimate ? "Updating…" : "Update usage estimate"}</Button>
+              {usageEstimateError && <p role="alert">{usageEstimateError}</p>}
+              {activationReview.preview.cost_estimate.expected_monthly_usage && <p role="status">Customer-entered projection: {activationReview.preview.cost_estimate.expected_monthly_usage.conversations.toLocaleString()} conversations × {activationReview.preview.cost_estimate.expected_monthly_usage.interactions_per_conversation} interactions = {activationReview.preview.cost_estimate.expected_monthly_usage.projected_interactions.toLocaleString()} interactions/month. Estimated cost remains unknown.</p>}
+            </section>
             <p>A total operating-cost estimate is not available. These costs are not estimated: {activationReview.preview.cost_estimate.not_estimated.join("; ")}.</p>
             <p>Any listed license amount is an already recorded payment or the current zero-price listing base; it is not a quote for future provider usage. Optional managed services still require their own current quote and owner confirmation.</p>
             {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}

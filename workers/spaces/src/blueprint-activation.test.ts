@@ -177,16 +177,20 @@ describe("Space Template activation preview", () => {
       SPACE_DO: { idFromName: () => "space-cost-do", get: () => stub } } as never;
     const headers = { "x-naelao-tenant-id": "tenant-buyer", "x-naelao-user-id": "owner", "x-naelao-role": "owner",
       "x-naelao-internal-token": await mintInternalToken(secret, "tenant-buyer") };
-    const response = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    const response = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview?conversations_per_month=200&interactions_per_conversation=8`, { headers }), env, {} as ExecutionContext);
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toMatchObject({ cost_estimate: {
       status: "partial", currency: "USD", total_estimate_cents: null,
       known_one_time_costs: [{ amount_cents: 2500, basis: "recorded_purchase", already_paid: true,
         paid_at: "2026-11-01T00:00:00.000Z" }],
+      expected_monthly_usage: { conversations: 200, interactions_per_conversation: 8, projected_interactions: 1600, estimated_cost_cents: null },
     } });
     expect(queries.find(query => query.sql.includes("marketplace_license_purchases"))?.values)
       .toEqual(["tenant-buyer", artifact.id, "listing-selected"]);
+    const invalidUsage = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview?conversations_per_month=200&interactions_per_conversation=501`, { headers }), env, {} as ExecutionContext);
+    expect(invalidUsage.status).toBe(400);
+    expect(await invalidUsage.json()).toMatchObject({ error_code: "template_expected_usage_invalid" });
   });
 
   it("activates a certified template through the host for a fresh Space", async () => {

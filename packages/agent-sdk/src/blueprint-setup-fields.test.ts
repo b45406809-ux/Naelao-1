@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateBlueprintSetupGroups, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema } from "./blueprint-setup-fields.js";
+import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel,
+  validateBlueprintSetupGroups, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema } from "./blueprint-setup-fields.js";
 import type { SpaceBlueprint } from "./types.js";
 
 const blueprint: SpaceBlueprint = {
@@ -49,6 +50,43 @@ describe("versioned Space Template setup fields", () => {
       support: { hours: 8, enabled: false },
     });
     expect(() => validateBlueprintSetupValuesForSchema(groups, { support: { greeting: "x" } }, { allowIncomplete: true })).toThrow("Invalid setup value");
+  });
+
+  it("supports signed v2 equality conditions and locale fallback without executable logic", () => {
+    const localized: SpaceBlueprint = { ...blueprint, setupSchemaVersion: 2, projects: [{ ...blueprint.projects[0]!, setupFields: [
+      { id: "channel", type: "select", label: "Channel", defaultValue: "web",
+        localization: { label: { en: "Channel", fr: "Canal" }, optionLabels: { web: { fr: "Web" }, whatsapp: { fr: "WhatsApp" } } },
+        options: [{ value: "web", label: "Website" }, { value: "whatsapp", label: "WhatsApp" }] },
+      { id: "phone_number", type: "text", label: "Phone number", required: true, minLength: 4, maxLength: 30,
+        visibleWhen: { fieldId: "channel", equals: "whatsapp" }, localization: { label: { fr: "Numéro de téléphone" }, helpText: { fr: "Utilisé pour les messages." } } },
+    ] }] };
+    const groups = validateBlueprintSetupSchema(localized);
+    const [channel, phone] = groups[0]!.fields;
+    expect(resolveBlueprintSetupFieldLabel(channel!, "fr-CA")).toBe("Canal");
+    expect(resolveBlueprintSetupOptionLabel(channel as Extract<typeof channel, { type: "select" }>, "web", "fr-FR")).toBe("Web");
+    expect(resolveBlueprintSetupFieldHelpText(phone!, "fr")).toBe("Utilisé pour les messages.");
+    expect(isBlueprintSetupFieldVisible(groups[0]!.fields, phone!, { channel: "web" })).toBe(false);
+    expect(validateBlueprintSetupValues(localized, { support: { channel: "web", phone_number: "ignored while hidden" } })).toEqual({ support: { channel: "web" } });
+    expect(() => validateBlueprintSetupValues(localized, { support: { channel: "whatsapp" } })).toThrow("Required setup value missing");
+    expect(validateBlueprintSetupValues(localized, { support: { channel: "whatsapp", phone_number: "+263 77" } })).toMatchObject({ support: { phone_number: "+263 77" } });
+    expect(() => validateBlueprintSetupSchema({ ...localized, setupSchemaVersion: 1 })).toThrow("unsupported property");
+    expect(() => validateBlueprintSetupSchema({ ...localized, projects: [{ ...localized.projects[0]!, setupFields: [
+      { id: "phone_number", type: "text", label: "Phone", visibleWhen: { fieldId: "later", equals: "x" } } as never,
+      { id: "later", type: "text", label: "Later" },
+    ] }] })).toThrow("earlier field");
+    expect(() => validateBlueprintSetupSchema({ ...localized, projects: [{ ...localized.projects[0]!, setupFields: [
+      { id: "phone_number", type: "text", label: "Phone", localization: { label: { fr: "Identifiant secret" } } },
+    ] }] })).toThrow("cannot request provider credentials");
+  });
+
+  it("caps the complete localized schema byte size", () => {
+    const locales = Object.fromEntries(["en", "fr", "de", "es", "it", "pt", "nl", "sv", "no", "fi", "da", "pl"].map(locale => [locale, "x".repeat(80)]));
+    const options = Array.from({ length: 30 }, (_, index) => ({ value: `option${index}`, label: `Option ${index}` }));
+    const optionLabels = Object.fromEntries(options.map(option => [option.value, locales]));
+    const fields = Array.from({ length: 3 }, (_, index) => ({ id: `select_${index}`, type: "select" as const, label: "Choice",
+      options, localization: { optionLabels } }));
+    expect(() => validateBlueprintSetupSchema({ ...blueprint, setupSchemaVersion: 2,
+      projects: [{ ...blueprint.projects[0]!, setupFields: fields }] })).toThrow("exceeds the byte limit");
   });
 
   it("revalidates persisted schema groups and updates one project without dropping others", () => {

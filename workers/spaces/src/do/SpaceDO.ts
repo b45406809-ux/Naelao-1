@@ -12182,7 +12182,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const json = (value: unknown, status = 200) => Response.json(value, { status, headers });
     if (!tenantId || !spaceId || !/^[A-Za-z0-9._:-]{1,160}$/.test(blueprintId)
       || !/^[A-Za-z0-9._:-]{1,160}$/.test(listingId) || !/^[a-f0-9]{64}$/.test(artifactSha256)
-      || !/^[a-f0-9]{64}$/.test(schemaHash) || !(schemaVersion === null || schemaVersion === 1)
+      || !/^[a-f0-9]{64}$/.test(schemaHash) || !(schemaVersion === null || schemaVersion === 1 || schemaVersion === 2)
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return json({ error_code: "forbidden" }, 403);
     const role = request.headers.get("x-naelao-role") ?? "";
@@ -12226,7 +12226,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let groups: ReturnType<typeof validateBlueprintSetupGroups>, values: unknown;
     try {
       groups = validateBlueprintSetupGroups(body.schema);
-      if (!groups.length || (schemaVersion !== 1)) throw new Error("Template setup schema is unavailable");
+      if (!groups.length || (schemaVersion !== 1 && schemaVersion !== 2)) throw new Error("Template setup schema is unavailable");
       const canonicalSchemaHash = await sha256Hex(JSON.stringify(groups));
       if (canonicalSchemaHash !== schemaHash) throw new Error("Template setup schema binding changed");
       values = validateBlueprintSetupValuesForSchema(groups, body.values, { allowIncomplete: true });

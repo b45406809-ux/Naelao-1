@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadTemplateCostEstimate, selectedTemplateListingId } from "./template-cost-estimate.js";
+import { loadTemplateCostEstimate, selectedTemplateListingId, validateTemplateExpectedUsage } from "./template-cost-estimate.js";
 
 describe("guided template cost disclosure", () => {
   it("preserves an exact selected listing identity in the Space configuration", () => {
@@ -36,6 +36,19 @@ describe("guided template cost disclosure", () => {
 
     expect(estimate).toMatchObject({ status: "partial", total_estimate_cents: null,
       known_one_time_costs: [{ amount_cents: 0, basis: "current_zero_price_listing", already_paid: false }] });
+  });
+
+  it("validates customer-entered usage assumptions and reports projected volume without inventing rates", async () => {
+    const usage = validateTemplateExpectedUsage({ conversations_per_month: 200, interactions_per_conversation: 8 });
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 0, interactions_per_conversation: 8 })).toThrow("expected_usage_invalid");
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 200, interactions_per_conversation: 8, total_cents: 0 })).toThrow("expected_usage_invalid");
+    const estimate = await loadTemplateCostEstimate({ prepare() { return { bind() { return { first: async () => ({
+      pricing_model: "fixed_license", price_cents: 0, amount_cents: null, created_at: null,
+    }) }; } }; } }, "tenant-a", "blueprint-a", "listing-a", new Date("2026-11-13T00:00:00.000Z"), usage);
+    expect(estimate).toMatchObject({ total_estimate_cents: null, expected_monthly_usage: {
+      basis: "customer_entered_assumption", conversations: 200, interactions_per_conversation: 8,
+      projected_interactions: 1600, estimated_cost_cents: null,
+    } });
   });
 
   it("does not infer a price when legacy installation metadata or listing evidence is missing", async () => {
