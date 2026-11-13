@@ -2155,7 +2155,10 @@ export function registerExtensionPublisherKey(spaceId: string, session: SessionC
 }
 
 export function revokeExtensionPublisherKey(spaceId: string, session: SessionCredentials, keyId: string) {
-  return apiFetch<{ revoked: boolean; key_id: string; changed: boolean }>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers/${encodeURIComponent(keyId)}`, { method: "DELETE", session, body: "{}" });
+  return apiFetch<{ revoked: boolean; key_id: string; changed: boolean; revoked_at: string; revoked_by: string;
+    revoked_release_count: number; disabled_installation_count: number; active_work_count: number;
+    state: "draining" | "drained"; new_work_denied: true; admitted_work_policy: "allowed_to_finish" }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers/${encodeURIComponent(keyId)}`, { method: "DELETE", session, body: "{}" });
 }
 
 export async function listProjectExtensionReleases(spaceId: string, projectId: string, extensionId: string, session: SessionCredentials): Promise<ExtensionRelease[]> {

@@ -503,6 +503,7 @@ export function ChannelConnect({
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
   const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
+  const [publisherNotice, setPublisherNotice] = React.useState<string | null>(null);
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
@@ -750,13 +751,16 @@ export function ChannelConnect({
   }
 
   async function revokePublisherKey(keyId: string) {
-    if (busy || !window.confirm("Revoke this publisher key? Releases signed by it will stop running in this Space.")) return;
-    setBusy(true); setError(null);
+    if (busy || !window.confirm("Revoke this publisher key? New installs and work will be denied. Work already admitted may finish.")) return;
+    setBusy(true); setError(null); setPublisherNotice(null);
     try {
-      await revokeExtensionPublisherKey(spaceId, session, keyId);
+      const receipt = await revokeExtensionPublisherKey(spaceId, session, keyId);
       const result = await listExtensionPublisherKeys(spaceId, session);
       setPublisherKeys(result.publishers);
       if (canvasPublisherKeyId === keyId) { setCanvasPublisherKeyId(""); setCanvasPublisherSignature(""); }
+      setPublisherNotice(receipt.state === "draining"
+        ? `Publisher revoked. New work is denied; ${receipt.active_work_count} already admitted operation(s) may finish.`
+        : "Publisher revoked. New work is denied and no admitted operations remain.");
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't revoke this publisher key."); }
     finally { setBusy(false); }
   }
@@ -887,7 +891,8 @@ export function ChannelConnect({
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>This release can combine CanvasMount HTML, project-bound Gadget databases, external channel handlers, and Durable Workflow worker steps under one versioned extension ID. Canvas parts appear in the project Canvas selector and keep their own installed-instance scope. Channel handlers receive only the restricted external channel context. Workflow steps can call only the operation names declared in the bundle and enabled for the acting user by the host. Provider credentials are not package-bound here; connect channels through the existing provider controls. Review the manifest and every artifact before installing.</p>
         <section aria-label="Trusted extension publishers" style={{ margin: "10px 0", padding: 10, border: "1px solid var(--border)", borderRadius: 7 }}>
           <div style={{ fontSize: 11.5, fontWeight: 600 }}>Trusted publishers for this Space</div>
-          <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 8px" }}>Register a publisher public key separately from its packages. Private signing keys stay with the publisher; a revoked key blocks its releases and is not automatically restored.</p>
+          <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 8px" }}>Register a publisher public key separately from its packages. Private signing keys stay with the publisher. Revocation blocks new work and disables its installations; already admitted work can finish.</p>
+          {publisherNotice && <div role="status" style={{ color: "var(--text2)", fontSize: 11, marginBottom: 8 }}>{publisherNotice}</div>}
           <form onSubmit={registerPublisherKey} style={{ display: "grid", gap: 6, marginBottom: 8 }}>
             <input aria-label="Publisher ID" value={newPublisherId} onChange={event => setNewPublisherId(event.target.value)} pattern="pub_[a-z0-9_-]{1,48}" maxLength={52} required placeholder="pub_my_team" />
             <input aria-label="Publisher P-256 public key" value={newPublisherPublicKey} onChange={event => setNewPublisherPublicKey(event.target.value)} required placeholder="Base64url uncompressed P-256 public key" />

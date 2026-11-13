@@ -219,8 +219,8 @@ describe("runtime extension installation", () => {
   });
 
   it("binds publisher identity to immutable releases and blocks a revoked publisher release", async () => {
-    const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "publisher-test-secret" } as never);
+    const storage = createDOStorage(), state = { storage }, secret = "publisher-test-secret";
+    let space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const manifest = { id: "ext_publisher_lifecycle", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
@@ -237,15 +237,44 @@ describe("runtime extension installation", () => {
     const instances = storage.sql.exec("SELECT instance_id FROM extension_instances WHERE extension_id='ext_publisher_lifecycle'").toArray();
     expect(instances).toHaveLength(1);
     const instanceId = String(instances[0]?.instance_id);
-    const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: instanceId, tenant_id: "tenant", space_id: "space" })));
+    const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: instanceId, tenant_id: "tenant", space_id: "space", include_disabled: "1" })));
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: true, publisher: { id: "pub_example", keyId: "a".repeat(64), revoked: false } } });
     storage.sql.exec("UPDATE extension_releases SET publisher_key_id=NULL WHERE extension_id='ext_publisher_lifecycle' AND version='1.0.0'");
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { id: "pub_example", keyId: null } } });
     storage.sql.exec("UPDATE extension_releases SET publisher_key_id=? WHERE extension_id='ext_publisher_lifecycle' AND version='1.0.0'", "a".repeat(64));
-    const revoke = await space.fetch(new Request("http://space/extension-publisher-revoke?key_id=" + "a".repeat(64), { method: "POST" }));
-    expect(revoke.status).toBe(200);
+    const token = await mintInternalToken(secret, "tenant");
+    const work = (action: "acquire" | "release", workId: string) => space.fetch(new Request("http://space/extension-runtime-work", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ action, tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId, workId, workKind: "channel" }),
+    }));
+    expect((await work("acquire", "before-revoke")).status).toBe(200);
+    const revokeRequest = (headers: HeadersInit = { "content-type": "application/json", "x-naelao-internal-token": token }) => space.fetch(new Request("http://space/extension-publisher-revoke", {
+      method: "POST", headers, body: JSON.stringify({ tenantId: "tenant", spaceId: "space", keyId: "a".repeat(64), actorId: "owner" }),
+    }));
+    expect((await revokeRequest({ "content-type": "application/json" })).status).toBe(403);
+    const revoke = await revokeRequest();
+    expect(revoke.status).toBe(202);
+    expect(await revoke.json()).toMatchObject({ revoked: true, changed: true, state: "draining", active_work_count: 1,
+      disabled_installation_count: 1, new_work_denied: true, admitted_work_policy: "allowed_to_finish" });
+    space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { revoked: true } } });
-    storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", instanceId);
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", instanceId).toArray()).toEqual([{ status: "disabled" }]);
+    const reenable = await space.fetch(new Request("http://space/project-extension-lifecycle", { method: "PATCH",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId, action: "enable" }) }));
+    expect(reenable.status).toBe(409);
+    expect(await reenable.json()).toMatchObject({ error_code: "extension_publisher_key_revoked" });
+    const afterRevoke = await work("acquire", "after-revoke");
+    expect(afterRevoke.status).toBe(409);
+    expect(await afterRevoke.json()).toMatchObject({ error_code: "extension_installation_inactive" });
+    expect(await (await install()).json()).toMatchObject({ error: "extension_publisher_key_revoked" });
+    expect(await (await work("release", "before-revoke")).json()).toMatchObject({ released: true, status: "released" });
+    const drained = await revokeRequest();
+    expect(drained.status).toBe(200);
+    expect(await drained.json()).toMatchObject({ changed: false, state: "drained", active_work_count: 0, revoked_release_count: 1,
+      disabled_installation_count: 1 });
+    expect(storage.sql.exec("SELECT status,active_work_count FROM extension_publisher_revocation_receipts WHERE key_id=?", "a".repeat(64)).toArray())
+      .toEqual([{ status: "drained", active_work_count: 0 }]);
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0", installationId: instanceId, tenantId: "tenant", spaceId: "space", projectId: "project-a", expectedCurrentVersion: "1.0.0" }) }));
     expect(rollback.status).toBe(409);

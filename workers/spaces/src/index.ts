@@ -4416,9 +4416,17 @@ app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
   const result = await c.env.PLATFORM_DB.prepare(`UPDATE extension_publisher_keys SET status='revoked',revoked_by=?,revoked_at=datetime('now')
     WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.userId, tenantId, spaceId, keyId).run();
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const invalidated = await stub.fetch(new Request(`http://space-do/extension-publisher-revoke?key_id=${encodeURIComponent(keyId)}`, { method: "POST" }));
+  const invalidated = await stub.fetch(new Request("http://space-do/extension-publisher-revoke", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ tenantId, spaceId, keyId, actorId: identity.userId }) }));
   if (!invalidated.ok) return c.json({ error_code: "publisher_revocation_invalidation_unavailable" }, 503);
-  return c.json({ revoked: true, key_id: keyId, changed: (result.meta?.changes ?? 0) > 0 });
+  const receipt = await invalidated.json<{ revoked?: unknown; key_id?: unknown; active_work_count?: unknown; state?: unknown;
+    revoked_at?: unknown; revoked_by?: unknown; revoked_release_count?: unknown; disabled_installation_count?: unknown;
+    new_work_denied?: unknown; admitted_work_policy?: unknown; changed?: unknown }>().catch(() => null);
+  if (!receipt || receipt.revoked !== true || receipt.key_id !== keyId || !["draining", "drained"].includes(String(receipt.state)))
+    return c.json({ error_code: "publisher_revocation_receipt_unavailable" }, 503);
+  const status: 200 | 202 = invalidated.status === 202 ? 202 : 200;
+  return c.json({ ...receipt, changed: receipt.changed === true || (result.meta?.changes ?? 0) > 0 }, status);
 });
 
 // Project bundle installation for Canvas + Gadget + external channel + Durable Workflow
