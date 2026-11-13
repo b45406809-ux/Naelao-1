@@ -3672,11 +3672,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             spaceId, instanceId, tenantId, spaceId);
           if (dependency) return Response.json({ error_code: "extension_required_by_space_template", blueprint_id: dependency.blueprint_id }, { status: 409 });
         }
-        const result = projectId
-          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId, projectId)
-          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId);
-        if (result.rowsWritten === 1) execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
-        return result.rowsWritten === 1
+        const removed = this.ctx.storage.transactionSync(() => {
+          const result = projectId
+            ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId, projectId)
+            : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId);
+          if (result.rowsWritten !== 1) return false;
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings WHERE instance_id=?", instanceId);
+          return true;
+        });
+        return removed
           ? Response.json({ removed: true, instance_id: instanceId })
           : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
       }

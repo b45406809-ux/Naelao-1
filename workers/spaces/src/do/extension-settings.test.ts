@@ -88,5 +88,12 @@ describe("Space-shared extension settings", () => {
     expect(await (await userRequest("GET", "user-a")).json()).toMatchObject({ revision: 0, can_configure: true });
     expect((await userRequest("PATCH", "user-a", { settings: { greeting: "Mine" }, revision: 0 })).status).toBe(200);
     expect((await userRequest("GET", "user-b")).status).toBe(404);
+
+    const removed = await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({
+      instance_id: installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a",
+    })}`, { method: "DELETE" }));
+    expect(removed.status).toBe(200);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_installation_settings WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
+    expect((await request("GET")).status).toBe(404);
   });
 });
