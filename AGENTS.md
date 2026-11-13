@@ -12,8 +12,8 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` matches fetched
-`origin/Mcbt5s-Backup-2` at code `15a04f7e19df8d586445e1f0eb7a2d69754c9c9f`. P10/P24 now persist
+Current checkpoint (2026-11-13): branch `autonomous-managed-services-20261111` is pushed through
+`6fccacaa` on `origin/Mcbt5s-Backup-2`; runtime-work admission/drain is in `15a04f7e`. P10/P24 now persist
 per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch, phone calls and
 simulations, shared/project Gadgets, Canvas Gadget reads, workflow Gadget actions, dynamic pages and
 first-party initialization acquire before invoking the runtime; streamed responses retain the lease
@@ -25,20 +25,25 @@ typechecks, and `git diff --check`. These are local mocks/SQLite checks; no depl
 package, call or recovery drill ran. Preserve the untracked `infra/scripts/__pycache__/`; rollouts stay
 disabled.
 
-P10/P24 remain PARTIAL: general update review receipts, runtime/data migration preview and recovery,
-rollback/version selection UI, authority/dependency expansion, provider connection and price changes,
-compromise response, scanning/retention and live acceptance remain uncoded or unverified. The 30-minute
-lease expiry is crash cleanup; provider/deployed timing is not verified. P04/P06 remain PARTIAL. P01/P02
-still require actual resource separation, ownership, 158 read-only receipts and operator-attested D1
-baselines. No live or deployed acceptance is claimed.
+P04 now has an owner/admin full-archive export control in Shell. It calls the existing resumable API,
+retains a Space-and-actor-scoped request ID in session storage through ambiguous responses, and shows
+the current limits/exclusions. P04 remains PARTIAL for archive caps, cross-service coverage, approved
+retention/key/jurisdiction policy and isolated/deployed recovery evidence. P10/P24 remain PARTIAL:
+general update review receipts, runtime/data migration preview and recovery, wider rollback/version
+selection, authority/dependency expansion, provider connection and price changes, compromise response,
+scanning/retention and live acceptance remain uncoded or unverified. A project-scoped rollback picker
+exists in ChannelConnect; it is not a general rollback path. The 30-minute lease expiry is crash cleanup;
+provider/deployed timing is not verified. P01/P02 still require actual resource separation, ownership,
+158 read-only receipts and operator-attested D1 baselines. No live or deployed acceptance is claimed.
 
 The detailed managed-services ledger already reconciles supported U11/U12 callers; their remaining
-invoice, billed-idle/CPU-size, policy and live-evidence gaps are not credential blockers. Do not repeat
-those audits without new source evidence. Exact next action: close the P04 owner-facing backup gap by
-adding a reachable owner/admin full-archive export control to `ArchiveKeyRotationPanel`, using the
-existing resumable `data-ops` API and a stable request ID across retries. Cover request identity,
-authorization and visible completion/failure in local checks; update the archive runbook. Then resume
-the exact uncoded rows in the S4–S9/U01–U12 and platform ledgers, preserving P01/P02 external gates.
+invoice, billed-idle/CPU-size, policy and live-evidence gaps are not credential blockers. P03/P20 are
+source-reconciled; grace/restriction and refund/access/author-accounting policy remain unresolved and
+must not be guessed. Do not repeat those audits without new source evidence. Exact next action: continue
+P10/P24's uncoded general update review path. Inspect the signed update preview/apply and rollback
+routes, then implement the next owner-reviewed update intent/receipt for a safely bounded package class;
+keep migrations, authority/dependency expansion, connections and price changes gated. Then resume exact
+remaining S4–S9/U01–U12 code gaps, preserving P01/P02 external gates.
 After compaction, interruption or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
 purchase, reset, clean, switch branches or force-push.

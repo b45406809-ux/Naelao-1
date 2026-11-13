@@ -2,11 +2,11 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; runtime-work drain `15a04f7e` pushed)
+### Active continuation (2026-11-13; P04 owner full-archive export `6fccacaa` pushed)
 
-- Code `15a04f7e19df8d586445e1f0eb7a2d69754c9c9f` is pushed and fetch-confirmed on
-  `origin/Mcbt5s-Backup-2`; branch `autonomous-managed-services-20261111` matches it. It follows
-  static Canvas update receipt `9d5a0c23`.
+- Code `6fccacaa` is pushed after fetch-confirming `59bdead1`; branch `autonomous-managed-services-20261111`
+  matches `origin/Mcbt5s-Backup-2`. Runtime-work admission/drain is in `15a04f7e`, following static
+  Canvas update receipt `9d5a0c23`.
 - P10/P24 now persist per-installation runtime-work leases in SpaceDO migration 126. Channel dispatch,
   phone calls/simulations, shared and project Gadget calls, Canvas Gadget reads, workflow Gadget
   operations, dynamic pages and first-party initialization acquire before runtime invocation. Streamed
@@ -19,17 +19,24 @@
   SQLite only. No deployed DO, real provider, Marketplace, live call or recovery drill ran. Preserve
   `infra/scripts/__pycache__/`; rollouts remain disabled.
 - P10/P24 remain PARTIAL: general owner-reviewed update intent/receipt, runtime/data migration preview
-  and recovery, rollback/version-selection UI, authority/dependency expansion, connection/price
+  and recovery, broader rollback/version-selection UI, authority/dependency expansion, connection/price
   changes, compromise response, scanning/retention and deployed/live acceptance remain uncoded or
-  unverified. The 30-minute lease expiry is crash cleanup, not measured provider timing. S2–S9/U01–U12
+  unverified. A project-scoped rollback picker exists in ChannelConnect but is not a general rollback
+  path. The 30-minute lease expiry is crash cleanup, not measured provider timing. S2–S9/U01–U12
   status is otherwise unchanged. P01/P02 retain their external resource/ownership/receipt/baseline
   gates; P03/P20 retain unresolved policy and operator-identity questions.
-- Managed-services source/caller reconciliation already closes the supported U11/U12 audits. Missing
+- P04 code `6fccacaa` adds the reachable owner/admin full-archive export control to `ArchiveKeyRotationPanel`,
+  using the existing encrypted/resumable endpoint. A Space-and-actor-scoped request ID remains in
+  session storage until the server confirms a verified archive; limits and excluded data are stated.
+  Local checks: Shell focused suites **6/6**, Shell typecheck, Spaces archive suite **11/11**, and
+  `git diff --check`. This does not prove deployed R2 durability or isolated recovery. P04 remains
+  PARTIAL for limits, cross-service coverage, approved retention/key/jurisdiction policy and live drills.
+- Managed-services source/caller reconciliation already closes supported U11/U12 audits. Missing
   invoices, billed-idle/CPU-size feeds, approved policy and live evidence remain distinct gaps; do not
-  repeat those audits without new source evidence. Exact next action: implement the P04 owner/admin
-  full-archive export caller in `ArchiveKeyRotationPanel`, retaining a stable request ID for safe
-  retry through the existing resumable API. Then resume the exact uncoded S4–S9/U01–U12 rows from this
-  ledger; do not infer completion from the reconciliation alone.
+  repeat those audits without new source evidence. P03/P20 policy questions remain open. Exact next
+  action: implement the next safely bounded P10/P24 owner-reviewed package update receipt path; keep
+  migration, authority/dependency, connection and price changes gated. Then resume uncoded S4–S9/U01–U12
+  rows from this ledger rather than inferring completion from the reconciliation.
 
 ### Prior active continuation (2026-11-13; cross-Space signed package import `b4cf5214` pushed)
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)
