@@ -2,27 +2,32 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `e6c956d9` is pushed to
-`origin/Mcbt5s-Backup-2`, after `08c9e4b9` added project installation settings. The owner phone panel
-now follows its existing bounded cursors for actions and incoming call/event history, with separate
-load-older controls, independent page state and stale-request protection. The backend continues to
-cap each query at 50 rows and scope it to the exact phone binding. Local evidence: Agents phone cursor
-regression **1/1** (33 unrelated cases skipped), Shell typecheck and `git diff --check`. This reaches
-older owner phone records; it does not create customer voice-agent call history or invoice
-reconciliation. Project installation settings local evidence is Spaces route/DO **7/7**, Router
-product-path **47/47**, and Spaces/Router/Shell typechecks. No deployed installation or provider
-acceptance ran. §9.5 remains PARTIAL for customer voice runtime, provider catalogs/rates, safe test and
-publish flows, package composition, customer call receipts and live acceptance. §10 remains PARTIAL
-for configurable posture/publication authority, extension/dependency lifecycle, reservation/
-cardinality, expiry, concurrency and broad non-disclosure. P01/P02 remain fail-closed on actual
-resource isolation, ownership receipts, operator-attested D1 baselines and deployed acceptance.
-Template update/uninstall effects on generated projects, extensions, provider resources, licenses
-and retained receipts have no agreed product contract; no destructive action is inferred.
-Exact next task: add the basic host-rendered settings form to the project extension management UI for
-active non-Canvas installations that declare a validated settings schema and read capability. Reuse
-the exact project/installation API; do not expose another user's PROJECT_USER settings. Then continue
-remaining §9.5 work against supported contracts. Preserve `infra/scripts/__pycache__/` and keep all
-rollouts disabled.
+Current continuation checkpoint (2026-11-13): code `73e10f20` is pushed to
+`origin/Mcbt5s-Backup-2`, after proposal-authority coverage `59906cd8` and project extension settings
+cleanup `bc4528cf`. Migration 121 records each extension settings schema version. The owner form now
+previews compatible values after a schema change, omits incompatible/retired fields, requires an
+explicit save to adopt the new schema, and hides conditional fields. Settings writes recheck the exact
+active installation and schema inside the revision transaction; removing an installation atomically
+revokes its shared-filesystem grant and deletes its settings, so an in-flight write cannot restore
+them. The accepted-public-proposal regression proves acceptance grants no project membership, card
+edit, extension lifecycle or settings-write authority.
+
+Local evidence for `73e10f20`: Spaces extension/coordination suites **25/25**, Shell suite **20/20**,
+Spaces and Shell typechecks, and `git diff --check`. These are local SQLite/Worker tests; no deployed
+installation, provider call or live acceptance ran. §5 remains PARTIAL for Marketplace template
+schema migration/update, permission/pricing review, rollback/uninstall effects outside local settings,
+complete verified rates, visual authoring and live acceptance. §9.5 remains PARTIAL for a customer
+voice-agent runtime/dashboard, verified catalogs/rates, safe test/publish, customer call receipts and
+package composition; the owner phone panel remains the separate Space Assistant phone feature. §10
+remains PARTIAL for configurable posture/publication authority, project/service lifecycle links,
+reservation/cardinality, expiry/concurrency policy and broad non-disclosure. Managed S2 is local for
+supported lanes; remaining S3–S9/U01–U12 gaps and their exact runtime, feed, policy and live gates stay
+open in the managed-services ledger. P01/P02 remain fail-closed on real resource isolation, ownership
+receipts, operator-attested D1 baselines and deployed acceptance. Rollout remains disabled.
+Exact next task: update `ExtensionSettingsForm` to display the schema's localized field labels, help
+text and option labels using browser locale with declared fallback; then continue the first remaining
+independently implementable managed-services S3–S9/U01–U12 item. Preserve
+`infra/scripts/__pycache__/` and do not deploy or purchase services.
 
 Previous code checkpoint `881c1d1a` added signed phone-handler candidate discovery. Owner phone status
 lists only active, correctly scoped phone installations whose publisher signature and complete

@@ -2,34 +2,28 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; owner phone history cursor UI `e6c956d9` pushed)
+### Active continuation (2026-11-13; extension settings schema migration `73e10f20` pushed)
 
-- Code `e6c956d9` is pushed to `origin/Mcbt5s-Backup-2`, after project settings code `08c9e4b9`. The
-  owner phone dashboard now consumes separate bounded `phone-actions` and `phone-events` cursors and
-  exposes load-older controls. Each backend request remains capped at 50 rows and scoped to the exact
-  phone binding; the UI prevents overlapping history requests and ignores results after scope refresh.
-- Local evidence: Agents phone tied-timestamp cursor regression **1/1** (33 unrelated tests skipped),
-  Shell typecheck, and `git diff --check`. No provider call, deployment or invoice reconciliation
-  ran.
-- This improves the existing Space Assistant phone operations panel; it does not establish customer
-  voice-agent call history. Project Canvas extension settings from `08c9e4b9` remain exact-installation
-  scoped with host validation and current read/manage authority. Customer voice runtime, catalogs,
-  rates, test/publish operations, provider receipts and live acceptance remain partial.
-- The managed-services S2–S9/U01–U12 matrix remains the status source of truth. S2 is
-  IMPLEMENTED_LOCAL for supported provider lanes; unsupported U05/U06 trusted runtime allocation,
-  observation, writer admission/drain/handoff remain non-credential platform-contract gaps. Other
-  partial rows retain only their recorded product/legal decisions, missing provider feeds/evidence,
-  external consumer durability and deployed/live acceptance. Keep rollout disabled.
-- §10 remains PARTIAL for owner-configured posture and publication authority, extension/dependency
-  lifecycle, reservation/cardinality, expiry, concurrency and broad non-disclosure. The published
-  template lifecycle status path is read-only and signed-source-checked; there is no agreed contract
-  for removing generated projects, extensions, provider resources, licenses or retained receipts.
-- Exact next task: add a basic host-rendered settings form in project extension management for active
-  non-Canvas installations that declare the validated schema and read capability. Reuse the exact
-  project/installation API and keep other users' PROJECT_USER settings hidden. Then continue §9.5
-  against supported source contracts. The S2–S9/U01–U12 matrix remains the managed-services status
-  source; its named platform-contract, policy, external evidence and deployed/live acceptance gaps
-  remain open. Preserve `infra/scripts/__pycache__/` and rollout flags.
+- Code `73e10f20` is pushed to `origin/Mcbt5s-Backup-2`, after accepted-proposal authority test
+  `59906cd8` and project-installation settings cleanup `bc4528cf`. SpaceDO migration 121 records the
+  settings schema version. The owner form previews values that remain valid under a changed schema,
+  omits incompatible fields, and requires an explicit save to adopt the new version. Settings writes
+  recheck the active exact installation and exact schema under the revision transaction. Installation
+  removal atomically marks the instance removed, revokes its shared-filesystem grant and erases its
+  settings; a held late write cannot recreate the erased row.
+- The real Worker-to-SpaceDO public-proposal regression proves acceptance does not create project
+  membership or grant card edit, project extension lifecycle or settings-write authority. These are
+  advisory proposals only; no policy-defined service access follows acceptance.
+- Local evidence: Spaces extension/coordination suites **25/25**, Shell suite **20/20**, Spaces and
+  Shell typechecks, and `git diff --check`. Tests use local SQLite/Worker stubs; no deployment,
+  provider call or live acceptance occurred. This does not complete Marketplace Template update/schema
+  migration or define retained generated-project/provider resources. S2 stays IMPLEMENTED_LOCAL for
+  supported lanes; S3–S9/U01–U12 remain PARTIAL for their documented runtime/provider contracts,
+  policy, missing feeds or deployed/live acceptance. No rollout is enabled.
+- Exact next task: make the host-rendered project extension settings form use declared localized
+  labels, help text and option labels with browser locale and schema fallback. Then continue the first
+  remaining independently implementable S3–S9/U01–U12 gap; do not call the managed mission complete
+  while named code gaps remain. Preserve `infra/scripts/__pycache__/`.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

@@ -2,38 +2,47 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after phone history UI code `e6c956d9` was pushed, following project settings
-code `08c9e4b9`. Project Canvas extensions have an exact installation-scoped settings API, server
-checks for project read/manage authority and declared grants, host schema/value validation, revision
-fencing, and an iframe path limited to `/api/settings`. The owner phone panel now consumes the
-existing separate 50-row cursors for actions and incoming call/event history. Local evidence for the
-latest slice: Agents phone cursor regression **1/1** (33 unrelated tests skipped), Shell typecheck and
-`git diff --check`. Prior settings slice: Spaces route/DO **7/7**, Router product-path **47/47**,
-Spaces/Router/Shell typechecks. No deployed installation, provider call or invoice reconciliation
+Updated 2026-11-13 after extension settings schema migration code `73e10f20` was pushed, following
+project removal cleanup `bc4528cf` and accepted-proposal authority coverage `59906cd8`. SpaceDO
+migration 121 records settings schema revisions. On schema change, GET returns a host-validated
+compatible-value preview and `migration_required`; the owner form explains the review and requires an
+explicit save. It hides fields whose declared visibility condition is false and removes incompatible
+or retired values only when the owner saves. PATCH rechecks the active exact installation and schema
+in the revision transaction. Removal atomically clears that installation's settings and filesystem
+grant, and the regression confirms an in-flight write cannot recreate data after removal.
+
+The public-proposal Worker-to-SpaceDO test proves acceptance does not add project membership or grant
+card edit, extension lifecycle or settings-write authority. Local evidence: Spaces
+extension/coordination suites **25/25**, Shell suite **20/20**, Spaces and Shell typechecks, and
+`git diff --check`. No deployed installation, provider call, database migration or live acceptance
 occurred.
 
-The phone history is the existing Space Assistant phone operations feed; it is not customer
-voice-agent call history. §9.5 remains PARTIAL for customer voice runtime, verified provider
-catalogs/rates, safe tests/publish, knowledge/tools, signed package composition, customer call
-receipts and live acceptance. Project settings are reachable from a Canvas; the project extension
-management screen still lacks the required basic host-rendered form for active non-Canvas packages.
-§10 coordination and P01/P02/P03/P04 gaps remain as recorded in the managed-services ledger.
+**§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
+localized setup declarations, expected-usage inputs, install status and owner host forms exist.
+Per-installation extension settings schema migration now has a versioned, owner-reviewed path; the
+separate Marketplace Template release schema migration/update flow remains uncoded. Permission/pricing
+review, rollback/uninstall effects for generated projects, extensions, provider resources, licenses
+and retained receipts, complete verified rates, visual authoring and live acceptance remain uncoded
+or unresolved by the lifecycle contract.
 
-§10 remains PARTIAL for owner-configured posture/publication authority, extension and dependency
-lifecycle, reservations/cardinality, expiry, concurrency and broad non-disclosure. P01/P02 local
-release controls remain fail-closed on actual isolated resources, ownership/existence receipts,
-operator-attested D1 baselines and deployed acceptance. P03/P20 recovery and P04 restore code is
-present, with the separately recorded grace/restriction, refund/accounting/operator-identity, archive
-limits and external acceptance gaps. §5 already has signed source-update detection, setup-schema and
-cost disclosures, encrypted draft/resume and owner installation status. The status screen does not
-apply updates. A safe update/uninstall contract for generated projects, extensions, provider
-resources, license state and retained receipts has not been decided, so update mutation and deletion
-remain unimplemented product/lifecycle work rather than credential blocks.
+**§9.5 — PARTIAL.** Per-installation host settings and non-Canvas fallback are implemented locally.
+The phone history feed is only Space Assistant phone operations, not customer voice-agent call
+history. Customer agent runtime, verified catalogs/rates, browser tests/publish, customer call
+receipts, package composition and live acceptance are uncoded without a supported runtime producer;
+live provider acceptance also requires external provider/account evidence. No credential blocker is
+claimed for the uncoded product/runtime.
 
-Exact next task: add a basic host-rendered form in project extension management for active non-Canvas
-installations that declare a validated settings schema and read capability. Reuse the exact
-project/installation API and keep other users' PROJECT_USER settings hidden. Then continue remaining
-§9.5 requirements in dependency order.
+**§10 — PARTIAL.** The advisory registry, audience-filtered reads, confirmation receipts, versioned
+amendments/revocation, public project cards/proposals and project access rechecks have local code and
+coverage. Owner-configurable posture/defaults, private publication and request-to-use authority,
+extension/dependency linkage, reservation/cardinality, expiry/concurrency policy and broad
+non-disclosure acceptance remain. Product/policy choices are unresolved; they are not credential
+blocks. P01/P02/P03/P04 external gates and evidence remain in the managed-services ledger.
+
+Exact next task: update `ExtensionSettingsForm` to render localized labels, help text and option labels
+from the declared schema using the browser locale with explicit-language fallback. Then continue the
+first remaining independently implementable managed-services S3–S9/U01–U12 requirement and do not
+claim completion while named code gaps remain.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
@@ -611,33 +620,29 @@ complete installation. Refund-to-license revocation, author earning/payout recov
 policy remain unresolved under P20, and provider/live acceptance remains separate. Do not represent
 the listing as installed merely because checkout returned or a fork row exists.
 
-### §5 — developer-authored guided template installation: PARTIAL
+### §5 — developer-authored guided template installation: PARTIAL (current source reconciliation)
 
-The old-checkout research described the guided customer-service installation as missing. Current
-source already provides a Marketplace-backed Space Template picker, selected listing identity through
-Space creation, signed/certified blueprint preview, server-side dependency/runtime readiness, human
-approval, shared-filesystem permission selection, resumable pending-template review, and idempotent
-activation/retry through the existing Space and extension journals. Managed AgentMail is offered as a
-post-setup separately quoted owner action; template selection does not provision it. Publisher trust
-and exact installed-release checks are recorded under P24.
+The old-checkout research described this customer journey as missing. Current source already has a
+Marketplace-backed Space Template picker, listing identity through Space creation, signed/certified
+blueprint preview, server-side dependency/runtime readiness, human approval, shared-filesystem
+permission selection, resumable pending-template review, and idempotent activation/retry through
+Space and extension journals. Managed AgentMail is a separately quoted owner action; template
+selection does not provision it. Publisher trust and exact installed-release checks are recorded
+under P24.
 
-Code `46f38eea` closes a selection and disclosure gap. The exact `template_listing_id` persists in the
-Space configuration and constrains preview/activation to that tenant fork. Owner preview reports a
-recorded paid license or verified current zero-price listing; no total is fabricated. Local evidence:
-Spaces blueprint/cost/create-record tests **63/63**, Spaces/Shell typechecks and `git diff --check`.
+Codes `f5050258`, `b9ad2c83`, `5c7ba416`, `f725fa2c` and `9d0c2da7` add the bounded declarative setup
+schema, owner value collection, conditional/localized fields, encrypted draft/resume, expected-usage
+inputs, setup provenance/status, same-publisher update availability and host-certified fork checks.
+Code `2901377e`, after `08c9e4b9`, makes the same installation-scoped host settings form reachable
+from project extension management when an active package has no Canvas dashboard. Preview exposes
+verified listing/permission/known-cost changes but does not apply them or provision provider
+resources.
 
-§5 remains PARTIAL. `SpaceBlueprint.requiredCredentials` contains descriptive prompts but there is
-no bounded author-declared setup schema for typed values, conditionals, validation, localization or
-safe persistence. Preview does not collect settings such as supported language, business hours,
-escalation policy or expected usage. Current costs omit usage-based model/tool, channel/provider,
-runtime/storage, regional/tax and account-specific charges; a complete total and visual template
-editor are absent. These are code/product-surface gaps; actual rates and provider eligibility need
-reviewed sources and account-specific evidence.
-
-Exact next task: define a bounded, versioned declarative setup-field contract in the signed template
-package, validate schema and submitted values on the host, persist approved values per Space, and
-render only supported field types in the owner flow. Do not add arbitrary executable form logic or
-imply that a field grants access to raw provider secrets.
+§5 remains PARTIAL. Schema migrations between releases, owner review of changed permissions/pricing,
+rollback, revocation/uninstall effects on generated projects/extensions/provider resources/licenses
+and retained receipts, complete usage/provider/runtime rates, visual authoring, and end-to-end live
+acceptance remain uncoded or lack an approved lifecycle contract. Unknown rates remain unknown; these
+are not credential-only gaps. No deployed Marketplace, DB, payment or provider acceptance is claimed.
 
 ### P24 — publisher and package trust: PARTIAL, scoped rollback and key-registry checks implemented
 
@@ -682,7 +687,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    customer/creator status callers are implemented in pushed code `41996f29`; grace/restriction and
    refund/dispute/payout policies plus authenticated operator identity remain unresolved. The
    managed-services ledger reconciles S2–S9/U01–U12, including U11/U12 caller audits; do not repeat
-   those without new evidence. Continue §5 at the exact next task above. P22's
+   those without new evidence. §5's bounded setup schema, draft/resume, installation status and
+   per-installation extension settings schema migration are implemented locally; Marketplace Template
+   release migration, lifecycle/rates/authoring gaps are listed above. Continue at the exact task
+   above. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
