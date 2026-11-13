@@ -2,7 +2,28 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P10/P24 drained Canvas and channel-code update `c7412170` pushed)
+### Active continuation (2026-11-13; P05 visual setup authoring `b3feecb5` pushed)
+
+- Code `b3feecb5` is pushed to `origin/Mcbt5s-Backup-2` after fetch confirmed the remote tip was an
+  ancestor. The Foundry Template Studio Canvas now visually authors optional version 1/2 setup
+  fields, defaults, required state, bounded field controls, English/Spanish labels/help and simple
+  visibility conditions. Export sends declarations through the owner-only Space route; the route
+  attaches them only to the selected exported project, validates with the SDK contract before storage,
+  revalidates the sanitized blueprint, and stores them in the conformance artifact. Empty setup forms
+  remain optional. Host validation remains authoritative; unsupported fields/credentials fail closed.
+- Local evidence: Spaces setup-authoring route/helper tests **4/4**, SDK Foundry Canvas tests **3/3**,
+  Spaces and SDK typechecks, and `git diff --check`. No deployed Worker/DO, Marketplace, provider or
+  live customer acceptance ran. Rollouts remain disabled. Preserve
+  `infra/scripts/__pycache__/`.
+- Platform §5 remains PARTIAL for permission/price changes, general upgrade/rollback/uninstall,
+  project/provider-resource/license lifecycle, verified rates, end-to-end guided installation and
+  live acceptance. This slice closes only visual field authoring/export wiring.
+- Exact next action: add test-only `call.received` and `call.digits` inputs to the existing owner
+  phone-handler simulator and route output through the existing response validator/renderer without
+  carrier commands. Verify owner authorization and DTMF preview; then continue remaining S4–S9/U01–U12
+  and both plans' uncoded requirements.
+
+### Prior checkpoint (2026-11-13; P10/P24 drained Canvas and channel-code update `c7412170` pushed)
 
 - Code `c7412170` is pushed to `origin/Mcbt5s-Backup-2` after fetching; branch
   `autonomous-managed-services-20261111` matched the remote before push. P04 archive export remains in
@@ -28,9 +49,8 @@
 - P04 code `6fccacaa` connects the owner/admin full-archive export to the resumable API with a stable
   session request ID, visible limits and exclusions. Local Shell **6/6**, Shell typecheck and archive
   suite **11/11** are recorded above; deployed R2 durability and isolated recovery are not established.
-- Exact next action: add validated, visual setup-field authoring to Foundry Template Studio and pass
-  those declarations through the signed Space Template export/conformance path. Then continue uncoded
-  S4–S9/U01–U12 and platform §5/§9/§10 requirements without repeating closed audits.
+- At that checkpoint the next action was visual setup-field authoring. It is now completed in
+  `b3feecb5`; see the active continuation above. Do not repeat its audit.
 
 ### Prior active continuation (2026-11-13; cross-Space signed package import `b4cf5214` pushed)
 ### Prior active continuation (2026-11-13; P05 scoped text attachment access `5e0c6501` pushed)

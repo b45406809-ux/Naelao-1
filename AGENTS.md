@@ -12,8 +12,19 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): the latest progress/runbook commit `19a59bdb` and P10/P24 code commit
-`c7412170` are pushed to `origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
+Current checkpoint (2026-11-13): P05 visual setup-field authoring code `b3feecb5` is pushed to
+`origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`; the prior progress/runbook
+checkpoint is `19a59bdb`. The P05 Foundry Canvas now authors optional v1/v2 declarative fields,
+localization and simple visibility conditions and sends them through the owner-only export route.
+The route binds fields to the selected exported project, uses the SDK schema validator before
+artifact creation, revalidates after sanitization, and retains the declarations in the conformance
+artifact. Focused Spaces tests pass **4/4**, Foundry Canvas tests **3/3**, Spaces/SDK typechecks and
+`git diff --check` pass. This is local Worker/mock evidence; no deployment, Marketplace, live
+provider, or live customer acceptance occurred. Keep rollouts disabled and preserve the untracked
+`infra/scripts/__pycache__/`.
+
+Earlier current checkpoint (2026-11-13): P10/P24 code commit `c7412170` is pushed to
+`origin/Mcbt5s-Backup-2` on branch `autonomous-managed-services-20261111`;
 runtime-work admission/drain is in `15a04f7e`. P10/P24 now
 allow an owner-reviewed same-publisher release update for version-only manifest changes to static
 Canvas and channel-handler code packages with unchanged authority/configuration. The host verifies
@@ -46,10 +57,11 @@ U11/U12 supported callers/build wiring are locally implemented, while invoices, 
 feeds and live evidence remain open. P01/P02 still require real resource separation, ownership, 158
 read-only receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/
 author-accounting policies remain unresolved and must not be guessed. Do not repeat completed audits
-without new evidence. Exact next action: add validated, visual setup-field authoring to Foundry Template
-Studio and pass those declarations through the signed Space Template export/conformance path; keep the
-existing host validation authoritative. Then continue remaining S4–S9/U01–U12 and platform §5/§9/§10
-gaps while preserving all external and unsupported-contract gates.
+without new evidence. Exact next action: add an explicit `call.received`/`call.digits` input to the
+owner-authorized local keypad simulator and route its response through the existing host validator
+and renderer without issuing carrier commands. Test role denial and DTMF preview. Then continue
+remaining S4–S9/U01–U12 and platform §5/§9/§10 gaps while preserving all external and unsupported-
+contract gates.
 After compaction, interruption or a new session, read both plans, both progress records and this
 runbook; inspect the actual branch and worktree; resume from this exact action. Do not deploy,
 purchase, reset, clean, switch branches or force-push.

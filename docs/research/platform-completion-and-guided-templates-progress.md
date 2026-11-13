@@ -2,6 +2,14 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after P05 visual setup authoring code `b3feecb5` was fetched and pushed to
+`origin/Mcbt5s-Backup-2`. Foundry Template Studio now authors optional v1/v2 declarative setup
+fields, defaults, required state, bounds, English/Spanish labels/help and simple visibility conditions.
+The owner-only export route scopes fields to the selected exported project, uses the SDK validator
+before storage, revalidates after sanitization, and retains the declarations in the conformance
+artifact. Local evidence: Spaces helper/route tests **4/4**, SDK Canvas tests **3/3**, Spaces and SDK
+typechecks, and `git diff --check`. No deployed or live acceptance ran; rollouts stay disabled.
+
 Updated 2026-11-13 after code `c7412170` was pushed to `origin/Mcbt5s-Backup-2` following fetch. It follows P04 full-archive export `6fccacaa`, runtime-work admission/drain `15a04f7e`, and the original static Canvas receipt path `9d5a0c23`.
 
 P10/P24 now support an owner-reviewed version-only signed release update for same-publisher Space-shared packages whose only primitives are static Canvas and channel handlers. The normalized signed manifest must be identical except release and primitive versions; settings, dependencies, permissions, capabilities, connections, storage and package configuration cannot change. The update API reads the exact installation's active runtime-work count and withholds its short-lived apply token until the installation is paused and drained. SpaceDO repeats signature, pin, pause and lease checks in the update transaction, writes the version and a durable replayable receipt, and leaves the installation paused. The Shell caller explains the supported scope and active-work count. Gadget/schema/data migrations and broader update classes remain gated.
@@ -12,7 +20,7 @@ P06 migration `0239` pins each new Telnyx extension call to the exact active ins
 
 P04 `849bf78a` previews additive merge insert/skip counts in a rolled-back SQLite transaction, rechecks on apply, persists skipped counts and shows restore status. Code `6fccacaa` adds an owner/admin full-archive export caller with stable request-ID recovery. The panel states that archives cover supported SpaceDO rows and listed workspace/extension objects, not other services, provider data or opaque Container snapshots, and shows current fail-closed size/object limits. This is not point-in-time rollback. Archive caps, cross-service coverage, legal/key/jurisdiction policy and isolated/live recovery remain open. P01/P02 still lack actual resource separation, service ownership, 158 read-only receipts and operator-attested D1 baselines. Preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement visual setup-field authoring in Foundry Template Studio and pass the declarations through the owner-authorized `/spaces/:spaceId/export-template` route, SDK schema validation, and conformance artifact. The current dogfood authoring form accepts setup schema neither visually nor in its export payload; preserve the existing host validator and signed export path. Then continue remaining S4–S9/U01–U12 and platform §5/§9/§10 gaps. P01/P02 resource IDs, ownership, read-only receipts and operator-attested baselines remain external evidence gates; P03/P20 grace/restriction and refund/access/author-accounting policies remain undecided. Do not repeat completed caller audits without new source evidence or claim deployed/live acceptance from local checks.
+Exact next action: add test-only `call.received` and `call.digits` input to the existing owner phone-handler simulator, then pass output through the current host response validator and renderer without issuing carrier commands. Verify owner authorization and DTMF preview, then continue remaining S4–S9/U01–U12 and both plans' uncoded requirements. P01/P02 resource IDs, ownership, read-only receipts and operator-attested baselines remain external evidence gates; P03/P20 grace/restriction and refund/access/author-accounting policies remain undecided. Do not repeat completed caller audits or claim deployed/live acceptance from local checks.
 Prior checkpoint: scoped attachment code `5e0c65019f3e0b9dc994977cfba494a1f8c8eaf9` was
 pushed to `origin/Mcbt5s-Backup-2` after fetching and confirming the remote was an ancestor. Channel
 packages can declare bounded text attachment access, which requires explicit owner/admin approval.
@@ -98,8 +106,8 @@ fail-closed on resource separation, ownership, `naelao-calls`, missing receipts 
 D1 baselines. Rollouts remain disabled.
 
 **§5 — PARTIAL.** Signed source/provenance, encrypted draft/resume, localized/conditional fields,
-expected usage, owner forms, installation settings/status and setup-only schema migration are local.
-Visual setup-schema authoring in Foundry Studio is not yet connected to the validated export path.
+expected usage, owner forms, installation settings/status, setup-only schema migration, and Foundry
+visual field authoring through validated export/conformance (`b3feecb5`) are local.
 Permission/price changes, general upgrade/rollback/uninstall, project/provider-resource/license
 lifecycle, verified rates and live acceptance remain uncoded or lack approved contracts.
 
