@@ -2,52 +2,53 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P23 synchronous notification outcomes `27683db1` and setup migration
-foundation `4dbd5c99` were pushed to `origin/Mcbt5s-Backup-2`. The route claims caller-stable IDs before provider egress, persists
-non-PII not-sent/rejected/accepted/ambiguous outcomes, returns outcome/ID, and refuses automatic
-resend after ambiguous attempts. Migrations 0235/0236 widen channels and add terminal ambiguous
-cost-alert delivery. Existing asynchronous ledger/status paths remain in migration 0234.
+Updated 2026-11-13 after code `0f07a512` was pushed to `origin/Mcbt5s-Backup-2`. The owner/admin
+guided-template setup update resolves the newest same-publisher signed candidate, verifies unchanged
+runtime content, dependencies and price, and permits only schema/value changes. Preview and apply
+carry installed artifact/listing/setup-revision fences; SpaceDO revalidates the schema migration,
+collects missing required values, requires explicit confirmation for dropped values, and persists a
+durable actor-attributed audit event. Automatic rollback and broader package lifecycle operations are
+not implemented.
 
-Local/mock evidence: Notifications **44/44**, Agents **1,481 passed / 7 skipped** across 270 files,
-Auth **34/34**, affected Auth/Agents/Billing/Shell/Dashboard typechecks, migration/release tests
-**18/18**, release/deployment manifest validators and `git diff --check`. Release inventory: 236
-migrations, required schema `0236_cost_alert_ambiguous_delivery_status`. No provider, deployed
-database, deployment or live acceptance ran. P23 remains PARTIAL for approved retention, audited
-operator replay and live acceptance. Provider acceptance is not inbox delivery.
+Local/mock evidence for `0f07a512`: Agent SDK **10/10** and typecheck; Spaces focused suites **29/29**
+and typecheck; Router route test **49/49** and typecheck; Shell typecheck; `git diff --check`. No
+Marketplace provider, deployed DB, deployment or live installation acceptance ran.
 
-P01/P02 controls pass locally but block on real/operator evidence: one shared D1, eleven shared KV
-IDs, unresolved `naelao-calls`, **158** missing read-only resource receipts and absent operator-
-attested D1 baselines. No independent code gap is currently recorded in the release runner/map.
-P03/P12/P20 and P04 implementation paths are present; remaining grace/restriction, refund/dispute/
-accounting, archive/key/jurisdiction policy and deployed/live recovery drills remain policy or
-acceptance gaps. These are not credential blockers. No rollout is enabled.
+P23 code `27683db1` remains pushed: stable caller operation IDs are claimed before provider egress;
+non-PII not-sent/rejected/accepted/ambiguous outcomes are persisted and returned; ambiguous outcomes
+are never automatically resent. Migrations 0235/0236 widen channel storage and add terminal ambiguous
+cost-alert status. Previous local evidence is Notifications **44/44**, Agents **1,481 passed / 7
+skipped**, Auth **34/34**, affected typechecks, migration/release **18/18**, validators and diff check.
+P23 remains PARTIAL for approved retention, audited replay and provider/deployed live acceptance.
+
+P01/P02 code controls pass locally but fail closed on shared D1/KV IDs, unresolved `naelao-calls`,
+missing read-only resource receipts and absent operator-attested D1 baselines. P03/P12/P20 and P04
+retain policy, archive/jurisdiction and deployed recovery gates; these are not ordinary-code or
+credential-only blockers. Rollouts remain disabled.
 
 **§5 — PARTIAL.** Signed listing/schema provenance, encrypted draft/resume, bounded conditional and
-localized declarations, expected-usage inputs, install status, owner host forms and per-installation
-settings migration exist. Code `4dbd5c99` adds a bounded, signed, data-only setup migration contract
-and pure preview helper pinned to source artifact/schema digests; it is tested **10/10** and typechecks.
-It is not connected to Marketplace source verification, owner UI or per-installation persistence yet.
-The Template setup-schema migration/update caller flow therefore remains uncoded.
-Permission/pricing review, rollback/uninstall effects, generated-project/provider-resource lifecycle,
-complete verified rates, visual authoring and live acceptance also remain gaps; ordinary unwritten code
-is not labeled credential-blocked.
+localized declarations, expected-usage inputs, installation status, owner host forms, per-installation
+settings and setup-only schema update are reachable. `0f07a512` adds preview/apply with exact
+artifact/listing/revision fences and a durable audit event. Permission/pricing review, general package
+upgrade/rollback, generated-project/extension/provider-resource/license lifecycle, complete verified
+rates, visual authoring and live acceptance remain uncoded or lack approved contracts.
 
-**§9.5 — PARTIAL.** Per-installation settings and non-Canvas fallback are local. The phone history
-feed is Space Assistant phone operations, not customer voice-agent call history. Customer agent
-runtime, verified catalogs/rates, browser test/publish, customer call receipts, package composition and
-live acceptance remain. Provider/account acceptance is a separate gate.
+**§9.5 — PARTIAL.** Per-installation settings, non-Canvas fallback and signed phone-handler discovery
+are local. Customer voice runtime, customer call history/receipts, verified catalogs/rates, browser
+test/publish, package composition and live acceptance remain. No provider/account acceptance is
+claimed.
 
 **§10 — PARTIAL.** Advisory registry, audience-filtered reads, confirmation receipts, versioned
 amendments/revocation, public cards/proposals and project access rechecks have local code/coverage.
 Owner-configurable posture/defaults, private publication/request-to-use authority, extension/dependency
 linkage, reservation/cardinality, expiry/concurrency policy and broad non-disclosure acceptance remain.
-Unresolved product/policy choices are not credential blocks.
 
-Exact next task: wire the §5 migration helper to Marketplace's same-publisher signed source verifier,
-owner/admin installation-status UI and SpaceDO persistence. Add preview/apply with exact artifact,
-schema, listing and setup-revision fences; allow only setup-only updates with unchanged runtime,
-dependencies and terms. Keep generated-project, permission, dependency, price and provider-resource
-changes outside this path. Resume the managed-services source/caller matrix after this slice.
+Exact next task: continue the managed-services source/caller matrix at S3/U11, tracing settlement
+outbox, supported provider-cost sources, threshold/alert delivery and owner controls; close a concrete
+reachable code gap if present, then verify U12 and finish S4–S9/U01–U12 reconciliation. The platform
+queue then resumes at P01/P02 external evidence gates and P03/P20 policy gates, followed by remaining
+§5 lifecycle, §9.5 voice and §10 coordination requirements. Preserve rollout, local/mock/deployed/live
+distinctions and `infra/scripts/__pycache__/`.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting
@@ -532,9 +533,13 @@ acceptance receipts remain on their existing paths. Local/mock evidence at `e967
 affected typechecks, release/deployment manifest validation and staging/production Wrangler dry runs.
 No deployed D1 or provider delivery was exercised.
 
-Remaining code/policy gaps are general synchronous-send outcomes, an approved retention rule and
-scoped/audited operator replay. Provider request acceptance does not prove inbox delivery or reading.
-No provider/deployed live acceptance is claimed.
+Code `27683db1` plus migrations 0235/0236 adds synchronous `/internal/notify` operation IDs and
+non-PII accepted/rejected/ambiguous/not-sent outcomes; callers supply stable IDs where source event
+identity exists, and ambiguous operations are not automatically resent. Local evidence: Notifications
+**44/44**, Agents **1,481 passed / 7 skipped**, Auth **34/34**, affected typechecks, migration/release
+**18/18** and release validators. Provider request acceptance does not prove inbox delivery or reading.
+P23 remains PARTIAL for approved retention, audited operator replay, incomplete identity/receipt
+coverage in other paths, and provider/deployed live acceptance.
 
 ### P15 — large-Space Blackboard discovery: PARTIAL, indexed bounded path implemented locally
 
@@ -629,13 +634,17 @@ inputs, setup provenance/status, same-publisher update availability and host-cer
 Code `2901377e`, after `08c9e4b9`, makes the same installation-scoped host settings form reachable
 from project extension management when an active package has no Canvas dashboard. Preview exposes
 verified listing/permission/known-cost changes but does not apply them or provision provider
-resources.
+resources. Code `0f07a512` adds a separate setup-only migration preview/apply path: the Worker resolves
+the newest same-publisher signed artifact; the owner/admin caller rechecks exact artifact/listing/schema
+and setup-revision fences; the runtime package, dependencies and price must stay unchanged; SpaceDO
+persists migrated setup values and an actor-attributed event. Drop operations require explicit
+confirmation. Automatic rollback is not available.
 
-§5 remains PARTIAL. Schema migrations between releases, owner review of changed permissions/pricing,
-rollback, revocation/uninstall effects on generated projects/extensions/provider resources/licenses
-and retained receipts, complete usage/provider/runtime rates, visual authoring, and end-to-end live
-acceptance remain uncoded or lack an approved lifecycle contract. Unknown rates remain unknown; these
-are not credential-only gaps. No deployed Marketplace, DB, payment or provider acceptance is claimed.
+§5 remains PARTIAL. This does not implement general package updates, changed-permission/pricing
+approval, rollback, revocation/uninstall effects on generated projects/extensions/provider
+resources/licenses and retained receipts, complete usage/provider/runtime rates, visual authoring or
+end-to-end live acceptance. Unknown rates remain unknown; these are not credential-only gaps. No
+deployed Marketplace, DB, payment or provider acceptance is claimed.
 
 ### P24 — publisher and package trust: PARTIAL, scoped rollback and key-registry checks implemented
 
@@ -697,7 +706,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P20 | PARTIAL | Idempotent refund review ledger and buyer/creator status exist; dispute, access reversal, author accounting and independent operator identity remain unresolved. |
 | P21 | PARTIAL | Encrypted bounded auth-email outbox and acceptance status exist; builder delivery, unverified-user policy and live delivery remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
-| P23 | PARTIAL | Async queue outcomes and owner status exist; synchronous `/internal/notify` outcomes remain uncoded, as do retention policy, audited replay and live delivery. Next code task. |
+| P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
 | P24 | PARTIAL | Signed installed-release checks, scoped rollback and key registry exist; dependency closure, cross-Space restore, active-work drain and compromise handling remain. |
 
 ## Requirement queue

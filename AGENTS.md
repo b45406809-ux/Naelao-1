@@ -12,40 +12,32 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): P23 synchronous notification outcomes are committed and pushed as
-`27683db1`, and the signed declarative template setup-migration foundation is pushed as `4dbd5c99`,
-to `origin/Mcbt5s-Backup-2`. The Notifications route now
-claims stable operation IDs before provider egress, records non-PII `not_sent`, rejected, accepted or
-ambiguous outcomes, returns outcome and ID, and never automatically repeats an ambiguous operation.
-Reachable callers pass stable IDs where their event or operation identity supports it. Migrations
-0235 and 0236 widen channel storage and add terminal ambiguous cost-alert delivery; release inventory
-is 236 migrations and requires schema `0236_cost_alert_ambiguous_delivery_status`.
+Current checkpoint (2026-11-13): Code `0f07a512` is pushed to `origin/Mcbt5s-Backup-2`. It connects
+the signed declarative template setup migration (`4dbd5c99`) to Marketplace source verification,
+owner/admin status UI, and SpaceDO persistence. Preview/apply revalidate the newest same-publisher
+signed candidate, fence installed artifact/listing/setup revision, and permit setup values only when
+runtime content, dependencies and price are unchanged. Dropped saved values need explicit owner
+confirmation; successful updates create a durable actor-attributed event. Rollback is unavailable and
+the broader template lifecycle remains partial.
 
-Local/mock evidence for `27683db1`: Notifications **44/44**; Agents **1,481 passed, 7 skipped** across
-270 files; Auth **34/34**; Auth, Agents, Billing, Shell and Dashboard typechecks pass; migration and
-release tests **18/18**; release and deployment manifest validators pass; `git diff --check` passes.
-No provider, deployed database, deployment, or live acceptance was exercised. P23 remains PARTIAL for
-approved retention, audited operator replay and live acceptance. `infra/scripts/__pycache__/` remains
-untracked and preserved.
+Local/mock evidence for `0f07a512`: Agent SDK **10/10** and typecheck; Spaces focused suites **29/29**
+and typecheck; Router route test **49/49** and typecheck; Shell typecheck; `git diff --check`. No
+Marketplace provider, deployed database, deployment, or live installation acceptance was exercised.
+The separately pushed P23 synchronous outcomes (`27683db1`, migrations 0235/0236) remain PARTIAL for
+approved retention, audited replay and live acceptance. S2 is IMPLEMENTED_LOCAL for supported lanes;
+S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10 retain their specific gaps in the ledgers. P01/P02
+remain fail-closed on shared configured IDs, unresolved `naelao-calls`, missing read-only receipts and
+operator-attested migration baselines. Preserve untracked `infra/scripts/__pycache__/`; keep rollouts
+disabled.
 
-`4dbd5c99` adds a signed, data-only setup migration declaration pinned to the installed artifact and
-schema digests, validates rename/drop/default steps, and previews values without coercion while
-reporting required owner input. Agent SDK focused tests **10/10**, SDK typecheck and
-`git diff --check` pass. This helper is not yet reachable from the Marketplace installation caller
-and does not apply an update.
-
-S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 and platform P01–P24/§5/§9.5/§10 retain
-their specific statuses and gaps in the ledgers. P01/P02 code controls pass locally and fail closed on
-one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, 158 missing read-only resource receipts,
-and absent operator-attested migration baselines. No rollout is enabled.
-
-Exact next action: wire the §5 migration foundation to the current Marketplace source verifier,
-owner/admin installation-status caller and SpaceDO persistence. Add an owner preview that resolves the
-newest same-publisher signed artifact, confirms the runtime package/dependencies/price are unchanged,
-matches the exact installed artifact/schema digests, collects missing values, and applies only after
-explicit confirmation with expected listing/hash/setup-revision fences. Keep generated-project,
-permission, dependency, price and provider-resource changes out of this setup-only path. Then continue
-the remaining managed-services matrix actions. Update both progress records after each coherent slice.
+Exact next action: resume the managed-services progress matrix at U11 (S3 cost and settlement
+outcomes). Trace the current settlement outbox, provider-cost sources, threshold/alert delivery,
+owner controls and unsupported invoice/billed-idle feeds; close only an independent reachable local
+code gap, then verify U12 and update the S4–S9/U01–U12 reconciliation. Keep external commercial,
+provider/runtime-contract and live acceptance gates explicit. Continue the platform queue afterward
+from P01/P02 evidence gates and P03/P20 policy gates, then §5 remaining lifecycle, §9.5 voice and §10
+coordination gaps. After each meaningful checkpoint, update both ledgers and this runbook; after a
+session boundary, reread both plans, both ledgers and the actual worktree before resuming.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing

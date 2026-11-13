@@ -2,9 +2,20 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; P23 outcomes `27683db1`, setup migration foundation `4dbd5c99` pushed)
+### Active continuation (2026-11-13; pushed code `0f07a512`)
 
-- `27683db1` is pushed to `origin/Mcbt5s-Backup-2`. Notifications claims a stable operation ID before
+- `0f07a512` is pushed to `origin/Mcbt5s-Backup-2`. It completes the reachable setup-only update path
+  built on `4dbd5c99`: Marketplace rechecks the newest same-publisher signed source and unchanged
+  runtime/dependencies/price; owner/admin UI previews and applies with installed artifact, listing and
+  setup-revision fences; SpaceDO validates the exact migration, persists new setup values/provenance
+  and an actor-attributed audit event. Dropped fields require explicit confirmation. No project,
+  extension, permission, provider resource or license changes occur, and automatic rollback is absent.
+- Local/mock verification for `0f07a512`: Agent SDK **10/10** and typecheck; Spaces focused suites
+  **29/29** and typecheck; Router route test **49/49** and typecheck; Shell typecheck; `git diff --check`.
+  No Marketplace/provider, deployed DB, deployment or live installation acceptance ran. §5 remains
+  PARTIAL for permission/pricing review, full package update/rollback/uninstall lifecycle, provider and
+  generated-project effects, complete verified rates, visual authoring and live acceptance.
+- P23 code `27683db1` remains pushed. Notifications claims a stable operation ID before
   provider egress, stores non-PII not-sent/rejected/accepted/ambiguous results, returns the ID and
   outcome, and does not automatically resend an ambiguous operation. Reachable Agent, Auth, Space,
   Billing and script callers were checked; IDs derive from event/operation identity where available.
@@ -26,11 +37,12 @@
   schema SHA-256 values. Rename/drop/default operations are bounded and type-checked; preview preserves
   existing values without coercion and reports required owner input. Agent SDK test **10/10**, SDK
   typecheck and `git diff --check` pass. It is not yet wired to the installation UI or persistence.
-- Exact next task: connect this foundation to Marketplace's same-publisher signed source check and
-  owner/admin status caller, then implement preview/apply with exact artifact/schema/listing and setup
-  revision fences. Permit only setup-only updates with unchanged package runtime, dependencies and
-  terms; preserve project, provider and permission state. Then resume the remaining managed-services
-  matrix actions from their recorded next tasks.
+- Exact next task: resume S3 at U11. Trace the settlement outbox, provider-cost sources,
+  threshold/alert delivery and owner controls against current callers; implement any independent
+  reachable gap, keeping provider invoices, billed-idle/CPU-size feeds and supported-account
+  acceptance distinct. Then verify U12 and finish the S4–S9/U01–U12 source/caller reconciliation.
+  Keep U05/U06 runtime contracts, external policy and live acceptance as explicit gates; preserve
+  `infra/scripts/__pycache__/` and keep rollouts disabled.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 
