@@ -56,6 +56,7 @@ export function AssistantPhonePanel({
       telnyx_order?: { operation_id: string; status: string; phone_number: string; upfront_cost_minor: number; monthly_cost_minor: number; currency: string; provider_order_id: string | null } | null;
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
+      recent_telnyx_extension_calls?: Array<{ state:string;turn_count:number;started_at:number;duration_seconds:number|null;caller_hint:string|null }>;
       phone_handler_candidates?: PhoneHandlerCandidate[];
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
@@ -330,6 +331,15 @@ export function AssistantPhonePanel({
           <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
         </fieldset>;
       })}
+      {((state?.extension_lines?.length ?? 0) > 0 || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
+        <summary>Recent customer extension calls · Telnyx</summary>
+        <p>The latest 50 call records from the last 7 days. Caller IDs are masked. This keypad extension does not store transcripts or recordings, and this view is not an invoice.</p>
+        {state?.recent_telnyx_extension_calls?.length ? <ol>
+          {state.recent_telnyx_extension_calls.map((call, index) => <li key={`${call.started_at}:${index}`}>
+            {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`}
+          </li>)}
+        </ol> : <p>No recent Telnyx extension calls are recorded.</p>}
+      </details>}
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}
         {state?.phone?.status ?? ""}

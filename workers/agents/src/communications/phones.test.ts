@@ -968,6 +968,23 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
  });
 
+ it("shows owner-scoped Telnyx extension call history with masked caller and no provider call ID",async()=>{
+  const f=await phoneFixture();f.env.AGENTS_WORKER={fetch:vi.fn(async()=>Response.json({valid:true}))} as unknown as Fetcher;
+  await f.act("phone-handler",{installation_id:"extension",handler_sha256:"a".repeat(64),confirm:true});
+  const now=Math.floor(Date.now()/1000);
+  await f.db.prepare("UPDATE assistant_phone_bindings SET provider='telnyx' WHERE id=?").bind(f.binding.id).run();
+  await f.db.prepare(`INSERT INTO assistant_telnyx_extension_calls(call_control_id,binding_id,caller,state,turn_count,started_at,
+    expires_at,duration_seconds,created_at,updated_at) VALUES(?,?,?,'ended',2,?,?,25,?,?)`)
+    .bind("provider-call-control-private",f.binding.id,"+14155550199",now-30,now+300,now-30,now).run();
+  const status=await f.act("phone-status") as {recent_telnyx_extension_calls:Array<Record<string,unknown>>};
+  expect(status.recent_telnyx_extension_calls).toEqual([expect.objectContaining({state:"ended",turn_count:2,
+    started_at:now-30,duration_seconds:25,caller_hint:"•••• 0199"})]);
+  expect(JSON.stringify(status)).not.toContain("provider-call-control-private");
+  expect(JSON.stringify(status)).not.toContain("+14155550199");
+  const nonManager=await f.act("phone-status",{},false,false) as {recent_telnyx_extension_calls:unknown[]};
+  expect(nonManager.recent_telnyx_extension_calls).toEqual([]);
+ });
+
  it("offers only active signed phone handlers with matching package and source bytes", async () => {
   const f = await phoneFixture();
   const source = "export default async function handle() { return { reply: 'ok' }; }";

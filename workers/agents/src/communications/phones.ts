@@ -525,6 +525,11 @@ function metadata(binding: AssistantPhoneBinding | null) {
     currency: "USD",
   };
 }
+
+function maskedPhoneCaller(caller: string): string | null {
+  const digits = caller.replace(/\D/g, "");
+  return digits.length >= 4 ? `•••• ${digits.slice(-4)}` : null;
+}
 function checkedNumber(
   record: Record<string, unknown>,
   account: string,
@@ -570,6 +575,18 @@ export async function handlePhoneAction(
     const telnyxRelease = await env.PLATFORM_DB.prepare("SELECT id,status,phone_number,next_reconcile_at,last_error FROM assistant_telnyx_number_release_operations WHERE identity_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
       .bind(identity.id).first<{ id:string;status:string;phone_number:string;next_reconcile_at:string|null;last_error:string|null }>();
     const phoneHandlerCandidates = manager ? await listPhoneHandlerCandidates(env, scope) : [];
+    const recentExtensionCalls = manager
+      ? (await env.PLATFORM_DB.prepare(`SELECT c.call_control_id,c.caller,c.state,c.turn_count,c.started_at,c.duration_seconds
+          FROM assistant_telnyx_extension_calls c JOIN assistant_phone_bindings b ON b.id=c.binding_id
+          WHERE b.identity_id=? AND b.purpose='extension' AND c.started_at>=?
+          ORDER BY c.started_at DESC,c.call_control_id DESC LIMIT 50`)
+          .bind(identity.id, Math.floor(Date.now() / 1000) - 7 * 86_400)
+          .all<{ call_control_id:string;caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
+          .results.map(row => ({
+            state: row.state, turn_count: row.turn_count, started_at: row.started_at,
+            duration_seconds: row.duration_seconds, caller_hint: maskedPhoneCaller(row.caller),
+          }))
+      : [];
     const agentPortShare = currentPhone?.provider === "telnyx" ? await env.PLATFORM_DB.prepare(`SELECT m.agentport_link_status,
         (SELECT o.operation_name FROM managed_service_operations o WHERE o.account_id=m.id AND o.operation_name IN ('agentport_sync','agentport_revoke')
           ORDER BY o.updated_at DESC LIMIT 1) AS operation_name,
@@ -607,6 +624,7 @@ export async function handlePhoneAction(
           ).results
         : [],
       phone_handler_candidates: phoneHandlerCandidates,
+      recent_telnyx_extension_calls: recentExtensionCalls,
       legacy_numbers: manager
         ? (
             await env.PLATFORM_DB.prepare(
