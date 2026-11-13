@@ -2,7 +2,15 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after template runtime API commit `99a036cd` was pushed to
+Updated 2026-11-13 after S4/MS03c-d code commit `ebe98120` was pushed to
+`origin/Mcbt5s-Backup-2`. Sidecar import failures/conflicts now receive durable terminal outcomes;
+export receipts bind workspace path/revision and track immutable artifact staging separately from
+checked publication. A bounded owner/admin status route and Shell review list expose the last 50
+receipts per installation/branch, with no automatic conflict publication. Agents sidecar DO/prebuilt/
+route suites pass **40/40**, Shell API test **1/1**, Agents/Shell typechecks and `git diff --check`.
+These are local R2/DO/Worker mocks, not deployed or provider acceptance.
+
+Prior code commit `99a036cd` was pushed to
 `origin/Mcbt5s-Backup-2`. SpaceDO migration 115 persists versioned setup schema plus optimistic
 revision with each new activation. The `/api/template-setup` host path returns one project group to
 the exact active, required SPACE_SHARED extension and revalidates declared read/configure grants,
@@ -25,13 +33,13 @@ end-to-end acceptance. No template field provides provider-secret access. The se
 customer phone-extension controls are available through the existing phone ledgers, while the retired
 `/customer-voice/*` route remains closed and public extension streaming remains unavailable.
 
-The managed-services mission is not yet code-complete. Continue S4/MS03c–d first: trace durable
-sidecar transfer receipts and conflicts through their agent and owner callers; add an installation-
-scoped status/conflict-review path where no first-party caller exists, keeping conflict data staged.
-Then close independent S4–S9/U01–U12 code gaps before resuming the platform plan in dependency order
-(release/environment safety, commercial integrity/recovery, guided templates, voice extension
-dashboards, and Shared-Space coordination). Keep rollout, local/mock, deployed and live evidence
-distinct.
+The managed-services matrix still contains PARTIAL rows for the unsupported U05/U06 writer/runtime
+contract, policy/product decisions, external evidence and deployed/live acceptance; this code does not
+change those classifications. The traced MS03c/d caller gap is closed locally. Continue the platform
+plan at P01/P02 release and environment safety, checking current sources for independent code gaps
+while keeping missing operator baselines, resource receipts and environment separation fail closed.
+Then proceed through commercial integrity/recovery, guided-template lifecycle, voice-extension
+dashboards and Shared-Space coordination. Keep rollout and local/mock/deployed/live evidence distinct.
 
 Prior checkpoint — updated 2026-11-13 after code commit `36ff9179` was pushed to `origin/Mcbt5s-Backup-2`. Initial §10.2
 coordination-registry code is IMPLEMENTED_LOCAL: migration 114 persists bounded Space-owned facts,
@@ -60,22 +68,24 @@ The voice microapp edits Space Assistant preferences only; it is not a customer 
 §9.5's package-owned customer dashboard, test/publish/monitor flow, custom voice lifecycle, voice
 preview, supported public streaming and provider acceptance remain open.
 
-§5 remains PARTIAL. Space Template setup values are persisted with their idempotent install record,
-but are still not exposed to template code; no browser draft/resume lifecycle, conditional/localized
-fields, visual authoring, expected-usage inputs, complete provider/runtime rate coverage or full
-update/uninstall acceptance exists. The new extension settings store is install-scoped but is not a
-template runtime consumer. Fields cannot collect provider secrets; use host-managed connections.
+§5 remains PARTIAL. Space Template setup values are now exposed to the exact active required shared
+extension through a host API that rechecks the signed installation, declared capabilities, schema,
+normalized values and optimistic revision. Browser draft/resume, conditional/localized fields,
+visual authoring, expected-usage inputs, complete provider/runtime rate coverage, package
+update/uninstall lifecycle and end-to-end acceptance remain open. The separate extension settings
+store is still not a Template runtime consumer. Fields cannot collect provider secrets; use
+host-managed connections.
 
 The managed-services source/caller ledger continues to track S2–S9/U01–U12. Its PARTIAL rows retain
 their named product policy, unsupported runtime/platform contract, external resource evidence or
 deployed/live acceptance gap. P01/P02 remain fail-closed on environment IDs, ownership receipts and
 operator-attested migration baselines; P03/P20 retain the grace/restriction,
-refund/dispute/author-accounting and independent operator-identity gaps. Exact next task: reconcile
-§9.5 customer voice package setup with current `/customer-voice/*` route retirement, installed phone
-extensions, line assignments, phone settings and cost/status surfaces. Do not resurrect retired
-customer call behavior or public streaming. Then continue the remaining §9 package/runtime/cost gaps
-and §10 policy, lifecycle, concurrency and privacy work; keep implementation, mocked, deployed and
-live evidence distinct.
+refund/dispute/author-accounting and independent operator-identity gaps. After P01/P02 and commercial
+integrity/recovery, continue guided-template lifecycle before returning to §9.5 customer voice-package
+setup, the current retired `/customer-voice/*` routes, installed phone extensions, line assignments,
+phone settings and cost/status surfaces. Do not resurrect retired customer call behavior or public
+streaming. Then continue the remaining §9 package/runtime/cost gaps and §10 policy, lifecycle,
+concurrency and privacy work; keep implementation, mocked, deployed and live evidence distinct.
 
 Updated 2026-11-13 after guided-template code commit `46f38eea` was pushed to
 `origin/Mcbt5s-Backup-2`. Space creation retains the exact Marketplace listing selected with a

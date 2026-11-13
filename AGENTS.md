@@ -2,16 +2,19 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): code `99a036cd` is pushed to
-`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It adds a host-validated
-Space Template setup runtime API. Activation persists the validated schema with the exact artifact
-hash and initial values; old matching installations can backfill the schema only when the artifact
-hash and values match. A caller is scoped to one installed Template/project and one active required
-SPACE_SHARED extension, with declared read/configure capabilities, no-store responses, host-side
-value validation, and optimistic revisions. SpaceDO, the Space gateway, Router product-session
-allowlist, Shell RPC and typed Agent SDK consumer are connected. Local evidence: Agent SDK **40/40**,
-Spaces **25/25**, Router **40/40**, SDK/Spaces/Router/Shell typechecks and `git diff --check`.
-These are local tests/mocks and static checks; no deployment or live provider/runtime acceptance ran.
+Current continuation checkpoint (2026-11-13): code `ebe98120` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. It closes the MS03c/d sidecar
+artifact receipt caller gap. Sidecar transfers now persist terminal import conflicts and failures,
+bound the recent owner-visible receipt index to 50, distinguish exported immutable artifacts from
+confirmed workspace publication, and record checked-publisher conflicts. The owner/admin-only
+Agents route is connected to Shell runtime settings, supports branch selection, and exposes request
+IDs, paths, expected/current hashes, status and artifact digest without a publish action. Conflicted
+outputs remain staged. Focused local evidence: Agents **40/40** across the sidecar DO, prebuilt and
+route suites; Shell **1/1**; Agents/Shell typechecks and `git diff --check`. These are local R2/DO/
+Worker mocks and static checks; no deployed Durable Object, R2, extension or live acceptance ran.
+
+The prior code `99a036cd` also exposes persisted Template setup values to the exact active required
+SPACE_SHARED extension through host validation, capability checks and optimistic revisions.
 
 S2–S9/U01–U12 remains the source of truth; do not claim the managed-services mission complete while
 its named partial rows remain. U05 still lacks a candidate allocator and trusted runtime observation
@@ -22,14 +25,18 @@ observations. This producer is coupled to U06's unsupported pinned-runtime write
 drain/flush and generation-bound handoff contract. This is not a credential blocker. Keep live
 runtime disabled and do not synthesize trusted records.
 
-Exact next task: continue the managed-services mission at S4/MS03c–d. Trace the durable sidecar
-artifact transfer receipts and conflict outcomes from `environment.sidecar_artifact_import/export`
-through their current agent and owner callers. Add a bounded, installation-scoped owner status and
-conflict-review path where no first-party caller exists; preserve staged changes and never auto-publish
-a conflict. Then continue the remaining independent S4–S9/U01–U12 code gaps before resuming platform
-plan lifecycle, voice-dashboard and Shared-Space work. Preserve all rollout flags, local/mock/deployed/
-live distinctions and `infra/scripts/__pycache__/`; do not deploy, buy services, reset, clean, switch
-branches or force-push.
+S2–S9/U01–U12 remains reconciled in the implementation-progress matrix; do not claim the managed
+services mission fully complete. Its recorded partial requirements still include the unsupported
+U05/U06 live-writer contract, product/payment and retention decisions, missing provider evidence,
+external consumer durability, and deployed/live acceptance. Reopen a row only when new source evidence
+shows an independent code gap. Exact next task: start the new platform plan at P01/P02 release and
+environment safety using the existing ordered migration runner, deployment manifest, resource map and
+preflights. Verify against current source and close any independent local code gap before moving to the
+commercial integrity/recovery sections; do not bypass missing baselines, resource ownership receipts
+or environment separation. Then continue guided-template lifecycle, voice-extension dashboards and
+Shared-Space coordination in dependency order. Preserve all rollout flags, local/mock/deployed/live
+distinctions and `infra/scripts/__pycache__/`; do not deploy, buy services, reset, clean, switch branches
+or force-push.
 
 Earlier code commits `07af44c2` and `9919963e` add per-install extension settings and a reference
 Assistant Voice preferences microapp. The dashboard edits Space Assistant preferences only; a
@@ -42,12 +49,11 @@ unsupported runtime/platform contract, external evidence and live acceptance gap
 P01/P02 remain fail-closed on environment-resource separation, ownership receipts and
 operator-attested migration baselines. P03/P20 still need approved grace/restriction and
 refund/dispute/author-accounting policies plus an independently authenticated operator identity.
-After the managed-services mission reaches a documented code-complete state with only named policy,
-platform-contract, external evidence or live acceptance gates, resume the platform plan in dependency
-order: release/environment safety, commercial integrity/recovery, guided-template lifecycle and cost,
-voice-extension dashboards, then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route
-stays closed and public extension streaming stays unavailable. Do not repeat completed audits without
-new source evidence.
+Continue the managed-services ledger alongside the platform plan; do not call the full mission complete
+while any named requirement remains uncoded or gated. The active platform order is release/environment
+safety, commercial integrity/recovery, guided-template lifecycle and cost, voice-extension dashboards,
+then Shared-Space policy/lifecycle. The retired `/customer-voice/*` route stays closed and public
+extension streaming stays unavailable. Do not repeat completed audits without new source evidence.
 
 P04 bounded object capture and restore code commit `937fbdd5` remains pushed to
 `origin/Mcbt5s-Backup-2`, based on P24 code `415ba199`.
