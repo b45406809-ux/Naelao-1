@@ -2,33 +2,35 @@
 
 ## Current checkpoint
 
-### Active continuation (2026-11-13; owner phone call history `1a7806e3` pushed)
+### Active continuation (2026-11-13; signed phone settings reach the handler `95429a34`)
 
-- Branch `autonomous-managed-services-20261111` is at `1a7806e3`, pushed to
-  `origin/Mcbt5s-Backup-2`. The tracked worktree is clean; preserve the unrelated untracked
-  `infra/scripts/__pycache__/`.
-- Owner/admin phone status now returns at most 50 Telnyx customer-extension calls started in the
-  prior seven days, scoped to the exact phone identity. It masks caller numbers, omits provider call
-  control IDs, and labels the rows as call history rather than invoice/recording/transcript evidence.
-  Non-managers receive none. Local evidence: Agents phone **35/35**, Agents and Shell typechecks,
-  `git diff --check`. No provider, deployed DB, deployment or live call ran.
-- S2 remains IMPLEMENTED_LOCAL for supported provider lanes. U11/U12 have already been reconciled
-  against source and callers for supported local behavior; no ordinary alert-delivery/toolchain gap
-  is the current next action. Actual invoices, billed idle/CPU-size feeds, policy and live acceptance
-  remain explicit. S3–S9 and U01–U12 keep their individual ledger statuses and named gaps; U05/U06's
-  trusted observation and pinned writer-admission/drain/handoff contracts remain unsupported and are
-  not credential blockers. Rollouts remain disabled.
-- Platform §5/§9.5/§10 are PARTIAL; P01/P02 stay fail-closed on shared resource IDs, unresolved
-  `naelao-calls`, missing ownership/resource receipts and operator-attested D1 baselines. Other
-  product/legal policy and deployed/live recovery gates remain as recorded below and in the platform
-  ledger.
-- Exact next action: add an internal host read for saved configuration belonging to the exact active
-  signed phone extension installation. Recheck tenant, Space, installation, active status, phone
-  declaration, `extension.settings.read` capability/permission and signed schema; validate persisted
-  values and pass only those values plus revision to the phone channel runtime. Deny revoked,
-  cross-installation, undeclared and invalid-schema reads. Add focused authorization/runtime tests and
-  typechecks, then continue §9.5 dashboard/test/operations plus remaining §5/§10 and managed-service
-  code gaps. Do not repeat the completed U11/U12 audit without new source evidence.
+- Code commit `95429a34` is the branch tip and is being pushed with this ledger checkpoint to
+  `origin/Mcbt5s-Backup-2`; branch `autonomous-managed-services-20261111`. Preserve unrelated
+  untracked `infra/scripts/__pycache__/`.
+- The phone handler now receives settings saved for its exact active signed extension installation.
+  Spaces checks tenant/Space/instance and Project or SPACE_SHARED scope, current host-signed release
+  version and artifact digest, exact phone declaration, `extension.settings.read` capability and
+  permission, schema revision, strict required-value validation and an 8 KiB bound. The Spaces
+  worker also requires the publisher key to remain active. Settings are read-only, no-store, passed
+  with schema version/revision through the typed Agent SDK and frozen handler context. Old release,
+  malformed/incomplete values, disabled installs and undeclared settings fail closed. Packages with no
+  settings grant keep the previous path.
+- Local/mock evidence: Agents phone/runtime harness tests **8/8** and typecheck; Spaces settings,
+  internal route and signed installation suites **28/28** and typecheck; Agent SDK **29/29** and
+  typecheck; Shell typecheck; `git diff --check`. No provider, deployed DB, deployment or live call
+  ran. This proves local caller behavior, not deployed publisher registry, storage or provider acceptance.
+- S2 remains IMPLEMENTED_LOCAL for supported lanes. U11/U12 are already reconciled for supported
+  callers/toolchain; invoices, billed idle/CPU-size feeds, policy and live evidence remain. S3–S9 and
+  U01–U12 retain their row-level statuses and gaps; U05/U06 trusted observation and pinned runtime
+  writer-admission/drain/handoff contracts are unsupported, not credential blockers. P01/P02 remain
+  fail-closed on shared IDs, unresolved `naelao-calls`, missing receipts and operator-attested D1
+  baselines. §5/§9.5/§10 remain PARTIAL; rollouts stay disabled.
+- Exact next action: build an owner-authorized text simulation for a selected active signed phone
+  handler, using synthetic caller text and the bounded isolated runtime. Return only a clearly labeled
+  simulated reply/status; do not call providers, create call records, or persist simulated session
+  state. Add the owner phone UI caller and tests for role, installation/revocation, settings, output
+  bounds and absence of provider egress. Then proceed through remaining §9.5 publish/operations and
+  the uncoded §5/§10 plus S2–S9/U01–U12 rows. Do not repeat closed U11/U12 audits absent new evidence.
 
 ### Active continuation (2026-11-13; public read and proposal authority boundary)
 

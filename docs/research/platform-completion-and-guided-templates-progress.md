@@ -2,43 +2,48 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 at pushed code `1a7806e3` on `origin/Mcbt5s-Backup-2` (branch
-`autonomous-managed-services-20261111`). The owner phone panel now shows at most 50 Telnyx extension
-calls from the last seven days for the scoped phone identity. Caller numbers are masked, raw call
-control IDs are omitted, and the view explicitly does not imply transcripts, recordings or invoice
-cost. Only managers see the history. Local evidence: Agents phone **35/35**, Agents and Shell
-typechecks, and `git diff --check`; no provider, deployment, deployed database or live call acceptance
-was exercised. Preserve untracked `infra/scripts/__pycache__/`.
+Updated 2026-11-13 at code commit `95429a34`, being pushed with this checkpoint to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Saved extension settings now reach
+the exact active signed phone handler through an internal Spaces host read. The host rechecks tenant,
+Space, installation, Project/SPACE_SHARED scope, active status, current release version/artifact,
+phone declaration, read capability/permission, schema and complete values. It fails closed on stale,
+revoked, invalid, oversized or incomplete configuration. The Agent SDK exposes a read-only frozen
+settings snapshot with schema version/revision to the isolated handler. Packages without settings
+permission remain on the prior runtime path.
 
-The earlier checkpoint's “U11 next” instruction is stale. The managed-services ledger already records
-U11/U12 as reconciled for supported local callers/toolchain. Actual provider invoices, billed idle and
-CPU/size measurements, approved policies and live evidence remain open; do not repeat that audit absent
-new source evidence. S2 remains IMPLEMENTED_LOCAL for supported lanes, with S3–S9/U01–U12 gaps retained
-per row. P01/P02 fail closed on configured-resource separation, unresolved `naelao-calls`, missing
-resource receipts and operator-attested migration baselines. Rollouts remain disabled.
+Local/mock evidence: Agents focused tests **8/8** and typecheck; Spaces focused suites **28/28** and
+typecheck; Agent SDK **29/29** and typecheck; Shell typecheck; `git diff --check`. No provider, deployed
+DB, deployment or live call acceptance was exercised. Preserve untracked
+`infra/scripts/__pycache__/`.
 
-**§5 — PARTIAL.** Signed source/provenance, encrypted draft/resume, localized and conditional fields,
+The older “U11 next” note is stale; the managed-services matrix already reconciles U11/U12 for
+supported local callers/toolchain. Invoices, billed idle and CPU/size measurements, approved policies
+and live acceptance remain gates. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12
+retain their row-level gaps. P01/P02 remain fail-closed on resource separation, `naelao-calls`, missing
+receipts and operator-attested D1 baselines. Rollouts remain disabled.
+
+**§5 — PARTIAL.** Signed source/provenance, encrypted draft/resume, localized/conditional fields,
 expected usage, owner forms, installation settings/status and setup-only schema migration are local.
-Package permission/price changes, general upgrade/rollback/uninstall, generated-project/provider
-resource/license lifecycle, verified rates, visual authoring and live acceptance remain uncoded or
-lack approved contracts.
+Permission/price changes, general upgrade/rollback/uninstall, project/provider-resource/license
+lifecycle, verified rates, visual authoring and live acceptance remain uncoded or lack approved
+contracts.
 
-**§9.5 — PARTIAL.** Per-installation settings, signed handler discovery and owner call history are local.
-Saved settings are not yet connected to the customer call handler. Package-owned dashboard runtime,
-voice/model catalogs and rates, test/publish/operations, composition, custom voice lifecycle and live
-acceptance remain. Public keypad extension remains; streaming stays unavailable.
+**§9.5 — PARTIAL.** Per-installation settings now reach the customer phone handler; signed handler
+discovery and masked owner call history are local. Package dashboard runtime, voice/model catalogs and
+rates, text/browser test, publish/version/rollback, operations and composition remain. Streaming is
+unavailable; keypad behavior remains. No provider/account acceptance is claimed.
 
-**§10 — PARTIAL.** Audience-filtered facts, confirmation receipts, amendments/revocation, published
-cards/proposals and access rechecks have local code. Configurable posture/defaults, private-project
-publication and request authority, extension/dependency ownership, reservations, expiry/concurrency
-policy and broad non-disclosure acceptance remain.
+**§10 — PARTIAL.** Audience-filtered facts, receipts, amendments/revocation, published cards/proposals
+and access rechecks have local code. Configurable posture/defaults, private publication/request
+authority, extension/dependency ownership, reservations, expiry/concurrency policy and broad
+non-disclosure acceptance remain.
 
-Exact next action: add an internal read of validated settings for the exact active signed phone
-extension installation; enforce tenant/Space/instance scope, phone declaration, read capability and
-permission, current schema and active status, then pass only validated values and revision to the
-handler. Add focused authorization/runtime coverage and typechecks. Continue through the remaining
-§9.5/§5/§10 and S2–S9/U01–U12 implementation gaps in dependency order; do not repeat closed audits.
-After compaction or interruption reread both plans, both ledgers, AGENTS.md and the actual worktree.
+Exact next action: implement an owner-authorized text simulation for the selected active signed phone
+handler, using synthetic caller text and the same bounded isolated runtime, without provider egress or
+persistent call/session writes. Wire the owner phone UI; cover authorization, signed installation and
+revocation, settings, output bounds and no-provider-egress behavior. Then continue §9.5 publish/
+operations and remaining §5/§10 plus S2–S9/U01–U12 implementation gaps. After compaction or interruption,
+reread both plans, both progress records, AGENTS.md and the actual worktree.
 
 Updated 2026-11-13 after public-read code `82e36d16` was pushed, following bounded-list fix `fb988c26`.
 Space members can read published public-project cards and submit a collaboration proposal; accepting

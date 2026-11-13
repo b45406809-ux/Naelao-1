@@ -12,31 +12,30 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-Current checkpoint (2026-11-13): Branch `autonomous-managed-services-20261111` is at pushed code
-`1a7806e3` on `origin/Mcbt5s-Backup-2`. The tracked worktree is clean; preserve the unrelated
-untracked `infra/scripts/__pycache__/`. This code adds owner/admin phone-extension call history,
-showing the latest 50 calls from seven days with masked callers and no provider call IDs. Local
-verification: Agents phone suite **35/35**, Agents and Shell typechecks, `git diff --check`. No
-provider, deployed database, deployment or live call acceptance ran.
+Current checkpoint (2026-11-13): Branch `autonomous-managed-services-20261111` has code commit
+`95429a34` at its tip, to be pushed with this checkpoint to `origin/Mcbt5s-Backup-2`. The tracked
+worktree is clean after the code commit; preserve the unrelated untracked
+`infra/scripts/__pycache__/`. The phone handler now receives only validated, complete saved settings
+from its exact active signed installation, guarded by tenant/Space/instance, read capability and
+permission, current schema and release-version/artifact checks. Packages without a settings grant keep
+the existing phone path. Local/mock evidence: Agents focused tests **8/8** and typecheck; Spaces
+focused tests **28/28** and typecheck; Agent SDK tests **29/29** and typecheck; Shell typecheck;
+`git diff --check`. No provider, deployed database, deployment or live call ran.
 
-The detailed S2–S9/U01–U12 ledger has already reconciled U11 and U12 for supported local callers and
-toolchain; its missing invoices, billed-idle/CPU-size feeds, policy and live evidence remain explicit.
-The older top-level “U11 next” note is stale. Do not repeat that audit without new source evidence.
-S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and U01–U12 retain their per-row status and
-gaps. §5, §9.5 and §10 remain PARTIAL. P01/P02 fail closed on actual environment separation,
-ownership/resource receipts and operator-attested D1 baselines; other product, policy, runtime contract
-and live acceptance gates remain in the progress records.
+The detailed S2–S9/U01–U12 ledger already reconciles U11/U12 for supported local callers/toolchain;
+actual invoices, billed-idle/CPU-size feeds, approved policies and live evidence remain. Do not repeat
+that audit without new source evidence. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9 and
+U01–U12 keep their row-level status and gaps. §5, §9.5 and §10 remain PARTIAL. P01/P02 fail closed on
+actual environment separation, ownership/resource receipts and operator-attested D1 baselines; other
+product, policy, runtime contract and live acceptance gates remain in both progress records.
 
-Exact next action: connect saved settings from the exact active signed phone extension installation
-to its customer-call handler. Add an internal, tenant/Space/instance-scoped host read that rechecks
-active installation, `phone` declaration, `extension.settings.read` capability and permission, schema
-and persisted values; pass only validated settings and revision into the phone channel context. Reject
-cross-installation, revoked, undeclared and invalid-schema reads. Add focused authorization/runtime
-coverage and affected typechecks. Keep the public streaming route retired, keypad handler behavior
-working, rollout disabled, and all live gates explicit. Then resume the uncoded §9.5 dashboard/test/
-operations work and the ledgers’ remaining §5/§10 and S2–S9 gaps in dependency order. After compaction,
-interruption or a new session, reread both plans, both progress records and this file; inspect the actual
-worktree and resume from the exact next unfinished action recorded there.
+Exact next action: implement an owner-authorized text simulation for the selected active signed phone
+handler. Use synthetic caller input and the same bounded isolated handler runtime, return a clearly
+labeled simulated response, and perform no provider egress or persistent call/session writes. Wire it to
+the owner phone UI and add authorization, installation/revocation, settings, output-bound and no-egress
+coverage. Then continue §9.5 publish/operations gaps and the remaining §5/§10 and S2–S9 requirements.
+After compaction, interruption or a new session, reread both plans, both progress records and this file;
+inspect the actual worktree and resume from the exact next unfinished action.
 
 Safety and fixed decisions remain in force: keep rollouts disabled; do not deploy, purchase services,
 reset, clean, switch branches, or force-push. Preserve uncommitted work and the existing
