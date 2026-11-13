@@ -9,7 +9,19 @@ export interface SpaceArchivePayload {
   tableRows: Record<string, Array<Record<string, unknown>>>;
   rowCounts: Record<string, number>;
   objectReferences: Array<{ key: string; etag: string; size: number }>;
+  /** Absent only in legacy archives written before object-byte capture was added. */
+  objectSnapshots?: SpaceArchiveObjectSnapshot[];
   selectionFingerprint?: string;
+}
+
+export interface SpaceArchiveObjectSnapshot {
+  key: string;
+  etag: string;
+  size: number;
+  checksum: string;
+  bytesBase64: string;
+  httpMetadata?: Omit<R2HTTPMetadata, "cacheExpiry"> & { cacheExpiry?: string };
+  customMetadata?: Record<string, string>;
 }
 
 interface ArchiveEnvelope {
@@ -70,6 +82,8 @@ function archiveKeysForVersion(keys: ArchiveKeys, version: string): string[] {
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const MAX_ENCRYPTED_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES * 2;
 const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+export const MAX_ARCHIVE_OBJECT_BYTES = 2 * 1024 * 1024;
+export const MAX_ARCHIVE_OBJECT_CAPTURE_BYTES = 4 * 1024 * 1024;
 
 /** R2 archive loads must check object metadata before allocating the encrypted body. */
 export async function readSpaceArchiveObject(
@@ -138,6 +152,54 @@ export function topologicalRestoreOrder(tables: readonly string[], dependencies:
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Capture one bounded R2 body and bind its bytes to the listed object identity. */
+export async function captureSpaceArchiveObject(
+  object: Pick<R2ObjectBody, "etag" | "size" | "arrayBuffer" | "httpMetadata" | "customMetadata">,
+  key: string,
+): Promise<SpaceArchiveObjectSnapshot> {
+  if (!key || !Number.isSafeInteger(object.size) || object.size < 0 || object.size > MAX_ARCHIVE_OBJECT_BYTES) {
+    throw new Error("archive_object_capture_limit_exceeded");
+  }
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  if (bytes.byteLength !== object.size) throw new Error("archive_object_size_mismatch");
+  const metadata = object.httpMetadata;
+  const httpMetadata: SpaceArchiveObjectSnapshot["httpMetadata"] = metadata ? {
+    ...(metadata.contentType ? { contentType: metadata.contentType } : {}),
+    ...(metadata.contentLanguage ? { contentLanguage: metadata.contentLanguage } : {}),
+    ...(metadata.contentDisposition ? { contentDisposition: metadata.contentDisposition } : {}),
+    ...(metadata.contentEncoding ? { contentEncoding: metadata.contentEncoding } : {}),
+    ...(metadata.cacheControl ? { cacheControl: metadata.cacheControl } : {}),
+    ...(metadata.cacheExpiry ? { cacheExpiry: metadata.cacheExpiry.toISOString() } : {}),
+  } : undefined;
+  return {
+    key, etag: object.etag, size: object.size, checksum: await sha256(bytes), bytesBase64: base64(bytes),
+    ...(httpMetadata ? { httpMetadata } : {}),
+    ...(object.customMetadata ? { customMetadata: { ...object.customMetadata } } : {}),
+  };
+}
+
+/** Decode and authenticate captured bytes against the original R2 listing record. */
+export async function decodeSpaceArchiveObjectSnapshot(
+  snapshot: SpaceArchiveObjectSnapshot,
+  expected: { key: string; etag: string; size: number },
+): Promise<Uint8Array> {
+  if (!snapshot || snapshot.key !== expected.key || snapshot.etag !== expected.etag || snapshot.size !== expected.size
+    || !Number.isSafeInteger(snapshot.size) || snapshot.size < 0 || snapshot.size > MAX_ARCHIVE_OBJECT_BYTES
+    || !/^[a-f0-9]{64}$/.test(snapshot.checksum) || typeof snapshot.bytesBase64 !== "string") {
+    throw new Error("archive_object_snapshot_invalid");
+  }
+  if (snapshot.httpMetadata && (typeof snapshot.httpMetadata !== "object" || Array.isArray(snapshot.httpMetadata)
+    || Object.entries(snapshot.httpMetadata).some(([key, value]) => !["contentType", "contentLanguage", "contentDisposition", "contentEncoding", "cacheControl", "cacheExpiry"].includes(key)
+      || typeof value !== "string" || (key === "cacheExpiry" && !Number.isFinite(Date.parse(value)))))) throw new Error("archive_object_snapshot_invalid");
+  if (snapshot.customMetadata && (typeof snapshot.customMetadata !== "object" || Array.isArray(snapshot.customMetadata)
+    || Object.values(snapshot.customMetadata).some(value => typeof value !== "string"))) throw new Error("archive_object_snapshot_invalid");
+  let bytes: Uint8Array;
+  try { bytes = fromBase64(snapshot.bytesBase64); }
+  catch { throw new Error("archive_object_snapshot_invalid"); }
+  if (bytes.byteLength !== snapshot.size || await sha256(bytes) !== snapshot.checksum) throw new Error("archive_object_checksum_mismatch");
+  return bytes;
 }
 
 function base64(bytes: Uint8Array): string {

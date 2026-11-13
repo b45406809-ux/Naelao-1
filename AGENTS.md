@@ -2,18 +2,17 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): P24 scoped publisher trust and rollback code commit
-`415ba199` is pushed to `origin/Mcbt5s-Backup-2` from the preserved
-`autonomous-managed-services-20261111` branch in `/workspace/Naelao-1-managed-services`. Rollback is
-fenced to one tenant/Space/project installation and its expected current release; it no longer
-changes sibling installs or the Space-wide catalog manifest. Incomplete publisher metadata fails
-closed, worker install/runtime paths consult the current D1 publisher-key registry, and rollback and
-upgrade require explicit approval when the selected installation gains permissions or capabilities.
-Local evidence: six focused Spaces suites **67/67**, Spaces and Shell typechecks, and `git diff
---check`. These are local/mocked checks; no deployment or live provider acceptance was exercised.
-P24 remains PARTIAL for transitive extension dependency resolution, verified cross-Space artifact
-restore, package removal/retention and owner compromise-notice policy, and a drain/receipt for work
-already admitted when a publisher key is revoked. Preserve the unrelated
+Current continuation checkpoint (2026-11-13): P04 bounded object capture and restore code is in the
+preserved `autonomous-managed-services-20261111` worktree, based on pushed P24 code `415ba199`.
+New full archives capture at most 2 MiB per workspace object and 4 MiB total inside the existing
+8 MiB encrypted archive. Restore verifies object checksums, conditionally recreates missing objects,
+never overwrites conflicting content, and records partial progress in migration 111. The focused
+Space data-operations suite passes **9/9**, Spaces typecheck passes, and `git diff --check` passes.
+These are local SQLite/R2-mock results; no deployment, isolated restore, live R2 check, or measured
+RPO/RTO drill was performed. P04 remains PARTIAL for archive size/row limits, merge-only relational
+restore, legal/key/jurisdiction policy, provider reconnection safety, and isolated/live recovery
+evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, package
+retention/compromise notices and drain receipts for already-admitted work. Preserve the unrelated
 `infra/scripts/__pycache__/`.
 
 P16 code commit `1056a322` remains pushed. One shared versioned capability definition supplies
@@ -36,9 +35,11 @@ direct-write attempts being rejected at the delegation boundary. P15 remains PAR
 membership-distribution performance, independently labeled relevance/task quality and deployed
 acceptance. Preserve the unrelated untracked `infra/scripts/__pycache__/`.
 
-P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table and 5,000
-object references; workspace object bytes are references, restore merges missing rows, and no
-isolated restore/RPO/RTO drill or live store verification exists. The newly integrated plan commit
+P04 remains PARTIAL: archives remain capped at 8 MiB plaintext, 10,000 rows per table, 5,000 object
+references and captured object bytes of 2 MiB per object/4 MiB total. New archives include those
+bounded bytes and restore missing objects with checksum verification and durable partial progress;
+relational restore still merges missing rows, and no isolated restore/RPO/RTO drill or live store
+verification exists. The newly integrated plan commit
 `9e1281ce` is in branch history. Current P01/P02 preflights still fail closed on one shared D1, 11
 shared KV namespaces, unresolved `naelao-calls` ownership and 62 missing read-only resource receipts;
 the D1 release runner requires absent operator-attested migration baselines before any remote
@@ -57,10 +58,11 @@ policy and live provider delivery. P23 remains partial on general channel exhaus
 and receipt coverage outside the Product auth outbox; see
 `docs/operations/notification-delivery-contract.md`. P24 local code `415ba199` is pushed; its
 remaining dependency, package-retention, live-running-work and deployed acceptance gaps are listed
-in the two progress ledgers. Exact next task: continue the platform plan at P04 recovery by tracing
-Space archive object references through current export and restore callers, then implement bounded
-object-byte capture and verification using the existing archive and R2 contracts. P01/P02 already
-fail closed on the recorded resource and baseline evidence gates. P17 remains partial for the
+in the two progress ledgers. Exact next task: finish the P04 docs/checkpoint, fetch and safely push
+it, then continue P03/P20 commercial recovery by tracing current operator identity, refund triage
+and dunning callers and closing independent UI/authorization code gaps without choosing unapproved
+grace, refund, dispute or payout policy. P01/P02 already fail closed on the recorded resource and
+baseline evidence gates. P17 remains partial for the
 Marketplace-to-Shell identity/install handoff, refund/license policy and live provider acceptance.
 P01/P02
 remain fail-closed on actual

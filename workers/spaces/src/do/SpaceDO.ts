@@ -39,7 +39,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { decodeSpaceArchive, encodeSpaceArchive, readSpaceArchiveObject, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
+import { captureSpaceArchiveObject, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, encodeSpaceArchive, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, readSpaceArchiveObject, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
@@ -2377,6 +2377,13 @@ const MIGRATIONS: Migration[] = [
     description: "index bounded Space Blackboard project visibility pagination",
     up: `CREATE INDEX IF NOT EXISTS idx_projects_space_id ON projects(space_id,id);`,
   },
+  {
+    version: 111,
+    description: "record partial Space archive object restore progress",
+    up: `ALTER TABLE space_archive_restores ADD COLUMN status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('restoring','partial','completed'));
+      ALTER TABLE space_archive_restores ADD COLUMN restored_object_count INTEGER NOT NULL DEFAULT 0 CHECK (restored_object_count >= 0);
+      ALTER TABLE space_archive_restores ADD COLUMN last_error TEXT;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2820,17 +2827,35 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
       }
       const objectReferences: Array<{ key: string; etag: string; size: number }> = [];
-      for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`]) {
-        let cursor: string | undefined;
-        do {
-          const page = await this.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
-          objectReferences.push(...page.objects.map(obj => ({ key: obj.key, etag: obj.etag, size: obj.size })));
-          cursor = page.truncated ? page.cursor : undefined;
-          if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
-        } while (cursor);
+      if (kind === "full") {
+        for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`]) {
+          let cursor: string | undefined;
+          do {
+            const page = await this.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+            objectReferences.push(...page.objects.map(obj => ({ key: obj.key, etag: obj.etag, size: obj.size })));
+            cursor = page.truncated ? page.cursor : undefined;
+            if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+          } while (cursor);
+        }
+      }
+      const objectSnapshots: NonNullable<SpaceArchivePayload["objectSnapshots"]> = [];
+      let capturedObjectBytes = 0;
+      for (const ref of objectReferences) {
+        if (!Number.isSafeInteger(ref.size) || ref.size < 0 || capturedObjectBytes + ref.size > MAX_ARCHIVE_OBJECT_CAPTURE_BYTES) {
+          return Response.json({ error_code: "archive_object_capture_limit_exceeded", key: ref.key, max_total_bytes: MAX_ARCHIVE_OBJECT_CAPTURE_BYTES }, { status: 413 });
+        }
+        const source = await this.env.SCRIPTS_R2.get(ref.key);
+        if (!source || source.etag !== ref.etag || source.size !== ref.size) return Response.json({ error_code: "archive_object_changed_during_export", key: ref.key }, { status: 409 });
+        try {
+          objectSnapshots.push(await captureSpaceArchiveObject(source, ref.key));
+          capturedObjectBytes += ref.size;
+        } catch (error) {
+          const code = (error as Error).message;
+          return Response.json({ error_code: code, key: ref.key }, { status: code.includes("limit") ? 413 : 409 });
+        }
       }
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
-      const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, ...(selectionFingerprint ? { selectionFingerprint } : {}) };
+      const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots, ...(selectionFingerprint ? { selectionFingerprint } : {}) };
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
       try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
       catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 413 }); }
@@ -2962,10 +2987,45 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         || Object.entries(payload.rowCounts).some(([table, count]) => !Number.isSafeInteger(count) || count < 0 || payload.tableRows[table]?.length !== count)) return Response.json({ error_code: "archive_row_count_mismatch" }, { status: 422 });
       const currentMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       if (payload.migrationVersion > currentMigration) return Response.json({ error_code: "archive_schema_from_future", archive_schema: payload.migrationVersion, current_schema: currentMigration }, { status: 409 });
+      const hasObjectSnapshots = Object.prototype.hasOwnProperty.call(payload, "objectSnapshots");
+      const snapshotsByKey = new Map<string, NonNullable<SpaceArchivePayload["objectSnapshots"]>[number]>();
+      const snapshotBytesByKey = new Map<string, Uint8Array>();
+      if (hasObjectSnapshots) {
+        if (!Array.isArray(payload.objectSnapshots) || payload.objectSnapshots.length !== payload.objectReferences.length) return Response.json({ error_code: "archive_object_snapshot_set_incomplete" }, { status: 422 });
+        let totalSnapshotBytes = 0;
+        for (const snapshot of payload.objectSnapshots) {
+          const ref = payload.objectReferences.find(candidate => candidate.key === snapshot?.key);
+          if (!ref || snapshotsByKey.has(snapshot.key)) return Response.json({ error_code: "archive_object_snapshot_invalid" }, { status: 422 });
+          let bytes: Uint8Array;
+          try { bytes = await decodeSpaceArchiveObjectSnapshot(snapshot, ref); }
+          catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
+          totalSnapshotBytes += bytes.byteLength;
+          if (totalSnapshotBytes > MAX_ARCHIVE_OBJECT_CAPTURE_BYTES) return Response.json({ error_code: "archive_object_capture_limit_exceeded" }, { status: 422 });
+          snapshotsByKey.set(snapshot.key, snapshot);
+          snapshotBytesByKey.set(snapshot.key, bytes);
+        }
+      }
+      let objectRestoreRequiredCount = 0;
+      const seenObjectKeys = new Set<string>();
       for (const ref of payload.objectReferences) {
-        if (!ref || typeof ref.key !== "string" || !ref.key.startsWith(`spaces/${spaceId}/`) || !Number.isSafeInteger(ref.size) || typeof ref.etag !== "string") return Response.json({ error_code: "archive_object_reference_invalid" }, { status: 422 });
+        if (!ref || typeof ref.key !== "string" || !ref.key.startsWith(`spaces/${spaceId}/`) || !Number.isSafeInteger(ref.size) || ref.size < 0 || typeof ref.etag !== "string" || seenObjectKeys.has(ref.key)) return Response.json({ error_code: "archive_object_reference_invalid" }, { status: 422 });
+        seenObjectKeys.add(ref.key);
+        const snapshot = snapshotsByKey.get(ref.key);
         const head = await this.env.SCRIPTS_R2.head(ref.key);
-        if (!head || head.etag !== ref.etag || head.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
+        if (!head) {
+          if (!snapshot) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
+          objectRestoreRequiredCount++;
+          continue;
+        }
+        if ((!snapshot && head.etag !== ref.etag) || head.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
+        if (snapshot) {
+          const currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+          if (!currentObject || currentObject.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
+          try {
+            const capturedCurrent = await captureSpaceArchiveObject(currentObject, ref.key);
+            if (capturedCurrent.checksum !== snapshot.checksum) return Response.json({ error_code: "referenced_workspace_object_checksum_mismatch", key: ref.key }, { status: 409 });
+          } catch (error) { return Response.json({ error_code: (error as Error).message, key: ref.key }, { status: 422 }); }
+        }
       }
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
@@ -2993,11 +3053,53 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(sql, "DELETE FROM space_archive_restore_previews WHERE tenant_id=? AND space_id=? AND (expires_at<? OR consumed_at IS NOT NULL)", tenantId, spaceId, now);
         const previewId = crypto.randomUUID(), expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
         execute(sql, "INSERT INTO space_archive_restore_previews (preview_id,tenant_id,space_id,archive_id,checksum,expires_at,created_by) VALUES (?,?,?,?,?,?,?)", previewId, tenantId, spaceId, archiveId, record.checksum, expiresAt, actorId);
-        return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts, object_references_verified: payload.objectReferences.length, restore_mode: "idempotent_merge_missing_rows", expires_at: expiresAt, requires_explicit_apply: true });
+        return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts, object_references_verified: payload.objectReferences.length, object_restore_required_count: objectRestoreRequiredCount, restore_mode: "idempotent_merge_missing_rows", expires_at: expiresAt, requires_explicit_apply: true });
       }
       const previewId = String(body.preview_id ?? "");
       const preview = queryOne<{ tenant_id: string; space_id: string; archive_id: string; checksum: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_archive_restore_previews WHERE preview_id=?", previewId);
       if (!preview || preview.tenant_id !== tenantId || preview.space_id !== spaceId || preview.archive_id !== archiveId || preview.checksum !== record.checksum || preview.consumed_at || preview.expires_at < now) return Response.json({ error_code: "restore_preview_invalid_or_expired" }, { status: 409 });
+      execute(sql, `INSERT INTO space_archive_restores (id,tenant_id,space_id,archive_id,restored_by,restored_at,row_counts_json,status,restored_object_count,last_error)
+        VALUES (?,?,?,?,?,?,?,'restoring',0,NULL)
+        ON CONFLICT(id) DO UPDATE SET status='restoring',last_error=NULL`, previewId, tenantId, spaceId, archiveId, actorId, now, "{}");
+      let verifiedObjectCount = 0;
+      try {
+        for (let index = 0; index < payload.objectReferences.length; index++) {
+          const ref = payload.objectReferences[index]!;
+          const snapshot = snapshotsByKey.get(ref.key);
+          const snapshotBytes = snapshotBytesByKey.get(ref.key);
+          let currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+          if (!currentObject) {
+            if (!snapshot || !snapshotBytes) throw new Error("referenced_workspace_object_changed_or_missing");
+            const httpMetadata: R2HTTPMetadata = {};
+            if (snapshot.httpMetadata?.contentType) httpMetadata.contentType = snapshot.httpMetadata.contentType;
+            if (snapshot.httpMetadata?.contentLanguage) httpMetadata.contentLanguage = snapshot.httpMetadata.contentLanguage;
+            if (snapshot.httpMetadata?.contentDisposition) httpMetadata.contentDisposition = snapshot.httpMetadata.contentDisposition;
+            if (snapshot.httpMetadata?.contentEncoding) httpMetadata.contentEncoding = snapshot.httpMetadata.contentEncoding;
+            if (snapshot.httpMetadata?.cacheControl) httpMetadata.cacheControl = snapshot.httpMetadata.cacheControl;
+            if (snapshot.httpMetadata?.cacheExpiry) httpMetadata.cacheExpiry = new Date(snapshot.httpMetadata.cacheExpiry);
+            const putOptions: R2PutOptions = {
+              onlyIf: { etagDoesNotMatch: "*" },
+              ...(Object.keys(httpMetadata).length ? { httpMetadata } : {}),
+              ...(snapshot.customMetadata ? { customMetadata: snapshot.customMetadata } : {}),
+            };
+            const written = await this.env.SCRIPTS_R2.put(ref.key, snapshotBytes, putOptions);
+            currentObject = await this.env.SCRIPTS_R2.get(ref.key);
+            if (!currentObject) throw new Error(written ? "restored_workspace_object_missing_after_write" : "workspace_object_changed_during_restore");
+          }
+          if ((!snapshot && currentObject.etag !== ref.etag) || currentObject.size !== ref.size) throw new Error("referenced_workspace_object_changed_or_missing");
+          if (snapshot) {
+            const currentSnapshot = await captureSpaceArchiveObject(currentObject, ref.key);
+            if (currentSnapshot.checksum !== snapshot.checksum) throw new Error("restored_workspace_object_checksum_mismatch");
+          }
+          verifiedObjectCount = index + 1;
+          execute(sql, "UPDATE space_archive_restores SET status='restoring',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, previewId, tenantId, spaceId);
+        }
+      } catch (error) {
+        const message = ((error as Error).message || "archive_object_restore_failed").slice(0, 160);
+        execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+        const status = message.includes("changed") ? 409 : message.includes("checksum") ? 422 : 503;
+        return Response.json({ error_code: "archive_object_restore_incomplete", message, restored_object_count: verifiedObjectCount }, { status });
+      }
       const restoredCounts: Record<string, number> = {};
       try {
         this.ctx.storage.transactionSync(() => {
@@ -3016,11 +3118,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             restoredCounts[table] = restored;
           }
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
-          execute(sql, "INSERT INTO space_archive_restores (id,tenant_id,space_id,archive_id,restored_by,restored_at,row_counts_json) VALUES (?,?,?,?,?,?,?)", crypto.randomUUID(), tenantId, spaceId, archiveId, actorId, now, JSON.stringify(restoredCounts));
+          execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, mode: "idempotent_merge_missing_rows" });
         });
-      } catch (error) { return Response.json({ error_code: "restore_transaction_rolled_back", message: (error as Error).message.slice(0, 200) }, { status: 409 }); }
-      return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
+      } catch (error) {
+        const message = ((error as Error).message || "restore_transaction_rolled_back").slice(0, 200);
+        execute(sql, "UPDATE space_archive_restores SET status='partial',last_error=? WHERE id=? AND tenant_id=? AND space_id=?", message, previewId, tenantId, spaceId);
+        return Response.json({ error_code: "restore_transaction_rolled_back", message, restored_object_count: verifiedObjectCount }, { status: 409 });
+      }
+      return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, restored_object_count: verifiedObjectCount, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });
   }

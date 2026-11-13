@@ -2,22 +2,36 @@
 
 ## Active checkpoint
 
-Updated 2026-11-13 after P24 code commit `415ba199` was pushed to `origin/Mcbt5s-Backup-2`.
-Publisher/package trust now fails closed for incomplete publisher metadata, applies the current D1
-publisher-key registry to installation views, template paths and rollback, and fences rollback to
-one exact tenant/Space/project installation with an expected current release. Rollback and supported
-package upgrades require explicit approval when the selected install gains permissions or
-capabilities. Local evidence: six focused Spaces suites **67/67**, Spaces/Shell typechecks and
-`git diff --check`. No deployed R2, publisher registry, runtime or live provider acceptance was
-exercised. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, lost-response
+Updated 2026-11-13 after P04 bounded object capture/restore implementation. New full archives place
+bounded workspace object bytes and SHA-256 checksums inside the existing encrypted archive; restore
+can conditionally recreate missing objects, verifies read-back checksums, and records partial
+progress in migration 111 so a retry can complete after R2 or SQLite failure. Per-object capture is
+capped at 2 MiB, aggregate object bytes at 4 MiB, and full plaintext archive remains capped at 8 MiB.
+Local evidence: `space-data-ops.test.ts` **9/9**, Spaces typecheck, and `git diff --check`. These are
+SQLite/R2-mock checks; no deployed R2, isolated recovery, provider reconnection or RPO/RTO drill was
+exercised. P04 remains PARTIAL for these bounded size/row limits, merge-only relational restore,
+legal/key/jurisdiction policy, safe external side-effect reconnection, and live/isolated recovery
+evidence. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, lost-response
 acceptance across the full Worker/R2 path, key compromise notice, removal/retention policy, supply
 chain scanning and drain receipts for work already admitted at revocation. P01/P02 protections
-remain fail-closed on the recorded shared resources, missing ownership/receipts and operator-attested
-migration baselines. Exact next task: advance to P04 recovery; trace Space archive object references
-through current export and restore calls, then add bounded object-byte capture and checksum-verified
-restore using the current archive/R2 contracts. Continue commercial recovery, guided templates, voice
-extension dashboards and Shared-Space coordination in the dependency order; reuse existing ledgers
-and avoid repeating completed audits without changed source or specific evidence.
+remain fail-closed on shared resources, missing ownership/receipts and operator-attested migration
+baselines. Exact next task: continue P03/P20 commercial recovery by tracing the existing operator
+identity, refund triage and dunning callers, then close independent UI/authorization gaps without
+choosing unapproved grace, refund, dispute or payout policy. Continue through guided templates, voice
+extension dashboards and Shared-Space coordination; reuse existing ledgers and avoid repeating
+completed audits without changed source or specific evidence.
+
+### Prior checkpoint — P24 publisher/package trust (`415ba199`)
+
+Publisher trust fails closed for incomplete publisher metadata, applies the current D1 publisher-key
+registry to installation views, template paths and rollback, and fences rollback to one exact
+tenant/Space/project installation with an expected current release. Rollback and supported package
+upgrades require explicit approval when the selected install gains permissions or capabilities.
+Local evidence at that checkpoint: six focused Spaces suites **67/67**, Spaces/Shell typechecks and
+`git diff --check`. No deployed R2, publisher registry, runtime or live provider acceptance was
+exercised. P24 remains PARTIAL for dependency closure, cross-Space artifact restoration, full
+Worker/R2 lost-response acceptance, key compromise notice, removal/retention policy, supply-chain
+scanning and drain receipts for work already admitted at revocation.
 
 ## Prior checkpoints
 
@@ -155,6 +169,25 @@ owner/admin. Payment recovery and expiry are handled by provider subscription tr
 There is no approved grace-period length, activity restriction matrix, escalation policy, or manual
 intervention contract. Paid access remains until the provider reports expiry; this is current
 behavior, not a policy claim. Provider retries and actual Notifications delivery are not verified.
+
+### P04 — encrypted archive object recovery: PARTIAL
+
+New full archive exports capture the listed `spaces/{space}/projects/` and
+`spaces/{space}/space-workspace/` object bytes into the encrypted archive, with each object bound to
+its key, listed ETag, size and SHA-256 checksum. Capture is limited to 2 MiB per object and 4 MiB in
+total and preserves R2 HTTP/custom metadata; the existing archive plaintext cap remains 8 MiB, so larger snapshots fail closed. Restore
+validates complete snapshot coverage and checksums, accepts an existing object only when its content
+matches, conditionally writes missing objects without overwriting collisions, and verifies the bytes
+after the write. Migration 111 records `restoring`/`partial`/`completed`, verified object count and
+last error. SQLite rows still restore as an idempotent merge, and R2 writes cannot participate in the
+SQLite transaction. A failed SQL apply may leave captured bytes restored, but durable partial state
+allows retry with the same preview.
+
+Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **9/9**, Spaces TypeScript check, and
+`git diff --check`, including conflicting-object non-overwrite and interrupted two-object recovery.
+P04 remains PARTIAL: archive capture limits and point-in-time semantics are unchanged; there is no
+isolated restore drill, measured RPO/RTO, live R2 durability/retention evidence, provider reconnection
+reconciliation, or approved key/legal/jurisdiction retention policy.
 
 ### P11/P12 — checkout and dunning contracts: local behavior reconciled
 
@@ -324,11 +357,13 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    read-only resource receipts, and per-database baselines are verified. Do not invent them.
 2. Preserve the explicit P03 grace/restriction and P20 refund/author-accounting decisions as open
    product contracts; advance only independent code while they are unresolved.
-3. P04 remains partial on byte-complete archive coverage and isolated restore drills. Next, trace
-   current archive object references through export and restore, implement bounded object-byte
-   capture/checksum verification using the existing archive/R2 contracts, and test retry behavior.
-   P22's independent local cache-entry purge and whole-Space cleanup status gaps are closed in
-   `7b6942e8`; retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
+3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
+   locally; the focused SQLite/R2-mock suite passes **9/9**. Next, continue P03/P20 commercial
+   recovery by tracing the existing dunning, operator identity, refund triage and author accounting
+   callers. Close independent UI/authorization code gaps using existing ledgers, while preserving
+   grace/restriction and refund/dispute/payout policies as unresolved product decisions. P22's
+   independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
+   retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary
    non-ephemeral retrieval and live provider acceptance remain partial. P17's direct catalog, license
    status, return URL and Shell category-selection gaps are committed; preserve its cross-origin

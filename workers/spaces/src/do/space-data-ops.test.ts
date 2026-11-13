@@ -5,9 +5,9 @@ import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArch
 import { SpaceDO } from "./SpaceDO.js";
 
 function mockR2() {
-  const objects = new Map<string, { bytes: Uint8Array; etag: string }>();
+  const objects = new Map<string, { bytes: Uint8Array; etag: string; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }>();
   const uploads = new Map<string, { key: string; parts: Map<number, Uint8Array> }>();
-  let failNext = false;
+  let failNext = false, failPutKey: string | null = null;
   let failPart: number | null = null, uploadedParts = 0;
   const multipart = (key: string, uploadId: string) => ({
     key, uploadId,
@@ -29,15 +29,21 @@ function mockR2() {
   return {
     objects,
     failNextWrite() { failNext = true; },
+    failNextWriteForKey(key: string) { failPutKey = key; },
     failMultipartPart(partNumber: number) { failPart = partNumber; },
     uploadedPartCount() { return uploadedParts; },
-    async put(key: string, value: Uint8Array) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } const bytes = new Uint8Array(value); const etag = `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag }); return { etag }; },
+    async put(key: string, value: Uint8Array, options?: { onlyIf?: { etagDoesNotMatch?: string }; httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> }) { if (failNext) { failNext = false; throw new Error("simulated R2 outage"); } if (failPutKey === key) { failPutKey = null; throw new Error("simulated keyed R2 outage"); } if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null; const bytes = new Uint8Array(value); const etag = options?.onlyIf ? `restored-etag-${bytes.byteLength}-${key}` : `etag-${bytes.byteLength}-${key}`; objects.set(key, { bytes, etag, ...(options?.httpMetadata ? { httpMetadata: { ...options.httpMetadata } } : {}), ...(options?.customMetadata ? { customMetadata: { ...options.customMetadata } } : {}) }); return { etag }; },
     async createMultipartUpload(key: string) { const uploadId = crypto.randomUUID(); uploads.set(uploadId, { key, parts: new Map() }); return multipart(key, uploadId); },
     resumeMultipartUpload(key: string, uploadId: string) { return multipart(key, uploadId); },
-    async get(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength, arrayBuffer: async () => entry.bytes.slice().buffer }; },
+    async get(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength, ...(entry.httpMetadata ? { httpMetadata: entry.httpMetadata } : {}), ...(entry.customMetadata ? { customMetadata: entry.customMetadata } : {}), arrayBuffer: async () => entry.bytes.slice().buffer }; },
     async head(key: string) { const entry = objects.get(key); return entry && { etag: entry.etag, size: entry.bytes.byteLength }; },
     async delete(key: string) { objects.delete(key); },
-    async list() { return { objects: [], truncated: false }; },
+    async list(options: { prefix?: string; cursor?: string; limit?: number } = {}) {
+      const matching = [...objects.entries()].filter(([key]) => key.startsWith(options.prefix ?? "")).sort(([a], [b]) => a.localeCompare(b));
+      const offset = Number(options.cursor ?? 0), limit = options.limit ?? 1000, selected = matching.slice(offset, offset + limit);
+      const next = offset + selected.length;
+      return { objects: selected.map(([key, value]) => ({ key, etag: value.etag, size: value.bytes.byteLength })), truncated: next < matching.length, cursor: next < matching.length ? String(next) : undefined };
+    },
   };
 }
 
@@ -146,6 +152,56 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec<{ content: string }>("SELECT content FROM messages WHERE id='message-a'").toArray()[0]?.content).toBe("preserved");
     const replay = await post({ action: "apply_restore", archive_id: archive.archive_id, preview_id: preview.preview_id });
     expect(replay.status).toBe(409);
+  });
+
+  it("captures bounded workspace bytes and retries a checksum-verified missing-object restore without overwriting conflicts", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
+    const key = "spaces/space-a/projects/project-a/assets/readme-a.txt", secondKey = "spaces/space-a/projects/project-a/assets/readme-b.txt", otherSpaceKey = "spaces/space-b/projects/project-b/assets/private.txt";
+    const original = new TextEncoder().encode("canonical workspace object contents"), secondOriginal = new TextEncoder().encode("second canonical workspace object");
+    await r2.put(key, original, { httpMetadata: { contentType: "text/plain", cacheControl: "private, max-age=60", cacheExpiry: new Date("2027-01-02T03:04:05.000Z") }, customMetadata: { uploadedBy: "owner-a" } });
+    await r2.put(secondKey, secondOriginal);
+    await r2.put(otherSpaceKey, new TextEncoder().encode("must stay outside the archive"));
+
+    const exported = await post({ action: "export", request_id: "workspace-object-archive-1" });
+    expect(exported.status).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const archiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
+    const archivedPayload = await decodeSpaceArchive(r2.objects.get(archiveKey)!.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    expect(archivedPayload.objectReferences.map(ref => ref.key)).toEqual([key, secondKey]);
+    expect(archivedPayload.objectSnapshots).toHaveLength(2);
+    await r2.delete(key);
+    await r2.delete(secondKey);
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; object_restore_required_count: number };
+    expect(preview.object_restore_required_count).toBe(2);
+
+    await r2.put(key, new TextEncoder().encode("concurrent replacement must not be overwritten"));
+    const conflicted = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(conflicted.status).toBe(409);
+    expect(new TextDecoder().decode(new Uint8Array(await (await r2.get(key))!.arrayBuffer()))).toBe("concurrent replacement must not be overwritten");
+
+    await r2.delete(key);
+    r2.failNextWriteForKey(secondKey);
+    const interrupted = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(interrupted.status).toBe(503);
+    expect(storage.sql.exec<{ status: string; restored_object_count: number }>("SELECT status,restored_object_count FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]).toEqual({ status: "partial", restored_object_count: 1 });
+    expect(new Uint8Array(await (await r2.get(key))!.arrayBuffer())).toEqual(original);
+    expect(await r2.get(secondKey)).toBeUndefined();
+
+    const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ restored_object_count: 2 });
+    expect(new Uint8Array(await (await r2.get(key))!.arrayBuffer())).toEqual(original);
+    expect(new Uint8Array(await (await r2.get(secondKey))!.arrayBuffer())).toEqual(secondOriginal);
+    expect(r2.objects.get(key)).toMatchObject({ httpMetadata: { contentType: "text/plain", cacheControl: "private, max-age=60", cacheExpiry: new Date("2027-01-02T03:04:05.000Z") }, customMetadata: { uploadedBy: "owner-a" } });
+    expect(r2.objects.has(otherSpaceKey)).toBe(true);
+    expect(storage.sql.exec<{ status: string; restored_object_count: number }>("SELECT status,restored_object_count FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]).toEqual({ status: "completed", restored_object_count: 2 });
   });
 
   it("retries a failed archive write with the same request and archive identity", async () => {
@@ -268,6 +324,6 @@ describe("SpaceDO owner data operations", () => {
     expect(applied.status).toBe(409);
     expect(storage.sql.exec("SELECT id FROM messages WHERE id='message-rollback'").toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT id FROM sessions WHERE id='session-rollback'").toArray()).toHaveLength(0);
-    expect(storage.sql.exec("SELECT id FROM space_archive_restores WHERE archive_id=?", archiveId).toArray()).toHaveLength(0);
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_restores WHERE archive_id=?", archiveId).toArray()[0]?.status).toBe("partial");
   });
 });

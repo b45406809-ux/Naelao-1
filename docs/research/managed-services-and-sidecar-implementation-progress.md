@@ -107,17 +107,23 @@
   and deployment validators, and `git diff --check`. These are local mocks/SQLite/static checks;
   no deployed D1, KV, Vectorize, AutoRAG provider index or live acceptance was exercised. AutoRAG
   provider-index deletion remains unverified and retrieval remains disabled.
-- P04 remains PARTIAL on archive limits (8 MiB plaintext, 10,000 rows/table, 5,000 object refs),
-  referenced rather than copied workspace object bytes, merge-only restore, legal/key policy, and
-  missing isolated restore/RPO/RTO drills. P01/P02 remain fail-closed on operator-attested migration
-  baselines, distinct real D1/KV IDs, `naelao-calls` ownership and 62 read-only resource receipts.
+- P04's next code slice is implemented in the current worktree: full archives capture workspace
+  object bytes with per-object 2 MiB/aggregate 4 MiB caps, and restore verifies checksums, avoids
+  overwriting conflicting objects, and records retryable partial progress in migration 111.
+  `space-data-ops.test.ts` passes **9/9**, Spaces typecheck and `git diff --check` pass. These are
+  local SQLite/R2-mock checks, not live recovery evidence. P04 remains PARTIAL for the 8 MiB
+  plaintext/10,000 row/5,000 reference caps, merge-only row restore, legal/key policy, isolated
+  restore, and RPO/RTO evidence. P01/P02 remain fail-closed on operator-attested migration baselines,
+  distinct real D1/KV IDs, `naelao-calls` ownership and 62 read-only resource receipts.
 - The S2–S9/U01–U12 source/caller audit is reconciled. Its remaining PARTIAL rows name specific
   product decisions, unsupported platform/provider contracts, or live evidence; no live acceptance
   is claimed. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
-- Exact next task: continue the current platform queue at P15. Measure bounded Space Blackboard
-  discovery against its current indexes, page limits, and ACL-change behavior; close an evidenced
-  local query gap if present, then reconcile the remaining P16/P17/P24 dependencies before guided
-  templates, voice dashboards, and Shared-Space coordination.
+- Exact next task: finish and safely push the P04 code/docs checkpoint, then continue P03/P20
+  commercial recovery by tracing current dunning, operator identity, refund triage and author
+  accounting callers and closing independent UI/authorization gaps without inventing grace,
+  restriction, refund, dispute or payout policy. Then return to the remaining managed-services
+  S2–S9/U01–U12 code gaps before advancing through guided templates, voice dashboards and Shared-Space
+  coordination.
 
 ### Prior checkpoint (2026-11-12; P23 code `f676408a` pushed)
 
