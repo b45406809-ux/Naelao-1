@@ -81,6 +81,35 @@ class DeploymentManifestTests(unittest.TestCase):
         errors = validate_data(manifest, schema, workflows, workers)
         self.assertTrue(any("production deployment workflow must run the post-worker health probe" in error for error in errors))
 
+    def test_requires_durable_migration_runner_tests_in_both_release_preflights(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        for environment in ("staging", "production"):
+            with self.subTest(environment=environment):
+                changed_workflows = dict(workflows)
+                changed_workflows[environment] = changed_workflows[environment].replace(
+                    'python3 -m unittest discover -s infra/scripts -p "test_release_migrations.py"',
+                    "echo skipped migration recovery tests",
+                )
+                errors = validate_data(manifest, schema, changed_workflows, workers)
+                self.assertIn(f"{environment} preflight does not test the durable D1 release migration runner", errors)
+
+        out_of_preflight = dict(workflows)
+        out_of_preflight["production"] = out_of_preflight["production"].replace(
+            '      - name: Test durable D1 release migration runner\n        run: python3 -m unittest discover -s infra/scripts -p "test_release_migrations.py"\n',
+            "",
+        )
+        out_of_preflight["production"] = out_of_preflight["production"].replace(
+            "  deploy-workers-prod:\n", '  migration-test-only-after-preflight:\n    name: misplaced test\n    steps:\n      - run: python3 -m unittest discover -s infra/scripts -p "test_release_migrations.py"\n\n  deploy-workers-prod:\n',
+        )
+        errors = validate_data(manifest, schema, out_of_preflight, workers)
+        self.assertIn("production preflight does not test the durable D1 release migration runner", errors)
+
     def test_health_probe_domains_must_match_current_worker_configuration(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         changed = copy.deepcopy(manifest)

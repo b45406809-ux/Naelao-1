@@ -83,6 +83,9 @@ def validate_data(
             errors.append(f"{environment} workflow has no preflight job")
         if "infra/scripts/validate_deployment_manifest.py" not in workflow:
             errors.append(f"{environment} preflight does not validate the deployment manifest")
+        preflight = re.search(r"^  preflight:\s*\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", workflow, re.MULTILINE | re.DOTALL)
+        if not preflight or 'test_release_migrations.py' not in preflight.group("body"):
+            errors.append(f"{environment} preflight does not test the durable D1 release migration runner")
         phases = env_manifest.get("phases")
         if not isinstance(phases, list) or not phases:
             errors.append(f"{environment} manifest phases must be a non-empty ordered list")
