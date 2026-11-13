@@ -2,6 +2,19 @@
 
 ## Active checkpoint
 
+Updated 2026-11-13 after §9.5 signed phone-handler candidate discovery code `881c1d1a` was pushed to
+`origin/Mcbt5s-Backup-2`. The owner phone dashboard now selects a handler only from active,
+correctly scoped installations whose publisher signature and complete package bytes match the release
+receipt. It fills the handler digest and still requires owner confirmation; the runtime admission
+check runs again before binding. SpaceDO and its internal listing support Project and SPACE_SHARED
+channels. Local/mock evidence: Agents phone **34/34**, Spaces extension runtime **22/22**,
+Agents/Spaces/Shell typechecks and `git diff --check`. No deployed installation or live provider call
+was exercised. This closes phone-handler discovery only; §9.5 remains PARTIAL for customer voice
+dashboard/runtime, catalogs and rates, test/publish/operations, package composition and live
+acceptance. Exact next task: continue §10.2 by tracing private-project visibility, publication and
+request-to-use callers against the existing audience-filtered coordination registry; implement the
+next independently supported lifecycle gap and preserve unresolved sharing/uniqueness policy.
+
 Updated 2026-11-13 after signed-template lifecycle review code `9d0c2da7` was pushed, following
 update-availability code `f725fa2c`, to `origin/Mcbt5s-Backup-2`. Owner/admin status verifies the
 installed receipt against the buyer's certified fork and checks the newest published, host-certified
@@ -9,13 +22,16 @@ listing from the same publisher. It reports changed artifact, setup schema, requ
 versions, and listing terms. It does not apply an update or alter licenses, permissions or customer
 configuration. Local evidence: Spaces activation/status suite **19/19**, Spaces/Shell typechecks and
 `git diff --check`. No Marketplace, provider, deployed database or live installation was accessed.
-A targeted P03 caller review confirmed provider outcomes reach Dashboard through Router; no independent
-code gap was found, and provider acceptance is not inbox delivery. P03/P20 policy and independent
+The §9.5 caller review found one supported dashboard gap: owners had to hand-copy a phone extension's
+installation ID and handler digest. The new candidate path verifies current signed package bytes but
+does not establish a customer voice-agent runtime, streaming, or voice catalogs. A targeted P03 caller
+review confirmed provider outcomes reach Dashboard through Router; no independent code gap was found,
+and provider acceptance is not inbox delivery. P03/P20 policy and independent
 operator identity remain unresolved. P04 restore safety is implemented locally (`b6c408c8`); archive
 limits, merge semantics, legal/key policy and isolated/live drills remain open. P01/P02 still lack
 separated resources, read-only receipts, operator-attested migration baselines and isolated/deployed
-acceptance. Exact next task: audit §9.5 voice-dashboard APIs and reachable callers, implement the next
-supported per-installation configuration gap, then continue §10 lifecycle/policy work.
+acceptance. Exact next task: continue §10 lifecycle/policy work from private-project publication and
+request-to-use; do not repeat the completed §9.5 handler-discovery audit.
 
 Prior §10 audience code `9ec259ba` is pushed to `origin/Mcbt5s-Backup-2`. Migration 119 preserves the
 legacy member audience and the v2 flow supports an explicit member or owners/admins audience, with

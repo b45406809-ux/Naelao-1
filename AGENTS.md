@@ -2,14 +2,16 @@
 
 ## Active mission and checkpoint
 
-Current continuation checkpoint (2026-11-13): signed-template lifecycle review code `9d0c2da7` is
-pushed to `origin/Mcbt5s-Backup-2`, following update-availability code `f725fa2c`. Owner/admin
-status verifies that the install receipt matches the buyer's certified fork, compares it to the newest
-host-certified publication from the same publisher, and reports artifact, setup-schema, dependency,
-and price/license-term changes without applying updates. Fresh local evidence: Spaces activation/status
-suite **19/19**, Spaces and Shell typechecks, `git diff --check`. No Marketplace, provider, deployed
-DB or live installation was accessed. Exact next task: audit §9.5 voice-dashboard APIs and reachable
-callers, then implement the next supported per-installation configuration gap.
+Current continuation checkpoint (2026-11-13): phone-handler candidate discovery code `881c1d1a` is
+pushed to `origin/Mcbt5s-Backup-2`. Owner phone status lists only active, correctly scoped phone
+installations whose publisher signature and complete artifact set still verify; the panel selects and
+fills the exact handler digest, then requests explicit owner confirmation. SpaceDO listing supports
+Project and SPACE_SHARED installations, and assignment repeats the runtime admission check. Local
+evidence: Agents phone suite **34/34**, Spaces extension runtime suite **22/22**, Agents/Spaces/Shell
+typechecks, `git diff --check`. These are local mocks; no deployed Space or real provider call ran.
+Exact next task: continue §10.2 by tracing private-project visibility, publication and request-to-use
+callers against the audience-filtered coordination registry; implement the next independent host-side
+lifecycle gap without inventing sharing or uniqueness policy.
 
 P01/P02 remain PARTIAL: distinct D1/KV resources, resolved `naelao-calls` ownership, read-only resource
 existence receipts, per-environment operator-attested migration baselines and isolated/deployed
@@ -28,9 +30,9 @@ S2 is IMPLEMENTED_LOCAL for currently supported lanes; partial rows retain their
 runtime/provider contracts, missing external feeds, product/legal decisions, external evidence or
 deployed/live acceptance. Keep U05/U06 live runtime disabled; their trusted allocation/observation
 producer and pinned writer-admission/drain/handoff contract are not credential blockers. Preserve the
-untracked `infra/scripts/__pycache__/`. Continue with §9.5 voice-dashboard callers, then §10 lifecycle
-and policy gaps, while revisiting remaining S2–S9/U01–U12 rows only where the ledger identifies an
-ordinary uncoded caller. Keep provider/runtime constraints and acceptance gates explicit.
+untracked `infra/scripts/__pycache__/`. Continue with §10 lifecycle and policy gaps, while revisiting
+remaining S2–S9/U01–U12 rows only where the ledger identifies an ordinary uncoded caller. Keep
+provider/runtime constraints and acceptance gates explicit.
 Do not deploy, buy services, reset, clean, switch branches or force-push.
 P04 recovery-safety code `b6c408c8` remains pushed. Restore previews disclose archived active event
 triggers; missing rows are inserted disabled, existing destination state is preserved, and durable

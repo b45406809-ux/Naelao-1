@@ -2,6 +2,29 @@
 
 ## Current checkpoint
 
+### Active continuation (2026-11-13; §9.5 signed phone-handler candidates `881c1d1a` pushed)
+
+- Owner phone status now returns active phone-channel installations for the exact Project or Space
+  scope. A candidate is shown only when installation identity/scope, the active publisher signature,
+  the declared phone-channel contract, complete immutable package digest and exact handler bytes
+  validate. The Shell fills the signed installation ID and handler digest; explicit owner confirmation
+  remains, and the existing validate-only runtime admission repeats before binding. SpaceDO's internal
+  channel list enumerates either Project-scoped or SPACE_SHARED installs.
+- Code `881c1d1a` is pushed to `origin/Mcbt5s-Backup-2`. Local/mock evidence: Agents phone tests
+  **34/34**, Spaces extension runtime install tests **22/22**, Agents/Spaces/Shell typechecks and
+  `git diff --check`. No deployed Durable Object, live provider call or customer voice-agent runtime
+  was exercised. This closes handler discovery and handoff UX only; §9.5 remains PARTIAL for customer
+  voice-agent dashboards/runtime, approved voice/model catalogs and rates, test/publish/monitor flows,
+  cost/invoice accounting and deployed/live acceptance.
+- S2–S9/U01–U12 remains reconciled in the existing matrix, with unsupported runtime/provider contracts,
+  external evidence gates and product/legal choices retained. No ordinary managed-services code gap
+  was identified by this focused caller change; it does not make partial rows complete or live-accepted.
+  Rollouts remain disabled.
+- Exact next task: continue platform §10.2 by tracing private-project visibility, publication and
+  request-to-use callers against the audience-filtered coordination registry; implement the next
+  independent host-side lifecycle gap without inventing sharing or uniqueness policy. Preserve
+  `infra/scripts/__pycache__/`.
+
 ### Active continuation (2026-11-13; template schema/dependency update review `9d0c2da7` pushed)
 
 - Space Template source review now verifies that the installed receipt digest matches the buyer's
