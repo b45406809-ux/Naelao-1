@@ -70,8 +70,14 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
 export interface ArchiveRewrapJob { job_id: string; status: "active" | "blocked" | "completed"; scanned_count: number; rewrapped_count: number; last_error?: string | null; updated_at?: string }
 export interface SpaceArchiveRecord { archive_id: string; kind: "full" | "retention_messages"; status: string; checksum: string; plaintext_bytes: number; row_counts_json: string; created_by: string; created_at: string; restored_at?: string | null }
 export interface SpaceArchiveRestore { id: string; archive_id: string; restored_by: string; restored_at: string; row_counts: Record<string, number>; skipped_counts: Record<string, number>; status: "restoring" | "partial" | "completed"; restored_object_count: number; last_error?: string | null; safety_actions: { restored_event_triggers_inserted_disabled?: number } }
+export interface SpaceArchiveExportResult { archive_id: string; checksum: string; plaintext_bytes?: number; row_counts?: Record<string, number>; object_reference_count?: number; replayed?: boolean; resumed?: boolean }
 export function getSpaceDataOps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ archives: SpaceArchiveRecord[]; restores: SpaceArchiveRestore[]; rewrap_jobs: ArchiveRewrapJob[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { session, cache: "no-store" });
+}
+export function exportSpaceArchive(spaceId: string, session: SessionCredentials, requestId: string) {
+  return apiFetch<SpaceArchiveExportResult>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, {
+    method: "POST", session, body: JSON.stringify({ action: "export", kind: "full", request_id: requestId }),
+  });
 }
 export function startArchiveRewrap(spaceId: string, session: SessionCredentials) {
   return apiFetch<ArchiveRewrapJob>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "start_rewrap_archives" }) });

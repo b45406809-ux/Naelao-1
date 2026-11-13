@@ -2,16 +2,19 @@
 
 import * as React from "react";
 import type { ArchiveRewrapJob, SessionCredentials, SpaceArchiveRecord, SpaceArchiveRestore, SpaceArchiveRestorePreview } from "@/lib/api";
-import { applySpaceArchiveRestore, getSpaceDataOps, previewSpaceArchiveRestore, resumeArchiveRewrap, startArchiveRewrap } from "@/lib/api";
+import { applySpaceArchiveRestore, exportSpaceArchive, getSpaceDataOps, previewSpaceArchiveRestore, resumeArchiveRewrap, startArchiveRewrap } from "@/lib/api";
+import { clearPendingSpaceArchiveExportRequest, getOrCreateSpaceArchiveExportRequest, readPendingSpaceArchiveExportRequest, spaceArchiveExportRequestKey } from "@/lib/archive-export-request";
 
 export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { spaceId: string; session: SessionCredentials | null; canManage: boolean }) {
   const [jobs, setJobs] = React.useState<ArchiveRewrapJob[]>([]);
   const [archives, setArchives] = React.useState<SpaceArchiveRecord[]>([]);
   const [restores, setRestores] = React.useState<SpaceArchiveRestore[]>([]);
   const [restorePreview, setRestorePreview] = React.useState<SpaceArchiveRestorePreview | null>(null);
+  const [pendingExport, setPendingExport] = React.useState<{ key: string; requestId: string } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
+  const exportRequestKey = session ? spaceArchiveExportRequestKey(spaceId, session.endUserId) : null;
   const refresh = React.useCallback(async () => {
     if (!session || !canManage) return;
     const result = await getSpaceDataOps(spaceId, session);
@@ -20,6 +23,55 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
     setRestores(result.restores ?? []);
   }, [canManage, session, spaceId]);
   React.useEffect(() => { void refresh().catch((e) => setError(e instanceof Error ? e.message : "Could not load archive rotation jobs")); }, [refresh]);
+  React.useEffect(() => {
+    if (!session || !exportRequestKey) { setPendingExport(null); return; }
+    try {
+      const requestId = readPendingSpaceArchiveExportRequest(sessionStorage, spaceId, session.endUserId);
+      setPendingExport(requestId ? { key: exportRequestKey, requestId } : null);
+    } catch {
+      setError("This browser could not read the saved archive request. No new archive was started.");
+    }
+  }, [exportRequestKey, session, spaceId]);
+
+  const pendingExportRequestId = pendingExport?.key === exportRequestKey ? pendingExport.requestId : null;
+
+  async function createFullArchive() {
+    if (!session || !canManage || !exportRequestKey) return;
+    const description = [
+      "Create an encrypted snapshot of this Space's local database rows and supported R2 workspace/extension objects?",
+      "The operation writes to R2. It does not capture other services, third-party provider data, or opaque Cloudflare Container snapshots.",
+      "The export fails closed above 8 MiB plaintext, 10,000 rows per table, 5,000 object references, 2 MiB per object, or 4 MiB total captured object bytes.",
+    ].join("\n\n");
+    if (!window.confirm(description)) return;
+
+    setBusy(true); setError(""); setMessage("");
+    let requestId: string;
+    try {
+      requestId = getOrCreateSpaceArchiveExportRequest(sessionStorage, spaceId, session.endUserId);
+      setPendingExport({ key: exportRequestKey, requestId });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "A recoverable archive request could not be saved in this browser.");
+      setBusy(false);
+      return;
+    }
+
+    try {
+      const result = await exportSpaceArchive(spaceId, session, requestId);
+      setMessage(`Encrypted archive verified: ${result.archive_id} · ${result.plaintext_bytes?.toLocaleString() ?? "size recorded"} bytes${result.replayed ? " · recovered existing request" : result.resumed ? " · resumed upload" : ""}.`);
+      try {
+        clearPendingSpaceArchiveExportRequest(sessionStorage, spaceId, session.endUserId);
+        setPendingExport(null);
+      } catch {
+        // The confirmed request ID remains safe to replay; the server returns the same verified archive.
+        setPendingExport({ key: exportRequestKey, requestId });
+        setMessage(`Archive ${result.archive_id} is verified. Its saved request ID could not be cleared, so a retry will return this same archive.`);
+      }
+      try { await refresh(); }
+      catch { setError("The archive completed, but the archive list could not refresh. Reload this panel to view it."); }
+    } catch (e) {
+      setError(`${e instanceof Error ? e.message : "Archive export could not be confirmed."} The saved request ID is retained; retrying will resume or recover the same archive.`);
+    } finally { setBusy(false); }
+  }
 
   async function run(jobId?: string) {
     if (!session) return;
@@ -67,11 +119,13 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
 
   if (!session || !canManage) return null;
   return <section style={{ marginTop: 24 }}>
-    <h3 className="settings-section-title">Archive key rotation</h3>
-    <p className="settings-section-sub">Re-encrypt verified archives after configuring a new active SPACE_ARCHIVE_KEY. Rotation is resumable; keep the previous key available until completion.</p>
+    <h3 className="settings-section-title">Space archives and key rotation</h3>
+    <p className="settings-section-sub">Create encrypted Space-local snapshots and restore them as additive merges. Exports are resumable and retain a request ID in this browser until the server confirms the verified archive.</p>
     <div className="settings-block" style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 13 }}>Encrypted Space archives</strong>
+        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Full archives include supported SpaceDO rows and listed workspace/extension objects. They exclude other services, provider data and opaque Container snapshots. Limits: 8 MiB plaintext, 10,000 rows per table, 5,000 object references, 2 MiB per object and 4 MiB total captured object bytes.</p>
+        <button type="button" disabled={busy} onClick={() => void createFullArchive()}>{busy ? "Working…" : pendingExportRequestId ? "Retry same full-archive request" : "Create encrypted full archive"}</button>
         <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Restore is an additive merge, not a point-in-time rollback. Existing rows and objects remain. Archived event triggers are inserted disabled and require admin review before they can run.</p>
         {archives.filter(archive => archive.status === "verified").map(archive => <div key={archive.archive_id} className="settings-row" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           <span style={{ flex: 1 }}>{archive.kind === "retention_messages" ? "Retention archive" : "Full archive"} · {new Date(archive.created_at).toLocaleString()} · {archive.plaintext_bytes.toLocaleString()} bytes</span>
