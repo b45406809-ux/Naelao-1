@@ -16,7 +16,37 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (U05 exact project hold check; P04 next; pushed)
+## Latest checkpoint — 2026-11-14 (P04 safe Project runtime settings archive; pushed)
+
+Code `e747b62d15da7f62405159595636726652de9153` is pushed to `origin/Mcbt5s-Backup-2`; fetch immediately before push showed no
+remote advance. Full Space archives now include a bounded version-1 snapshot of an Agent-owned
+Project main-runtime profile and inert restart recipes. The Agents export/preview/restore bridge
+authenticates the tenant, binds the exact tenant/Space/Project, validates schemas and size, and
+additively restores only when the destination has no current value. Restore actor audit rows are
+written only for inserted settings. The archive preview and durable restore status report restored
+versus preserved values. Allocations, live observations and provider snapshots remain excluded;
+recipes stay inert. Shell disclosure and apply confirmation describe those limits.
+
+Local evidence: Agents profile/archive helper and internal-route tests **9/9**; Space archive codec
+and schema tests **7/7**; Space data-ops suite **17/17**, plus a rerun of its project archive/restore
+integration after partial-status recording; Shell archive panel **2/2**; Agents, Spaces and Shell
+typechecks; `git diff --check`. Migration-backed local tests cover destination-current-wins, actor
+audit, idempotent retry, strict scope/schema rejection, authenticated bridge, preview and integration
+through encrypted archive export/restore. No browser, deployment, R2 drill, provider call, or live
+acceptance ran. P04 remains PARTIAL for other service stores/private inbound data, approved retention,
+key and jurisdiction policy, RPO/RTO, and isolated/deployed recovery. Preserve untracked
+`infra/scripts/__pycache__/`; keep rollouts disabled.
+
+Exact next action: continue S3/U05 by implementing the reachable owner-authorized candidate allocation
+and reservation path against the existing project-main runtime lifecycle. Bind it to exact tenant,
+Space, Project, main allocation generation, selected template/image digest, current authorization and
+the budget reservation. Persist candidate state and expose an authorized caller; test stale and
+concurrent allocation, budget mismatch, revocation and no fabricated attestation. Keep candidates
+unqualified until a trusted runtime producer emits the required observations. Do not claim a live
+mount or U06 writer/drain/flush support. Then continue P04's independent cross-service gaps and the
+remaining S3–S9/U01–U12/P01–P24 requirements.
+
+## Previous checkpoint — 2026-11-14 (U05 exact project hold check; P04 next; pushed)
 
 Code `b5b0514068c96f711de60d54a4bd2e1fd93ca5cf` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch confirmed `36dfb191` with no advance. Project-main runtime generation admission now requires its Billing hold to match the exact tenant, Space and Project, remain held, and remain unexpired before the container can start. The regression proves a different Project's hold does not claim an allocation generation or start the runtime.
 
