@@ -1,6 +1,35 @@
 # Platform completion and guided templates progress
 
 
+## Active continuation — 2026-11-14 (template coordination defaults; Modal/P06 reconciliation)
+
+The current pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
+`autonomous-managed-services-20261111` / `origin/Mcbt5s-Backup-2`; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Source reconciliation against both plans found no coordination posture field in signed
+`SpaceBlueprint`, activation preview or owner activation. Space Settings already has a revisioned,
+default-off member-publication policy, so templates cannot currently express the requested default.
+This is an uncoded reachable contract, not an external blocker. Implement an optional signed template
+default and expose it in owner activation review. Applying it must require explicit owner confirmation
+and must not overwrite any Space whose policy already has a revision; use the existing policy API and
+preserve current facts.
+
+The same review confirmed Twilio phone extensions accept completed `call.speech` turns and the Shell
+simulator exposes synthetic speech; Telnyx phone extensions stay DTMF-only and reject streaming. The
+MeloTTS `VoiceSession` implementation is not constructed by a production caller; live OwnerVoiceAgent
+uses OpenRouter, and audio attachment transcription uses Workers AI Whisper. Modal's official JS SDK
+is Beta, Node 22+ and gRPC-based with a documented private/changeable gRPC API. No compatible Node
+host or reachable Modal caller exists in the Agents Worker, and the current mock's `actualCredits`
+does not match a documented provider usage receipt. These are host/API/usage-contract gates, not
+credential blockers. Local checks: phone suites **41/41**, Agents and Shell typechecks; no browser,
+deployed or live provider acceptance ran.
+
+Exact next action: implement and test the signed Space Template coordination default through Foundry
+authoring, activation preview, explicit owner confirmation, and revision-zero policy persistence.
+Then continue uncoded P05/P06 and S3–S9/U01–U12 requirements. Keep rollouts disabled.
+
+
 ## Active continuation — 2026-11-14 (P24 installed publisher revocation notice)
 
 Code `f3a04010077064cd569ed20933f4b4bbac957db9` threads persisted release revocation state through

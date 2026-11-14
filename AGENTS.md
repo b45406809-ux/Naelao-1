@@ -12,7 +12,38 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (P24 installed publisher revocation notices)
+## Latest checkpoint — 2026-11-14 (Modal host contract; P06 voice caller reconciliation)
+
+The pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
+`autonomous-managed-services-20261111`, tracking `origin/Mcbt5s-Backup-2`. The only untracked path is
+the intentionally preserved `infra/scripts/__pycache__/`.
+
+The Modal audit checked the official [JS/Go SDK guide](https://modal.com/docs/guide/sdk-javascript-go),
+[Sandbox API](https://modal.com/docs/sdk/js/latest/Sandbox), SDK README and client source as of
+2026-11-14. The SDK is Beta, requires Node 22+ (or Deno/Bun), and its official client uses Node built-
+ins plus `nice-grpc`; Modal documents the gRPC API as private and subject to change. Sandbox create
+supports GPU, region and time limits and exposes termination, but the reviewed public SDK contract
+does not expose the `actualCredits` field assumed by the local mock. Agents runs in Cloudflare
+Workers, has no Modal package, Node host binding or reachable caller. Do not claim Modal support or
+map mock credits to provider charges. This is a missing host/caller plus a platform/API and usage
+receipt contract gate, not a credential blocker.
+
+P06 source reconciliation found Twilio extension calls can use completed `call.speech` turns through
+the signed handler and owner simulator; Telnyx remains keypad-only and rejects streaming. The
+`VoiceSession` class that defaults to Cloudflare MeloTTS has no production constructor/caller.
+Reachable attachment transcription uses Workers AI Whisper; the reachable OwnerVoiceAgent uses its
+OpenRouter audio adapters. Do not switch that active OpenRouter path based on the unused class.
+Focused local phone suites pass **41/41** and Agents/Shell typechecks pass. These are local mocks and
+static checks; no live provider, browser or deployed acceptance ran.
+
+Exact next action: implement the missing shared-Space template coordination posture contract. Add an
+optional signed blueprint default, expose it in owner activation review, and apply it through the
+existing revisioned policy API only after explicit owner confirmation and only when no owner policy
+revision already exists. Add authoring, persistence, authorization and regression coverage; preserve
+default-off behavior and existing approved facts. Then continue the remaining S3–S9/U01–U12 and
+platform-plan code gaps. Keep rollouts disabled.
+
+## Previous checkpoint — 2026-11-14 (P24 installed publisher revocation notices)
 
 Code `f3a04010077064cd569ed20933f4b4bbac957db9` adds current-trust status to the installed
 Space-shared and owner-only project extension views. A revoked or missing publisher key identifies

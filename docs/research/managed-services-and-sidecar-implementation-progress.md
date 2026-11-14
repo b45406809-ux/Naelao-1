@@ -1,6 +1,37 @@
 # Managed services and sidecar implementation progress
 
 
+## Active continuation — 2026-11-14 (MS08d Modal host contract; P06 voice path)
+
+The current pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
+`autonomous-managed-services-20261111` / `origin/Mcbt5s-Backup-2`; preserve untracked
+`infra/scripts/__pycache__/`.
+
+Official Modal JS documentation and repository source were checked on 2026-11-14. The SDK is Beta,
+requires Node 22+ (README also lists Deno/Bun), imports Node APIs and `nice-grpc`, and explicitly
+states the Modal gRPC API is private and may change without warning. Sandbox creation supports GPU,
+region, timeout and termination, but the reviewed public SDK surface has no per-Sandbox monetary
+receipt matching the mock's `actualCredits`. This Agents service is a Cloudflare Worker with no
+Modal package, compatible Node host, service binding or reachable caller. The missing host/caller is
+ordinary uncoded work and the private API/usage mapping is a platform contract gate; credentials
+are not the blocker. No speculative adapter or support claim was added.
+
+P06 source reconciliation: Twilio public extension calls have completed speech-turn support via
+`call.speech`, signed handler dispatch and owner simulator. Telnyx public extension calls remain
+DTMF-only and fail closed on streaming. The `VoiceSession`/MeloTTS path has no production caller;
+reachable attachment transcription uses Workers AI Whisper, while reachable OwnerVoiceAgent audio
+uses OpenRouter. Do not switch active OpenRouter speech based on the uncalled class. Local verification
+after this source review: Agents phone suites **41/41**, Agents typecheck and Shell typecheck pass.
+No browser, deployment, carrier or live voice acceptance ran.
+
+Exact next action: implement the missing Space Template coordination posture handoff from the platform
+plan. Add a signed optional default, show it in owner activation review, and apply via the existing
+revisioned policy API only after explicit owner confirmation and only when no owner policy revision
+already exists. Add Foundry authoring, persistence, owner authorization and regressions without
+changing default-off behavior or existing facts. Then resume remaining S3–S9/U01–U12 and platform
+code gaps; keep rollouts disabled.
+
+
 ## Active continuation — 2026-11-14 (P24 installed publisher revocation notice)
 
 Code `f3a04010077064cd569ed20933f4b4bbac957db9` adds current publisher-trust status to installed
