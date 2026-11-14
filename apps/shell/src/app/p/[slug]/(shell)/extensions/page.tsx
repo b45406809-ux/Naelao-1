@@ -49,7 +49,10 @@ export default function ExtensionsPage() {
       setApps(result.apps); setCatalog(available.extensions); setInstallReviews({});
       setUpdateReceipts(updateHistory.receipts);
       setReleaseHistory({}); setSelectedReleaseVersion({});
-      setActive(current => current && result.apps.some(app => app.app_id === current.app_id) ? current : null);
+      setActive(current => {
+        const latest = current && result.apps.find(app => app.app_id === current.app_id);
+        return latest?.status === "active" && latest.publisher_trusted !== false ? latest : null;
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load Space extensions.");
     } finally { setLoading(false); }
