@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { cors, requestId, errorResponse, badRequest, unauthorized, HttpError, readBoundedRequestText, RequestBodyTooLargeError, mintInternalToken } from "@naelao/http";
+import { cors, requestId, errorResponse, badRequest, unauthorized, HttpError, readBoundedRequestText, RequestBodyTooLargeError, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { signJwt, verifyJwt, AuthError } from "@naelao/auth";
+import { dispatchBuilderPasswordResetEmail, dispatchPendingBuilderPasswordResetEmails, enqueueBuilderPasswordResetEmail } from "./builder-password-reset-outbox.js";
 
 export interface AuthEnv {
   ENVIRONMENT: string;
@@ -165,26 +166,6 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, matching the end-user rese
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function sendResetEmail(env: AuthEnv, tenantId: string, to: string, token: string): Promise<void> {
-  if (!env.NOTIFICATIONS_WORKER) return;
-  const link = env.BUILDER_DASHBOARD_URL
-    ? `\n\nOr click this link: ${env.BUILDER_DASHBOARD_URL}/reset-password#token=${encodeURIComponent(token)}`
-    : "";
-  try {
-    await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-      body: JSON.stringify({
-        channel: "email",
-        to,
-        subject: "Reset your Naelao password",
-        body: `Reset token: ${token}${link}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`,
-        notification_id: `builder-password-reset:${await sha256Hex(token)}`,
-      }),
-    }));
-  } catch { /* best-effort — never blocks the caller's own (constant) response */ }
 }
 
 declare module "hono" {
@@ -404,18 +385,46 @@ app.post("/request-password-reset", async (c) => {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const tokenHash = await sha256Hex(token);
   const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
-  await c.env.PLATFORM_DB.batch([
-    c.env.PLATFORM_DB.prepare(
-      "DELETE FROM builder_password_reset_tokens WHERE user_id = ?1 AND used_at IS NULL"
-    ).bind(user.id),
-    c.env.PLATFORM_DB.prepare(
-      `INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at)
-       VALUES (?1, ?2, ?3, ?4)`
-    ).bind(crypto.randomUUID(), user.id, tokenHash, expiresAt),
-  ]);
-
-  await sendResetEmail(c.env, user.org_id, user.email, token);
+  const tokenId = crypto.randomUUID();
+  let operationId: string;
+  try {
+    operationId = await enqueueBuilderPasswordResetEmail(c.env.PLATFORM_DB, c.env, {
+      tenantId: user.org_id,
+      userId: user.id,
+      email: user.email,
+      tokenId,
+      tokenHash,
+      token,
+      expiresAt,
+    });
+  } catch {
+    // Keep the public response non-enumerating even when durable delivery cannot be recorded.
+    return ALWAYS_OK;
+  }
+  try { await dispatchBuilderPasswordResetEmail(c.env.PLATFORM_DB, c.env, operationId); }
+  catch { /* the scheduled dispatcher resumes from the durable outbox */ }
   return ALWAYS_OK;
+});
+
+app.get("/internal/builder-password-reset-email-operations", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const status = c.req.query("status") ?? null;
+  if (status && !["pending", "sending", "accepted", "ambiguous", "failed", "cancelled"].includes(status)) {
+    return c.json({ error_code: "invalid_status" }, 400);
+  }
+  const rawLimit = Number(c.req.query("limit") ?? 25);
+  const limit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(100, rawLimit)) : 25;
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT operation_id, status, attempt_count, next_attempt_at, last_error_code, provider_receipt_id,
+            created_at, updated_at, accepted_at
+       FROM builder_password_reset_email_outbox
+      WHERE tenant_id = ? AND (? IS NULL OR status = ?)
+      ORDER BY created_at DESC, operation_id LIMIT ?`
+  ).bind(tenantId, status, status, limit).all();
+  return c.json({ operations: rows.results ?? [] });
 });
 
 // ── POST /reset-password ─────────────────────────────────────────────────────
@@ -515,4 +524,13 @@ app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 
 export default {
   fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: AuthEnv): Promise<void> {
+    try {
+      const result = await dispatchPendingBuilderPasswordResetEmails(env.PLATFORM_DB, env);
+      console.log(`[builder-password-reset-outbox] accepted=${result.accepted} deferred=${result.deferred}`);
+    } catch {
+      // Do not log reset tokens, recipient data or provider payloads.
+      console.error("[builder-password-reset-outbox] dispatch pass failed");
+    }
+  },
 } satisfies ExportedHandler<AuthEnv>;

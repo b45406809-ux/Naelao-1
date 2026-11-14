@@ -8,6 +8,9 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 ENVIRONMENT = "development"
 JWT_EXPIRY_SECONDS = "3600"
@@ -41,9 +44,15 @@ service = "agentport-api"
 name = "naelao-auth-staging"
 vars = { ENVIRONMENT = "staging", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD_URL = "https://staging-dashboard.naelao.com" }
 
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+
 [env.production]
 name = "naelao-auth-production"
 vars = { ENVIRONMENT = "production", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD_URL = "https://dashboard.naelao.com" }
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
 
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"

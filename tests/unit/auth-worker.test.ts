@@ -4,6 +4,7 @@ import { join } from "node:path";
 import authWorker from "../../workers/auth/src/index.js";
 import { cleanExpiredBuilderPasswordResetTokens } from "../../workers/sweeper/src/index.js";
 import { verifyJwt } from "@naelao/auth";
+import { mintInternalToken } from "@naelao/http";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Launch-readiness audit follow-up: workers/auth (login/register/password-reset — the builder's
@@ -25,9 +26,10 @@ const BILLING_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0
 const TOKEN_VERSION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0030_token_version.sql"), "utf8");
 const RESET_TOKENS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0057_builder_password_reset_tokens.sql"), "utf8");
 const RESET_TOKEN_EXPIRY_INDEX_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0123_builder_reset_token_expiry_index.sql"), "utf8");
+const RESET_EMAIL_OUTBOX_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0245_builder_password_reset_email_outbox.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION, RESET_TOKEN_EXPIRY_INDEX_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION, RESET_TOKEN_EXPIRY_INDEX_MIGRATION, RESET_EMAIL_OUTBOX_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string; notification_id?: string; tenantId: string | null }> = [];
   return {
     ENVIRONMENT: "test",
@@ -39,7 +41,7 @@ function makeEnv() {
       fetch: async (req: Request) => {
         const body = await req.json() as { to: string; subject: string; body: string; notification_id?: string };
         notifyCalls.push({ ...body, tenantId: req.headers.get("x-naelao-tenant-id") });
-        return new Response(JSON.stringify({ delivered: true }), { status: 200 });
+        return new Response(JSON.stringify({ delivered: true, provider_receipt_id: "receipt_builder_reset_1" }), { status: 200 });
       },
     },
     __notifyCalls: notifyCalls,
@@ -278,11 +280,17 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     const user = await env.__db.prepare("SELECT org_id FROM users WHERE email = 'jane@acme.com'").first<{ org_id: string }>();
     expect(env.__notifyCalls[0]?.tenantId).toBe(user?.org_id);
     const token = extractResetToken(env.__notifyCalls);
-    expect(env.__notifyCalls[0]?.notification_id).toMatch(/^builder-password-reset:[a-f0-9]{64}$/);
+    expect(env.__notifyCalls[0]?.notification_id).toMatch(/^builder-password-reset:[a-f0-9-]{36}:1$/);
     expect(env.__notifyCalls[0]?.notification_id).not.toContain(token);
+    expect(await env.__db.prepare("SELECT status, provider_receipt_id, encrypted_payload FROM builder_password_reset_email_outbox").first()).toEqual({
+      status: "accepted", provider_receipt_id: "receipt_builder_reset_1", encrypted_payload: "",
+    });
 
     const resetRes = await authWorker.fetch(req("/reset-password", { token, new_password: "newpassword1" }), env as never, execCtx);
     expect(resetRes.status).toBe(200);
+    expect(await env.__db.prepare("SELECT status, encrypted_payload FROM builder_password_reset_email_outbox").first()).toEqual({
+      status: "accepted", encrypted_payload: "",
+    });
 
     // Old password no longer works; new one does.
     const oldLogin = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
@@ -326,6 +334,106 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(env.__notifyCalls).toHaveLength(1);
   });
 
+  it("persists an encrypted delivery intent and keeps the reset response constant when Notifications is unavailable", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    env.NOTIFICATIONS_WORKER = undefined as never;
+
+    const response = await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const missing = await authWorker.fetch(req("/request-password-reset", { email: "nobody@acme.com" }), env as never, execCtx);
+
+    expect(response.status).toBe(missing.status);
+    expect(await response.json()).toEqual(await missing.json());
+    const row = await env.__db.prepare("SELECT encrypted_payload, status, attempt_count FROM builder_password_reset_email_outbox").first<{ encrypted_payload: string; status: string; attempt_count: number }>();
+    expect(row).toMatchObject({ status: "pending", attempt_count: 1 });
+    expect(row?.encrypted_payload).toMatch(/^v1\./);
+    expect(row?.encrypted_payload).not.toContain("jane@acme.com");
+    expect(env.__notifyCalls).toHaveLength(0);
+  });
+
+  it("retries explicit not-sent outcomes with a new ID and records the accepted provider receipt", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const outcomes = [
+      new Response(JSON.stringify({ delivered: false, outcome: "not_sent", reason: "scope_check_unavailable" }), { status: 503 }),
+      new Response(JSON.stringify({ delivered: true, outcome: "provider_accepted", provider_receipt_id: "receipt_after_retry" }), { status: 200 }),
+    ];
+    (env.NOTIFICATIONS_WORKER as Fetcher).fetch = async (request: Request) => {
+      const body = await request.json() as { to: string; subject: string; body: string; notification_id?: string };
+      env.__notifyCalls.push({ ...body, tenantId: request.headers.get("x-naelao-tenant-id") });
+      return outcomes.shift() ?? new Response(null, { status: 500 });
+    };
+
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const pending = await env.__db.prepare("SELECT status FROM builder_password_reset_email_outbox").first();
+    expect(pending).toEqual({ status: "pending" });
+    env.__db.db.exec("UPDATE builder_password_reset_email_outbox SET next_attempt_at = datetime('now', '-1 second')");
+
+    await authWorker.scheduled({ cron: "*/5 * * * *", scheduledTime: Date.now(), type: "scheduled" } as ScheduledController, env as never);
+
+    expect(env.__notifyCalls).toHaveLength(2);
+    expect(env.__notifyCalls[0]?.notification_id).not.toBe(env.__notifyCalls[1]?.notification_id);
+    expect(await env.__db.prepare("SELECT status, provider_receipt_id FROM builder_password_reset_email_outbox").first()).toEqual({
+      status: "accepted", provider_receipt_id: "receipt_after_retry",
+    });
+  });
+
+  it("reconciles a lost service-binding response with the same stable notification ID", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    let calls = 0;
+    (env.NOTIFICATIONS_WORKER as Fetcher).fetch = async (request: Request) => {
+      const body = await request.json() as { to: string; subject: string; body: string; notification_id?: string };
+      env.__notifyCalls.push({ ...body, tenantId: request.headers.get("x-naelao-tenant-id") });
+      calls++;
+      if (calls === 1) throw new Error("simulated response loss after request dispatch");
+      return new Response(JSON.stringify({ delivered: true, outcome: "provider_accepted", provider_receipt_id: "receipt_lost_response" }), { status: 200 });
+    };
+
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    env.__db.db.exec("UPDATE builder_password_reset_email_outbox SET next_attempt_at = datetime('now', '-1 second')");
+    await authWorker.scheduled({ cron: "*/5 * * * *", scheduledTime: Date.now(), type: "scheduled" } as ScheduledController, env as never);
+
+    expect(env.__notifyCalls).toHaveLength(2);
+    expect(env.__notifyCalls[0]?.notification_id).toBe(env.__notifyCalls[1]?.notification_id);
+    expect(await env.__db.prepare("SELECT status, provider_receipt_id FROM builder_password_reset_email_outbox").first()).toEqual({
+      status: "accepted", provider_receipt_id: "receipt_lost_response",
+    });
+  });
+
+  it("reconciles an ambiguous outcome using the same Notification ID and exposes tenant-scoped metadata internally", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    (env.NOTIFICATIONS_WORKER as Fetcher).fetch = async (request: Request) => {
+      const body = await request.json() as { to: string; subject: string; body: string; notification_id?: string };
+      env.__notifyCalls.push({ ...body, tenantId: request.headers.get("x-naelao-tenant-id") });
+      return new Response(JSON.stringify({ delivered: false, outcome: "attempt_ambiguous" }), { status: 502 });
+    };
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+
+    const firstId = env.__notifyCalls[0]?.notification_id;
+    expect(await env.__db.prepare("SELECT status, encrypted_payload, active_notification_id FROM builder_password_reset_email_outbox").first()).toMatchObject({
+      status: "pending", encrypted_payload: expect.stringMatching(/^v1\./), active_notification_id: firstId,
+    });
+    env.__db.db.exec("UPDATE builder_password_reset_email_outbox SET next_attempt_at = datetime('now', '-1 second')");
+    await authWorker.scheduled({ cron: "*/5 * * * *", scheduledTime: Date.now(), type: "scheduled" } as ScheduledController, env as never);
+    expect(env.__notifyCalls).toHaveLength(2);
+    expect(env.__notifyCalls[1]?.notification_id).toBe(firstId);
+    const unauthenticated = await authWorker.fetch(new Request("https://auth.naelao.com/internal/builder-password-reset-email-operations"), env as never, execCtx);
+    expect(unauthenticated.status).toBe(403);
+    const user = await env.__db.prepare("SELECT org_id FROM users WHERE email = 'jane@acme.com'").first<{ org_id: string }>();
+    if (!user) throw new Error("registered builder should exist");
+    const tenantId = user.org_id;
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const rows = await authWorker.fetch(new Request("https://auth.naelao.com/internal/builder-password-reset-email-operations", {
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+    }), env as never, execCtx);
+    expect(rows.status).toBe(200);
+    const diagnostics = await rows.json() as { operations: Array<Record<string, unknown>> };
+    expect(diagnostics.operations[0]).toMatchObject({ status: "pending", attempt_count: 2 });
+    expect(JSON.stringify(diagnostics)).not.toContain("jane@acme.com");
+  });
+
   it("a token can only be used once", async () => {
     const env = makeEnv();
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
@@ -348,6 +456,25 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
 
     expect((await authWorker.fetch(req("/reset-password", { token: firstToken, new_password: "anotherpass1" }), env as never, execCtx)).status).toBe(400);
     expect((await authWorker.fetch(req("/reset-password", { token: secondToken, new_password: "anotherpass1" }), env as never, execCtx)).status).toBe(200);
+    expect(await env.__db.prepare("SELECT status, encrypted_payload FROM builder_password_reset_email_outbox ORDER BY rowid").all()).toMatchObject({
+      results: [{ status: "accepted", encrypted_payload: "" }, { status: "accepted", encrypted_payload: "" }],
+    });
+  });
+
+  it("cancels and scrubs an undelivered reset email when a newer reset token replaces it", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    env.NOTIFICATIONS_WORKER = undefined as never;
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+
+    expect(await env.__db.prepare("SELECT status, encrypted_payload FROM builder_password_reset_email_outbox ORDER BY rowid").all()).toMatchObject({
+      results: [
+        { status: "cancelled", encrypted_payload: "" },
+        { status: "pending", encrypted_payload: expect.stringMatching(/^v1\./) },
+      ],
+    });
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM builder_password_reset_tokens WHERE used_at IS NULL").first()).toEqual({ count: 1 });
   });
 
   it("a successful reset invalidates any other outstanding reset token for that user", async () => {

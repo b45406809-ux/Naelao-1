@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0244_marketplace_purchase_price_snapshots",
+  "requiredSchemaVersion": "0245_builder_password_reset_email_outbox",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -979,6 +979,10 @@
     {
       "filename": "0244_marketplace_purchase_price_snapshots.sql",
       "sha256": "cfc44a4206f7cbfb62a3b81b66bf86f1a789382c109dee5a12af613fdafae18a"
+    },
+    {
+      "filename": "0245_builder_password_reset_email_outbox.sql",
+      "sha256": "3ccb51a217cd001d1f9410bb23521396c5bc8f647ee8c4ab5e54a84df3b5d4a2"
     }
   ]
 }
