@@ -1,7 +1,24 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P04 chunked Space archive objects)
+## Active continuation — 2026-11-14 (P02 receipt identity and source freshness)
+
+P02 fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
+`6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed. The preflight now requires exact R2 bucket
+and Vectorize index names in read-only receipts, and the collector rejects stale source maps at both
+default and custom paths before making Cloudflare API calls. Environment-resource and collector
+suites pass **16/16** and `git diff --check` passes. The local preflight still rejects one shared D1,
+eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing
+read-only receipts; no Cloudflare account, deployed resources or remote D1 was inspected. P02 remains
+PARTIAL for real resource separation/ownership, receipts and operator-attested baselines. Rollouts
+remain disabled; preserve the intentionally untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue P20's refund settlement path from webhook normalization through durable
+refund cases and buyer/author status callers. Close a concrete identity, idempotency or persistence gap
+without deciding license access, author clawback, dispute or payout policy, then continue independent
+P03/P12 and S3–S9/U01–U12/P01–P24 gaps without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (P04 chunked Space archive objects)
 
 Source `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2`. Existing v1
 archives remain readable and are still written within 2 MiB/object and 4 MiB aggregate. Larger captures

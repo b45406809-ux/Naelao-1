@@ -16,7 +16,27 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 chunked Space archive objects)
+## Latest checkpoint — 2026-11-14 (P02 receipt identity and source freshness)
+
+P02 validator/collector fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
+`6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Receipt validation now binds R2 and Vectorize observations to
+their configured provider names, and the GET-only receipt collector compares every supplied source map
+(including custom paths) to the current selected Wrangler inventory before making provider calls.
+Local evidence: environment-resource and receipt-collector suites **16/16**; `git diff --check`.
+The current local preflight correctly remains fail-closed on one shared D1, eleven shared KV IDs,
+unresolved `naelao-calls`, missing Cloudflare account/time observations, and 158 missing resource
+receipts. No Cloudflare account, deployed resource, or remote D1 was inspected. P02 remains PARTIAL for
+actual resource separation/ownership, receipts and operator-attested D1 baselines. Preserve the
+intentionally untracked `infra/scripts/__pycache__/`; keep rollouts disabled.
+
+Exact next action: continue P20's license-refund settlement path from provider webhook normalization
+through the existing durable refund-case review and buyer/author status callers. Close a concrete
+policy-independent identity, idempotency, or persistence gap if present; do not decide license access,
+author clawback, dispute or payout policy. Then continue independent P03/P12 and S3–S9/U01–U12/P01–P24
+gaps without repeating completed audits.
+
+## Previous checkpoint — 2026-11-14 (P04 chunked Space archive objects)
 
 Source `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2` from
 `autonomous-managed-services-20261111`. Existing archive v1 reads remain supported; exports within

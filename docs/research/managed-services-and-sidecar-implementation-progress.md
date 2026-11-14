@@ -1,7 +1,25 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P04 chunked Space archive objects)
+## Active continuation — 2026-11-14 (P02 receipt identity and source freshness)
+
+P02 fixes `fe8b31216c6c6049c7c3519dea0744e2f58e00e6` and
+`6f5ded73c48be8a5d44644ce694ea2a43dbdbdd1` are pushed to `origin/Mcbt5s-Backup-2`. Preflight now
+rejects R2/Vectorize receipt IDs that differ from the configured Cloudflare bucket/index names. The
+GET-only collector also checks current Wrangler-source equality for both default and custom map paths
+before making provider calls. Environment-resource and collector tests pass **16/16**; `git diff
+--check` passes. Running the actual local preflight still correctly rejects one shared D1, eleven
+shared KV IDs, unresolved `naelao-calls`, absent Cloudflare account/time evidence, and 158 missing
+read-only resource receipts. No Cloudflare account, deployed binding or remote D1 was inspected.
+P02 remains PARTIAL for actual resource separation/ownership, live receipts and operator-attested D1
+baselines. Preserve `infra/scripts/__pycache__/`; keep rollouts disabled.
+
+Exact next action: continue P20 from provider refund webhook normalization through the durable refund
+case and buyer/author status callers. Fix any independent event identity, idempotency or persistence
+gap without choosing license access, author clawback, dispute or payout policy. Then proceed through
+P03/P12 and the remaining S3–S9/U01–U12/P01–P24 code gaps.
+
+## Previous continuation — 2026-11-14 (P04 chunked Space archive objects)
 
 Code `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2`. V1 archives
 remain readable and remain the writer format below 2 MiB/object and 4 MiB aggregate. Larger captures
