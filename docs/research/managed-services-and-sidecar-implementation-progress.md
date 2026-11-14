@@ -1,34 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
+## Active checkpoint — 2026-11-14 (P06 synthetic phone-menu scenarios; pushed)
 
-Code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to `origin/Mcbt5s-Backup-2`; the
-pre-push fetch confirmed remote tip `60c5505b` with no advance. The owner/admin Template status modal
-links validated generated Project IDs after setting the target Space active and links to the Space's
-extension manager. It discloses that template uninstall/resource or billing cleanup is unavailable in
-this view, that Projects/extensions/provider connections/licenses/charges may need separate review,
-and that the current listing cannot establish whether any is active. It performs no mutation.
+Code `7f6f4591642dd1fea064d9e9174bf410db4bf5f2` is pushed to `origin/Mcbt5s-Backup-2`; pre-push
+fetch confirmed remote tip `1d9f6d38` with no advance. The signed `bounded-phone-menu` source is now
+version 1.0.6. Its owner-triggered scenario suite sends synthetic call-start, valid/invalid DTMF and
+eligible owner-enabled Twilio speech to the exact selected active binding via `/api/phone-simulate`,
+then compares host-validated output with the preview of saved settings. It labels results synthetic.
+Endpoint source and tests confirm the binding is checked server-side and simulation creates no carrier
+call, call receipt or saved session. A response-shape assumption found during source tracing was
+corrected before commit. Telnyx remains DTMF-only; this remains a bounded IVR, not a conversational
+agent.
 
-Verification: focused Shell helper test **1/1**, Shell `tsc --noEmit`, and `git diff --check` pass. No
-browser, deployment, provider, or live customer acceptance ran. P05 remains PARTIAL for broader
-installation lifecycle, approved uninstall/cleanup and license/provider-charge semantics, Space-wide
-provider connection authority, complete verified rates, and live acceptance.
+Local evidence: Agent SDK suite **6/6**, SDK typecheck, Agents synthetic simulation tests **2/2**,
+Agents typecheck, and `git diff --check`. No browser, carrier/provider, deployment or live acceptance
+ran. P06 remains PARTIAL for first-party catalog/provisioning, conversational streaming, complete cost
+accounting and live acceptance. Keep rollout flags disabled; preserve `infra/scripts/__pycache__/`.
 
-P03/P12 status code `39c0b9e4` is pushed and locally verified as recorded below. The P04 restore audit
-found the durable tombstone fence in `SpaceDO.fetch` before route dispatch; the `space-data-ops.test.ts`
-case proves archive preview returns 410 after erasure. No additional tombstone code is warranted.
-P04 remains PARTIAL for other service stores, private inbound data, approved retention/key/jurisdiction
-policy, RPO/RTO, and isolated/deployed drills. P01/P02 external inventory and receipt gates remain.
-U06 remains an unsupported pinned-runtime writer/drain/flush/handoff contract, not a credentials block.
-Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Other durable gates remain unchanged: P01/P02 await actual resource separation/ownership, current
+read-only receipts and operator-attested D1 baselines; P03/P20 policy decisions remain open; P04 lacks
+approved retention/key/jurisdiction/RPO-RTO policy and isolated/deployed drills; U06 lacks an upstream
+trusted writer-admission/drain/flush/handoff contract. These are not missing ordinary implementation
+or generic credential blockers.
 
-Exact next action: add owner-initiated synthetic scenario checks to the signed `bounded-phone-menu`
-dashboard using the current `/api/phone-simulate` route. For the exact selected active installation and
-line, run call start and DTMF 1/2/invalid cases; add speech cases only for Twilio lines whose owner
-policy allows speech. Compare host-validated results to preview expectations based on saved settings,
-show per-case synthetic outcomes, and do not create a carrier request or call session. Keep this bounded
-IVR distinct from the unimplemented conversational voice-agent lifecycle. Then continue other
-independent P05/P06/S3–S9/U01–U12/P01–P24 gaps.
+Exact next action: implement P05/§10.3's Space Template collaboration-posture handoff. Reconcile the
+current signed SpaceBlueprint schema, activation review and revisioned Space policy API. Add an optional
+signed default posture, show it to the owner, and apply only after explicit confirmation when no owner
+policy revision exists. Wire authoring and durable retry through existing contracts; test authorization,
+retries and default-off behavior without overriding owner policy or changing existing facts. Then
+continue independent P05/P06/shared-Space/S3–S9/U01–U12/P01–P24 code gaps.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

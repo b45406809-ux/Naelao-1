@@ -16,33 +16,35 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
+## Latest checkpoint — 2026-11-14 (P06 synthetic phone-menu scenarios; pushed)
 
-P05 code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to
-`origin/Mcbt5s-Backup-2` after fetching remote `60c5505b` with no advance. Owner/admin Template
-status now links only validated generated Project IDs into the matching Space and links to that
-Space's extension manager. It states that this screen cannot uninstall the template or remove
-Projects/extensions/provider connections/licenses/charges, and that it cannot infer those items are
-active. It performs no cleanup or billing mutation.
+Code `7f6f4591642dd1fea064d9e9174bf410db4bf5f2` is pushed to
+`origin/Mcbt5s-Backup-2`; immediately before push, fetching found no remote advance from `1d9f6d38`.
+The signed `bounded-phone-menu` source is now version 1.0.6 and its owner-triggered dashboard runs
+synthetic call-start, valid/invalid DTMF and eligible owner-enabled Twilio speech through the exact
+selected active binding's `/api/phone-simulate` path. It compares host-validated responses with the
+saved-settings preview and labels results synthetic. A source check caught and fixed a response-shape
+assumption: the endpoint deliberately returns no line metadata, so the UI trusts its server-validated
+simulation response while the request remains scoped to the selected binding. Existing host tests
+prove simulation invokes neither a carrier nor durable call receipts/sessions. Telnyx remains DTMF-only;
+the example remains a bounded IVR, not a conversational agent.
 
-P03/P12 code `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` remains pushed; P04's restore-tombstone
-fence has no open local code gap. `SpaceDO.fetch` rejects every request except the exact erasure receipt
-when its durable tombstone exists; `space-data-ops.test.ts` proves archive restore preview returns 410
-after erasure. P04 still lacks other-service stores, approved retention/key/jurisdiction/RPO-RTO policy
-and isolated/deployed drills. P01/P02 still lack verified remote baselines, separated resources,
-ownership and read-only receipts. U06 still lacks an upstream writer-admission/drain/flush/handoff
-contract; this is not a credential blocker. Local verification for P05: Shell typecheck and focused
-project-ID link test **1/1**, `git diff --check`. No browser, deployment, provider or user acceptance
-ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local verification: SDK dashboard/handler suite **6/6**, SDK typecheck, Agents simulation tests **2/2**,
+Agents typecheck and `git diff --check`. No browser, carrier, provider, deployment or live acceptance
+ran. P06 remains PARTIAL for first-party catalog/provisioning, a conversational streaming lifecycle,
+complete costs and live acceptance. P01/P02 resource IDs, ownership, fresh receipts and operator D1
+baselines remain evidence gates; P03/P20 policy choices remain open; P04 retention, jurisdiction,
+RPO/RTO and isolated drills remain open; U06 still lacks the upstream trusted writer-admission,
+drain/flush and generation-fenced handoff contract. Rollouts remain disabled; preserve untracked
+`infra/scripts/__pycache__/`.
 
-Exact next action: add a bounded, owner-initiated synthetic scenario suite to the signed
-`bounded-phone-menu` dashboard. Run call-start, valid/invalid DTMF and eligible Twilio speech cases
-against the exact active installed handler and selected line via the existing `/api/phone-simulate`
-path. Compare actual host-validated responses with the saved-settings preview, clearly mark every
-result synthetic, and ensure no carrier request or call session is created. Keep speech disabled for
-Telnyx/ineligible lines and keep the sample distinct from a conversational voice agent. Then continue
-P05 lifecycle, P06 and remaining S3–S9/U01–U12/P01–P24 code. Fetch before each push; never force-push,
-deploy or enable rollouts.
+Exact next action: implement the P05/§10.3 Space Template collaboration-posture handoff. Reconcile
+the current signed SpaceBlueprint schema, owner activation review and revisioned Space policy API;
+add an optional signed default posture, show it in the owner review, and apply it only after explicit
+owner confirmation when no owner policy revision exists. Wire authoring/persistence through existing
+contracts and add authorization, retry and default-off regressions. Do not overwrite owner policy or
+change existing coordination facts. Then continue independent P05/P06, shared-Space, S3–S9/U01–U12 and
+P01–P24 gaps. Fetch and safely integrate before each push; never force-push, deploy or enable rollouts.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 

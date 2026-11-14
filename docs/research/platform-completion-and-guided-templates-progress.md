@@ -1,29 +1,30 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P05 generated-project lifecycle handoff; pushed)
+## Active checkpoint — 2026-11-14 (P06 synthetic phone-menu scenarios; pushed)
 
-Code `53ff1c61a316bfa36a37432aa2f9c1eae37bbf2` is pushed to `origin/Mcbt5s-Backup-2`; the fetch
-before push confirmed remote `60c5505b` with no advance. Owner/admin Template status links only safe,
-validated generated Project IDs into the selected Space and links to its extension manager. It states
-that this view cannot uninstall the template or remove generated Projects, required extensions,
-provider connections, licenses, or charges; their active state is unknown here. No destructive action
-or billing change is available.
+Code `7f6f4591642dd1fea064d9e9174bf410db4bf5f2` is pushed to `origin/Mcbt5s-Backup-2`; pre-push
+fetch confirmed remote tip `1d9f6d38` with no advance. The signed `bounded-phone-menu` dashboard now
+offers owner-triggered synthetic call-start, valid/invalid DTMF and policy-eligible Twilio speech cases
+through the exact selected active binding's `/api/phone-simulate` path. It compares host-validated
+responses to the saved-settings preview and labels each run synthetic. The actual endpoint returns no
+line metadata; its server checks the submitted binding before dispatch, and host tests prove no carrier
+call, call receipt or saved session is created. Telnyx speech remains unsupported and the sample remains
+a bounded IVR.
 
-Local evidence: helper test **1/1**, Shell typecheck and `git diff --check`. No browser, deployment,
-provider, or live customer acceptance ran. P05 remains PARTIAL for the actual broader update/uninstall
-lifecycle and unresolved cleanup/accounting contracts, Space-wide provider authority, full rates, and
-live acceptance. P04 restore tombstone enforcement is already implemented and tested; the new focused
-source check found no separate gap. Other-service archive coverage, approved retention/key/jurisdiction,
-RPO/RTO and isolated/deployed recovery remain open. P01/P02 resource inventory gates and the U06
-unsupported runtime contract remain as recorded. Keep rollouts disabled; preserve untracked
+Local evidence: Agent SDK tests **6/6**, SDK typecheck, Agents simulation tests **2/2**, Agents
+typecheck and `git diff --check`. No browser, deployment, provider or live acceptance ran. P06 remains
+PARTIAL for publisher identity/catalog, managed provisioning, a conversational voice-agent lifecycle,
+complete cost/quality evidence and live acceptance. P01/P02 resource and baseline evidence gates, P03/
+P20 product-policy decisions, P04 retention/jurisdiction/RPO-RTO and isolated recovery, and the U06
+upstream writer/drain/flush/handoff contract remain open. Rollouts remain disabled; preserve untracked
 `infra/scripts/__pycache__/`.
 
-Exact next action: extend the signed `bounded-phone-menu` dashboard with an owner-triggered synthetic
-scenario suite. Invoke call-start, valid/invalid DTMF and only policy-eligible Twilio speech through the
-existing exact-installation `/api/phone-simulate` path; compare host-validated output to the saved
-settings preview, disclose each result as synthetic and prove no carrier call/session is created. Keep
-Telnyx speech unsupported and the package bounded as an IVR. Then continue the next independent P05/P06
-or S3–S9/U01–U12/P01–P24 code gap. Fetch and integrate remote advances before every push.
+Exact next action: implement P05/§10.3's Space Template collaboration-posture handoff. Reconcile the
+current signed SpaceBlueprint schema, owner activation review and revisioned Space policy API. Add an
+optional signed default posture, present it in owner review, and apply it only after explicit owner
+confirmation while no owner policy revision exists. Add authoring/persistence through existing
+contracts and authorization, retry and default-off tests; preserve existing facts and never overwrite
+owner policy. Then continue uncoded P05/P06, shared-Space, S3–S9/U01–U12 and P01–P24 requirements.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
@@ -1583,7 +1584,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes only the current user’s subscription and recent non-PII provider outcomes; erasure deletes the scoped receipts. Current local verification: Billing **12/12**, Notifications **14/14**, Router **53/53**, Spaces **7/7**, plus affected typechecks. Grace/restriction/escalation and retry-cadence policy, inbox delivery and live acceptance remain. |
 | P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects and WorkspaceCoordinatorDO heads. New format-v2 capture is capped at 16 MiB/object and 64 MiB aggregate; restore is additive and checksum-verified. `75feeabb` excludes owner-managed grants from new archives and strips/reports them from legacy restore. `452345fd` proves uninstall status survives restore and runtime admission stays denied. `501b1526` pauses only restored active tasks for human review, clears stale leases, records preview/receipt counts, rejects blocked/terminal claims, preserves current and terminal rows; archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**, Spaces/Shell typechecks. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. |
 | P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts, durable activation/recovery, and owner-selected Knowledge intent carried to each created Project are local. Migration 137 stores default-empty per-Project grants; activation never writes a grant, and the owner saves through the publication-checked grant API. `75feeabb` prevents grant resurrection during archive restore. The current owner/admin status handoff links validated generated Projects and Space extensions, and discloses that no template uninstall/resource/billing cleanup occurs there (`53ff1c61`). | Actual broader update/uninstall lifecycle, cleanup/retained license/provider-charge semantics, Space-wide provider authority/payer/revocation contract, complete verified rates and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Code `7e218ae2` adds persisted Twilio-only `man`/`woman` `<Say>` style with bounded SDK/host validation and synthetic preview; Telnyx retains provider default and its host rejects style keys. Twilio `price` remains delayed connectivity-only API evidence, not an invoice. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Code `7e218ae2` adds persisted Twilio-only `man`/`woman` `<Say>` style with bounded SDK/host validation and synthetic preview; `7f6f4591` adds owner-triggered exact-binding synthetic call-start, DTMF and eligible Twilio speech scenarios compared with saved settings. Telnyx remains DTMF-only. Twilio `price` remains delayed connectivity-only API evidence, not an invoice. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
