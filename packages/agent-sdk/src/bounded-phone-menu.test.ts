@@ -50,6 +50,11 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("does not run a carrier call, contact a provider, publish this draft, or save a call session");
     expect(dashboard).toContain("Twilio with owner-enabled speech input");
     expect(dashboard).toContain("single-turn keyword route");
+    expect(dashboard).toContain("Phone line for installed-handler test");
+    expect(dashboard).toContain("binding_id:line.binding_id");
+    const dashboardScript = dashboard.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(dashboardScript).toBeDefined();
+    expect(() => new Function(dashboardScript!)).not.toThrow();
   });
 
   it("previews the same bounded responses as the package handler without provider execution", async () => {

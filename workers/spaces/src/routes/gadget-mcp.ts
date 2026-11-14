@@ -306,7 +306,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
           { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
         return c.json({ error_code: "phone_cost_unavailable" }, 503);
       }
-      const safeLines = lines.map(line => ({ provider: line.provider, status: line.status,
+      const safeLines = lines.map(line => ({ binding_id: line.id as string, provider: line.provider, status: line.status,
         handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
         speech_input_allowed: line.provider === "twilio" && line.speech_input_allowed === true,
         number_hint: typeof line.phone_number === "string" && line.phone_number.length >= 4 ? `•••• ${line.phone_number.slice(-4)}` : null }));
@@ -328,13 +328,14 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (c.req.method !== "POST") return c.json({ error_code: "method_not_allowed" }, 405);
     if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
-    let body: { event_type?: unknown; digits?: unknown; input?: unknown };
+    let body: { event_type?: unknown; digits?: unknown; input?: unknown; binding_id?: unknown };
     try {
       const bytes = await readBoundedRequestBytes(c.req.raw, 12 * 1024);
       body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body;
     } catch { return c.json({ error_code: "bad_request" }, 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)
-      || Object.keys(body).some(key => !["event_type", "digits", "input"].includes(key))
+      || Object.keys(body).some(key => !["event_type", "digits", "input", "binding_id"].includes(key))
+      || (body.binding_id !== undefined && (typeof body.binding_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.binding_id)))
       || (body.event_type !== "call.received" && body.event_type !== "call.digits" && body.event_type !== "call.speech")
       || (body.event_type === "call.received" && (body.digits !== undefined || body.input !== undefined))
       || (body.event_type === "call.digits" && (typeof body.digits !== "string" || !/^[0-9]{1,8}$/.test(body.digits) || body.input !== undefined))
@@ -366,20 +367,25 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const matchingLines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
         .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
           && (line.provider === "telnyx" || line.provider === "twilio") && line.status === "active" && line.handler_status === "active");
-      if (matchingLines.length !== 1) return c.json({ error_code: matchingLines.length ? "phone_simulation_line_ambiguous" : "phone_simulation_line_unavailable" }, 409);
-      if (body.event_type === "call.speech" && matchingLines[0]!.provider !== "twilio") return c.json({ error_code: "phone_simulation_speech_unsupported_for_provider" }, 409);
-      if (body.event_type === "call.speech" && matchingLines[0]!.speech_input_allowed !== true) return c.json({ error_code: "phone_simulation_speech_disabled" }, 409);
+      const selectedLines = typeof body.binding_id === "string"
+        ? matchingLines.filter(line => line.id === body.binding_id)
+        : matchingLines;
+      if (selectedLines.length !== 1) return c.json({ error_code: selectedLines.length ? "phone_simulation_line_ambiguous" : "phone_simulation_line_unavailable" }, 409);
+      const selectedLine = selectedLines[0]!;
+      if (body.event_type === "call.speech" && selectedLine.provider !== "twilio") return c.json({ error_code: "phone_simulation_speech_unsupported_for_provider" }, 409);
+      if (body.event_type === "call.speech" && selectedLine.speech_input_allowed !== true) return c.json({ error_code: "phone_simulation_speech_disabled" }, 409);
       const simulation = await c.env.AGENTS_WORKER.fetch(new Request(
         `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-handler-test`,
         { method: "POST", headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ action: "phone-handler-test", binding_id: matchingLines[0]!.id, event_type: body.event_type,
+          body: JSON.stringify({ action: "phone-handler-test", binding_id: selectedLine.id, event_type: body.event_type,
             ...(body.event_type === "call.speech" ? { input: (body.input as string).trim() } : {}),
             ...(body.event_type === "call.digits" ? { digits: body.digits } : {}) }) }
       ));
       if (!simulation.ok) return c.json({ error_code: simulation.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_failed" }, simulation.status === 403 ? 403 : 409);
       const result = await readBoundedResponseJson<{ simulation?: unknown; response?: unknown }>(simulation, 32 * 1024);
       if (result.simulation !== true || !result.response) return c.json({ error_code: "phone_simulation_response_invalid" }, 503);
-      return new Response(JSON.stringify({ simulation: true, event_type: body.event_type, response: result.response,
+      return new Response(JSON.stringify({ simulation: true, event_type: body.event_type,
+        selected_line: { binding_id: selectedLine.id, provider: selectedLine.provider }, response: result.response,
         disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." }),
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
     } catch { return c.json({ error_code: "phone_simulation_unavailable" }, 503); }

@@ -213,8 +213,8 @@ describe("gadget MCP host adapter", () => {
     const result = await response.json();
     expect(result).toEqual({ installation_status: "assigned", signed_release: { extension_id: "ext_phone_menu", version: "1.2.0",
       publisher_id: "pub_phone", publisher_key_id: "a".repeat(64), publisher_key_status: "active" }, lines: [
-      { provider: "telnyx", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0123" },
-      { provider: "twilio", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0124" },
+      { binding_id: "binding-a", provider: "telnyx", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0123" },
+      { binding_id: "binding-c", provider: "twilio", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0124" },
     ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
       handler_sha256: "a".repeat(64),
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
@@ -279,6 +279,7 @@ describe("gadget MCP host adapter", () => {
     let secondInstallation = "install-b";
     let lineProvider: "telnyx" | "twilio" = "telnyx";
     let speechAllowed = false;
+    let expectedBindingId = "binding-a";
     const agentsFetch = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (request.method === "GET") {
@@ -290,9 +291,9 @@ describe("gadget MCP host adapter", () => {
       }
       expect(url.searchParams.get("action")).toBe("phone-handler-test");
       const body = await request.json() as Record<string, unknown>;
-      expect(body).toMatchObject({ action: "phone-handler-test", binding_id: "binding-a" });
-      if (body.event_type === "call.digits") expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.digits", digits: "1" });
-      if (body.event_type === "call.speech") expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.speech", input: "sales please" });
+      expect(body).toMatchObject({ action: "phone-handler-test", binding_id: expectedBindingId });
+      if (body.event_type === "call.digits") expect(body).toEqual({ action: "phone-handler-test", binding_id: expectedBindingId, event_type: "call.digits", digits: "1" });
+      if (body.event_type === "call.speech") expect(body).toEqual({ action: "phone-handler-test", binding_id: expectedBindingId, event_type: "call.speech", input: "sales please" });
       expect(request.headers.get("x-naelao-user-id")).toBe("space-owner");
       expect(request.headers.get("x-naelao-role")).toBe("owner");
       return Response.json({ simulation: true, response: { schema_version: 1, actions: [{ type: "say", text: "Sales" }, { type: "hangup" }] } });
@@ -309,6 +310,7 @@ describe("gadget MCP host adapter", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({ simulation: true, event_type: "call.digits",
+      selected_line: { binding_id: "binding-a", provider: "telnyx" },
       response: { schema_version: 1, actions: [{ type: "say", text: "Sales" }, { type: "hangup" }] },
       disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." });
     expect(agentsFetch).toHaveBeenCalledTimes(2);
@@ -357,18 +359,30 @@ describe("gadget MCP host adapter", () => {
     expect(ambiguous.status).toBe(409);
     expect(await ambiguous.json()).toMatchObject({ error_code: "phone_simulation_line_ambiguous" });
     expect(agentsFetch).toHaveBeenCalledTimes(8);
+    expectedBindingId = "binding-b";
+    const selectedLine = await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ event_type: "call.received", binding_id: "binding-b" }) }, env);
+    expect(selectedLine.status).toBe(200);
+    expect(await selectedLine.json()).toMatchObject({ simulation: true, event_type: "call.received",
+      selected_line: { binding_id: "binding-b", provider: "twilio" } });
+    expect(agentsFetch).toHaveBeenCalledTimes(10);
+    const wrongLine = await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ event_type: "call.received", binding_id: "binding-missing" }) }, env);
+    expect(wrongLine.status).toBe(409);
+    expect(await wrongLine.json()).toMatchObject({ error_code: "phone_simulation_line_unavailable" });
+    expect(agentsFetch).toHaveBeenCalledTimes(11);
     secondInstallation = "install-b";
 
     runtime.phoneSimulationAllowed = false;
     const undeclared = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(undeclared.status).toBe(404);
-    expect(agentsFetch).toHaveBeenCalledTimes(8);
+    expect(agentsFetch).toHaveBeenCalledTimes(11);
 
     runtime.phoneSimulationAllowed = true;
     runtime.active = false;
     const revoked = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(revoked.status).toBe(503);
-    expect(agentsFetch).toHaveBeenCalledTimes(8);
+    expect(agentsFetch).toHaveBeenCalledTimes(11);
 
     const isolatedApp = testApp(); registerGadgetMcpRoutes(isolatedApp as never);
     const foreign = await isolatedApp.request(path, { method: "POST", headers: await auth("foreign", {
@@ -376,7 +390,7 @@ describe("gadget MCP host adapter", () => {
       body: JSON.stringify({ event_type: "call.received" }) }, { ...env,
         PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } } as never);
     expect(foreign.status).toBe(404);
-    expect(agentsFetch).toHaveBeenCalledTimes(8);
+    expect(agentsFetch).toHaveBeenCalledTimes(11);
   });
 
   it("forwards the exact Template setup project query and restricts writes to administrators", async () => {
