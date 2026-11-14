@@ -1,7 +1,31 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P06 signed phone package caller verification)
+## Active continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
+
+Code `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
+`origin/Mcbt5s-Backup-2`. Both deployment preflights resolve all 28 Worker Wrangler TOMLs for
+staging and production and compare Wrangler's resolved mutable-resource bindings to the source
+receipt inventory. The check verifies source hashes, emits binding identities only, and makes no
+Cloudflare calls. Each preflight runs the validator and its Node regression suite; the deployment
+manifest validator enforces both steps. Local evidence: Wrangler inventory **5/5** and full
+56-environment comparison; environment resource map **12/12**, receipt collector **4/4**, isolation
+**6/6**, deployment-manifest tests **13/13**, deployment manifest validation and `git diff --check`.
+No Cloudflare account, deployed resource, remote D1 or live acceptance was inspected.
+
+P02 remains PARTIAL/fail-closed: one D1 and eleven KV IDs are shared across staging/production,
+`naelao-calls` has no named Worker owner, 158 read-only receipts and account/time evidence are absent,
+and staging/production have no operator-attested D1 baselines. This source check does not resolve
+those external inventory gates. P01 remains local-only for release code; no staging rehearsal or
+deployment ran. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: add first-party catalog discovery for the signed `bounded-phone-menu` package via
+the existing extension listing/install flow. Preserve release-signature, owner-review and active
+installation checks; disclose DTMF limits, Twilio-only speech, synthetic tests and provider-cost
+limits. Do not add carrier provisioning or streaming. Then proceed through remaining P05/P06 and
+S3–S9/U01–U12/P01–P24 code gaps.
+
+## Previous continuation — 2026-11-14 (P06 signed phone package caller verification)
 
 Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
 `origin/Mcbt5s-Backup-2`. The current source already contains the signed bounded keypad package,
@@ -15,12 +39,10 @@ listing/discovery is uncoded, provider provisioning is not integrated, and strea
 the current runtime contract. Broader lifecycle, cost evidence and live acceptance also remain.
 Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement §10's project-owner disclosure proposal workflow. Pending proposals must
-be visible only to the submitting project manager and Space owner/admin reviewers; owner/admin approval
-must confirm the exact fact and audience and use existing schema/policy validation. Persist revisions,
-support requester withdrawal, and retire linked state when the source project is removed. Add the
-reachable project settings caller and authorization/non-disclosure coverage. This workflow must not
-grant project or service access. Then continue remaining S2–S9/U01–U12/P01–P24 code gaps.
+Historical next action, completed by `8a0972c7`: implement §10's project-owner disclosure proposal
+workflow with requester/admin-only pending reads, exact owner-confirmed publication, revision fencing,
+withdrawal, source-project lifecycle handling and a reachable Project Settings caller. The latest
+proposal checkpoint above records the implementation and its local evidence.
 
 ## Previous continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 
@@ -1226,7 +1248,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
 | P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` adds a fresh-install in-memory SQLite rehearsal across all 247 migrations and repairs the safe 0164 skip prerequisite for 0229; tests pass 20/20 and run in both preflights. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
-| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
+| P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |

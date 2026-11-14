@@ -16,26 +16,59 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 signed phone package caller verification)
+## Latest checkpoint — 2026-11-14 (P02 Wrangler-resolved resource preflight)
 
-Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
-`origin/Mcbt5s-Backup-2`. The recorded customer keypad microapp is already present in
-`packages/agent-sdk/examples/bounded-phone-menu/`; its signed per-install settings/dashboard,
-owner-only phone status and synthetic exact-install test APIs are reachable through the existing
-Canvas and Space/Agents callers. Local evidence: SDK **5/5**, Spaces route/package suites **40/40**,
-Agents phone suites **49/49**, Agent SDK `tsc --noEmit`, and `git diff --check`. The assertions were
-updated to match the current cost disclosure; no provider call or package publication occurred.
-P06/§9.5 remains PARTIAL: this is a bounded IVR, not a conversational voice agent. The example has
-no first-party catalog listing/discovery integration; carrier provisioning and streaming are also
-uncoded or unsupported by the current runtime contract. No live acceptance is claimed. Preserve
-`infra/scripts/__pycache__/`; all rollouts remain disabled.
+Source `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
+`origin/Mcbt5s-Backup-2`. The release path now resolves all 28 Worker TOMLs in both staging and
+production through Wrangler and compares mutable resource bindings to the source receipt inventory.
+The check verifies the source hashes and reports only binding identities; it makes no Cloudflare
+calls. Both deployment preflights run it and its regression suite, and the deployment-manifest
+validator requires those steps. Local verification: Wrangler-resolved inventory **5/5** and full
+56-environment comparison passed; environment map **12/12**, receipt collector **4/4**, isolation
+**6/6**, release-manifest **13/13**, deployment-manifest validator and `git diff --check` passed.
+These are local config/mock checks. No Cloudflare account, deployed resource, remote D1 or live
+acceptance was inspected. Keep rollouts disabled and preserve the intentionally untracked
+`infra/scripts/__pycache__/`.
 
-Exact next action: implement §10's missing project-owner publication proposal path. A project manager
-may submit only a bounded, explicitly authored fact; pending text stays private to its requester and
-Space owner/admin reviewers. Approval must show the exact audience/disclosure and pass the current
-policy/schema checks before publishing through the existing registry. Add durable revisioned review,
-withdrawal and source-project retirement behavior plus a reachable Shell caller; do not grant project
-or service access. Continue the remaining S2–S9/U01–U12/P01–P24 code gaps after this slice.
+P02 remains PARTIAL: current source still shares one D1 and eleven KV IDs between staging and
+production, `naelao-calls` has no named Worker owner, 158 read-only existence receipts are absent,
+and neither account/time observations nor operator-attested per-D1 baselines exist. P01/P02 remain
+fail-closed. The private §10 proposal lifecycle in `8a0972c7` is locally implemented; shared-Space
+uniqueness/reservation policy and deployed multi-user non-disclosure remain. P05's project-vs-Space
+provider scope is a product/API contract gap; P06 lacks first-party catalog discovery, provider
+provisioning, streaming, full costs and live acceptance. S2 remains local for supported lanes; S3–S9,
+U01–U12 and P01–P24 remain governed by their matrices.
+
+Exact next action: implement first-party discovery for the signed `bounded-phone-menu` example through
+the existing package/catalog install path. Display its keypad-only and Twilio-only speech limits,
+simulated-test status and provider-cost caveats; reuse signed-release trust and owner approval, and do
+not provision a carrier or enable streaming. Then continue remaining guided-template, S3–S9/U01–U12
+and P01–P24 code gaps without repeating completed source traces. Fetch and safely integrate before
+the next push.
+
+## Previous checkpoint — 2026-11-14 (§10 project-owner publication proposals)
+
+Source `8a0972c7` is pushed to `origin/Mcbt5s-Backup-2`. Migration 133 adds a durable private proposal
+ledger and revision history, source-project links and lifecycle audit. Project owners/editors can
+submit a bounded explicit fact through Project Settings; pending text is returned only to its
+requester and Space owner/admin reviewers. Review confirms the exact audience/draft, reuses current
+schema and member-audience policy checks, and atomically creates the advisory registry entry without
+granting access. Requesters can withdraw pending proposals; archiving the source project retires
+pending/approved proposals and revokes linked facts. SDK and Shell APIs/callers are wired.
+Verification: Agent SDK contract **5/5**; Spaces route/registry/proposal suites **29/29**; Spaces and
+Shell `tsc --noEmit`; `git diff --check`. These are local SQLite/mock checks. No browser, deployed,
+provider or live multi-user acceptance ran. Keep rollouts disabled and preserve the intentionally
+untracked `infra/scripts/__pycache__/`.
+
+§10 proposal lifecycle is now IMPLEMENTED_LOCAL; wider shared-Space uniqueness/reservation policy,
+template acceptance and deployed multi-user non-disclosure remain open. P05 still has a genuine
+provider/collection scope contract gap; P06 remains partial for catalog listing, managed provisioning,
+streaming, full costs and live acceptance. Preserve all S2–S9/U01–U12 and P01–P24 gates in their
+requirement matrices.
+
+Historical next action, completed by `6040847e`: compare the receipt collector and release preflights
+with Wrangler-resolved bindings. Remaining real-resource separation, ownership, account/time receipts
+and operator-attested per-D1 baselines remain fail-closed as recorded in the latest checkpoint.
 
 ## Previous checkpoint — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 

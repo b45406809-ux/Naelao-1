@@ -1,7 +1,31 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P06 signed phone package caller verification)
+## Active continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
+
+Code `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
+`origin/Mcbt5s-Backup-2`. Both deployment preflights resolve all 28 Worker Wrangler TOMLs for
+staging and production and compare Wrangler's resource bindings with the source receipt map. The
+validator verifies source hashes and emits binding identities only; it does not call Cloudflare.
+Both preflights also run five focused Node regression tests, and the deployment-manifest validator
+requires both commands. Local evidence: Wrangler inventory **5/5** plus full 56-environment
+comparison; environment resource map **12/12**, receipt collector **4/4**, Wrangler isolation
+**6/6**, deployment-manifest tests **13/13**, manifest validator and `git diff --check`. No account,
+deployed resource, remote D1 or live acceptance was inspected.
+
+P02 remains fail-closed on one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, 158 missing
+read-only receipts, missing account/time observations and operator-attested D1 baselines. P01/P02
+external inventory and migration gates are unchanged. S2 is IMPLEMENTED_LOCAL for supported lanes;
+S3–S9/U01–U12 remain open at their row-level code/contract/policy/evidence gaps. Rollouts stay
+disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: add first-party discovery for the signed `bounded-phone-menu` example in the
+existing extension/package catalog and install flow. Carry forward current signed-release trust and
+owner review; clearly disclose DTMF behavior, Twilio-only speech, synthetic tests and provider-cost
+limits. Do not add carrier provisioning or streaming. Then continue remaining P05/P06 and
+S3–S9/U01–U12 work.
+
+## Previous continuation — 2026-11-14 (P06 signed phone package caller verification)
 
 Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
 `origin/Mcbt5s-Backup-2`. Reconciliation found the recorded `bounded-phone-menu` package already
@@ -19,11 +43,9 @@ current runtime contract, and richer package lifecycle, full cost evidence and l
 Rollouts stay off;
 preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement the missing §10 project-owner coordination publication proposal flow with
-requester/admin-only pending reads, exact owner-confirmed publication, revision fencing, withdrawal,
-source-project lifecycle handling, and a project manager Shell caller. It must reuse the current fact
-validator/audience policy, expose no private project data to members, and grant no project/service
-authority. Then continue remaining S2–S9/U01–U12/P01–P24 uncoded work.
+Historical next action, completed by `8a0972c7`: implement the project-owner publication proposal
+flow with private pending reads, exact owner-confirmed publication, revision fencing, withdrawal,
+source-project lifecycle handling and a project manager caller. See the pushed §10 checkpoint above.
 
 ## Previous continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 
