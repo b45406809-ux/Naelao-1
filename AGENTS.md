@@ -16,37 +16,37 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 recovery; S4 runtime caller reachability)
+## Latest checkpoint — 2026-11-14 (S4/MS12 restart-recipe settings; P01 schema 0250)
 
-P04 archive safety code `501b1526` and docs checkpoint `8c5fb4e9` are pushed. Restore pauses only newly
-inserted active tasks for human review, clears stale leases, records preview/receipt counts and rejects
-blocked/intervention-required or terminal task claims. Existing destination and archived terminal
-state are preserved. Archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**,
-Spaces/Shell typechecks and `git diff --check` pass locally. Provider/deployed recovery remains untested.
+Code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` is pushed to `origin/Mcbt5s-Backup-2`. Migration
+0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed per-revision audit.
+Agents exposes owner/admin-only read/write with bounded input, shell/secret-shaped value rejection,
+compare-and-set revisions and single-winner concurrent audit behavior. Router now reaches the Agents
+route; the existing Shell project-runtime panel exposes the editor. Recipes are inert metadata:
+execution and health verification remain unsupported and explicitly disclosed. No credentials or
+runtime environment values are stored.
 
-A fresh caller trace found that Shell project runtime-profile and retention APIs were implemented in
-Agents but Router's `/spaces/*` fallback sent them to Spaces. Code `11251168` adds explicit authenticated
-routing for main/sidecar runtime profiles, reset, execution limits, transfer receipts and workspace
-retention. Router route tests **4/4**, typecheck and diff check pass. No deployed or live request ran.
+Local evidence: profile/persistence and route suites **9/9**, Agents typecheck, Shell typecheck and
+inert-state UI assertion **1/1**, Router route test **4/4** and typecheck, release manifest/runner
+unit suites **38/38**, full fresh SQLite migration rehearsal **1/1** through required schema 0250,
+release/deployment manifest validation, and `git diff --check`. These are local SQLite/mocked checks;
+no D1, Container, provider, deployment, browser or live acceptance ran. P01 now pins all **250**
+manifest migrations. P02 remains fail-closed pending actual per-environment resource ownership,
+read-only receipts and operator-attested D1 baselines.
 
-P04 remains PARTIAL for other service stores, private inbound data, retention/key/jurisdiction policy,
-RPO/RTO and isolated/deployed recovery. S4 remains PARTIAL because the Cloudflare runtime adapter,
-private-state fallback, restart execution, snapshot purge and live acceptance are unavailable or
-unverified. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+S4/MS12 remains PARTIAL: there is no accepted runtime adapter or U05 mount/sync/flush producer, U06
+writer-admission/drain/reconnect/handoff contract, separately encrypted private-state fallback,
+process restart execution, physical snapshot purge, or deployed isolation/recovery evidence. P04
+recovery still lacks the other service stores, private inbound state, approved retention/key/
+jurisdiction policy, RPO/RTO and isolated/deployed acceptance. Keep all rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-Exact next action: implement S4/MS12 project-main service restart-recipe configuration. Add a new
-expand-only migration for a project-scoped, versioned recipe set and actor-attributed audit; expose
-owner/admin-only read/write routes with compare-and-set revisions; render an editor in the existing
-project runtime panel. Bound recipe count, IDs, labels, relative working directory, argv tokens and
-manual verification notes; store no environment values or credentials. Keep recipes inert and show
-that execution/health verification is unavailable while the runtime adapter is unsupported. Test
-scope, malformed/unsafe values, revision conflicts and disabled-runtime display. Fetch and safely
-integrate before every push.
+Exact next action: trace P03/P12 from the durable Billing outbox and queue producers through workflow
+creation, retry scheduling and notification receipts. Close one concrete reachable contract or
+idempotency gap without selecting grace, restriction or retry-cadence policy; then continue the
+remaining S3–S9/U01–U12 and P01–P24 requirements in dependency order. Fetch and safely integrate
+remote advances before every push.
 
-The user has authorized coherent checkpoint commits and pushes to `origin/Mcbt5s-Backup-2`. After
-meaningful verified slices, fetch that branch, safely integrate any advance, commit the checkpoint,
-and push without force. Do not deploy, purchase services, or enable rollouts; preserve all untracked
-work, including `infra/scripts/__pycache__/`.
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
 Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are

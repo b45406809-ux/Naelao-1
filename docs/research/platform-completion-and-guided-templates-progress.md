@@ -1,33 +1,35 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P04 recovery; S4 runtime caller reachability)
+## Active checkpoint — 2026-11-14 (S4/MS12 restart-recipe settings; P01 schema 0250)
 
-P04 archive safety code `501b1526` and docs `8c5fb4e9` are pushed. Restore pauses only newly inserted
-active tasks for human review, clears stale leases, records preview and durable receipt counts, and
-rejects blocked/intervention-required or terminal claims. Existing destination and archived terminal
-state are preserved. Earlier grant safety `75feeabb` and extension-uninstall regression `452345fd`
-remain pushed.
+Code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` is pushed to `origin/Mcbt5s-Backup-2`. Migration
+0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed per-revision audit.
+Agents exposes owner/admin-only read/write with bounded input, shell/secret-shaped value rejection,
+compare-and-set revisions and single-winner concurrent audit behavior. Router now reaches the Agents
+route; the existing Shell project-runtime panel exposes the editor. Recipes are inert metadata:
+execution and health verification remain unsupported and explicitly disclosed. No credentials or
+runtime environment values are stored.
 
-A source-to-caller trace found that the Shell project's runtime profile and retention APIs lived in
-Agents, while Router's `/spaces/*` catch-all sent those requests to Spaces. Router code `11251168` now
-routes main/sidecar profiles, reset, execution limits, transfer receipts and workspace retention to
-Agents with verified user identity and an internal token. Local Router routing tests **4/4**, typecheck
-and `git diff --check` pass; no deployment/live request ran.
+Local evidence: profile/persistence and route suites **9/9**, Agents typecheck, Shell typecheck and
+inert-state UI assertion **1/1**, Router route test **4/4** and typecheck, release manifest/runner
+unit suites **38/38**, full fresh SQLite migration rehearsal **1/1** through required schema 0250,
+release/deployment manifest validation, and `git diff --check`. These are local SQLite/mocked checks;
+no D1, Container, provider, deployment, browser or live acceptance ran. P01 now pins all **250**
+manifest migrations. P02 remains fail-closed pending actual per-environment resource ownership,
+read-only receipts and operator-attested D1 baselines.
 
-P04 remains PARTIAL for other service stores, private inbound data, retention/key/jurisdiction policy,
-RPO/RTO and isolated/deployed recovery. P05 remains PARTIAL for broader lifecycle/setup/cost,
-Space-wide provider connection authority/payer/revocation and live acceptance. S4 remains PARTIAL for
-runtime execution, private-state fallback, restart execution and physical snapshot purge. Rollouts
-stay disabled; preserve `infra/scripts/__pycache__/`.
+S4/MS12 remains PARTIAL: there is no accepted runtime adapter or U05 mount/sync/flush producer, U06
+writer-admission/drain/reconnect/handoff contract, separately encrypted private-state fallback,
+process restart execution, physical snapshot purge, or deployed isolation/recovery evidence. P04
+recovery still lacks the other service stores, private inbound state, approved retention/key/
+jurisdiction policy, RPO/RTO and isolated/deployed acceptance. Keep all rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-Exact next action: implement S4/MS12 project-main service restart-recipe configuration. Add a new
-expand-only migration for a project-scoped, versioned recipe set and actor-attributed audit; expose
-owner/admin-only read/write routes with compare-and-set revisions; render an editor in the existing
-project runtime panel. Bound recipe count, IDs, labels, relative working directory, argv tokens and
-manual verification notes; store no environment values or credentials. Keep recipes inert and show
-that execution/health verification is unavailable while the runtime adapter is unsupported. Test
-scope, malformed/unsafe values, revision conflicts and disabled-runtime display. Fetch and safely
-integrate before every push.
+Exact next action: trace P03/P12 from the durable Billing outbox and queue producers through workflow
+creation, retry scheduling and notification receipts. Close one concrete reachable contract or
+idempotency gap without selecting grace, restriction or retry-cadence policy; then continue the
+remaining S3–S9/U01–U12 and P01–P24 requirements in dependency order. Fetch and safely integrate
+remote advances before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
@@ -1531,7 +1533,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
-| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` added a fresh-install in-memory SQLite rehearsal and repaired the safe 0164 skip prerequisite for 0229. The current manifest pins 249 migrations through `0249_project_main_runtime_budget_reservations`; fresh SQLite rehearsal passes **20/20** and release/deployment manifest validators pass **18/18**. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
+| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. The current manifest pins **250** migrations through `0250_project_main_restart_recipes`; after that addition the full fresh-install SQLite rehearsal passes **1/1**, release/deployment manifest validation passes, and release-manifest/runner suites pass **38/38**. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects and WorkspaceCoordinatorDO heads. New format-v2 capture is capped at 16 MiB/object and 64 MiB aggregate; restore is additive and checksum-verified. `75feeabb` excludes owner-managed grants from new archives and strips/reports them from legacy restore. `452345fd` proves uninstall status survives restore and runtime admission stays denied. `501b1526` pauses only restored active tasks for human review, clears stale leases, records preview/receipt counts, rejects blocked/terminal claims, preserves current and terminal rows; archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**, Spaces/Shell typechecks. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. |
