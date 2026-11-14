@@ -12,7 +12,29 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14
+## Latest checkpoint — 2026-11-14 (multi-project guided setup)
+
+P05 multi-project visual setup authoring/export is pushed as `bf55151a` to
+`origin/Mcbt5s-Backup-2`. Foundry Studio now selects 1–64 exact same-Space projects, keeps setup
+fields and preview values separate per project, and exports bounded `setupFieldsByProject` groups.
+The owner export route attaches groups only to selected projects and runs the shared SDK validator;
+SpaceDO uses parameterized project selection. SDK project-ID validation now accepts actual UUID IDs.
+This reuses the existing SDK `SpaceBlueprint.projects[].setupFields` contract and activation-preview
+groups; it does not introduce a new setup contract. Local evidence: Spaces **35/35**, SDK **13/13**,
+both typechecks and `git diff --check`. No browser, deployment, provider or live acceptance ran.
+P05 remains PARTIAL for action/dependency authoring, broader lifecycle, verified rates and live
+acceptance. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain open at the
+specific code gaps and unsupported contracts in the managed-services ledger. Keep rollouts disabled
+and preserve the intentionally untracked `infra/scripts/__pycache__/`.
+
+Exact next action: add an owner-authorized, read-only host operation that returns only currently
+installed, trusted signed extension candidates (ID, name, exact version and manifest digest) to
+Foundry Studio; replace its free-form required-extension ID/version JSON with selection from that
+list, then keep the export route's existing server-side exact-release validation authoritative. Test
+owner authorization, revoked/untrusted candidates, and exported pins. Continue remaining P05/P06 and
+S3–S9/U01–U12 work afterward. No browser, deployment or live acceptance is implied by local checks.
+
+## Previous checkpoint — 2026-11-14 (phone dashboard handoff; completed)
 
 P05 signed-template onboarding now reviews validated channel defaults before install (`1aff67de`),
 links the extension review to the target Space dashboard (`f1a82b42`), and after activation opens the
@@ -27,14 +49,10 @@ journeys in the progress ledger. S2 remains locally implemented for supported la
 retain the specific gaps and external contracts recorded there. Keep rollouts disabled and preserve
 the intentionally untracked `infra/scripts/__pycache__/`.
 
-Exact next action: add a safe deep link from the owner phone dashboard's assigned, currently verified
-signed extension to that exact Space-shared extension's existing settings/microapp dashboard. Reuse
-the membership-checked Space compatibility route and select only an installation returned by the
-target Space's authorized extension list. Test the scoped continuation and selection; do not add
-provider calls or new authority. Then continue the next uncoded P05/P06 requirement and the remaining
-S3–S9/U01–U12 work. No browser, deployment or live acceptance is implied by local checks.
+This phone-to-dashboard handoff was completed in pushed commit `15e86a66`; the active next action is
+the multi-project guided-setup follow-up above.
 
-## Active checkpoint — 2026-11-14
+## Previous checkpoint — 2026-11-14 (activation channel defaults; completed)
 
 Latest guided-template checkpoint: Foundry Studio now authors validated `assistantChannels`
 availability and phone-prompt defaults. The owner export route reuses the Agent SDK validator and
@@ -54,14 +72,13 @@ API and render an explicit pre-install review in Shell, clearly separating prefe
 connections/provisioning. Then continue the next uncoded guided-template lifecycle item and S3–S9 /
 U01–U12. Keep rollouts disabled.
 
-The activation-preview API and owner review are now implemented in pushed commit
+The activation-preview API and owner review were implemented in pushed commit
 `1aff67dee97b5d835c8e4cb55c58c44a0721b16f`. The preview exposes only channel availability and phone
 prompt defaults; the Shell says connections/provisioning are separate. Spaces activation preview
 tests pass **21/21**, Spaces and Shell typechecks pass, and `git diff --check` passes. No browser,
-deployed or live acceptance ran. Exact next action: extend Foundry Studio from one setup-field project
-to bounded multi-project groups, reusing the current SDK setup validator and rejecting unknown
-project IDs; verify saved export and customer preview. Keep credentials, provider connection and
-provisioning flows outside this form. Then continue S3–S9/U01–U12. Keep rollouts disabled.
+deployed or live acceptance ran. Its follow-up is complete in `bf55151a`; the SDK setup schema and
+activation review already supported per-project groups, which corrects the earlier source
+reconciliation note below. Continue from the latest checkpoint above. Keep rollouts disabled.
 
 The U12 typing fix is pushed to `origin/Mcbt5s-Backup-2` as
 `6ee3a16577fba9c14304aae4d4b24cb43050c254`.

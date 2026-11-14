@@ -1,7 +1,28 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P06 phone routing and dashboard handoff)
+## Active continuation — 2026-11-14 (P05 multi-project guided setup)
+
+Code `bf55151a` is pushed to `origin/Mcbt5s-Backup-2`. Foundry Studio can select up to 64
+same-Space projects and author independent bounded setup groups and local previews per project.
+SpaceDO exports only the exact selected non-archived projects; the owner export route validates each
+setup group against those project IDs using the existing Agent SDK schema, including real UUID project
+IDs. Conformance still applies to every selected project. Local evidence: Spaces tests **35/35**, SDK
+tests **13/13**, Spaces/SDK typechecks, embedded Foundry JavaScript syntax check, and
+`git diff --check`. These are local/mocked checks; no browser, deployment, provider or live acceptance
+ran. P05 remains PARTIAL for dependency/action authoring, broader package lifecycle and pricing; P06
+remains PARTIAL for streaming, complete provider billing/invoices and live/region acceptance. No live
+credentials blocked this implementation. Rollouts remain disabled; preserve
+`infra/scripts/__pycache__/`.
+
+Exact next action: add an owner-authorized, read-only host operation returning only the current Space's
+installed and publisher-trusted extension candidates with exact ID, version and manifest digest;
+replace the Studio's free-form required-extension JSON inputs with visual selection and test owner
+authorization, publisher revocation, and exact pins in the stored export. Then continue remaining
+uncoded P05/P06 and S3–S9/U01–U12 requirements.
+
+
+## Previous checkpoint — 2026-11-14 (P06 phone routing and dashboard handoff; completed)
 
 The code checkpoints `1aff67de`, `f1a82b42`, `17683e29` and `4b8749b56db7f04208a1ca6531fc45c9a81b8af7`
 are pushed to `origin/Mcbt5s-Backup-2`. P05 now authors and previews validated channel defaults,
@@ -14,11 +35,8 @@ P05/P06 remain PARTIAL for broader channel/action and provider journeys, lifecyc
 streaming, managed billing/invoice reconciliation, verified rates and live acceptance. Keep rollouts
 disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: link the owner phone dashboard's assigned, currently verified signed extension to
-that exact Space-shared extension's existing settings/microapp dashboard. Reuse the membership-checked
-Space compatibility route and only auto-select an installation returned by that Space's authorized
-extension list. Test scope and selection locally; add no provider calls or new authority. Continue the
-uncoded P05/P06 work and remaining S3–S9/U01–U12 requirements afterward.
+The phone-to-extension-dashboard handoff was completed and pushed as `15e86a66`; see the latest
+checkpoint above for the active action.
 
 
 ## Previous checkpoint — 2026-11-14 (guided template activation channel persistence; superseded)
@@ -36,10 +54,11 @@ persistence is covered by `6693d380914d248ac7885a90a10ddfc055d665ba`: the target
 no provider or deployment ran. Activation preview/review code `1aff67dee97b5d835c8e4cb55c58c44a0721b16f`
 returns only channel availability and phone-prompt defaults and explicitly separates account
 connections/provisioning. Spaces preview tests pass **21/21** and Spaces/Shell typechecks pass; no
-browser or deployed acceptance ran. The former idea to extend this single-project editor to
-multi-project groups was not started: current source provides no signed multi-project contract or
-reachable caller for that change. Resume from the active checkpoint above, then continue P05
-lifecycle. Rollouts remain disabled.
+browser or deployed acceptance ran. The earlier statement that no signed multi-project contract or
+caller existed was incorrect. Source reconciliation found `SpaceBlueprint.projects[].setupFields` in
+the SDK and per-project groups in activation preview. Visual authoring/export was therefore a
+reachable implementation gap and is now closed locally in `bf55151a`; resume from the active
+checkpoint above. Rollouts remain disabled.
 
 
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)
@@ -878,8 +897,9 @@ ambiguous imports can retry. The Shell currently keeps the import/install stage 
 after reload the owner can query the persisted destination release through the read-only install
 review and continue without repeating the source copy (`edf08814`).
 
-The code `b3feecb5` visual setup-field editor/export is also present; it authors validated fields and
-conditional/localized help, not the full visual channel/action/price workflow described in the plan.
+Code `b3feecb5` adds visual authoring of bounded fields; `bf55151a` extends it to multiple selected
+projects and separate validated setup groups, reusing the signed SDK schema and activation preview.
+The editor still does not author dependencies/actions or prices.
 
 §5 remains PARTIAL. This does not implement general package updates, changed-permission/pricing
 approval, rollback, revocation/uninstall effects on generated projects/extensions/provider
@@ -926,7 +946,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; all current targets resolve. Tests pass 11/11. The preflight still rejects 13 shared-resource findings, one unresolved `naelao-calls` owner and 158 missing read-only receipts; actual resource separation/ownership and deployed isolation remain external evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | `50dd1fa4` adds an interactive customer-form preview for the bounded v1/v2 setup contract. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Channel/action authoring, binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
+| P05 | PARTIAL | `50dd1fa4` adds customer-form preview for bounded v1/v2 setup; `bf55151a` adds Foundry multi-project setup authoring/export using existing SDK schema and activation-preview support. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Visual dependency/action authoring, binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. `b2140aaf` adds a draft-only simulated call/DTMF preview; `b2d4ac0f` pins calls to the admitted installation/handler and groups owner history by that pin; `4c42012b` exposes the exact signed release and active publisher-key identity in the owner phone dashboard. Customer voice lifecycle, public streaming, managed billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |

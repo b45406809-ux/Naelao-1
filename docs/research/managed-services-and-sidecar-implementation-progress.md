@@ -1,7 +1,26 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P06 phone routing readiness)
+## Active continuation — 2026-11-14 (joint mission; P05 multi-project setup checkpoint)
+
+P05 multi-project visual setup authoring/export is pushed as `bf55151a` to
+`origin/Mcbt5s-Backup-2`. Foundry Studio selects 1–64 same-Space projects and exports separate,
+bounded setup groups; the Spaces owner route verifies selected-project membership and applies the
+shared SDK schema validator before artifact storage/conformance. Existing setup groups and activation
+preview are reused. Local evidence: Spaces **35/35**, SDK **13/13**, both typechecks, and
+`git diff --check`. No browser, deployment or live acceptance ran. P05 remains partial for visual
+dependency/action authoring, wider lifecycle, verified prices and live journeys. S2 remains local for
+supported lanes; S3–S9/U01–U12 remain open only at the specific code gaps/contracts in the matrix.
+Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: expose an owner-authorized read-only list of the current Space's installed,
+publisher-trusted extension candidates (exact ID, version and manifest digest) through a bounded host
+operation and replace Foundry's raw dependency JSON inputs with candidate selection. Preserve export's
+existing exact server-side release checks. Test authorization, trust/revocation, and persisted pins;
+then continue the other uncoded P05/P06 and S3–S9/U01–U12 requirements.
+
+
+## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)
 
 Current branch `autonomous-managed-services-20261111` has pushed through `4b8749b56db7f04208a1ca6531fc45c9a81b8af7`
 to `origin/Mcbt5s-Backup-2`. P05 commits `1aff67de`, `f1a82b42` and `17683e29` carry validated channel
@@ -15,11 +34,7 @@ rates and live acceptance. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3�
 at their specific code gaps and unsupported runtime/product contracts below. Preserve the intentionally
 untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
 
-Exact next action: add a safe deep link from the owner phone dashboard's assigned, currently verified
-signed extension to that exact Space-shared extension's existing settings/microapp dashboard. Reuse
-the membership-checked Space compatibility route and select only an installation returned by the
-target Space's authorized extension list. Test the scoped continuation and selection; do not add
-provider calls or new authority. Then continue P05/P06 and the remaining S3–S9/U01–U12 implementation.
+The phone-dashboard handoff is complete in `15e86a66`. Resume from the active continuation at the top.
 
 
 ## Previous checkpoint — 2026-11-14 (guided template activation channel persistence; superseded)
@@ -39,11 +54,11 @@ owner preferences endpoint resolves the defaults, and no provisioning state is c
 ran. Activation preview/review code `1aff67dee97b5d835c8e4cb55c58c44a0721b16f` now returns only
 channel availability and phone-prompt defaults and explains that provider connections/provisioning
 are separate. Spaces preview **21/21**, Spaces/Shell typechecks, and `git diff --check` pass; no browser,
-deployment or live acceptance ran. Exact next action: extend Foundry Studio from one setup-field
-project to bounded multi-project setup groups using the same SDK validator and exported-project
-checks. That speculative task was not started: current source remains single-project and no signed
-multi-project contract or caller justified widening it. Resume from the active checkpoint above.
-Preserve `infra/scripts/__pycache__/`; rollouts remain disabled.
+deployment or live acceptance ran. Multi-project setup authoring/export is complete in `bf55151a`;
+the earlier claim that no signed setup schema or caller existed was incorrect because the SDK schema
+and activation preview already supported per-project groups. Do not repeat that source audit without
+new evidence. Resume from the active continuation at the top. Preserve `infra/scripts/__pycache__/`;
+rollouts remain disabled.
 
 
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)
