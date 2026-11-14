@@ -40,6 +40,10 @@
     <button id="simulate-phone" type="button" disabled>Run installed handler test (synthetic)</button>
     <pre id="simulation-result" role="status" aria-label="Synthetic installed handler result">No installed handler test has run.</pre>
     <p>The installed handler test uses saved installation settings and synthetic input. Speech tests require an assigned Twilio line and owner-enabled speech input. It does not create a carrier call or call session.</p>
+    <button id="run-scenarios" type="button" disabled>Run synthetic menu scenario checks</button>
+    <p id="scenario-status" role="status" aria-live="polite">Choose an active phone line to check its saved menu settings.</p>
+    <ol id="scenario-results" aria-label="Synthetic menu scenario results"></ol>
+    <p>Scenario checks use synthetic events and saved settings through the exact-installed-handler test path. Results are local handler checks, not carrier calls, provider acceptance, or live voice quality measurements.</p>
     <details><summary>Recent extension calls</summary>
       <p>At most 50 calls per provider from the last 7 days are shown for this installation. Caller IDs are masked. An owner or admin can explicitly check a Twilio call against the carrier Calls API. Provider API observations are not invoices or customer charges; missing or pending prices remain unknown. Twilio's reported call price covers connectivity and may exclude other call-related features.</p>
       <h3>Telnyx calls</h3>
@@ -89,11 +93,11 @@
       const previewEvent=document.getElementById('preview-event'),previewDigits=document.getElementById('preview-digits'),previewDigitsLabel=document.getElementById('preview-digits-label'),previewSpeech=document.getElementById('preview-speech'),previewSpeechLabel=document.getElementById('preview-speech-label'),previewProvider=document.getElementById('preview-provider'),previewResult=document.getElementById('preview-result');
       function updatePreview(){previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewSpeechLabel.hidden=previewEvent.value!=='call.speech';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm(),previewSpeech.value,previewProvider.value),null,2);updateSimulationAvailability()}
       document.getElementById('preview').addEventListener('click',updatePreview);previewEvent.addEventListener('change',updatePreview);previewDigits.addEventListener('change',updatePreview);previewSpeech.addEventListener('input',updatePreview);previewProvider.addEventListener('change',updatePreview);
-      const phoneStatus=document.getElementById('phone-status'),phoneRelease=document.getElementById('phone-release'),phoneLines=document.getElementById('phone-lines'),phoneCalls=document.getElementById('phone-calls'),twilioPhoneCalls=document.getElementById('twilio-phone-calls'),phoneCostDisclosure=document.getElementById('phone-cost-disclosure'),simulateButton=document.getElementById('simulate-phone'),simulationResult=document.getElementById('simulation-result'),simulationLine=document.getElementById('simulate-line');let activePhoneLines=[];
+      const phoneStatus=document.getElementById('phone-status'),phoneRelease=document.getElementById('phone-release'),phoneLines=document.getElementById('phone-lines'),phoneCalls=document.getElementById('phone-calls'),twilioPhoneCalls=document.getElementById('twilio-phone-calls'),phoneCostDisclosure=document.getElementById('phone-cost-disclosure'),simulateButton=document.getElementById('simulate-phone'),simulationResult=document.getElementById('simulation-result'),simulationLine=document.getElementById('simulate-line'),scenarioButton=document.getElementById('run-scenarios'),scenarioStatus=document.getElementById('scenario-status'),scenarioResults=document.getElementById('scenario-results');let activePhoneLines=[];
       function selectedPhoneLine(){return activePhoneLines.find(line=>line.binding_id===simulationLine.value)}
-      function updateSimulationAvailability(){const line=selectedPhoneLine();simulateButton.disabled=!line||(previewEvent.value==='call.speech'&&(line.provider!=='twilio'||line.speech_input_allowed!==true))}
+      function updateSimulationAvailability(){const line=selectedPhoneLine();simulateButton.disabled=!line||(previewEvent.value==='call.speech'&&(line.provider!=='twilio'||line.speech_input_allowed!==true));scenarioButton.disabled=!line||scenarioButton.dataset.running==='true'}
       async function refreshPhoneStatus(){
-        phoneStatus.textContent='Loading phone status…';phoneRelease.textContent='Checking the installed signed release…';phoneLines.replaceChildren();phoneCalls.replaceChildren();twilioPhoneCalls.replaceChildren();activePhoneLines=[];simulationLine.replaceChildren();simulateButton.disabled=true;
+        phoneStatus.textContent='Loading phone status…';phoneRelease.textContent='Checking the installed signed release…';phoneLines.replaceChildren();phoneCalls.replaceChildren();twilioPhoneCalls.replaceChildren();activePhoneLines=[];simulationLine.replaceChildren();simulateButton.disabled=true;scenarioButton.disabled=true;
         try{
           const result=await call('GET',undefined,'/api/phone-dashboard');
           phoneStatus.textContent=result.installation_status==='assigned'?'A signed handler is assigned to this installation.':'No active phone line is assigned to this installation.';
@@ -111,6 +115,42 @@
         }catch(error){phoneStatus.textContent=error.message;phoneRelease.textContent='Signed release verification is unavailable.'}
       }
       simulateButton.addEventListener('click',async()=>{const line=selectedPhoneLine();if(!line){simulationResult.textContent='Select an active phone line before running the installed-handler test.';return}simulationResult.textContent='Running the installed handler with synthetic input…';const body={binding_id:line.binding_id,event_type:previewEvent.value,...(previewEvent.value==='call.digits'?{digits:previewDigits.value}:{}),...(previewEvent.value==='call.speech'?{input:previewSpeech.value}:{})};try{const result=await call('POST',body,'/api/phone-simulate');simulationResult.textContent=JSON.stringify(result,null,2)}catch(error){simulationResult.textContent=error.message}});
+      function canonical(value){if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical(value[key])).join(',')+'}';return JSON.stringify(value)}
+      scenarioButton.addEventListener('click',async()=>{
+        const line=selectedPhoneLine();if(!line){scenarioStatus.textContent='Select an active phone line before running scenario checks.';return}
+        scenarioButton.dataset.running='true';updateSimulationAvailability();scenarioResults.replaceChildren();scenarioStatus.textContent='Loading saved settings and running synthetic scenarios…';
+        try{
+          const saved=await call('GET'),values={...defaults,...(saved.settings||{})};fill(values);revision=saved.revision;
+          const providerMode=line.provider==='twilio'?(line.speech_input_allowed===true?'twilio-speech':'twilio-dtmf'):'telnyx-dtmf';
+          const scenarios=[
+            {label:'Call starts',event:'call.received'},
+            {label:'Key 1 selects option 1',event:'call.digits',digits:'1'},
+            {label:'Key 2 selects option 2',event:'call.digits',digits:'2'},
+            {label:'Invalid key uses fallback',event:'call.digits',digits:'9'},
+          ];
+          const scenarioNotes=[];
+          if(line.provider==='twilio'&&line.speech_input_allowed===true){
+            const optionOnePhrase='Please '+values.option_1_label;
+            const optionOnePreview=previewMenuResponse('call.speech','',values,optionOnePhrase,'twilio-speech');
+            if(optionOnePreview.actions?.[0]?.type==='say'&&optionOnePreview.actions[0].text===values.option_1_response)
+              scenarios.push({label:'Unambiguous speech selects option 1',event:'call.speech',input:optionOnePhrase});
+            else scenarioNotes.push('Option labels overlap, so the unambiguous speech case was skipped.');
+            scenarios.push({label:'Ambiguous speech uses fallback',event:'call.speech',input:values.option_1_label+' and '+values.option_2_label});
+          }
+          let passed=0;
+          for(const scenario of scenarios){
+            const request={binding_id:line.binding_id,event_type:scenario.event,...(scenario.digits?{digits:scenario.digits}:{}),...(scenario.input?{input:scenario.input}:{})};
+            const actual=await call('POST',request,'/api/phone-simulate');
+            const expected=previewMenuResponse(scenario.event,scenario.digits||'',values,scenario.input||'',providerMode);
+            // The host validates binding_id against the owner's active line before dispatch.
+            // The simulation response intentionally contains no line metadata or call receipt.
+            const matched=actual.simulation===true&&canonical(actual.response)===canonical(expected);
+            const item=document.createElement('li');item.textContent=(matched?'Passed: ':'Failed: ')+scenario.label;scenarioResults.appendChild(item);if(matched)passed++;
+          }
+          scenarioStatus.textContent=(passed===scenarios.length?`${passed} of ${scenarios.length} saved-settings scenarios passed for ${line.provider}.`:`${passed} of ${scenarios.length} saved-settings scenarios matched the local preview. Review failed cases.`)+' '+scenarioNotes.join(' ')+' All inputs were synthetic; no carrier call or call session was created.';
+        }catch(error){scenarioStatus.textContent=`Scenario checks stopped: ${error.message}. No carrier call or call session was created.`}
+        finally{scenarioButton.dataset.running='false';updateSimulationAvailability()}
+      });
       simulationLine.addEventListener('change',updateSimulationAvailability);
       document.getElementById('refresh-phone').addEventListener('click',refreshPhoneStatus);
       document.getElementById('reload').addEventListener('click',reload);reload();refreshPhoneStatus();

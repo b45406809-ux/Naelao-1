@@ -15,9 +15,12 @@ per-installation settings API. Its channel handler receives the host's validated
 and returns the versioned data-only `say`, `gather` and `hangup` response contract. The host checks
 the signed installation and handler digest, validates the response, enforces number policy and
 renders carrier-specific actions. The dashboard previews call-start, keypad, and completed-transcript
-responses from the current draft in the browser; speech matching is not speech recognition or a
-language-quality claim. This preview is explicitly simulated and does not invoke a carrier, publish
-the draft, or save a call session. A Space owner separately assigns and confirms the handler in
+responses from the current draft in the browser. An owner-triggered scenario suite also sends
+synthetic call-start, valid/invalid DTMF and, only on an owner-enabled Twilio line, unambiguous and
+ambiguous speech through the exact-installed-handler test path, then compares host-validated output
+with the saved-settings preview. These checks do not invoke a carrier, create a call session or
+establish voice quality. Speech matching is not speech recognition or a language-quality claim. A
+Space owner separately assigns and confirms the handler in
 Assistant Phone settings. Its read-only Phone connection view requires the declared
 `assistant.phone.read` capability, resolves only this exact active signed installation, masks number
 and caller IDs, and shows at most 50 matching Telnyx calls from the last 7 days. Provider cost reports
