@@ -16,36 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P10 owner-confirmed Space-shared authority expansion)
+## Latest checkpoint — 2026-11-14 (P10 sequential additive Gadget migration pins)
 
-Code `12e0163d` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
-Space-shared signed updates now permit only additive top-level declared permissions/capabilities
-while publisher, package settings, dependencies, provider connections, shared-drive grants and
-primitive-level authority stay unchanged. A Space owner must explicitly confirm at review and apply;
-apply rechecks the signed source/candidate/artifact, publisher revocation, pause/drain state and exact
-authority delta. Migration 138 persists that delta in the durable receipt and replay verifies it.
-The installation remains paused.
+Code `63297b3f` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
+`MicroAppDO` continues verifying its original signed Canvas proof and now separately pins the current
+schema release, manifest digest and artifact digest. Each additive migration must match those exact
+current source pins; success atomically advances all three. This enables sequential signed updates
+without treating the original artifact proof as the current release and still rejects stale sources.
 
-Verification: focused Spaces contract/package/DO/migration suites **67/67**, Spaces and Shell
-typechecks, and `git diff --check` pass. These are local SQLite/mocked checks; no deployment, browser,
-provider or live acceptance ran. P10 remains PARTIAL for data/schema migration recovery, connection,
-dependency and price changes, package scanning/retention, and deployment/live acceptance. P02's
-resource isolation/evidence, P03/P12 policy and live-delivery gates, and S4's runtime, private-state,
-physical purge and U05/U06 contracts remain as recorded in the ledgers. Rollouts remain disabled.
+Verification: focused extension-schema and signed package route tests **32/32**, Spaces typecheck,
+and `git diff --check` pass. These are local SQLite/Worker mocks; no deployment, provider, browser or
+live acceptance ran. P10 remains PARTIAL for migration-aware rollback, dependencies, connections and
+prices, package scanning/retention, and deployment/live acceptance. P02 resource isolation/evidence,
+P03/P12 policy and delivery, and S4 runtime/private-state/purge/U05/U06 contracts remain as recorded.
+Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-The bounded-phone-menu package and owner dashboard are already implemented locally; first-party
-listing still needs an approved Naelao publisher identity, signing/key custody, canonical artifact
-distribution and catalog policy. Shared-Space proposal approval stays advisory and does not grant
-project/service access. Earlier S4/P01, P03/P12, archive restore and knowledge-grant work remains in
-the records below.
+The prior `12e0163d` checkpoint permits only owner-confirmed additive top-level Space-shared package
+authority, with exact token and durable receipt binding. The bounded-phone-menu package and dashboard
+are locally implemented; first-party listing still requires Naelao publisher identity, signing/key
+custody, canonical distribution and catalog policy. Space coordination remains advisory and does not
+grant project/service access. Earlier S4/P01, P03/P12, archive and Knowledge work remains in the ledgers.
 
-Exact next action: make sequential additive Gadget schema updates work across signed package releases.
-In `MicroAppDO`, keep the original signed artifact proof verifiable, but bind each migration request's
-current source to the persisted `schema_release_version` and `schema_manifest_sha256` plus the
-Space worker's signed current-release claims. Add an integration regression for 1.0→1.2→1.3 on the
-same Gadget actor, including retry and stale-source rejection. Keep migrations append-only and
-forward-compatible; do not run destructive rollback SQL. Then continue the next uncoded S3–S9/
-U01–U12/P01–P24 requirement. Fetch and safely integrate before every push; preserve the Python cache.
+Exact next action: support a paused owner-confirmed code rollback for a Space-shared Gadget package
+only when the candidate's additive migration history is an exact prefix of the current signed
+manifest. Keep the database schema and data forward, execute no rollback DDL, show owners which
+migrations remain applied, and bind review/apply to both manifest hashes. Add contract, route and
+SpaceDO tests proving stale/revoked candidates fail and no schema rows are removed. Then continue
+the next uncoded S3–S9/U01–U12/P01–P24 requirement. Fetch and safely integrate before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
