@@ -102,14 +102,15 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
 
   async function applyRestore(archiveId: string, previewId: string) {
     if (!session) return;
-    if (!window.confirm("Apply this encrypted archive as an additive merge? Existing rows and objects will remain. Newly restored event triggers will be paused until an admin reviews and re-enables them.")) return;
+    if (!window.confirm("Apply this encrypted archive as an additive merge? Existing rows and objects will remain. Newly restored event triggers will be paused until an admin reviews and re-enables them. Owner-managed access grants will not be restored and must be approved again.")) return;
     setBusy(true); setError(""); setMessage("");
     try {
       const result = await applySpaceArchiveRestore(spaceId, session, archiveId, previewId);
       setRestorePreview(null);
       const insertedRows = Object.values(result.restored_counts).reduce((sum, count) => sum + count, 0);
       const skippedRows = Object.values(result.skipped_counts).reduce((sum, count) => sum + count, 0);
-      setMessage(`Restore completed in merge mode. ${insertedRows} rows added, ${skippedRows} archived rows skipped by existing keys/constraints, ${result.restored_object_count} workspace objects verified; ${result.safety_actions.restored_event_triggers_inserted_disabled} restored event triggers were inserted disabled.`);
+      const grantsNotRestored = Object.values(result.safety_actions.owner_managed_grant_rows_not_restored ?? {}).reduce((sum, count) => sum + count, 0);
+      setMessage(`Restore completed in merge mode. ${insertedRows} rows added, ${skippedRows} archived rows skipped by existing keys/constraints, ${result.restored_object_count} workspace objects verified; ${result.safety_actions.restored_event_triggers_inserted_disabled} restored event triggers were inserted disabled; ${grantsNotRestored} archived owner-managed grant rows were not restored.`);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Restore could not complete. A partial restore can be resumed below.");
@@ -124,9 +125,9 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
     <div className="settings-block" style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 13 }}>Encrypted Space archives</strong>
-        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Full archives include supported SpaceDO rows and listed workspace/extension objects. They exclude other services, provider data and opaque Container snapshots. Limits: 8 MiB encrypted-manifest plaintext, 10,000 rows per table, 5,000 object references, 16 MiB per object and 64 MiB total captured object bytes. New larger captures use encrypted chunks; older archives remain readable.</p>
+        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Full archives include supported SpaceDO rows and listed workspace/extension objects. They exclude other services, provider data, opaque Container snapshots, and owner-managed local-machine, shared-filesystem and Project Knowledge grants. Legacy archives may contain those grants; restore skips them and reports the count. Reapprove grants after recovery. Limits: 8 MiB encrypted-manifest plaintext, 10,000 rows per table, 5,000 object references, 16 MiB per object and 64 MiB total captured object bytes. New larger captures use encrypted chunks.</p>
         <button type="button" disabled={busy} onClick={() => void createFullArchive()}>{busy ? "Working…" : pendingExportRequestId ? "Retry same full-archive request" : "Create encrypted full archive"}</button>
-        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Restore is an additive merge, not a point-in-time rollback. Existing rows and objects remain. Archived event triggers are inserted disabled and require admin review before they can run.</p>
+        <p style={{ margin: 0, color: "var(--text3)", fontSize: 12 }}>Restore is an additive merge, not a point-in-time rollback. Existing rows and objects remain. Archived event triggers are inserted disabled and require admin review before they can run. Owner-managed grants are never restored; owners must approve them again.</p>
         {archives.filter(archive => archive.status === "verified").map(archive => <div key={archive.archive_id} className="settings-row" style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           <span style={{ flex: 1 }}>{archive.kind === "retention_messages" ? "Retention archive" : "Full archive"} · {new Date(archive.created_at).toLocaleString()} · {archive.plaintext_bytes.toLocaleString()} bytes</span>
           <button type="button" disabled={busy} onClick={() => void previewRestore(archive.archive_id)}>{busy ? "Working…" : "Review restore"}</button>
@@ -134,7 +135,7 @@ export function ArchiveKeyRotationPanel({ spaceId, session, canManage }: { space
         {archives.every(archive => archive.status !== "verified") && <span style={{ color: "var(--text3)", fontSize: 12 }}>No verified archives are available.</span>}
         {restorePreview && <div className="settings-block" style={{ display: "grid", gap: 8 }}>
           <strong style={{ fontSize: 12 }}>Review archive {restorePreview.archive_id.slice(0, 8)}</strong>
-        <span style={{ color: "var(--text3)", fontSize: 12 }}>Merge mode · {restorePreview.object_references_verified} object references verified · {restorePreview.object_restore_required_count} missing objects need restoration · {restorePreview.safety_actions.archived_active_event_trigger_count} archived active event triggers will not be reactivated.</span>
+        <span style={{ color: "var(--text3)", fontSize: 12 }}>Merge mode · {restorePreview.object_references_verified} object references verified · {restorePreview.object_restore_required_count} missing objects need restoration · {restorePreview.safety_actions.archived_active_event_trigger_count} archived active event triggers will not be reactivated · {Object.values(restorePreview.safety_actions.owner_managed_grant_rows_not_restored ?? {}).reduce((sum, count) => sum + count, 0)} owner-managed grant rows will be skipped and must be reapproved.</span>
         <span style={{ color: "var(--text3)", fontSize: 12 }}>Temporary database merge simulation ({new Date(restorePreview.merge_snapshot_at).toLocaleString()}): {Object.values(restorePreview.row_merge.would_insert).reduce((sum, count) => sum + count, 0)} rows would be added; {Object.values(restorePreview.row_merge.would_skip_by_constraints).reduce((sum, count) => sum + count, 0)} archived rows would be skipped by existing keys or constraints. Per table: {Object.entries(restorePreview.row_merge.would_insert).map(([table, count]) => `${table} +${count}/skip ${restorePreview.row_merge.would_skip_by_constraints[table] ?? 0}`).join(" · ") || "none"}.</span>
         <span style={{ color: "var(--text3)", fontSize: 11 }}>Preview runs in a rolled-back transaction; concurrent changes before apply can change these counts. Apply remains additive and keeps existing rows.</span>
           <span style={{ color: "var(--text3)", fontSize: 11 }}>Rows: {Object.entries(restorePreview.row_counts).map(([table, count]) => `${table} ${count}`).join(" · ") || "none"}</span>

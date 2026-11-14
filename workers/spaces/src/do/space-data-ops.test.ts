@@ -223,6 +223,65 @@ describe("SpaceDO owner data operations", () => {
     expect(storage.sql.exec<{ enabled: number; updated_by: string }>("SELECT enabled,updated_by FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 1, updated_by: "owner-a" }]);
   });
 
+  it("excludes owner-managed grants from new archives and rejects them in legacy restores", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+    }));
+    storage.sql.exec(`INSERT INTO local_grants(id,space_id,user_id,grant_type,commands_json,created_at)
+      VALUES(?,?,?,?,?,?)`, "local-grant-a", "space-a", "user-a", "exec", JSON.stringify(["node"]), "2026-11-14T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at)
+      VALUES(?,?,?,?,?)`, "extension-a", "workspace/reports", "READ", "owner-a", "2026-11-14T00:00:00.000Z");
+    storage.sql.exec(`INSERT INTO extension_project_knowledge_grants(tenant_id,space_id,project_id,instance_id,publication_id,granted_by,granted_at)
+      VALUES(?,?,?,?,?,?,?)`, "tenant-a", "space-a", "project-a", "extension-a", "support_docs", "owner-a", "2026-11-14T00:00:00.000Z");
+
+    const exported = await post({ action: "export", request_id: "grant-recovery-safety" });
+    expect(exported.status).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    const archiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
+    const stored = r2.objects.get(archiveKey)!;
+    const payload = await decodeSpaceArchive(stored.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    const grantRows: Record<string, Array<Record<string, unknown>>> = {
+      local_grants: [{ id: "local-grant-a", space_id: "space-a", project_id: null, user_id: "user-a", grant_type: "exec", directory: null, commands_json: '["node"]', created_at: "2026-11-14T00:00:00.000Z" }],
+      extension_shared_filesystem_grants: [{ instance_id: "extension-a", path: "workspace/reports", access: "READ", approved_by: "owner-a", approved_at: "2026-11-14T00:00:00.000Z" }],
+      extension_project_knowledge_grants: [{ tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_id: "extension-a", publication_id: "support_docs", granted_by: "owner-a", granted_at: "2026-11-14T00:00:00.000Z" }],
+    };
+    for (const table of Object.keys(grantRows)) {
+      expect(payload.tableRows).not.toHaveProperty(table);
+      expect(payload.rowCounts).not.toHaveProperty(table);
+    }
+
+    const legacyPayload = structuredClone(payload);
+    for (const [table, rows] of Object.entries(grantRows)) {
+      legacyPayload.tableRows[table] = rows;
+      legacyPayload.rowCounts[table] = rows.length;
+      storage.sql.exec(`DELETE FROM "${table}"`);
+    }
+    const encoded = await encodeSpaceArchive(legacyPayload, secret);
+    stored.bytes = encoded.bytes;
+    storage.sql.exec("UPDATE space_archive_records SET checksum=? WHERE archive_id=?", await spaceArchiveChecksum(legacyPayload), archiveId);
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; row_counts: Record<string, number>; safety_actions: { owner_managed_grant_rows_not_restored?: Record<string, number> } };
+    expect(preview.row_counts).not.toHaveProperty("extension_project_knowledge_grants");
+    expect(preview.safety_actions.owner_managed_grant_rows_not_restored).toEqual({
+      local_grants: 1, extension_shared_filesystem_grants: 1, extension_project_knowledge_grants: 1,
+    });
+
+    const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ safety_actions: { owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored } });
+    for (const table of Object.keys(grantRows)) expect(storage.sql.exec(`SELECT * FROM "${table}"`).toArray()).toHaveLength(0);
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json))
+      .toMatchObject({ owner_managed_grant_rows_not_restored: preview.safety_actions.owner_managed_grant_rows_not_restored });
+  });
+
   it("previews exact merge inserts and skips without mutating current rows, then persists the applied outcome", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never,

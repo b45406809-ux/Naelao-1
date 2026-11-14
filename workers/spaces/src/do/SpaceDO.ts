@@ -49,6 +49,19 @@ import { supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update
 
 type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
 
+// Owner-managed access grants require fresh approval after archive recovery. Additive restore may
+// insert missing rows from old archives, so it must never replay a grant that was revoked later.
+const SPACE_ARCHIVE_PERMISSION_TABLES = [
+  "local_grants", "extension_shared_filesystem_grants", "extension_project_knowledge_grants",
+] as const;
+const SPACE_ARCHIVE_EXCLUDED_TABLES = [
+  "space_retention_policies", "space_storage_measurements", "space_archive_records", "space_archive_uploads",
+  "space_retention_previews", "space_archive_restore_previews", "space_archive_restores", "space_retention_events",
+  "space_erasure_tombstones", ...SPACE_ARCHIVE_PERMISSION_TABLES,
+] as const;
+const SPACE_ARCHIVE_EXCLUDED_TABLE_SET: ReadonlySet<string> = new Set(SPACE_ARCHIVE_EXCLUDED_TABLES);
+const SPACE_ARCHIVE_EXCLUDED_TABLE_SQL = SPACE_ARCHIVE_EXCLUDED_TABLES.map(table => `'${table}'`).join(",");
+
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
@@ -4245,7 +4258,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         rowCounts.messages = messages.length;
       } else {
         const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
-        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_archive_uploads','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events','space_erasure_tombstones') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
+        const list = queryAll<{ name: string }>(sql, `SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN (${SPACE_ARCHIVE_EXCLUDED_TABLE_SQL}) ORDER BY name`).filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
         for (const { name } of list) {
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) continue;
           const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", name).map(row => row.name));
@@ -4502,6 +4515,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
       if (Object.entries(payload.tableRows).some(([table, rows]) => !Array.isArray(rows) || payload.rowCounts[table] !== rows.length)
         || Object.entries(payload.rowCounts).some(([table, count]) => !Number.isSafeInteger(count) || count < 0 || payload.tableRows[table]?.length !== count)) return Response.json({ error_code: "archive_row_count_mismatch" }, { status: 422 });
+      const ownerManagedGrantRowsNotRestored: Record<string, number> = {};
+      for (const table of SPACE_ARCHIVE_PERMISSION_TABLES) {
+        const rows = payload.tableRows[table];
+        if (rows) {
+          if (rows.length > 0) ownerManagedGrantRowsNotRestored[table] = rows.length;
+          delete payload.tableRows[table];
+          delete payload.rowCounts[table];
+        }
+      }
       const currentMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       if (payload.migrationVersion > currentMigration) return Response.json({ error_code: "archive_schema_from_future", archive_schema: payload.migrationVersion, current_schema: currentMigration }, { status: 409 });
       const hasObjectSnapshots = Object.prototype.hasOwnProperty.call(payload, "objectSnapshots");
@@ -4578,7 +4600,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
       for (const table of Object.keys(payload.tableRows)) {
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_archive_uploads","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events","space_erasure_tombstones"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || SPACE_ARCHIVE_EXCLUDED_TABLE_SET.has(table)) return Response.json({ error_code: "archive_table_forbidden", table }, { status: 422 });
         const exists = queryOne<{ name: string; sql: string | null }>(sql, "SELECT name,sql FROM sqlite_master WHERE type='table' AND name=?", table);
         if (!exists || exists.sql?.startsWith("CREATE VIRTUAL TABLE")) return Response.json({ error_code: "archive_table_schema_incompatible", table }, { status: 409 });
         const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", table).map(row => row.name));
@@ -4642,7 +4664,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           row_merge: { would_insert: mergePreview.inserted, would_skip_by_constraints: mergePreview.skipped }, object_references_verified: payload.objectReferences.length,
           object_restore_required_count: objectRestoreRequiredCount, workspace_restore_count: workspaceSnapshots.length, restore_mode: "idempotent_merge_missing_rows", merge_snapshot_at: now,
           safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
-            existing_event_trigger_state_will_be_preserved: true }, expires_at: expiresAt, requires_explicit_apply: true });
+            existing_event_trigger_state_will_be_preserved: true,
+            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, expires_at: expiresAt, requires_explicit_apply: true });
       }
       const previewId = String(body.preview_id ?? "");
       const preview = queryOne<{ tenant_id: string; space_id: string; archive_id: string; checksum: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_archive_restore_previews WHERE preview_id=?", previewId);
@@ -4740,7 +4763,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           Object.assign(skippedCounts, merged.skipped);
           restoredEventTriggersDisabled = merged.restoredEventTriggersDisabled;
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
-          const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled };
+          const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
+            ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
         });
@@ -4750,7 +4774,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ error_code: "restore_transaction_rolled_back", message, restored_object_count: verifiedObjectCount }, { status: 409 });
       }
       return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, skipped_counts: skippedCounts, restored_object_count: verifiedObjectCount,
-        restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
+        restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
+          ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });
   }
