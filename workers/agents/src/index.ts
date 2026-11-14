@@ -6913,7 +6913,8 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
           maxFileBytes: DISCORD_ATTACHMENT_LIMITS.maxFileBytes, maxTotalBytes: DISCORD_ATTACHMENT_LIMITS.maxTotalBytes } } : {}) });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "channel_media_unavailable";
-      const rejected = /(?:media|slack)_?(?:rejected|url_rejected|size_mismatch|too_large)/.test(reason) || reason.includes("size_limit") || reason.includes("count_limit");
+      const rejected = /(?:media|slack)_?(?:rejected|url_rejected|size_mismatch|too_large)/.test(reason)
+        || reason === "discord_media_url_expired" || reason.includes("size_limit") || reason.includes("count_limit");
       console.warn(`[channels] platform media ${rejected ? "rejected" : "unavailable"} channel=${channel}: ${reason}`);
       return c.json({ error_code: rejected ? "unsupported_channel_media" : "channel_media_unavailable" }, rejected ? 422 : 503);
     }
@@ -7302,7 +7303,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
       try { files = await downloadDiscordAttachments(raw); }
       catch (error) {
         const reason = error instanceof Error ? error.message : "discord_media_download_failed";
-        const rejected = reason === "discord_media_rejected" || reason === "discord_media_url_rejected" ||
+        const rejected = reason === "discord_media_rejected" || reason === "discord_media_url_rejected" || reason === "discord_media_url_expired" ||
           reason === "discord_media_size_mismatch" || reason === "discord_media_too_large" || reason.includes("non_ephemeral");
         return c.json({ error_code: rejected ? "unsupported_discord_media" : "discord_media_unavailable" }, rejected ? 422 : 503);
       }
