@@ -15,6 +15,13 @@ describe("extension-owned voice presentation", () => {
       )
     ).toBe("<Say>&lt;script&gt;&amp;</Say><Hangup/>");
   });
+  it("renders only the bounded Twilio man/woman Say styles", () => {
+    expect(render({ actions: [
+      { type: "say", text: "Welcome", style: "woman" },
+      { type: "gather", text: "Choose one", input: "dtmf", digits: 1, style: "man" },
+    ] }, "https://host/menu")).toBe('<Say voice="woman">Welcome</Say><Gather input="dtmf" numDigits="1" timeout="10" action="https://host/menu" method="POST"><Say voice="man">Choose one</Say></Gather><Hangup/>');
+    expect(() => render({ actions: [{ type: "say", text: "Hi", style: "Polly.Joanna" }] }, "/menu")).toThrow();
+  });
   it("rejects executable TwiML, arbitrary URLs and unauthorized financial call actions", () => {
     for (const value of [
       "<Dial>evil</Dial>",

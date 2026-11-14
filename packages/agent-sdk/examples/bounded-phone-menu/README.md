@@ -3,11 +3,14 @@
 This signed extension example provides a deterministic two-choice inbound phone menu. DTMF works
 with supported phone lines. On Twilio, an owner can enable completed speech input in the existing
 phone policy; the handler then matches one option-label phrase to a configured response. Ambiguous
-and unmatched phrases use the fallback. Telnyx remains DTMF-only. This is not a streaming or AI voice
-agent. It does not call an LLM, retrieve knowledge, transfer calls, dial outbound, or hold provider
-credentials.
+and unmatched phrases use the fallback. On Twilio, owners may also choose the documented `man` or
+`woman` `<Say>` style; Telnyx remains DTMF-only and uses its provider default. The Twilio style
+selection does not establish voice availability, language support, quality or rate. This is not a
+streaming or AI voice agent. It does not call an LLM, retrieve knowledge, transfer calls, dial
+outbound, or hold provider credentials.
 
-The extension's signed Canvas dashboard saves its six bounded text settings through the existing
+The extension's signed Canvas dashboard saves its six bounded text settings and one voice-style
+selection through the existing
 per-installation settings API. Its channel handler receives the host's validated settings snapshot
 and returns the versioned data-only `say`, `gather` and `hangup` response contract. The host checks
 the signed installation and handler digest, validates the response, enforces number policy and
@@ -25,6 +28,10 @@ handler on its single active assigned line. It uses synthetic `call.received`, `
 whose owner policy enables speech input. It creates no carrier call or call session. The browser preview remains available
 for unsaved draft settings. The dashboard cannot buy, release, configure or call a number. Phone number
 and provider connection changes remain under their existing owner and provider controls.
+
+Twilio contract checked 2026-11-14: [TwiML `<Say>`](https://www.twilio.com/docs/voice/twiml/say)
+documents `man` and `woman` values for the `voice` attribute. This example exposes only those two
+styles and does not expose arbitrary TwiML, provider voice names, locale or language controls.
 
 Build the release artifact set from this manifest, `handler.ts` and `dashboard.html`, sign it with
 the normal extension release process, and install the exact release in a Space before selecting it

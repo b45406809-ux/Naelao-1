@@ -443,7 +443,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
             event: {
               id: event === "answer" ? sid : `${sid}:${speech ? "speech" : "digits"}:${eventHash}`,
               type: voiceEvent,
-              payload: { voice_event: voiceEvent, caller: from, ...(digits ? { digits } : {}), ...(speech ? { speech } : {}), ...(confidence !== undefined ? { confidence } : {}) },
+              payload: { voice_event: voiceEvent, provider: "twilio", caller: from, ...(digits ? { digits } : {}), ...(speech ? { speech } : {}), ...(confidence !== undefined ? { confidence } : {}) },
             },
           }),
         })

@@ -15,16 +15,18 @@ export function renderExtensionVoiceResponse(
         throw new Error("invalid_extension_voice_action");
       if (
         a.type === "say" &&
-        Object.keys(a).every((k) => ["type", "text"].includes(k)) &&
+        Object.keys(a).every((k) => ["type", "text", "style"].includes(k)) &&
         typeof a.text === "string" &&
-        a.text.length <= 2000
+        a.text.length <= 2000 &&
+        (a.style === undefined || a.style === "man" || a.style === "woman")
       )
-        return `<Say>${xml(a.text)}</Say>`;
+        return `<Say${a.style ? ` voice="${a.style}"` : ""}>${xml(a.text)}</Say>`;
       if (
         a.type === "gather" &&
-        Object.keys(a).every((k) => ["type", "text", "digits", "input"].includes(k)) &&
+        Object.keys(a).every((k) => ["type", "text", "digits", "input", "style"].includes(k)) &&
         typeof a.text === "string" &&
         a.text.length <= 1000 &&
+        (a.style === undefined || a.style === "man" || a.style === "woman") &&
         (a.input === undefined || ["dtmf", "speech", "dtmf speech"].includes(String(a.input))) &&
         (allowSpeechInput || (a.input !== "speech" && a.input !== "dtmf speech")) &&
         ((a.input === "speech" && a.digits === undefined) ||
@@ -33,7 +35,7 @@ export function renderExtensionVoiceResponse(
         const input = a.input === "speech" ? "speech" : a.input === "dtmf speech" ? "dtmf speech" : "dtmf";
         const digits = input === "speech" ? "" : ` numDigits="${Number(a.digits)}"`;
         const speechTimeout = input.includes("speech") ? ` speechTimeout="auto"` : "";
-        return `<Gather input="${input}"${digits}${speechTimeout} timeout="10" action="${xml(callback)}" method="POST"><Say>${xml(a.text)}</Say></Gather><Hangup/>`;
+        return `<Gather input="${input}"${digits}${speechTimeout} timeout="10" action="${xml(callback)}" method="POST"><Say${a.style ? ` voice="${a.style}"` : ""}>${xml(a.text)}</Say></Gather><Hangup/>`;
       }
       if (a.type === "hangup" && Object.keys(a).length === 1)
         return "<Hangup/>";

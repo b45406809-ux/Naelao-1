@@ -1153,8 +1153,8 @@ describe("assistant telephone safety and lifecycle", () => {
    if (body.validateOnly) return Response.json({ valid: true });
    if (body.event?.type === "call.received")
     return Response.json({ response: { actions: [
-     { type: "say", text: "Welcome to the extension." },
-     { type: "gather", input: "speech", text: "How can I help?" },
+     { type: "say", text: "Welcome to the extension.", style: "woman" },
+     { type: "gather", input: "speech", text: "How can I help?", style: "man" },
     ] } });
    return Response.json({ response: { actions: [
     { type: "say", text: `I heard: ${String(body.event?.payload.speech ?? "")}` },
@@ -1185,8 +1185,9 @@ describe("assistant telephone safety and lifecycle", () => {
   const first = await invoke("answer");
   expect(first.status).toBe(200);
   const firstXml = await first.text();
-  expect(firstXml).toContain("Welcome to the extension.");
+  expect(firstXml).toContain('<Say voice="woman">Welcome to the extension.</Say>');
   expect(firstXml).toContain('<Gather input="speech"');
+  expect(firstXml).toContain('<Say voice="man">How can I help?</Say>');
   expect(firstXml).toContain("/assistant-phone/twilio/");
   const next = await invoke("menu", { SpeechResult: "Check my order", Confidence: "0.91" });
   expect(next.status).toBe(200);
@@ -1199,10 +1200,11 @@ describe("assistant telephone safety and lifecycle", () => {
   for (const request of dispatched.slice(1)) {
    const body = await request.clone().json() as { event: { type: string; payload: Record<string, unknown> } };
    voiceEvents.push(body.event.type);
+   expect(body.event.payload.provider).toBe("twilio");
   }
   expect(voiceEvents).toEqual(["call.received", "call.speech"]);
   expect((await dispatched[2]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload)
-   .toMatchObject({ speech: "Check my order", confidence: 0.91 });
+   .toMatchObject({ provider: "twilio", speech: "Check my order", confidence: 0.91 });
  });
 
  it("persists signed Twilio extension call outcomes against the admitted release", async () => {

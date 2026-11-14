@@ -136,6 +136,28 @@ describe("Telnyx live call command contract", () => {
     expect(String(carrier.mock.calls.at(-1)?.[0])).toContain("/actions/hangup");
   });
 
+  it("rejects Twilio-only Say styles on Telnyx and hangs up", async () => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")
+      ? Response.json({ effective_role: "owner" })
+      : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    const pair = generateKeyPairSync("ed25519");
+    const publicKey = pair.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({ apiKey: "test-api-key-123456", publicKey, verifiedNumberId: "12345", verifiedPhoneNumber: "+14155550100" }) })) } as unknown as Fetcher;
+    await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
+      .bind("public-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
+    await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('public-extension','ext-1',?,'active')").bind("a".repeat(64)).run();
+    f.env.AGENTS_WORKER = { fetch: vi.fn(async () => Response.json({ response: { actions: [{ type: "say", text: "Hello", style: "woman" }] } })) } as unknown as Fetcher;
+    const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
+    vi.stubGlobal("fetch", carrier);
+    const binding = await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='public-extension'").first<AssistantPhoneBinding>();
+    await dispatchTelnyxVoiceEvent(f.env, binding!, identity, { eventId: "e1", eventType: "call.initiated", payload: { call_control_id: "call-style", direction: "incoming", from: "+14155550101", to: "+14155550100" } });
+    const result = await dispatchTelnyxVoiceEvent(f.env, binding!, identity, { eventId: "e2", eventType: "call.answered", payload: { call_control_id: "call-style" } });
+    expect(result).toMatchObject({ accepted: true, ended: true, rejected: "unsupported_extension_voice_response" });
+    expect(String(carrier.mock.calls.at(-1)?.[0])).toContain("/actions/hangup");
+  });
+
   it("speaks a terminal extension response and ends without another extension dispatch", async () => {
     const f = fixture();
     f.fetch.mockImplementation(async (request: Request) => request.url.includes("assistant-access")

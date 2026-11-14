@@ -8,16 +8,17 @@ import { validateVoiceChannelResponse } from "./voice-channel.js";
 const settings = {
   greeting: "Welcome.", option_1_label: "Bookings", option_1_response: "Our booking team will help you.",
   option_2_label: "Support", option_2_response: "Our support team will help you.",
-  fallback_response: "That key is not available.",
+  fallback_response: "That key is not available.", speech_style: "default",
 };
 const dashboard = readFileSync(new URL("../examples/bounded-phone-menu/dashboard.html", import.meta.url), "utf8");
 
-async function responseFor(voiceEvent: string, digits?: string, speech?: string, provider: "twilio" | "telnyx" = "telnyx", speechInputAllowed = false) {
+async function responseFor(voiceEvent: string, digits?: string, speech?: string, provider: "twilio" | "telnyx" = "telnyx", speechInputAllowed = false,
+  speechStyle: "default" | "man" | "woman" = "default") {
   let raw = "";
   await run({}, { channel: {
     event: { payload: { voice_event: voiceEvent, provider, speech_input_allowed: speechInputAllowed,
       ...(digits ? { digits } : {}), ...(speech ? { speech } : {}) } },
-    settings: { values: settings },
+    settings: { values: { ...settings, speech_style: speechStyle } },
     reply: async message => { raw = message.text; return { messageId: "test" }; },
   } });
   return validateVoiceChannelResponse(JSON.parse(raw));
@@ -27,7 +28,9 @@ describe("bounded phone menu package", () => {
   it("declares signed per-installation settings and only the host-supported phone channel", () => {
     const parsed = validateExtensionManifest(manifest);
     expect(parsed.id).toBe("ext_bounded_phone_menu");
-    expect(parsed.settingsSchema?.fields).toHaveLength(6);
+    expect(parsed.settingsSchema?.fields).toHaveLength(7);
+    expect(parsed.settingsSchema?.fields.find(field => field.id === "speech_style")).toMatchObject({ type: "select", defaultValue: "default",
+      options: [{ value: "default" }, { value: "woman" }, { value: "man" }] });
     expect(parsed.channels).toEqual([expect.objectContaining({
       provider: "phone", handlerScript: "./handler.ts", context: "channel_only",
       inboundEvents: ["message.received", "call.received", "call.digits", "call.speech"], outboundEvents: ["message.reply", "voice.reply"],
@@ -49,6 +52,8 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("aria-label=\"Simulated phone menu response\"");
     expect(dashboard).toContain("does not run a carrier call, contact a provider, publish this draft, or save a call session");
     expect(dashboard).toContain("Twilio with owner-enabled speech input");
+    expect(dashboard).toContain("The style does not guarantee voice availability, language, quality or rate.");
+    expect(dashboard).toContain("Telnyx · DTMF");
     expect(dashboard).toContain("single-turn keyword route");
     expect(dashboard).toContain("Phone line for installed-handler test");
     expect(dashboard).toContain("binding_id:line.binding_id");
@@ -62,14 +67,17 @@ describe("bounded phone menu package", () => {
     const previewFunction = dashboard.match(/      function previewMenuResponse\([\s\S]*?\n      \}/)?.[0];
     expect(previewFunction).toBeDefined();
     const preview = new Function(`${previewFunction}; return previewMenuResponse;`)() as
-      (event: string, digits: string, values: typeof settings, speech?: string, speechEnabled?: boolean) => unknown;
+      (event: string, digits: string, values: typeof settings, speech?: string, provider?: string) => unknown;
     for (const [event, digits] of [["call.received", ""], ["call.digits", "1"], ["call.digits", "2"], ["call.digits", "9"]]) {
-      expect(preview(event!, digits!, settings, undefined, false)).toEqual(await responseFor(event!, digits! || undefined));
+      expect(preview(event!, digits!, settings, undefined, "telnyx-dtmf")).toEqual(await responseFor(event!, digits! || undefined));
     }
-    expect(preview("call.received", "", settings, undefined, true)).toEqual({ schema_version: 1, actions: [
-      { type: "gather", input: "dtmf speech", digits: 1, text: "Welcome. Press 1 for Bookings or say Bookings. Press 2 for Support or say Support." },
+    expect(preview("call.received", "", { ...settings, speech_style: "woman" }, undefined, "twilio-speech")).toEqual({ schema_version: 1, actions: [
+      { type: "gather", input: "dtmf speech", digits: 1, text: "Welcome. Press 1 for Bookings or say Bookings. Press 2 for Support or say Support.", style: "woman" },
     ] });
-    expect(preview("call.speech", "", settings, "I need help with bookings", true)).toEqual(await responseFor("call.speech", undefined, "I need help with bookings", "twilio", true));
+    expect(preview("call.speech", "", settings, "I need help with bookings", "twilio-speech")).toEqual(await responseFor("call.speech", undefined, "I need help with bookings", "twilio", true));
+    expect(preview("call.digits", "1", { ...settings, speech_style: "man" }, undefined, "twilio-dtmf")).toMatchObject({ actions: [
+      { type: "say", style: "man", text: settings.option_1_response }, { type: "hangup" },
+    ] });
   });
 
   it("gathers one DTMF digit and returns only configured, bounded responses", async () => {
@@ -102,6 +110,18 @@ describe("bounded phone menu package", () => {
     ] });
     expect(await responseFor("call.speech", undefined, "support", "twilio", false)).toEqual({ schema_version: 1, actions: [{ type: "hangup" }] });
     expect(await responseFor("call.speech", undefined, "support", "telnyx", true)).toEqual({ schema_version: 1, actions: [{ type: "hangup" }] });
+  });
+
+  it("applies only the selected Twilio Say style and leaves Telnyx on its provider default", async () => {
+    expect(await responseFor("call.received", undefined, undefined, "twilio", false, "woman")).toMatchObject({ actions: [
+      { type: "gather", style: "woman", input: "dtmf" },
+    ] });
+    expect(await responseFor("call.digits", "1", undefined, "twilio", false, "man")).toMatchObject({ actions: [
+      { type: "say", style: "man", text: "Our booking team will help you." }, { type: "hangup" },
+    ] });
+    expect(await responseFor("call.digits", "1", undefined, "telnyx", false, "woman")).toMatchObject({ actions: [
+      { type: "say", text: "Our booking team will help you." }, { type: "hangup" },
+    ] });
   });
 
   it("keeps Telnyx DTMF-only and tolerates a missing settings snapshot", async () => {

@@ -12,7 +12,7 @@
 </head>
 <body>
   <h1>Phone menu</h1>
-  <p>Configure a two-option phone menu with DTMF on supported phone lines. On Twilio only, an owner may enable speech input in Assistant Phone settings; the handler then routes one completed speech turn by an exact option-label phrase. This is not a streaming or AI voice agent and cannot transfer or dial calls.</p>
+  <p>Configure a two-option phone menu with DTMF on supported phone lines. On Twilio only, choose the documented man/woman Say style and, if the owner enables speech input in Assistant Phone settings, route one completed speech turn by an exact option-label phrase. Telnyx keeps its provider default. The style does not guarantee voice availability, language, quality or rate. This is not a streaming or AI voice agent and cannot transfer or dial calls.</p>
   <p>Settings are saved to this installation. A Space owner must separately select and confirm this signed handler for a phone number.</p>
   <div id="notice" role="status" aria-live="polite">Loading saved menu…</div>
   <form id="menu">
@@ -23,6 +23,8 @@
       <label>Option 2 name<input id="option_2_label" maxlength="60" required></label>
       <label>Response after option 2<textarea id="option_2_response" maxlength="240" required></textarea></label>
       <label>Response for another key or invalid selection<textarea id="fallback_response" maxlength="240" required></textarea></label>
+      <label>Twilio spoken voice style<select id="speech_style"><option value="default">Provider default</option><option value="woman">Twilio woman</option><option value="man">Twilio man</option></select></label>
+      <p>Twilio style applies only to Twilio Say actions. Telnyx uses its provider default. This setting does not verify voice availability, language support, quality or pricing.</p>
     </fieldset>
     <button type="submit">Save menu</button>
     <button id="reload" type="button">Reload saved menu</button>
@@ -50,7 +52,7 @@
   <section aria-labelledby="preview-heading">
     <h2 id="preview-heading">Try the menu</h2>
     <p>This is a local preview of the configured response. Speech matching is a single-turn keyword route over the completed provider transcript, not speech recognition or a language/model quality claim. It is simulated: it does not run a carrier call, contact a provider, publish this draft, or save a call session.</p>
-    <label>Preview provider mode<select id="preview-provider"><option value="dtmf">DTMF-only or speech policy disabled</option><option value="twilio-speech">Twilio with owner-enabled speech input</option></select></label>
+    <label>Preview provider mode<select id="preview-provider"><option value="telnyx-dtmf">Telnyx · DTMF</option><option value="twilio-dtmf">Twilio · DTMF</option><option value="twilio-speech">Twilio with owner-enabled speech input</option></select></label>
     <label>Preview event<select id="preview-event"><option value="call.received">Caller starts a call</option><option value="call.digits">Caller enters a key</option><option value="call.speech">Twilio returns one completed speech turn</option></select></label>
     <label id="preview-digits-label">Key pressed<select id="preview-digits"><option value="1">1 · Option 1</option><option value="2">2 · Option 2</option><option value="9">9 · Invalid selection</option></select></label>
     <label id="preview-speech-label" hidden>Recognized phrase (synthetic)<input id="preview-speech" maxlength="2000" value="I need Bookings"></label>
@@ -59,22 +61,24 @@
   </section>
   <script>
     (()=>{
-      const ids=['greeting','option_1_label','option_1_response','option_2_label','option_2_response','fallback_response'];
-      const defaults={greeting:'Thank you for calling.',option_1_label:'Sales',option_1_response:'Please contact our sales team for help.',option_2_label:'Support',option_2_response:'Please contact our support team for help.',fallback_response:'Sorry, that selection is not available.'};
+      const ids=['greeting','option_1_label','option_1_response','option_2_label','option_2_response','fallback_response','speech_style'];
+      const defaults={greeting:'Thank you for calling.',option_1_label:'Sales',option_1_response:'Please contact our sales team for help.',option_2_label:'Support',option_2_response:'Please contact our support team for help.',fallback_response:'Sorry, that selection is not available.',speech_style:'default'};
       const pending=new Map();let serial=0,revision=0;
       const notice=document.getElementById('notice');
-      function previewMenuResponse(voiceEvent,digits,values,speech,speechEnabled){
-        if(voiceEvent==='call.received')return {schema_version:1,actions:[{type:'gather',input:speechEnabled?'dtmf speech':'dtmf',digits:1,text:`${values.greeting} Press 1 for ${values.option_1_label}${speechEnabled?` or say ${values.option_1_label}`:''}. Press 2 for ${values.option_2_label}${speechEnabled?` or say ${values.option_2_label}`:''}.`}]};
+      function previewMenuResponse(voiceEvent,digits,values,speech,provider){
+        const style=String(provider).startsWith('twilio')&&(values.speech_style==='man'||values.speech_style==='woman')?{style:values.speech_style}:{};
+        const speechEnabled=provider==='twilio-speech';
+        if(voiceEvent==='call.received')return {schema_version:1,actions:[{type:'gather',input:speechEnabled?'dtmf speech':'dtmf',digits:1,text:`${values.greeting} Press 1 for ${values.option_1_label}${speechEnabled?` or say ${values.option_1_label}`:''}. Press 2 for ${values.option_2_label}${speechEnabled?` or say ${values.option_2_label}`:''}.`,...style}]};
         if(voiceEvent==='call.speech'){
           if(!speechEnabled)return {schema_version:1,actions:[{type:'hangup'}]};
           const normalize=value=>String(value||'').normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ');
           const spoken=` ${normalize(speech)} `,first=normalize(values.option_1_label),second=normalize(values.option_2_label);
           const firstMatch=!!first&&spoken.includes(` ${first} `),secondMatch=!!second&&spoken.includes(` ${second} `);
           const text=firstMatch!==secondMatch?(firstMatch?values.option_1_response:values.option_2_response):values.fallback_response;
-          return {schema_version:1,actions:[{type:'say',text},{type:'hangup'}]};
+          return {schema_version:1,actions:[{type:'say',text,...style},{type:'hangup'}]};
         }
         const text=digits==='1'?values.option_1_response:digits==='2'?values.option_2_response:values.fallback_response;
-        return {schema_version:1,actions:[{type:'say',text},{type:'hangup'}]};
+        return {schema_version:1,actions:[{type:'say',text,...style},{type:'hangup'}]};
       }
       function call(method,body,path='/api/settings'){return new Promise((resolve,reject)=>{const id='menu_'+(++serial),timer=setTimeout(()=>{pending.delete(id);reject(Error('Host did not respond'))},12000);pending.set(id,{resolve,reject,timer});parent.postMessage({type:'naelao.extension.rpc',id,method,path,...(body?{body}:{})},'*')})}
       addEventListener('message',event=>{if(event.source!==parent)return;const message=event.data;if(message?.type!=='naelao.extension.rpc.result'||typeof message.id!=='string')return;const item=pending.get(message.id);if(!item)return;clearTimeout(item.timer);pending.delete(message.id);message.ok?item.resolve(message.result):item.reject(Error(message.error||'Settings request failed'))});
@@ -83,7 +87,7 @@
       async function reload(){notice.textContent='Loading saved menu…';try{const saved=await call('GET');revision=saved.revision;fill(saved.settings||{});notice.textContent='Loaded installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}}
       document.getElementById('menu').addEventListener('submit',async event=>{event.preventDefault();const values=readForm();if(ids.some(id=>!values[id])){notice.textContent='Fill in all menu fields before saving.';return}notice.textContent='Saving menu…';try{const saved=await call('PATCH',{revision,settings:values});revision=saved.revision;notice.textContent='Saved installation settings revision '+revision+'.'}catch(error){notice.textContent=error.message}});
       const previewEvent=document.getElementById('preview-event'),previewDigits=document.getElementById('preview-digits'),previewDigitsLabel=document.getElementById('preview-digits-label'),previewSpeech=document.getElementById('preview-speech'),previewSpeechLabel=document.getElementById('preview-speech-label'),previewProvider=document.getElementById('preview-provider'),previewResult=document.getElementById('preview-result');
-      function updatePreview(){const speechEnabled=previewProvider.value==='twilio-speech';previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewSpeechLabel.hidden=previewEvent.value!=='call.speech';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm(),previewSpeech.value,speechEnabled),null,2);updateSimulationAvailability()}
+      function updatePreview(){previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewSpeechLabel.hidden=previewEvent.value!=='call.speech';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm(),previewSpeech.value,previewProvider.value),null,2);updateSimulationAvailability()}
       document.getElementById('preview').addEventListener('click',updatePreview);previewEvent.addEventListener('change',updatePreview);previewDigits.addEventListener('change',updatePreview);previewSpeech.addEventListener('input',updatePreview);previewProvider.addEventListener('change',updatePreview);
       const phoneStatus=document.getElementById('phone-status'),phoneRelease=document.getElementById('phone-release'),phoneLines=document.getElementById('phone-lines'),phoneCalls=document.getElementById('phone-calls'),twilioPhoneCalls=document.getElementById('twilio-phone-calls'),phoneCostDisclosure=document.getElementById('phone-cost-disclosure'),simulateButton=document.getElementById('simulate-phone'),simulationResult=document.getElementById('simulation-result'),simulationLine=document.getElementById('simulate-line');let activePhoneLines=[];
       function selectedPhoneLine(){return activePhoneLines.find(line=>line.binding_id===simulationLine.value)}

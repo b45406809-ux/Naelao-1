@@ -32,6 +32,9 @@ export async function run(_args: Record<string, never>, ctx: PhoneChannelContext
   const second = setting(values, "option_2_label", "Support", 60);
   const payload = ctx.channel.event.payload;
   const voiceEvent = payload.voice_event;
+  const speechStyle = payload.provider === "twilio" && (values.speech_style === "man" || values.speech_style === "woman")
+    ? values.speech_style : undefined;
+  const say = (text: string) => ({ type: "say", text, ...(speechStyle ? { style: speechStyle } : {}) });
   const speechEnabled = payload.provider === "twilio" && payload.speech_input_allowed === true;
 
   let response: { schema_version: 1; actions: Array<Record<string, string | number>> };
@@ -39,6 +42,7 @@ export async function run(_args: Record<string, never>, ctx: PhoneChannelContext
     response = { schema_version: 1, actions: [{
       type: "gather", input: speechEnabled ? "dtmf speech" : "dtmf", digits: 1,
       text: `${greeting} Press 1 for ${first}${speechEnabled ? ` or say ${first}` : ""}. Press 2 for ${second}${speechEnabled ? ` or say ${second}` : ""}.`,
+      ...(speechStyle ? { style: speechStyle } : {}),
     }] };
   } else if (voiceEvent === "call.digits") {
     const digits = typeof payload.digits === "string" ? payload.digits : "";
@@ -47,14 +51,14 @@ export async function run(_args: Record<string, never>, ctx: PhoneChannelContext
       : digits === "2"
         ? setting(values, "option_2_response", "Please contact our support team for help.", 240)
         : setting(values, "fallback_response", "Sorry, that selection is not available.", 240);
-    response = { schema_version: 1, actions: [{ type: "say", text }, { type: "hangup" }] };
+    response = { schema_version: 1, actions: [say(text), { type: "hangup" }] };
   } else if (voiceEvent === "call.speech" && speechEnabled && typeof payload.speech === "string") {
     const spoken = payload.speech.slice(0, 2_000);
     const matches = [matchesLabel(spoken, first), matchesLabel(spoken, second)];
     const text = matches[0] !== matches[1]
       ? setting(values, matches[0] ? "option_1_response" : "option_2_response", matches[0] ? "Please contact our sales team for help." : "Please contact our support team for help.", 240)
       : setting(values, "fallback_response", "Sorry, that selection is not available.", 240);
-    response = { schema_version: 1, actions: [{ type: "say", text }, { type: "hangup" }] };
+    response = { schema_version: 1, actions: [say(text), { type: "hangup" }] };
   } else {
     response = { schema_version: 1, actions: [{ type: "hangup" }] };
   }
