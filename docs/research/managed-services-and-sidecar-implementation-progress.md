@@ -1,6 +1,23 @@
 # Managed services and sidecar implementation progress
 
-## Active continuation — 2026-11-14 (P05 guided-template model-cost scenario)
+## Active continuation — 2026-11-14 (P05 model-credit planning budget)
+
+Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` follows the pushed model-cost scenario
+`d3044a665d16038ad54d4396d6a23b304849090e`. An optional bounded customer monthly Naelao-credit budget
+now compares with the owner-only activation-preview model estimate; the response states it is an
+unpersisted, unenforced assumption. The exact current verified price/version/expiry and Billing's
+monthly operation cap remain separate; direct provider charges and full USD operating total remain
+unknown. Local evidence: Spaces SQLite-backed estimate/activation **32/32**, Shell parser **4/4**,
+Spaces/Shell typechecks and `git diff --check`; no browser, deployment, purchase, or live acceptance.
+
+There is no reachable template-model execution caller to bind this assumption to a hard budget. The
+current `managed-model-quote/run` route is owner-only and uses a single-operation Billing mandate that
+is revoked after the operation. P05 remains partial; preserve the scope decision and do not claim this
+is enforcement. Exact next action: continue the known P16 Discord ordinary-attachment gap from current
+provider event through stored bytes to the approved image handler; verify official CDN authorization/
+expiry, implement only what the active binding can authorize under byte/MIME/expiry caps, and record a
+specific restriction if unsupported. Then continue remaining independent S3–S9/U01–U12/P01–P24 work.
+Preserve `infra/scripts/__pycache__/`; keep every rollout disabled.
 
 Cross-plan code commit `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
 `origin/Mcbt5s-Backup-2`. The owner-only Spaces activation preview now reads current-plan

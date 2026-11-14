@@ -1,6 +1,29 @@
 # Platform completion and guided templates progress
 
-## Active continuation — 2026-11-14 (P05 guided-template model-cost scenario)
+## Active continuation — 2026-11-14 (P05 model-credit planning budget)
+
+Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` follows model-cost scenario
+`d3044a665d16038ad54d4396d6a23b304849090e`. The owner-only activation preview accepts a bounded
+monthly Naelao-credit budget and compares it with a verified model projection. It marks that comparison
+not enforced and does not persist the customer assumption. Billing's verified monthly operation cap
+remains a separate admission rule; direct provider charges and full USD total remain unknown. Local
+evidence for both changes: SQLite-backed Spaces estimate/activation **32/32**, Shell parser **4/4**,
+Spaces/Shell typechecks and `git diff --check`; no browser, deployment, purchase, or live provider
+acceptance ran.
+
+Current managed Workers AI execution is not connected to a template runtime: `managed-model-quote/run`
+is owner-only and its Billing mandate is scoped to one operation, with the quoted operation credits as
+the period maximum, revoked at completion. A hard template budget needs a defined template/
+installation versus project/Space scope and a reachable runtime caller. Keep P05 PARTIAL.
+
+Exact next action: trace P16 from a Discord attachment event through storage to the existing
+owner-approved `read_image` handler. Verify current official CDN authorization and expiry behavior;
+implement exact-message host retrieval with bounded bytes/MIME/expiry only if the active binding can
+authorize it. Otherwise record the restriction and continue to another independent code gap. Keep
+provider URLs and credentials outside the isolated package, rollouts disabled, and fetch/integrate
+before each push.
+
+## Previous continuation — 2026-11-14 (P05 guided-template model-cost scenario)
 
 Code `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
 `origin/Mcbt5s-Backup-2`. The owner-only activation preview lists only active operator-verified
@@ -1401,7 +1424,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
-| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost and deployed/live acceptance remain. |
+| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. `d3044a66`/`d4b1652e` add an owner-only verified Workers AI credit scenario and a customer-entered planning-budget comparison; this is not an enforced/persisted cap, and provider charges/full operating total remain unknown. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |

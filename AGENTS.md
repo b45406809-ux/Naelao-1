@@ -16,7 +16,38 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 guided-template model-cost scenario)
+## Latest checkpoint — 2026-11-14 (P05 model-credit planning budget)
+
+Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` is pushed after cost-scenario code
+`d3044a665d16038ad54d4396d6a23b304849090e`; both are on `origin/Mcbt5s-Backup-2`. The guided
+activation preview accepts a bounded customer-entered monthly Naelao-credit budget and compares it
+with a verified model projection. Its response marks the comparison `not_enforced`; the assumption is
+not persisted and does not alter Billing. The Shell says so explicitly and keeps the separate
+operator-verified monthly operation cap and uncontrolled provider costs distinct. Local verification
+for the current code: SQLite-backed Spaces estimate/activation **32/32**, Shell parser **4/4**, Spaces
+and Shell typechecks, and `git diff --check`. No browser, deployment, purchase, or live provider
+acceptance ran. The P05 calculator remains partial: no enforceable template budget, provider-cost
+quote, or total USD operating estimate exists.
+
+Source evidence for that limit: the current managed Workers AI `managed-model-quote/run` route is
+owner-only; `runManagedModelOperation` creates a separate mandate keyed to the exact operation with
+the quote's single-operation credit amount as its period maximum, then revokes it after completion.
+There is no generic template/runtime caller that can bind an installer budget to model operations.
+Do not reinterpret this one-operation consent or warning thresholds as a template spending cap.
+P05 Space-shared provider scope, Modal host/API acceptance, P06 publisher trust, and the P01/P02/P03/
+P20 policy/inventory gates remain separate from missing credentials.
+
+Preserve untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
+
+Exact next action: trace the P16 Discord attachment path from provider event through storage to the
+owner-approved extension `read_image` handler. Check the current official CDN authorization/expiry
+contract. If the existing active provider binding can authorize an exact ordinary attachment, add a
+host-mediated retrieval path with strict byte/MIME/expiry bounds and tests; otherwise record the
+specific contract restriction and proceed to the next independent S3–S9/U01–U12/P01–P24 code gap.
+Never pass a provider URL or credential to the isolated package. Fetch and safely integrate before
+every push.
+
+## Previous checkpoint — 2026-11-14 (P05 guided-template model-cost scenario)
 
 Code commit `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
 `origin/Mcbt5s-Backup-2`. The owner-only guided-template activation preview now lists only active,
