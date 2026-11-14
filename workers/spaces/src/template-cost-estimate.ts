@@ -43,6 +43,12 @@ export interface TemplateCostEstimate {
     max_operations_per_period?: number | null;
     within_plan_operation_limit?: boolean | null;
     rate_valid_until?: string;
+    customer_budget_comparison?: {
+      basis: "customer_entered_planning_assumption";
+      credits_per_month: number;
+      within_projected_credits: boolean | null;
+      enforcement: "not_enforced";
+    };
     reason?: "active_model_entitlement_unavailable" | "model_rate_catalog_unavailable" | "projection_out_of_range";
   };
   expected_monthly_usage: {
@@ -60,24 +66,30 @@ export interface TemplateExpectedUsageV1 {
   interactions_per_conversation: number;
   managed_model_id?: string;
   model_calls_per_interaction?: number;
+  model_credits_budget_per_month?: number;
 }
 
 export function validateTemplateExpectedUsage(raw: unknown): TemplateExpectedUsageV1 {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected_usage_invalid");
   const value = raw as Record<string, unknown>;
-  if (Object.keys(value).some(key => !["conversations_per_month", "interactions_per_conversation", "managed_model_id", "model_calls_per_interaction"].includes(key))
+  if (Object.keys(value).some(key => !["conversations_per_month", "interactions_per_conversation", "managed_model_id", "model_calls_per_interaction", "model_credits_budget_per_month"].includes(key))
     || !Number.isSafeInteger(value.conversations_per_month) || Number(value.conversations_per_month) < 1 || Number(value.conversations_per_month) > 1_000_000
     || !Number.isSafeInteger(value.interactions_per_conversation) || Number(value.interactions_per_conversation) < 1 || Number(value.interactions_per_conversation) > 500)
     throw new Error("expected_usage_invalid");
   const modelId = value.managed_model_id;
   const callsPerInteraction = value.model_calls_per_interaction;
+  const modelCreditsBudget = value.model_credits_budget_per_month;
   if (modelId === undefined && callsPerInteraction !== undefined
+    || modelId === undefined && modelCreditsBudget !== undefined
     || modelId !== undefined && (typeof modelId !== "string" || modelId.length > 200 || !/^(?:[A-Za-z0-9]|@[A-Za-z0-9])[A-Za-z0-9._:/-]{0,199}$/.test(modelId)
       || !Number.isSafeInteger(callsPerInteraction) || Number(callsPerInteraction) < 1 || Number(callsPerInteraction) > 10)) {
     throw new Error("expected_usage_invalid");
   }
+  if (modelCreditsBudget !== undefined && (!Number.isSafeInteger(modelCreditsBudget) || Number(modelCreditsBudget) < 1))
+    throw new Error("expected_usage_invalid");
   return { conversations_per_month: Number(value.conversations_per_month), interactions_per_conversation: Number(value.interactions_per_conversation),
-    ...(typeof modelId === "string" ? { managed_model_id: modelId, model_calls_per_interaction: Number(callsPerInteraction) } : {}) };
+    ...(typeof modelId === "string" ? { managed_model_id: modelId, model_calls_per_interaction: Number(callsPerInteraction),
+      ...(modelCreditsBudget === undefined ? {} : { model_credits_budget_per_month: Number(modelCreditsBudget) }) } : {}) };
 }
 
 type CostDb = {
@@ -193,7 +205,8 @@ export async function loadTemplateCostEstimate(
       projected_interactions: expectedUsage.conversations_per_month * expectedUsage.interactions_per_conversation,
       estimated_cost_cents: null as null,
       ...(expectedUsage.managed_model_id ? { model_id: expectedUsage.managed_model_id,
-        model_calls_per_interaction: expectedUsage.model_calls_per_interaction } : {}),
+        model_calls_per_interaction: expectedUsage.model_calls_per_interaction,
+        ...(expectedUsage.model_credits_budget_per_month === undefined ? {} : { model_credits_budget_per_month: expectedUsage.model_credits_budget_per_month }) } : {}),
     } : null,
   };
   if (expectedUsage?.managed_model_id) {
@@ -210,10 +223,22 @@ export async function loadTemplateCostEstimate(
       max_operations_per_period: model.max_operations_per_period,
       within_plan_operation_limit: model.max_operations_per_period === null ? null : operationsPerMonth <= model.max_operations_per_period,
       rate_valid_until: model.valid_until,
+      ...(expectedUsage.model_credits_budget_per_month === undefined ? {} : { customer_budget_comparison: {
+        basis: "customer_entered_planning_assumption" as const,
+        credits_per_month: expectedUsage.model_credits_budget_per_month,
+        within_projected_credits: expectedUsage.model_credits_budget_per_month >= projectedCredits!,
+        enforcement: "not_enforced" as const,
+      } }),
     } : {
       status: "unavailable", basis: "customer_entered_operation_assumption", model_id: expectedUsage.managed_model_id,
       provider: "cloudflare", service_id: "workers-ai", operation_name: "generate-text", region: "global",
       credit_unit: "naelao_credit", operations_per_month: operationsPerMonth,
+      ...(expectedUsage.model_credits_budget_per_month === undefined ? {} : { customer_budget_comparison: {
+        basis: "customer_entered_planning_assumption" as const,
+        credits_per_month: expectedUsage.model_credits_budget_per_month,
+        within_projected_credits: null,
+        enforcement: "not_enforced" as const,
+      } }),
       reason: !model ? modelRates.status === "available" ? "active_model_entitlement_unavailable" : "model_rate_catalog_unavailable" : "projection_out_of_range",
     };
   }

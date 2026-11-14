@@ -1381,14 +1381,17 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   }
   const conversationsPerMonth = c.req.query("conversations_per_month"), interactionsPerConversation = c.req.query("interactions_per_conversation");
   const managedModelId = c.req.query("managed_model_id"), modelCallsPerInteraction = c.req.query("model_calls_per_interaction");
+  const modelCreditsBudgetPerMonth = c.req.query("model_credits_budget_per_month");
   let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
-  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined || managedModelId !== undefined || modelCallsPerInteraction !== undefined) {
+  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined || managedModelId !== undefined
+    || modelCallsPerInteraction !== undefined || modelCreditsBudgetPerMonth !== undefined) {
     try {
       if (conversationsPerMonth === undefined || interactionsPerConversation === undefined) throw new Error("Both expected usage values are required");
       expectedUsage = validateTemplateExpectedUsage({ conversations_per_month: Number(conversationsPerMonth),
         interactions_per_conversation: Number(interactionsPerConversation),
         ...(managedModelId === undefined ? {} : { managed_model_id: managedModelId }),
-        ...(modelCallsPerInteraction === undefined ? {} : { model_calls_per_interaction: Number(modelCallsPerInteraction) }) });
+        ...(modelCallsPerInteraction === undefined ? {} : { model_calls_per_interaction: Number(modelCallsPerInteraction) }),
+        ...(modelCreditsBudgetPerMonth === undefined ? {} : { model_credits_budget_per_month: Number(modelCreditsBudgetPerMonth) }) });
     } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
   }
   const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);

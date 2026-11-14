@@ -17,10 +17,14 @@ describe("template usage estimate inputs", () => {
   });
 
   it("includes a selected model and bounded call multiplier in the planning request", () => {
-    expect(parseTemplateExpectedUsageInput("200", "8", "@cf/model", "2")).toEqual({ valid: true,
-      usage: { conversations_per_month: 200, interactions_per_conversation: 8, managed_model_id: "@cf/model", model_calls_per_interaction: 2 }, message: null });
+    expect(parseTemplateExpectedUsageInput("200", "8", "@cf/model", "2", "150000")).toEqual({ valid: true,
+      usage: { conversations_per_month: 200, interactions_per_conversation: 8, managed_model_id: "@cf/model",
+        model_calls_per_interaction: 2, model_credits_budget_per_month: 150000 }, message: null });
     expect(parseTemplateExpectedUsageInput("", "", "@cf/model", "1")).toEqual({ valid: true, usage: null, message: null });
     expect(parseTemplateExpectedUsageInput("200", "8", "@cf/model", "11")).toMatchObject({ valid: false, usage: null });
+    expect(parseTemplateExpectedUsageInput("200", "8", "@cf/model", "2", "0")).toMatchObject({ valid: false, usage: null });
+    expect(parseTemplateExpectedUsageInput("200", "8", "", "1", "100")).toMatchObject({ valid: false, usage: null });
+    expect(parseTemplateExpectedUsageInput("", "", "@cf/model", "1", "9007199254740992")).toMatchObject({ valid: false, usage: null });
   });
 
   it("prevents an older overlapping response from being treated as current", () => {

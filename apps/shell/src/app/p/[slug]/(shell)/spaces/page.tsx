@@ -116,6 +116,7 @@ export default function SpacesPage() {
   const [expectedInteractions, setExpectedInteractions] = React.useState("");
   const [expectedManagedModelId, setExpectedManagedModelId] = React.useState("");
   const [expectedModelCalls, setExpectedModelCalls] = React.useState("1");
+  const [expectedModelCreditBudget, setExpectedModelCreditBudget] = React.useState("");
   const [updatingUsageEstimate, setUpdatingUsageEstimate] = React.useState(false);
   const [usageEstimateError, setUsageEstimateError] = React.useState("");
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
@@ -141,6 +142,7 @@ export default function SpacesPage() {
     setExpectedInteractions("");
     setExpectedManagedModelId("");
     setExpectedModelCalls("1");
+    setExpectedModelCreditBudget("");
   }, [expectedUsageBlueprintId, expectedUsageSpaceId]);
 
   function patchDependencyImport(extensionId: string, patch: Partial<TemplateDependencyImportProgress>) {
@@ -283,7 +285,7 @@ export default function SpacesPage() {
 
   function updateExpectedUsageEstimate() {
     if (!expectedUsageSpaceId || !expectedUsageBlueprintId) return;
-    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls);
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls, expectedModelCreditBudget);
     const requestId = expectedUsageEstimateRequests.issue();
     void fetchExpectedUsageEstimate(input.usage, requestId, input.valid ? null : input.message);
   }
@@ -295,7 +297,7 @@ export default function SpacesPage() {
       setUsageEstimateError("");
       return;
     }
-    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls);
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls, expectedModelCreditBudget);
     const requestId = expectedUsageEstimateRequests.issue();
     if (!input.valid) setUsageEstimateError(input.message);
     const timer = window.setTimeout(() => {
@@ -305,7 +307,7 @@ export default function SpacesPage() {
       window.clearTimeout(timer);
       if (expectedUsageEstimateRequests.isCurrent(requestId)) expectedUsageEstimateRequests.invalidate();
     };
-  }, [creds, expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls, expectedUsageBlueprintId, expectedUsageEstimateRequests,
+  }, [creds, expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls, expectedModelCreditBudget, expectedUsageBlueprintId, expectedUsageEstimateRequests,
     expectedUsageSpaceId, fetchExpectedUsageEstimate]);
 
   const refresh = React.useCallback(async () => {
@@ -972,7 +974,9 @@ export default function SpacesPage() {
                   </option>)}
                 </select></label>
                 {expectedManagedModelId && <label>Model calls per interaction<input aria-label="Managed model calls per interaction" type="number" min={1} max={10} step={1} value={expectedModelCalls} onChange={event => setExpectedModelCalls(event.target.value)} /></label>}
+                {expectedManagedModelId && <label>Monthly model credit planning budget<input aria-label="Monthly model credit planning budget" type="number" min={1} max={Number.MAX_SAFE_INTEGER} step={1} value={expectedModelCreditBudget} onChange={event => setExpectedModelCreditBudget(event.target.value)} /></label>}
               </div>
+              {expectedManagedModelId && <p style={{ color: "var(--text3)" }}>This customer-entered budget is a planning assumption only. It is not saved and does not set or enforce a spending cap.</p>}
               {activationReview.preview.cost_estimate.managed_model_catalog_status === "unavailable"
                 ? <p role="status">The current verified managed-model rate catalogue could not be loaded. No model credit scenario is available.</p>
                 : activationReview.preview.cost_estimate.available_managed_models.length === 0
@@ -985,6 +989,11 @@ export default function SpacesPage() {
                 : activationReview.preview.cost_estimate.managed_model_scenario.reason === "projection_out_of_range"
                   ? `The model rate is available for ${activationReview.preview.cost_estimate.managed_model_scenario.model_id}, but this volume is too large for a safe credit projection.`
                   : `No scenario rate is currently available for ${activationReview.preview.cost_estimate.managed_model_scenario.model_id}: ${activationReview.preview.cost_estimate.managed_model_scenario.reason}.`}</p>}
+              {activationReview.preview.cost_estimate.managed_model_scenario?.customer_budget_comparison && <p role="status">Customer-entered budget: {activationReview.preview.cost_estimate.managed_model_scenario.customer_budget_comparison.credits_per_month.toLocaleString()} Naelao credits/month. {activationReview.preview.cost_estimate.managed_model_scenario.customer_budget_comparison.within_projected_credits === null
+                ? "A current verified model projection is unavailable for comparison."
+                : activationReview.preview.cost_estimate.managed_model_scenario.customer_budget_comparison.within_projected_credits
+                  ? "The projection is within this planning amount."
+                  : "The projection is above this planning amount."} This comparison is not persisted or enforced; the verified Billing operation cap remains a separate admission check.</p>}
             </section>
             <p>A total operating-cost estimate is not available. These costs are not estimated: {activationReview.preview.cost_estimate.not_estimated.join("; ")}.</p>
             <p>Any listed license amount is an already recorded payment or the current zero-price listing base; it is not a quote for future provider usage. Optional managed services still require their own current quote and owner confirmation.</p>

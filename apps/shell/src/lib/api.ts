@@ -2941,6 +2941,10 @@ export interface SpaceTemplateActivationPreview {
       price_version?: string; credit_unit: "naelao_credit"; credits_per_operation?: number; operations_per_month: number;
       max_credits_per_operation?: number; projected_credits?: number; max_output_tokens?: number; max_operations_per_period?: number | null;
       within_plan_operation_limit?: boolean | null; rate_valid_until?: string;
+      customer_budget_comparison?: {
+        basis: "customer_entered_planning_assumption"; credits_per_month: number;
+        within_projected_credits: boolean | null; enforcement: "not_enforced";
+      };
       reason?: "active_model_entitlement_unavailable" | "model_rate_catalog_unavailable" | "projection_out_of_range";
     };
     expected_monthly_usage: null | {
@@ -2951,6 +2955,7 @@ export interface SpaceTemplateActivationPreview {
       estimated_cost_cents: null;
       model_id?: string;
       model_calls_per_interaction?: number;
+      model_credits_budget_per_month?: number;
     };
     reason?: "selected_listing_not_recorded" | "listing_price_unavailable";
   };
@@ -2960,13 +2965,15 @@ export interface SpaceTemplateExpectedUsageV1 {
   interactions_per_conversation: number;
   managed_model_id?: string;
   model_calls_per_interaction?: number;
+  model_credits_budget_per_month?: number;
 }
 export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials,
   expectedUsage?: SpaceTemplateExpectedUsageV1): Promise<SpaceTemplateActivationPreview> {
   const query = expectedUsage ? `?${new URLSearchParams({ conversations_per_month: String(expectedUsage.conversations_per_month),
     interactions_per_conversation: String(expectedUsage.interactions_per_conversation),
     ...(expectedUsage.managed_model_id ? { managed_model_id: expectedUsage.managed_model_id } : {}),
-    ...(expectedUsage.model_calls_per_interaction === undefined ? {} : { model_calls_per_interaction: String(expectedUsage.model_calls_per_interaction) }) })}` : "";
+    ...(expectedUsage.model_calls_per_interaction === undefined ? {} : { model_calls_per_interaction: String(expectedUsage.model_calls_per_interaction) }),
+    ...(expectedUsage.model_credits_budget_per_month === undefined ? {} : { model_credits_budget_per_month: String(expectedUsage.model_credits_budget_per_month) }) })}` : "";
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview${query}`, { session, cache: "no-store" });
 }
 

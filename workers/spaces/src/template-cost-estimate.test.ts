@@ -78,7 +78,7 @@ describe("guided template cost disclosure", () => {
   it("projects only the exact current verified model-credit price and plan limit from SQLite", async () => {
     const db = sqliteCostDb();
     const usage = validateTemplateExpectedUsage({ conversations_per_month: 200, interactions_per_conversation: 8,
-      managed_model_id: MODEL, model_calls_per_interaction: 2 });
+      managed_model_id: MODEL, model_calls_per_interaction: 2, model_credits_budget_per_month: 200000 });
     const estimate = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
       new Date("2026-11-13T00:00:00.000Z"), usage);
     expect(estimate).toMatchObject({
@@ -87,12 +87,18 @@ describe("guided template cost disclosure", () => {
       available_managed_models: [{ model_id: MODEL, price_version: "cf-model-fixed-v3", credits_per_operation: 55,
         max_operations_per_period: 3000, valid_until: RATE_VALID_UNTIL }],
       expected_monthly_usage: { projected_interactions: 1600, model_id: MODEL, model_calls_per_interaction: 2,
-        estimated_cost_cents: null },
+        model_credits_budget_per_month: 200000, estimated_cost_cents: null },
       managed_model_scenario: { status: "estimated", basis: "customer_entered_operation_assumption", model_id: MODEL,
         price_version: "cf-model-fixed-v3", credit_unit: "naelao_credit", operations_per_month: 3200,
         credits_per_operation: 55, projected_credits: 176000, max_operations_per_period: 3000,
-        within_plan_operation_limit: false, rate_valid_until: RATE_VALID_UNTIL },
+        within_plan_operation_limit: false, rate_valid_until: RATE_VALID_UNTIL,
+        customer_budget_comparison: { basis: "customer_entered_planning_assumption", credits_per_month: 200000,
+          within_projected_credits: true, enforcement: "not_enforced" } },
     });
+    const belowBudget = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), { ...usage, model_credits_budget_per_month: 100000 });
+    expect(belowBudget.managed_model_scenario?.customer_budget_comparison).toMatchObject({ credits_per_month: 100000,
+      within_projected_credits: false, enforcement: "not_enforced" });
     expect(estimate.not_estimated).toContain("direct provider costs for managed-model inference and other services");
     expect(estimate.not_estimated).toContain("taxes, regional pricing, and account-specific provider terms");
     db.db.close();
@@ -103,12 +109,17 @@ describe("guided template cost disclosure", () => {
       managed_model_id: MODEL })).toThrow("expected_usage_invalid");
     expect(() => validateTemplateExpectedUsage({ conversations_per_month: 4, interactions_per_conversation: 3,
       model_calls_per_interaction: 2 })).toThrow("expected_usage_invalid");
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 4, interactions_per_conversation: 3,
+      model_credits_budget_per_month: 500 })).toThrow("expected_usage_invalid");
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 4, interactions_per_conversation: 3,
+      managed_model_id: MODEL, model_calls_per_interaction: 1, model_credits_budget_per_month: 0 })).toThrow("expected_usage_invalid");
     const db = sqliteCostDb();
     const estimate = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
       new Date("2026-11-13T00:00:00.000Z"), { conversations_per_month: 4, interactions_per_conversation: 3,
-        managed_model_id: "unentitled-model", model_calls_per_interaction: 1 });
+        managed_model_id: "unentitled-model", model_calls_per_interaction: 1, model_credits_budget_per_month: 500 });
     expect(estimate.managed_model_scenario).toMatchObject({ status: "unavailable", model_id: "unentitled-model",
-      reason: "active_model_entitlement_unavailable", operations_per_month: 12 });
+      reason: "active_model_entitlement_unavailable", operations_per_month: 12,
+      customer_budget_comparison: { credits_per_month: 500, within_projected_credits: null, enforcement: "not_enforced" } });
     db.db.close();
   });
 
