@@ -1,11 +1,13 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { ExtensionSettingsForm } from "@/components/ExtensionSettingsForm";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { selectInstalledExtension } from "@/lib/space-extension-dashboard";
 import { applySpaceSharedExtensionUpdate, callSpaceExtensionSettingsAudit, importSpaceSharedExtension, installSpaceSharedExtension,
   listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, listSpaceSharedExtensionUpdateReceipts,
   listSpaceSharedExtensionReleases, previewSpaceSharedExtensionImport, previewSpaceSharedExtensionInstall,
@@ -19,11 +21,13 @@ import { applySpaceSharedExtensionUpdate, callSpaceExtensionSettingsAudit, impor
 export default function ExtensionsPage() {
   const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
+  const requestedInstallationId = useSearchParams().get("installationId");
   const [apps, setApps] = React.useState<SpaceSharedExtensionApp[]>([]);
   const [catalog, setCatalog] = React.useState<SpaceSharedExtensionCatalogEntry[]>([]);
   const [active, setActive] = React.useState<SpaceSharedExtensionApp | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const openedInstallation = React.useRef<string | null>(null);
   const credentials = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const [installReviews, setInstallReviews] = React.useState<Record<string, SpaceSharedExtensionInstallReview>>({});
   const [reviewingInstall, setReviewingInstall] = React.useState<string | null>(null);
@@ -51,6 +55,14 @@ export default function ExtensionsPage() {
     } finally { setLoading(false); }
   }, [activeSpaceId, credentials]);
   React.useEffect(() => { void refresh(); }, [refresh]);
+  React.useEffect(() => {
+    if (!requestedInstallationId || loading || openedInstallation.current === requestedInstallationId) return;
+    const requestedApp = selectInstalledExtension(apps, requestedInstallationId);
+    if (requestedApp) {
+      setActive(requestedApp);
+      openedInstallation.current = requestedInstallationId;
+    }
+  }, [apps, loading, requestedInstallationId]);
   const installedIds = new Set(apps.map(app => app.extension_id));
   const [installing, setInstalling] = React.useState<string | null>(null);
   const [selectedGrants, setSelectedGrants] = React.useState<Record<string, SharedFilesystemGrant[]>>({});

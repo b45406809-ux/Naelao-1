@@ -1,7 +1,9 @@
 "use client";
 import * as React from "react";
+import { useParams } from "next/navigation";
 import { assistantMailApi, type SessionCredentials } from "@/lib/api";
-import { phoneExtensionLineReadiness } from "./phone-extension-readiness.js";
+import { spaceCompatibilityHref } from "@/lib/space-extension-dashboard";
+import { phoneExtensionLineReadiness } from "./phone-extension-readiness";
 interface Phone {
   provider?: "twilio" | "telnyx";
   provider_number_id?: string | null;
@@ -58,6 +60,7 @@ export function AssistantPhonePanel({
   projectId,
   session,
 }: { spaceId: string; projectId?: string; session: SessionCredentials }) {
+  const route = useParams<{ slug: string }>();
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
@@ -337,10 +340,13 @@ export function AssistantPhonePanel({
         const simulationType = simulationTypes[line.id] ?? (line.provider === "telnyx" ? "call.received" : "call.speech");
         const simulationInput = simulationInputs[line.id] ?? "";
         const readiness = phoneExtensionLineReadiness({ ...line, handler_candidates: state?.phone_handler_candidates ?? [] });
+        const verifiedCandidate = state?.phone_handler_candidates?.find(candidate =>
+          candidate.installation_id === line.installation_id && candidate.handler_sha256 === line.handler_sha256);
         return <fieldset key={line.id} disabled={busy}>
           <legend>Extension phone handler</legend>
           <p>{line.phone_number ?? "Phone number"} · {line.status} · {line.handler_status ?? "No handler assigned"}</p>
           <p role="status"><strong>Routing readiness:</strong> {readiness.label}</p>
+          {readiness.state === "ready" && verifiedCandidate && <p><a href={spaceCompatibilityHref(route.slug, spaceId, "extensions", verifiedCandidate.installation_id)} target="_blank" rel="noopener noreferrer">Open this handler's settings and dashboard</a></p>}
           {(state?.phone_handler_candidates?.length ?? 0) > 0 && <label>Installed phone handler <select value={state?.phone_handler_candidates?.some(candidate => candidate.installation_id === assignment.installation) ? assignment.installation : ""} onChange={(event) => {
             const candidate = state?.phone_handler_candidates?.find(item => item.installation_id === event.target.value);
             setExtensionAssignments((current) => ({ ...current, [line.id]: candidate
