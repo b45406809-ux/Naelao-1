@@ -1746,8 +1746,9 @@ export function removeSpaceSharedExtension(spaceId: string, installationId: stri
 export function setSpaceSharedExtensionEnabled(spaceId: string, installationId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled"; drained?: boolean; active_work_count?: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable", drain_timeout_ms: enabled ? 0 : 5_000 }) });
 }
-export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read" | "blackboard.policy" | "blackboard.sharing";
+export type SpaceExtensionHostCapability = "blueprint.dependencies" | "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read" | "blackboard.policy" | "blackboard.sharing";
 export function callSpaceSharedExtensionOperation(spaceId: string, session: SessionCredentials, capability: SpaceExtensionHostCapability, input: unknown) {
+  if (capability === "blueprint.dependencies") return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/template-extension-candidates`, { session, cache: "no-store" });
   if (capability === "blackboard.sharing") {
     const value = input && typeof input === "object" ? input as { projectId?: unknown; peers?: unknown; dailyLimit?: unknown } : {};
     if (typeof value.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value.projectId) || !Array.isArray(value.peers) || value.peers.length > 30 || value.peers.some(peer => typeof peer !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(peer)) || !Number.isSafeInteger(value.dailyLimit) || Number(value.dailyLimit)<0 || Number(value.dailyLimit)>50) throw new Error("Invalid sharing policy");

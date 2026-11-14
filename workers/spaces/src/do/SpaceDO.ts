@@ -14138,7 +14138,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!manifest || !signatureValid || !hasPublisherReleaseFields(row)) return null;
       const canvas = manifest.bundle?.primitives.find(part => part.kind === "canvas");
       const gadgetName = manifest.gadgets?.find(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)?.name;
-      return { extension_id: row.extension_id, version: row.version, has_canvas: Boolean(canvas),
+      return { extension_id: row.extension_id, version: row.version, manifest_sha256: await digestExtensionManifest(manifest),
+        permissions: [...new Set(manifest.declaredPermissions)].sort(), capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
+        has_canvas: Boolean(canvas),
         name: gadgetName ?? canvas?.id ?? row.extension_id, requested_shared_filesystem: manifest.shared_filesystem ?? [],
         dependencies: manifest.dependencies ?? [],
         publisher: { id: row.publisher_id, key_id: row.publisher_key_id }, created_at: row.created_at };

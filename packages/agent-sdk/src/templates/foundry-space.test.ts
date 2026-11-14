@@ -25,7 +25,7 @@ describe("Foundry dogfood Space Template", () => {
     expect(manifest!.gadgets).toEqual(expect.arrayContaining([
       expect.objectContaining({ scope: "SPACE_SHARED", gadgetTier: 3 }),
     ]));
-    expect(manifest!.declaredPermissions).toEqual(["facet.sqlite.read", "facet.sqlite.write", "blueprint.export", "blueprint.status", "marketplace.graduate"]);
+    expect(manifest!.declaredPermissions).toEqual(["facet.sqlite.read", "facet.sqlite.write", "blueprint.dependencies", "blueprint.export", "blueprint.status", "marketplace.graduate"]);
     expect(manifest!.capabilityRequirements).not.toContain("payments.disburse");
     expect(manifest!.gadgets[0]?.migrations).toEqual(expect.arrayContaining([
       expect.objectContaining({ version: 1, up: expect.stringContaining("ALTER TABLE foundry_products ADD COLUMN description") }),

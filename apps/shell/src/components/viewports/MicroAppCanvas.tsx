@@ -36,7 +36,7 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       }
       if (operation?.type === "naelao.extension.operation") {
         if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
-          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy", "blackboard.sharing"].includes(String(operation.capability))
+          || !["blueprint.dependencies", "blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy", "blackboard.sharing"].includes(String(operation.capability))
           || !capabilities.includes(String(operation.capability))) return;
         let size = 0;
         try { size = new TextEncoder().encode(JSON.stringify(operation.input ?? {})).byteLength; } catch { return; }

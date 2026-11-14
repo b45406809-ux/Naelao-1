@@ -36,9 +36,11 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     spaceRequests.push(request);
     const path = new URL(request.url).pathname;
     if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: release.extension_id, version: release.version,
+      manifest_sha256: await digestExtensionManifest(manifest), permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements,
       has_canvas: true, name: "voice_dashboard", requested_shared_filesystem: [], publisher: { id: "pub_voice", key_id: "a".repeat(64) } }] });
     if (path === "/extension-package-release") return Response.json({ release });
     if (path === "/extension-installations") return Response.json({ installations: installedRows.filter(row => row.status !== "removed") });
+    if (path === "/extensions" && request.method === "GET") return Response.json({ extensions: [{ manifest, installedBy: "owner-a" }] });
     if (path === "/extensions") {
       const body = await request.clone().json() as { manifest: unknown; instanceKey: string; scope: string; approvedSharedFilesystem?: unknown[] };
       const prior = installedRows.find(row => row.instance_id === "install-voice");
@@ -427,6 +429,24 @@ describe("signed Space-shared extension packages", () => {
     expect(repeated.status).toBe(201);
     expect(await repeated.json()).toMatchObject({ installation_id: "install-voice" });
     expect(h.microAppRequests).toHaveLength(1);
+  });
+
+  it("returns only owner-authorized installed exact signed releases whose publisher key is active", async () => {
+    const h = harness();
+    const path = "/spaces/space-a/template-extension-candidates";
+    const response = await spacesWorker.fetch(await signedRequest(path), h.env);
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ extensions: [{ id: "ext_customer_voice", name: "voice_dashboard", version: "1.2.0",
+      manifest_sha256: await digestExtensionManifest(manifest), publisher_id: "pub_voice", publisher_key_id: "a".repeat(64),
+      permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements }] });
+
+    const denied = await spacesWorker.fetch(await signedRequest(path, "GET", undefined, "member"), h.env);
+    expect(denied.status).toBe(403);
+    const revoked = harness(false);
+    const hidden = await spacesWorker.fetch(await signedRequest(path), revoked.env);
+    expect(hidden.status).toBe(200);
+    expect(await hidden.json()).toEqual({ extensions: [] });
   });
 
   it("hides and refuses a package after its configured publisher key is revoked", async () => {

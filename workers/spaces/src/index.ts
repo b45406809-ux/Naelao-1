@@ -659,6 +659,51 @@ app.get("/spaces/:id", async (c) => {
 });
 
 // ── Blueprint export and activation ─────────────────────────────────────────
+app.get("/spaces/:spaceId/template-extension-candidates", async c => {
+  const { tenantId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+    .bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const [installedResponse, catalogResponse] = await Promise.all([
+    stub.fetch(new Request("http://space-do/extensions")),
+    stub.fetch(new Request("http://space-do/extension-package-catalog")),
+  ]);
+  if (!installedResponse.ok || !catalogResponse.ok) return c.json({ error_code: "template_extension_candidates_unavailable" }, 503);
+  const installed = await readBoundedResponseJson<{ extensions?: Array<{ manifest?: unknown }> }>(installedResponse, 2 * 1024 * 1024).catch(() => null);
+  const catalog = await readBoundedResponseJson<{ releases?: Array<{ extension_id?: unknown; version?: unknown; manifest_sha256?: unknown;
+    name?: unknown; permissions?: unknown; capabilities?: unknown; publisher?: { id?: unknown; key_id?: unknown } }> }>(catalogResponse, 2 * 1024 * 1024).catch(() => null);
+  if (!installed || !catalog || !Array.isArray(installed.extensions) || !Array.isArray(catalog.releases))
+    return c.json({ error_code: "template_extension_candidates_unavailable" }, 503);
+  const installedDigests = new Map<string, string>();
+  for (const entry of installed.extensions) {
+    try {
+      const manifest = validateExtensionManifest(entry.manifest);
+      if (manifest.id && manifest.bundle?.version) installedDigests.set(manifest.id, await digestExtensionManifest(manifest));
+    } catch { /* invalid installed manifests cannot become template dependencies */ }
+  }
+  const candidates = catalog.releases.filter(release => {
+    const publisherKeyId = release.publisher?.key_id;
+    return typeof release.extension_id === "string" && /^ext_[a-z0-9_-]{2,62}$/.test(release.extension_id)
+      && typeof release.version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(release.version)
+      && typeof release.manifest_sha256 === "string" && /^[a-f0-9]{64}$/.test(release.manifest_sha256)
+      && installedDigests.get(release.extension_id) === release.manifest_sha256
+      && typeof release.publisher?.id === "string" && typeof publisherKeyId === "string";
+  });
+  const activeKeys = await activePublisherKeyIds(c.env, tenantId, spaceId,
+    candidates.flatMap(release => typeof release.publisher?.key_id === "string" ? [release.publisher.key_id] : []));
+  const extensions = candidates.filter(release => activeKeys.has(release.publisher!.key_id as string)).map(release => ({
+    id: release.extension_id as string, name: typeof release.name === "string" ? release.name.slice(0, 120) : release.extension_id as string,
+    version: release.version as string, manifest_sha256: release.manifest_sha256 as string,
+    publisher_id: release.publisher!.id as string, publisher_key_id: release.publisher!.key_id as string,
+    permissions: Array.isArray(release.permissions) ? release.permissions.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
+    capabilities: Array.isArray(release.capabilities) ? release.capabilities.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
+  })).sort((a, b) => a.id.localeCompare(b.id));
+  return c.json({ extensions }, 200, { "cache-control": "private, no-store" });
+});
+
 app.post("/spaces/:spaceId/export-template", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   const spaceId = c.req.param("spaceId");

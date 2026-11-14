@@ -659,7 +659,9 @@ describe("runtime extension installation", () => {
     expect(install.status, JSON.stringify(await install.clone().json())).toBe(201);
     const { installationId, release } = await install.json() as { installationId: string; release: { hostSignature: string } };
     const catalog = await space.fetch(new Request("http://space/extension-package-catalog"));
-    expect(await catalog.json()).toMatchObject({ releases: [{ extension_id: "ext_shared_package", version: "1.0.0", has_canvas: true,
+    expect(await catalog.json()).toMatchObject({ releases: [{ extension_id: "ext_shared_package", version: "1.0.0",
+      manifest_sha256: await digestExtensionManifest(validateExtensionManifest(manifest)), has_canvas: true,
+      permissions: ["assistant.phone.read", "assistant.phone.simulate"], capabilities: ["assistant.phone.read", "assistant.phone.simulate", "extension.project_canvas"],
       name: "dashboard", publisher: { id: "pub_example", key_id: "a".repeat(64) } }] });
     const packageRelease = await space.fetch(new Request("http://space/extension-package-release?extension_id=ext_shared_package&version=1.0.0"));
     expect(await packageRelease.json()).toMatchObject({ release: { extension_id: "ext_shared_package", version: "1.0.0",
