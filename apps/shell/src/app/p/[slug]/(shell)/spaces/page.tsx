@@ -425,7 +425,7 @@ export default function SpacesPage() {
       const projectIds = Array.isArray(result.projectIds)
         ? result.projectIds.filter(projectId => typeof projectId === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(projectId))
         : [];
-      if (needsExternalProjectKnowledge && projectIds.length > 0) {
+      if (needsExternalProjectKnowledge) {
         setCreateOpen(false);
         setActivationReview(null);
         setActivationNotice(null);
@@ -1027,9 +1027,10 @@ export default function SpacesPage() {
           }
         }}>Continue to Space</Button>}>
         <p>The template is installed. Space-shared channel extensions receive no Project Knowledge by default.</p>
-        <p>For each Project, add and index documents, publish a collection with an ID declared by the signed package, then explicitly grant that collection in the Project&apos;s Space-shared channel access controls. Only current published collections can be granted.</p>
-        <ul>
-          {knowledgeSetupProjects?.projectIds.map((projectId, index) => (
+        {knowledgeSetupProjects?.projectIds.length ? <>
+          <p>For each Project, add and index documents, publish a collection with an ID declared by the signed package, then explicitly grant that collection in the Project&apos;s Space-shared channel access controls. Only current published collections can be granted.</p>
+          <ul>
+          {knowledgeSetupProjects.projectIds.map((projectId, index) => (
             <li key={projectId}>
               <Link href={`/p/${product.slug}/projects/${encodeURIComponent(projectId)}?setup=knowledge`} onClick={() => {
                 const handoff = knowledgeSetupProjects;
@@ -1039,7 +1040,8 @@ export default function SpacesPage() {
               </Link>
             </li>
           ))}
-        </ul>
+          </ul>
+        </> : <p role="status">Activation did not return a valid Project ID, so there is no safe Project link to open and no Knowledge grant was created. Continue to Space settings to review the installed template and open its Projects.</p>}
       </Modal>
       <Modal open={templateStatusSpace !== null} onClose={() => setTemplateStatusSpace(null)} title={`Template status · ${templateStatusSpace?.name ?? "Space"}`} width={760}
         footer={<Button variant="secondary" onClick={() => setTemplateStatusSpace(null)}>Close</Button>}>
