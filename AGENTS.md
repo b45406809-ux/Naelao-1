@@ -16,32 +16,34 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 Twilio extension call history)
+## Latest checkpoint — 2026-11-14 (P06 inbound Twilio extension cost observations)
 
-Code `36400108f3ef0a76a6d0f06651dfac5c1b1481e5` is pushed to `origin/Mcbt5s-Backup-2` on
-`autonomous-managed-services-20261111`; P04 archive code `cf375473` and its records checkpoint
-`e079bd3f` are also pushed. Migration 0248 stores the admitted Twilio extension installation and
-handler digest. Signed terminal callbacks update only a known call and cannot rewrite a conflicting
-final status. Every subsequent call turn sends the expected pin to the Agent DO, which rejects a
-changed handler. The package dashboard now shows recent masked Twilio status/duration alongside
-installation-filtered Telnyx history. It reports Twilio inbound cost as unknown/not collected.
+Code `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. Owner/admins can explicitly read an admitted inbound extension
+Call SID from Twilio's Calls API through the signed phone-menu dashboard. The lookup binds tenant,
+account, exact binding/line, caller, inbound direction, and the installation/handler digest stored at
+admission. Only final API prices with valid currency, time and duration enter the existing hashed cost
+observation ledger. The dashboard labels them provider API observations, not invoices or Naelao charges;
+missing or pending values stay unknown. Twilio's [Call Resource](https://www.twilio.com/docs/voice/api/call-resource)
+says its `price` may be delayed and covers connectivity, with other call features potentially excluded.
 
-Local evidence: Agents phone and DO suites **46/46**, Spaces package-dashboard suite **18/18**, Agents
-and Spaces typechecks, release/deployment manifest validation at schema `0248`, fresh-install migration
-rehearsal **20/20**, `git diff --check`, and the dashboard script syntax check. These are local mocks,
-SQLite and static checks. No carrier callback, provider cost read, deployment or live acceptance ran.
-P06 remains PARTIAL for inbound cost observation, streaming and managed voice, broader lifecycle and
-live provider/region tests. P04 remains PARTIAL for archive caps, other service stores, policy and
-isolated/deployed recovery. P01/P02 resource separation and operator receipts remain external evidence
-gates. Preserve untracked `infra/scripts/__pycache__/`; keep every rollout disabled.
+Local evidence: Agents Twilio/phone/cost-observation suites **49/49**, Spaces package-dashboard suite
+**18/18**, Agent SDK bounded-phone-menu suite **5/5**, Agents and Spaces typechecks, dashboard script
+syntax and `git diff --check`. These use D1/Worker fixtures and mocked provider responses; no live
+Twilio account read, browser, deployment or acceptance ran. P06 remains PARTIAL for streaming, managed
+voice and its wider lifecycle, quality/cost coverage and live provider/region checks. U02 remains local
+for connected cost sources; invoices, billed-idle/CPU-size feeds, approved spend policy and live
+account evidence remain separate gates. P04 remains PARTIAL for bounded archives and other stores,
+retention/key/jurisdiction policy and isolated/deployed recovery. P01/P02 actual resource separation and
+operator receipts remain external evidence gates. Preserve untracked `infra/scripts/__pycache__/` and
+keep every rollout disabled.
 
-Exact next action: extend the owner-confirmed Twilio Calls API cost read to admitted inbound extension
-calls. Bind the lookup to the exact stored Call SID, tenant/account, line and masked call event; require
-the API receipt to match the inbound direction and exact caller/dialed number; persist only through the
-existing provider-cost observation ledger; and surface it as a provider observation in the package
-dashboard. Missing or pending amounts remain unknown; never turn them into invoices, customer charges
-or zero. Add tests for mismatched IDs/accounts/direction and pending price, then continue the remaining
-independent requirements in both plans.
+Exact next action: continue P04 by designing and implementing a versioned chunked archive payload for
+captured R2 object bytes, preserving v1 archive reads and resumable writes. Replace the current
+monolithic 8 MiB archive payload / 4 MiB captured-object ceiling only with explicit aggregate, per-object
+and row bounds; add corruption, interrupted-upload and backward-compatibility coverage. Keep current
+limits fail-closed until that path verifies. Then continue the remaining independent requirements in
+both plans.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 

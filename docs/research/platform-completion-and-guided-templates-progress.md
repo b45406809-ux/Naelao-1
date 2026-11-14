@@ -1,29 +1,29 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P06 Twilio extension call history)
+## Active continuation — 2026-11-14 (P06 inbound Twilio extension cost observations)
 
-Source `36400108f3ef0a76a6d0f06651dfac5c1b1481e5` is pushed; P04 code `cf375473` and records checkpoint
-`e079bd3f` are also pushed to `origin/Mcbt5s-Backup-2`. Migration 0248 records the exact Twilio handler
-installation/digest at answer. Authenticated signed terminal callbacks persist only an admitted call's
-final status and bounded duration; repeated final states are idempotent and conflicting states do not
-rewrite history. Each further call turn is pinned to that release in the Agent DO. The signed package
-dashboard displays masked, per-installation Twilio call history and keeps cost unknown. The Space route
-also filters Telnyx calls to the matching installation and digest.
+Source `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed to `origin/Mcbt5s-Backup-2`. The signed
+package phone dashboard now lets an owner/admin explicitly read a recent admitted inbound Twilio call
+from the Calls API. The route limits the action to the current signed installation and exact binding;
+Agents checks the stored SID/account/caller/line/inbound direction and stored handler pin. Final valid
+price, currency, time and duration are stored only in the minimized provider-observation ledger. The
+dashboard separates that observation from invoices and customer charges and leaves missing/pending
+values unknown. Twilio documents that call price can be delayed and covers connectivity, not every
+call-related feature ([Call Resource](https://www.twilio.com/docs/voice/api/call-resource)).
 
-Local evidence: Agents phone/DO tests **46/46**, Spaces phone-dashboard tests **18/18**, Agents/Spaces
-typechecks, schema/deployment manifest validation (`0248`), fresh-install migration rehearsal **20/20**,
-dashboard JavaScript syntax and `git diff --check`. These are mocks/static checks; no browser, carrier
-callback, provider account, deployment or live acceptance ran. P06 stays PARTIAL for inbound Twilio cost
-observations, managed calling, streaming, full lifecycle, provider/region and live tests. P04 stays
-PARTIAL for bounded archives, other stores, retention/key/legal policy and isolated/deployed recovery.
-Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence: Agents **49/49**, Spaces dashboard **18/18**, Agent SDK bounded phone menu **5/5**,
+Agents/Spaces typechecks, dashboard script syntax and `git diff --check`. These are mocked/local checks;
+no browser, live Twilio API, deployment or acceptance ran. P06 remains PARTIAL for streaming, managed
+calling, customer lifecycle, cost/quality completeness and provider/region acceptance. P04 remains
+PARTIAL for bounded archive size/row limits, other stores, policy and isolated recovery. P01/P02
+deployed-resource and operator-receipt gates remain external. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-Exact next action: extend the existing owner-confirmed Twilio Calls API cost observation to admitted
-inbound extension calls. Require exact stored Call SID, account, direction and calling/dialed numbers;
-persist only minimized provider API cost data in the existing observation ledger and show the provider
-amount separately from Naelao/customer charges. Pending or missing price remains unknown. Verify
-mismatch/pending tests, then continue remaining uncoded work across both plans.
+Exact next action: implement the versioned chunked P04 archive path for captured R2 bytes, preserving
+v1 reads/resumable writes with explicit per-object, aggregate and row limits. Add old-format,
+interrupted-upload and corruption coverage; retain current fail-closed caps until the new path verifies.
+Then continue the next independent requirements in both plans.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
@@ -1143,7 +1143,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). Restore is checksum/scope checked, retryable and refuses conflicting heads; existing caps can still reject larger projects. Other service D1/DO/provider/runtime state, private inbound communications/attachments, key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds persisted Twilio extension call status/duration pinned to the admitted installation/digest and an owner-scoped package dashboard; the Space route filters calls to the exact installation. Twilio inbound call cost is not collected yet; Telnyx remains DTMF-only. This is not streaming or a managed AI voice agent. Customer lifecycle, voice catalogs/quality tests, inbound cost observations, managed billing and live provider/region acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds per-installation persisted Twilio call history pinned to the admitted handler. `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin, minimized provider-cost persistence and per-call display. Twilio documents that its delayed `price` is connectivity-only; this remains an API observation, not an invoice. Telnyx remains DTMF-only. Streaming, managed voice, full lifecycle, complete cost/quality evidence and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
