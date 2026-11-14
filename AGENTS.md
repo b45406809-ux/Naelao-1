@@ -12,6 +12,28 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
+## Latest checkpoint — 2026-11-14
+
+P05 signed-template onboarding now reviews validated channel defaults before install (`1aff67de`),
+links the extension review to the target Space dashboard (`f1a82b42`), and after activation opens the
+target Space Assistant settings to resolve and adjust those defaults (`17683e29`). P06 adds an
+owner-phone-panel routing-readiness state in `4b8749b56db7f04208a1ca6531fc45c9a81b8af7`: a line is
+called ready only if it is active, its assignment is active, the handler digest is valid, and the
+current trusted candidate list matches both the exact installation ID and digest. The wording is
+limited to supported keypad events. All four code commits are pushed to `origin/Mcbt5s-Backup-2`.
+Latest local evidence: Shell **36/36** and Shell typecheck pass; `git diff --check` passes. No browser,
+deployed Space/Worker, carrier or live-call acceptance ran. P05 and P06 remain PARTIAL for the wider
+journeys in the progress ledger. S2 remains locally implemented for supported lanes; S3–S9/U01–U12
+retain the specific gaps and external contracts recorded there. Keep rollouts disabled and preserve
+the intentionally untracked `infra/scripts/__pycache__/`.
+
+Exact next action: add a safe deep link from the owner phone dashboard's assigned, currently verified
+signed extension to that exact Space-shared extension's existing settings/microapp dashboard. Reuse
+the membership-checked Space compatibility route and select only an installation returned by the
+target Space's authorized extension list. Test the scoped continuation and selection; do not add
+provider calls or new authority. Then continue the next uncoded P05/P06 requirement and the remaining
+S3–S9/U01–U12 work. No browser, deployment or live acceptance is implied by local checks.
+
 ## Active checkpoint — 2026-11-14
 
 Latest guided-template checkpoint: Foundry Studio now authors validated `assistantChannels`

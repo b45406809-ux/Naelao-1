@@ -1,7 +1,27 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (guided template activation channel persistence)
+## Active continuation — 2026-11-14 (P06 phone routing and dashboard handoff)
+
+The code checkpoints `1aff67de`, `f1a82b42`, `17683e29` and `4b8749b56db7f04208a1ca6531fc45c9a81b8af7`
+are pushed to `origin/Mcbt5s-Backup-2`. P05 now authors and previews validated channel defaults,
+connects the signed extension review to the target Space's extension dashboard, persists defaults at
+activation, and opens Assistant settings afterward. P06 adds owner-visible keypad-routing readiness
+only when an active phone line and assignment match the current trusted candidate's exact installation
+ID and handler digest. Latest local evidence: Shell **36/36**, Shell typecheck and `git diff --check`.
+This is local-only; no browser, deployed Space/Worker, provider, carrier or live call was exercised.
+P05/P06 remain PARTIAL for broader channel/action and provider journeys, lifecycle, conversational
+streaming, managed billing/invoice reconciliation, verified rates and live acceptance. Keep rollouts
+disabled and preserve `infra/scripts/__pycache__/`.
+
+Exact next action: link the owner phone dashboard's assigned, currently verified signed extension to
+that exact Space-shared extension's existing settings/microapp dashboard. Reuse the membership-checked
+Space compatibility route and only auto-select an installation returned by that Space's authorized
+extension list. Test scope and selection locally; add no provider calls or new authority. Continue the
+uncoded P05/P06 work and remaining S3–S9/U01–U12 requirements afterward.
+
+
+## Previous checkpoint — 2026-11-14 (guided template activation channel persistence; superseded)
 
 P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
 Foundry Studio emits validated channel availability and phone-prompt preferences. The owner export
@@ -16,9 +36,10 @@ persistence is covered by `6693d380914d248ac7885a90a10ddfc055d665ba`: the target
 no provider or deployment ran. Activation preview/review code `1aff67dee97b5d835c8e4cb55c58c44a0721b16f`
 returns only channel availability and phone-prompt defaults and explicitly separates account
 connections/provisioning. Spaces preview tests pass **21/21** and Spaces/Shell typechecks pass; no
-browser or deployed acceptance ran. Exact next action: extend Foundry Studio from one setup-field
-project to bounded multi-project setup groups with the same SDK validation and exported-project
-checks, then continue P05 lifecycle. Rollouts remain disabled.
+browser or deployed acceptance ran. The former idea to extend this single-project editor to
+multi-project groups was not started: current source provides no signed multi-project contract or
+reachable caller for that change. Resume from the active checkpoint above, then continue P05
+lifecycle. Rollouts remain disabled.
 
 
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)

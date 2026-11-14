@@ -1,7 +1,28 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (guided template activation channel persistence)
+## Active continuation — 2026-11-14 (P06 phone routing readiness)
+
+Current branch `autonomous-managed-services-20261111` has pushed through `4b8749b56db7f04208a1ca6531fc45c9a81b8af7`
+to `origin/Mcbt5s-Backup-2`. P05 commits `1aff67de`, `f1a82b42` and `17683e29` carry validated channel
+defaults through activation preview, authorized Space extension review, and post-activation Assistant
+settings. P06 `4b8749b5` adds an owner phone-dashboard readiness label that requires an active line,
+active handler assignment, valid digest and an exact installation/digest match in the current trusted
+candidate list; it reports only readiness for supported keypad events. Shell tests pass **36/36**, Shell
+typecheck and `git diff --check` pass. These are local checks; no browser, deployed Space/Worker, carrier
+or live call was tested. P05/P06 remain PARTIAL for wider setup, lifecycle, streaming, provider billing,
+rates and live acceptance. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain open
+at their specific code gaps and unsupported runtime/product contracts below. Preserve the intentionally
+untracked `infra/scripts/__pycache__/`; rollouts remain disabled.
+
+Exact next action: add a safe deep link from the owner phone dashboard's assigned, currently verified
+signed extension to that exact Space-shared extension's existing settings/microapp dashboard. Reuse
+the membership-checked Space compatibility route and select only an installation returned by the
+target Space's authorized extension list. Test the scoped continuation and selection; do not add
+provider calls or new authority. Then continue P05/P06 and the remaining S3–S9/U01–U12 implementation.
+
+
+## Previous checkpoint — 2026-11-14 (guided template activation channel persistence; superseded)
 
 P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
 Foundry Studio now emits the Agent SDK's validated `assistantChannels` shape; the Spaces owner export
@@ -20,7 +41,9 @@ channel availability and phone-prompt defaults and explains that provider connec
 are separate. Spaces preview **21/21**, Spaces/Shell typechecks, and `git diff --check` pass; no browser,
 deployment or live acceptance ran. Exact next action: extend Foundry Studio from one setup-field
 project to bounded multi-project setup groups using the same SDK validator and exported-project
-checks. Preserve `infra/scripts/__pycache__/`; rollouts remain disabled.
+checks. That speculative task was not started: current source remains single-project and no signed
+multi-project contract or caller justified widening it. Resume from the active checkpoint above.
+Preserve `infra/scripts/__pycache__/`; rollouts remain disabled.
 
 
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)
