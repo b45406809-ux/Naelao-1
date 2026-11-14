@@ -16,7 +16,28 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+## Latest checkpoint — 2026-11-14 (P06 signed phone package caller verification)
+
+Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
+`origin/Mcbt5s-Backup-2`. The recorded customer keypad microapp is already present in
+`packages/agent-sdk/examples/bounded-phone-menu/`; its signed per-install settings/dashboard,
+owner-only phone status and synthetic exact-install test APIs are reachable through the existing
+Canvas and Space/Agents callers. Local evidence: SDK **5/5**, Spaces route/package suites **40/40**,
+Agents phone suites **49/49**, Agent SDK `tsc --noEmit`, and `git diff --check`. The assertions were
+updated to match the current cost disclosure; no provider call or package publication occurred.
+P06/§9.5 remains PARTIAL: this is a bounded IVR, not a conversational voice agent. The example has
+no first-party catalog listing/discovery integration; carrier provisioning and streaming are also
+uncoded or unsupported by the current runtime contract. No live acceptance is claimed. Preserve
+`infra/scripts/__pycache__/`; all rollouts remain disabled.
+
+Exact next action: implement §10's missing project-owner publication proposal path. A project manager
+may submit only a bounded, explicitly authored fact; pending text stays private to its requester and
+Space owner/admin reviewers. Approval must show the exact audience/disclosure and pass the current
+policy/schema checks before publishing through the existing registry. Add durable revisioned review,
+withdrawal and source-project retirement behavior plus a reachable Shell caller; do not grant project
+or service access. Continue the remaining S2–S9/U01–U12/P01–P24 code gaps after this slice.
+
+## Previous checkpoint — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 
 Source `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed to
 `origin/Mcbt5s-Backup-2`. Both staging and production preflights now run the GET-only resource receipt

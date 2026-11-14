@@ -1,7 +1,31 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+## Active continuation — 2026-11-14 (P06 signed phone package caller verification)
+
+Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
+`origin/Mcbt5s-Backup-2`. Reconciliation found the recorded `bounded-phone-menu` package already
+provides signed per-install settings, a package-owned Canvas dashboard, owner-authorized signed
+release/phone status, synthetic exact-install testing, masked call history and explicit provider-cost
+disclosures. Existing Space and Agents callers enforce active signed installation, owner/admin role,
+one exact assigned active line, Twilio-only policy-enabled speech, Telnyx DTMF, and no carrier call or
+session for simulations. Local verification: SDK **5/5**, Spaces route/package suites **40/40**,
+Agents phone suites **49/49**, Agent SDK typecheck and `git diff --check`. The changes only correct two
+stale assertions to match current disclosure copy; no provider, listing, deployment or live acceptance
+was exercised. `b4c0100f` contains the already-pushed package source. P06/§9.5 remains PARTIAL: the
+package is a bounded IVR, not a conversational voice-agent product; first-party catalog
+listing/discovery is uncoded, carrier provisioning is not integrated, streaming is unsupported by the
+current runtime contract, and richer package lifecycle, full cost evidence and live acceptance remain.
+Rollouts stay off;
+preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement the missing §10 project-owner coordination publication proposal flow with
+requester/admin-only pending reads, exact owner-confirmed publication, revision fencing, withdrawal,
+source-project lifecycle handling, and a project manager Shell caller. It must reuse the current fact
+validator/audience policy, expose no private project data to members, and grant no project/service
+authority. Then continue remaining S2–S9/U01–U12/P01–P24 uncoded work.
+
+## Previous continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 
 CI caller commit `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed. Staging and production
 deployment preflights now execute the GET-only resource receipt collector regression suite in addition

@@ -1,7 +1,28 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
+## Active continuation — 2026-11-14 (P06 signed phone package caller verification)
+
+Test checkpoint `bfc00ae4b836c0a9409a070ff0836289b2304b9e` is pushed to
+`origin/Mcbt5s-Backup-2`. The current source already contains the signed bounded keypad package,
+per-install settings, package-owned dashboard, owner-only call status and synthetic test callers, and
+host-side provider/event enforcement. Focused local evidence: SDK **5/5**, Spaces route/package
+**40/40**, Agents phone **49/49**, Agent SDK typecheck and `git diff --check`. Two outdated assertions
+were corrected to match current public disclosures. This is local-only; no signed listing was
+published, no carrier was contacted, and no deployed/live acceptance ran. P06/§9.5 stays PARTIAL: the
+package is a bounded IVR rather than a conversational voice agent; first-party catalog
+listing/discovery is uncoded, provider provisioning is not integrated, and streaming is unsupported by
+the current runtime contract. Broader lifecycle, cost evidence and live acceptance also remain.
+Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement §10's project-owner disclosure proposal workflow. Pending proposals must
+be visible only to the submitting project manager and Space owner/admin reviewers; owner/admin approval
+must confirm the exact fact and audience and use existing schema/policy validation. Persist revisions,
+support requester withdrawal, and retire linked state when the source project is removed. Add the
+reachable project settings caller and authorization/non-disclosure coverage. This workflow must not
+grant project or service access. Then continue remaining S2–S9/U01–U12/P01–P24 code gaps.
+
+## Previous continuation — 2026-11-14 (P02 receipt CI caller; P03/P12 reconciliation)
 
 CI source commit `ee41d1233659e4d3b7db7c8b1952298463337fb5` is pushed. Both deployment preflights now
 run the GET-only resource receipt collector suite, including custom-map freshness coverage. Local
