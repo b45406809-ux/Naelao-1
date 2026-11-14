@@ -11,7 +11,7 @@ function makeSpaceDO(rows: Row[] = []) {
       const lower = query.toLowerCase();
       if (lower.includes("select p.execution_status")) {
         const task = taskRows.get(String(args[0]));
-        return { toArray: () => task ? [{ execution_status: task.execution_status ?? "ACTIVE" }] : [] };
+        return { toArray: () => task ? [{ execution_status: task.execution_status ?? "ACTIVE", task_status: task.status, intervention_status: task.intervention_status ?? null }] : [] };
       }
       if (lower.includes("update tasks set claimed_by")) {
         const id = String(args[3]);
@@ -70,6 +70,20 @@ describe("SpaceDO task coordination journey", () => {
     expect(Date.parse(claimBody.leaseExpiresAt) - Date.now()).toBeLessThan(16 * 60_000);
     const spectator = await h.instance.fetch(new Request("https://space/tasks/task-1/lease", { method: "POST", body: JSON.stringify({ assistantId: "worker-b" }) }));
     expect((await spectator.json() as { status: string; suggestedAction: string })).toMatchObject({ status: "SPECTATING", suggestedAction: "AUDIT_ACTIVE_PULL_REQUEST" });
+  });
+
+  it("does not lease blocked or intervention-required tasks", async () => {
+    const h = makeSpaceDO([
+      { id: "blocked-task", status: "blocked", intervention_status: "REQUIRES_HUMAN_INTERVENTION", claimed_by: null, lease_expires_at: null, spectator_assistant_ids: "[]" },
+      { id: "completed-task", status: "completed", intervention_status: null, claimed_by: null, lease_expires_at: null, spectator_assistant_ids: "[]" },
+    ]);
+    const blocked = await h.instance.fetch(new Request("https://space/tasks/blocked-task/lease", { method: "POST", body: JSON.stringify({ assistantId: "worker-a" }) }));
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ error_code: "task_requires_human_intervention" });
+    const completed = await h.instance.fetch(new Request("https://space/tasks/completed-task/lease", { method: "POST", body: JSON.stringify({ assistantId: "worker-a" }) }));
+    expect(completed.status).toBe(409);
+    expect(await completed.json()).toMatchObject({ error_code: "task_not_claimable" });
+    expect(h.taskRows.get("blocked-task")).toMatchObject({ claimed_by: null, lease_expires_at: null, status: "blocked" });
   });
 
   it("detects an active semantic duplicate above the 0.85 threshold", async () => {

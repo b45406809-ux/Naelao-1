@@ -4621,27 +4621,38 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const restoreOrder = resolvedOrder ?? Object.keys(payload.tableRows).sort();
       const archivedActiveEventTriggerCount = (payload.tableRows.event_triggers ?? [])
         .filter(row => row.enabled !== 0 && row.enabled !== false).length;
+      const archivedActiveTaskCount = (payload.tableRows.tasks ?? [])
+        .filter(row => row.status === "pending" || row.status === "in_progress").length;
+      const archivedTerminalTaskCount = (payload.tableRows.tasks ?? [])
+        .filter(row => row.status === "completed" || row.status === "cancelled").length;
       const mergeArchiveRows = () => {
         const inserted: Record<string, number> = {}, skipped: Record<string, number> = {};
         let restoredEventTriggersDisabled = 0;
+        let restoredTasksBlockedForHumanIntervention = 0;
         this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
         for (const table of restoreOrder) {
           const rows = payload.tableRows[table] ?? [];
-          const columns = [...new Set([...rows.flatMap(row => Object.keys(row)), ...(table === "event_triggers" ? ["enabled"] : [])])].sort();
+          const columns = [...new Set([...rows.flatMap(row => Object.keys(row)),
+            ...(table === "event_triggers" ? ["enabled"] : []),
+            ...(table === "tasks" ? ["status", "intervention_status", "claimed_by", "lease_expires_at"] : [])])].sort();
           if (!columns.length) { inserted[table] = 0; skipped[table] = rows.length; continue; }
           if (columns.some(column => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))) throw new Error("archive_column_invalid");
           const placeholders = columns.map(() => "?").join(",");
           let restored = 0;
           for (const row of rows) {
-            const safeRow = table === "event_triggers" ? { ...row, enabled: 0 } : row;
+            const archivedActiveTask = table === "tasks" && (row.status === "pending" || row.status === "in_progress");
+            const safeRow = table === "event_triggers" ? { ...row, enabled: 0 }
+              : archivedActiveTask ? { ...row, status: "blocked", intervention_status: "REQUIRES_HUMAN_INTERVENTION", claimed_by: null, lease_expires_at: null }
+              : row;
             const result = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO "${table}" (${columns.map(column => `"${column}"`).join(",")}) VALUES (${placeholders})`, ...columns.map(column => safeRow[column] ?? null));
             restored += result.rowsWritten;
             if (table === "event_triggers" && result.rowsWritten > 0) restoredEventTriggersDisabled++;
+            if (archivedActiveTask && result.rowsWritten > 0) restoredTasksBlockedForHumanIntervention++;
           }
           inserted[table] = restored;
           skipped[table] = rows.length - restored;
         }
-        return { inserted, skipped, restoredEventTriggersDisabled };
+        return { inserted, skipped, restoredEventTriggersDisabled, restoredTasksBlockedForHumanIntervention };
       };
       if (action === "preview_restore") {
         let mergePreview: ReturnType<typeof mergeArchiveRows>;
@@ -4665,6 +4676,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           object_restore_required_count: objectRestoreRequiredCount, workspace_restore_count: workspaceSnapshots.length, restore_mode: "idempotent_merge_missing_rows", merge_snapshot_at: now,
           safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
             existing_event_trigger_state_will_be_preserved: true,
+            archived_active_task_count: archivedActiveTaskCount,
+            would_insert_active_tasks_blocked_for_human_intervention: mergePreview.restoredTasksBlockedForHumanIntervention,
+            archived_terminal_task_count: archivedTerminalTaskCount,
+            existing_task_state_will_be_preserved: true,
             ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, expires_at: expiresAt, requires_explicit_apply: true });
       }
       const previewId = String(body.preview_id ?? "");
@@ -4756,14 +4771,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const restoredCounts: Record<string, number> = {};
       const skippedCounts: Record<string, number> = {};
       let restoredEventTriggersDisabled = 0;
+      let restoredTasksBlockedForHumanIntervention = 0;
       try {
         this.ctx.storage.transactionSync(() => {
           const merged = mergeArchiveRows();
           Object.assign(restoredCounts, merged.inserted);
           Object.assign(skippedCounts, merged.skipped);
           restoredEventTriggersDisabled = merged.restoredEventTriggersDisabled;
+          restoredTasksBlockedForHumanIntervention = merged.restoredTasksBlockedForHumanIntervention;
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
+            restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
             ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
@@ -4775,6 +4793,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, skipped_counts: skippedCounts, restored_object_count: verifiedObjectCount,
         restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
+          restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
           ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });
@@ -12345,13 +12364,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!assistantId) return Response.json({ error_code: "bad_request", message: "assistantId is required" }, { status: 400 });
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
-    const taskState = queryOne<{ execution_status: string | null }>(this.ctx.storage.sql as never,
-      "SELECT p.execution_status FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", taskId);
+    const taskState = queryOne<{ execution_status: string | null; task_status: string; intervention_status: string | null }>(this.ctx.storage.sql as never,
+      "SELECT p.execution_status,t.status AS task_status,t.intervention_status FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", taskId);
     if (!taskState) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
     if (taskState.execution_status === "FROZEN_FOR_RFC") return Response.json({ error_code: "frozen_for_rfc", status: "FROZEN_FOR_RFC" }, { status: 409 });
+    if (taskState.intervention_status === "REQUIRES_HUMAN_INTERVENTION" || taskState.task_status === "blocked") {
+      return Response.json({ error_code: "task_requires_human_intervention", status: taskState.task_status }, { status: 409 });
+    }
+    if (taskState.task_status !== "pending" && taskState.task_status !== "in_progress") {
+      return Response.json({ error_code: "task_not_claimable", status: taskState.task_status }, { status: 409 });
+    }
     const claimed = queryOne<{ claimed_by: string; lease_expires_at: string }>(this.ctx.storage.sql as never,
       `UPDATE tasks SET claimed_by = ?, lease_expires_at = ?, status = 'in_progress', updated_at = ?
-       WHERE id = ? AND (claimed_by = ? OR claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+       WHERE id = ? AND status IN ('pending','in_progress') AND (intervention_status IS NULL OR intervention_status != 'REQUIRES_HUMAN_INTERVENTION')
+         AND (claimed_by = ? OR claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
        RETURNING claimed_by, lease_expires_at`,
       assistantId, expiresAt, now.toISOString(), taskId, assistantId, now.toISOString());
     const row = queryOne<{ claimed_by: string | null; lease_expires_at: string | null; spectator_assistant_ids: string }>(

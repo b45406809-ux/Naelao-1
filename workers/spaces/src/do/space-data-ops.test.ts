@@ -204,13 +204,14 @@ describe("SpaceDO owner data operations", () => {
     const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
     const preview = await previewResponse.json() as { preview_id: string; safety_actions: { archived_active_event_trigger_count: number; missing_event_triggers_will_be_inserted_disabled: boolean; existing_event_trigger_state_will_be_preserved: boolean } };
     expect(previewResponse.status).toBe(200);
-    expect(preview.safety_actions).toEqual({ archived_active_event_trigger_count: 1, missing_event_triggers_will_be_inserted_disabled: true, existing_event_trigger_state_will_be_preserved: true });
+    expect(preview.safety_actions).toEqual({ archived_active_event_trigger_count: 1, missing_event_triggers_will_be_inserted_disabled: true, existing_event_trigger_state_will_be_preserved: true,
+      archived_active_task_count: 0, would_insert_active_tasks_blocked_for_human_intervention: 0, archived_terminal_task_count: 0, existing_task_state_will_be_preserved: true });
 
     const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(applied.status).toBe(200);
-    expect(await applied.json()).toMatchObject({ safety_actions: { restored_event_triggers_inserted_disabled: 1 } });
+    expect(await applied.json()).toMatchObject({ safety_actions: { restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0 } });
     expect(storage.sql.exec<{ enabled: number }>("SELECT enabled FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 0 }]);
-    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({ restored_event_triggers_inserted_disabled: 1 });
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json)).toEqual({ restored_event_triggers_inserted_disabled: 1, restored_tasks_blocked_for_human_intervention: 0 });
     const restoreList = await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a&actor_id=owner-a", { headers }));
     expect(await restoreList.json()).toMatchObject({ restores: [{ id: preview.preview_id, status: "completed", safety_actions: { restored_event_triggers_inserted_disabled: 1 } }] });
 
@@ -221,6 +222,70 @@ describe("SpaceDO owner data operations", () => {
     const reactivated = await space.fetch(new Request("https://space/event-triggers/trigger-a?space_id=space-a", { method: "PATCH", headers, body: JSON.stringify({ enabled: true, actor_id: "owner-a" }) }));
     expect(reactivated.status).toBe(200);
     expect(storage.sql.exec<{ enabled: number; updated_by: string }>("SELECT enabled,updated_by FROM event_triggers WHERE id=?", "trigger-a").toArray()).toEqual([{ enabled: 1, updated_by: "owner-a" }]);
+  });
+
+  it("blocks restored active tasks for human review and never overwrites current or terminal task state", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers,
+      body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers }));
+    const insertTask = (id: string, status: string) => storage.sql.exec(
+      "INSERT INTO tasks(id,space_id,title,status,dependencies,claimed_by,lease_expires_at) VALUES(?,?,?,?,?,?,?)",
+      id, "space-a", `${id} archived title`, status, "[]", status === "in_progress" ? "old-worker" : null,
+      status === "in_progress" ? "2025-01-01T00:00:00.000Z" : null);
+    insertTask("pending-task", "pending");
+    insertTask("in-progress-task", "in_progress");
+    insertTask("terminal-task", "completed");
+    insertTask("current-task", "pending");
+
+    const exported = await post({ action: "export", request_id: "task-replay-archive" });
+    expect(exported.status).toBe(201);
+    const { archive_id: archiveId } = await exported.json() as { archive_id: string };
+    storage.sql.exec("DELETE FROM tasks WHERE id IN ('pending-task','in-progress-task','terminal-task')");
+    storage.sql.exec("UPDATE tasks SET status='completed',title='current title' WHERE id='current-task'");
+
+    const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
+    expect(previewResponse.status, JSON.stringify(await previewResponse.clone().json())).toBe(200);
+    const preview = await previewResponse.json() as { preview_id: string; safety_actions: {
+      archived_active_task_count: number;
+      would_insert_active_tasks_blocked_for_human_intervention: number;
+      archived_terminal_task_count: number;
+      existing_task_state_will_be_preserved: boolean;
+    } };
+    expect(preview.safety_actions).toEqual({ archived_active_event_trigger_count: 0,
+      missing_event_triggers_will_be_inserted_disabled: true,
+      existing_event_trigger_state_will_be_preserved: true,
+      archived_active_task_count: 3,
+      would_insert_active_tasks_blocked_for_human_intervention: 2, archived_terminal_task_count: 1,
+      existing_task_state_will_be_preserved: true });
+
+    const applied = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ safety_actions: { restored_tasks_blocked_for_human_intervention: 2 } });
+    expect(storage.sql.exec<{ id: string; status: string; intervention_status: string | null; claimed_by: string | null; lease_expires_at: string | null }>(
+      "SELECT id,status,intervention_status,claimed_by,lease_expires_at FROM tasks WHERE id IN ('pending-task','in-progress-task') ORDER BY id").toArray()).toEqual([
+      { id: "in-progress-task", status: "blocked", intervention_status: "REQUIRES_HUMAN_INTERVENTION", claimed_by: null, lease_expires_at: null },
+      { id: "pending-task", status: "blocked", intervention_status: "REQUIRES_HUMAN_INTERVENTION", claimed_by: null, lease_expires_at: null },
+    ]);
+    expect(storage.sql.exec<{ id: string; status: string; title: string }>(
+      "SELECT id,status,title FROM tasks WHERE id IN ('terminal-task','current-task') ORDER BY id").toArray()).toEqual([
+      { id: "current-task", status: "completed", title: "current title" },
+      { id: "terminal-task", status: "completed", title: "terminal-task archived title" },
+    ]);
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>(
+      "SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json))
+      .toMatchObject({ restored_tasks_blocked_for_human_intervention: 2 });
+
+    for (const taskId of ["pending-task", "in-progress-task"]) {
+      const claim = await space.fetch(new Request(`https://space/tasks/${taskId}/lease`, {
+        method: "POST", body: JSON.stringify({ assistantId: "new-worker" }),
+      }));
+      expect(claim.status).toBe(409);
+      expect(await claim.json()).toMatchObject({ error_code: "task_requires_human_intervention" });
+    }
   });
 
   it("excludes owner-managed grants from new archives and skips them in legacy restores", async () => {
