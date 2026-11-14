@@ -1,15 +1,15 @@
 # Platform completion and guided templates progress
 
 
-## Active checkpoint — 2026-11-14
+## Active checkpoint — 2026-11-14 (resumed after P21)
 
 P13 unknown/misrouted and malformed queue messages now retry to configured DLQs in Workflows, Billing, Notifications, Analytics, Provisioner and Agents (`4de53055`, `d640dbae`, pushed). Focused local suites and six affected Worker typechecks pass. DLQs are worker/environment-specific; Admin's consumer targets a separate queue and stores/logs raw payloads, so generic replay remains uncoded pending a safe retention/idempotency contract. P23 Notifications has a durable non-PII terminal status view. True backlog/age/DLQ remains unknown without supported provider evidence.
 
 P14 code `31aac278b7962fd28bbe592abf1783a816bbd07e` is pushed. Portal and Shell Product-user clients await server generation revocation; Portal and Dashboard builder clients await `/v1/auth/revoke`; Shell also awaits the HttpOnly DeskDrop cookie endpoint. Failed revocation leaves credentials available for retry and the UI shows the error; already-revoked builder tokens (401) clear locally. Evidence: Shell **3/3**, Portal **3/3**, Spaces logout route **17/17**, Shell/Portal/Dashboard typechecks and `git diff --check`. P14 remains PARTIAL for localStorage bearer storage, cross-origin/embedded cookie and CSRF/XSS transport decisions, and deployed copied-token acceptance.
 
-P11 purchase snapshots `16386d95679c5c739d07b3fbcc1061f98244b3ae`, P07 local-model profiles `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1`, and P01 durable migration-phase validation `60c5f03b30aac5241a379b0c59bbf343ed0186b1` remain pushed. The current release inventory has 244 migrations through 0244. P02 stays fail-closed on 13 shared resources, unresolved `naelao-calls`, 158 missing receipts and missing account/time evidence. P03/P12 access/recovery cadence and P20 refund/author accounting require product decisions; preserve the current policy. Rollouts stay disabled; no deployed or live acceptance is claimed.
+P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b5089286cf4fbd13727b252ba75`. Auth migration 0245 stores encrypted recipient/token data, atomically couples token issuance to outbox enqueue, dispatches through bounded leases/backoff with stable Notification IDs, cancels superseded tokens, persists provider acceptance receipts, and exposes tenant-HMAC-scoped metadata status. The neutral public reset response remains. Local evidence: Auth **39/39**, Auth typecheck, release/deployment manifest checks, release migration tests **15/15**, staging/production Wrangler dry runs and `git diff --check`; migration inventory is now 245. No deployment or real inbox delivery was tested. P21 remains PARTIAL for deployed/provider acceptance and unverified-user/session policy. P11 purchase snapshots `16386d95679c5c739d07b3fbcc1061f98244b3ae`, P07 local-model profiles `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1`, and P01 durable migration-phase validation `60c5f03b30aac5241a379b0c59bbf343ed0186b1` remain pushed. P02 stays fail-closed on 13 shared resources, unresolved `naelao-calls`, 158 missing receipts and missing account/time evidence. P03/P12 access/recovery cadence and P20 refund/author accounting require product decisions; preserve the current policy. Rollouts stay disabled; no deployed or live acceptance is claimed.
 
-Exact next action: implement durable builder password-reset email dispatch in Auth by adapting the encrypted Product-auth outbox pattern: atomically persist the encrypted reset payload with the token, use a stable Notification ID, retry with a bounded lease/backoff, cancel superseded tokens, and preserve the constant/non-enumerating response. Then continue remaining uncoded requirements in both plans, starting with S3/U01–U12 code gaps; do not repeat completed source audits without new evidence.
+Exact next action: continue the managed-services ledger at U11 by checking settlement outbox, provider-cost producers, threshold/alert delivery, owner controls and missing billed-idle/invoice feeds for independently implementable caller gaps; then audit U12 and close remaining S4–S9/U01–U12 code gaps before advancing the platform queue. U03 Agent37 lifecycle has a later source/caller audit with no additional code gap. Do not repeat completed audits without new evidence. Keep rollout disabled.
 
 ## Previous checkpoint details
 
@@ -726,11 +726,15 @@ No deploy or live acceptance occurred.
 P18 reset consumes a one-time token and atomically applies the password, advances account
 `security_generation`, and journals session cleanup via migration 0227 triggers. Protected requests
 compare the persisted generation before accepting a ProductUserDO session; the scheduled dispatcher
-retries downstream DO cleanup. P21 email delivery stores encrypted token/recipient payloads in a
-bounded outbox, keeps public responses neutral, retries using a stable notification ID, cancels
-superseded reset tokens, and exposes HMAC-scoped tenant diagnostics. Signup currently issues a
-session before verification; access policy for unverified users and real email delivery remain open.
-Current local verification: Spaces auth/reset/security/email suites **24/24** and Spaces typecheck.
+retries downstream DO cleanup. Product and builder P21 reset/verification email use encrypted,
+bounded outboxes with neutral public responses, retry, token supersession and HMAC-scoped metadata
+diagnostics. Auth migration 0245 (`814c429a`) atomically couples encrypted builder reset payload
+enqueue to token issuance, uses stable Notification IDs, retains provider acceptance receipts, and
+schedules bounded retries. Signup currently issues a Product session before verification; policy for
+unverified users and actual inbox delivery remain open. Local builder verification: Auth tests
+**39/39**, Auth typecheck, release/deployment manifest checks, release migration tests **15/15**,
+staging/production Wrangler dry runs and `git diff --check`. These do not establish deployment or
+inbox delivery.
 The follow-on `f676408a` slice parses Resend's accepted-request receipt, persists it to the same
 Product auth-email outbox operation, and exposes it only through the existing HMAC-protected
 operation list. This is a provider acceptance receipt, not inbox delivery. Product auth recovery
@@ -869,7 +873,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |
 | P20 | PARTIAL | Idempotent refund review ledger and buyer/creator status exist; dispute, access reversal, author accounting and independent operator identity remain unresolved. |
-| P21 | PARTIAL | Product-user recovery email has an encrypted bounded outbox, retry, cancellation and HMAC-scoped status. Builder reset email still calls Notifications best-effort without durable Auth-owned retry/status; unverified-user policy and live delivery remain. |
+| P21 | PARTIAL | Product-user and builder reset email use encrypted bounded outboxes, retry/cancellation, stable Notification IDs, provider acceptance receipts and HMAC-scoped metadata status. Builder Auth outbox is migration 0245 (`814c429a`); local Auth suite **39/39** and typecheck pass. Unverified-user/session policy, provider/inbox and deployed acceptance remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
 | P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update receipts (`c7412170`), runtime-work admission/drain (`15a04f7e`) and authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`) are local. Cross-tenant artifact authorization, broader schema migration/rollback, compromise response, scanning, retention and live acceptance remain. |

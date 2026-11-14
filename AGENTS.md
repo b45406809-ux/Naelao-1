@@ -14,13 +14,28 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-14
 
+P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b5089286cf4fbd13727b252ba75`.
+Auth now atomically stores the encrypted reset payload with its token in migration 0245, uses a
+bounded leased dispatcher with stable Notification IDs and superseded-token cancellation, preserves
+the neutral reset response, and exposes tenant-HMAC-scoped metadata diagnostics. Auth tests pass
+**39/39**, Auth typecheck, release/deployment manifest checks, release-migration tests **15/15**,
+staging/production Wrangler dry runs and `git diff --check` pass. Migration inventory is 245. This is
+local/mocked evidence; no deployment, provider acceptance or inbox delivery was exercised. P21 remains
+PARTIAL for real delivery, unverified-user/session policy and deployed acceptance. The managed ledger
+already records U03 Agent37 lifecycle recovery as locally implemented and audited with no independent
+code gap. Exact next action: continue U11's settlement outbox, provider-cost sources, threshold/alert
+delivery, owner controls and billed-idle/invoice-feed audit; close any independently implementable
+caller gap, then audit U12 and finish S4–S9 reconciliation. Preserve the existing untracked
+`infra/scripts/__pycache__/`; keep rollout disabled. After compaction, interruption or a new session,
+read both plans and both progress records, inspect the actual worktree and resume from this action.
+
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 
 P14 browser logout is pushed as `31aac278b7962fd28bbe592abf1783a816bbd07e`. Portal and Shell Product-user clients await account-generation revocation; Portal and Dashboard builder clients await `/v1/auth/revoke`; Shell also awaits HttpOnly DeskDrop cookie revocation. Callers retain credentials and show a retryable error when revocation fails, treating an already-revoked builder token (401) as success. Local evidence: Shell **3/3**, Portal **3/3**, Spaces logout route **17/17**, Shell/Portal/Dashboard typechecks and `git diff --check`. P14 remains PARTIAL because bearer tokens still use localStorage and cookie/CSRF/XSS transport and cross-product browser acceptance remain unresolved. No deployment or live test ran.
 
 P11 code `16386d95679c5c739d07b3fbcc1061f98244b3ae`, P07 `0da0abdbd80a9ea5dfa2ff5729be6c4cd53aaea1` and P01 `60c5f03b30aac5241a379b0c59bbf343ed0186b1` remain pushed. Migrations 0243–0244 persist immutable provider-event purchase terms; P07 private local-model routing uses exact machine and grant checks; P01 requires a durable environment-specific migration runner plus remote D1 probe. Setup recovery `c1c5e0d4`, U11 alert delivery `88457f40`, P08 default-off video frames `87374fc2`, U12 build staging and MS07 combined Assistant/AgentMail search remain as previously recorded. Preserve `infra/scripts/__pycache__/`; rollouts stay disabled.
 
-P12 recovery cadence/access policy and live delivery remain undecided or unverified. P02 remains fail-closed on 13 shared resources, unresolved `naelao-calls` ownership, 158 missing receipts and missing account/timestamp evidence. U05 has no trusted runtime observation/candidate producer; U06 lacks a supported writer admission/drain/flush/handoff contract and adapter. Exact next action: implement durable builder password-reset email dispatch in Auth by adapting the existing encrypted Product-auth outbox, with atomic enqueue, stable Notification ID, bounded leased retry and superseded-token cancellation; keep the public reset response non-enumerating and expose no reset token in diagnostics. After compaction, interruption or a new session, read both plans and progress records, inspect the actual worktree, and resume from this exact action.
+P12 recovery cadence/access policy and live delivery remain undecided or unverified. P02 remains fail-closed on 13 shared resources, unresolved `naelao-calls` ownership, 158 missing receipts and missing account/timestamp evidence. U05 has no trusted runtime observation/candidate producer; U06 lacks a supported writer admission/drain/flush/handoff contract and adapter. The exact next action is U11 as stated in the active checkpoint above; Agent37 U03 lifecycle has been re-audited and must not be restarted without new evidence.
 
 ## Recent completed-work record
 
