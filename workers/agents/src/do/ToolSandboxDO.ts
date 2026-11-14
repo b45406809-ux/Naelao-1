@@ -491,8 +491,8 @@ export class ToolSandboxDO extends DurableObject {
     if (!meter || meter.tenantId !== scope.tenantId || meter.spaceId !== scope.spaceId || meter.endedAt !== undefined)
       throw new Error("project_main_budget_reservation_unavailable");
     const budgetReservation = await db.prepare(`SELECT id FROM workflow_budget_reservations
-      WHERE id=? AND org_id=? AND space_id=? AND status='held' AND julianday(expires_at)>julianday(?) LIMIT 1`)
-      .bind(meter.reservationId, scope.tenantId, scope.spaceId, new Date().toISOString()).first<{ id: string }>();
+      WHERE id=? AND org_id=? AND space_id=? AND project_id=? AND status='held' AND julianday(expires_at)>julianday(?) LIMIT 1`)
+      .bind(meter.reservationId, scope.tenantId, scope.spaceId, scope.projectId, new Date().toISOString()).first<{ id: string }>();
     if (!budgetReservation || budgetReservation.id !== meter.reservationId)
       throw new Error("project_main_budget_reservation_unavailable");
     const branch = scope.workspaceBranch ?? "main";

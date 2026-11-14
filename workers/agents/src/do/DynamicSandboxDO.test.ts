@@ -23,11 +23,12 @@ function capacityService() {
   } }) } };
 }
 function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
-  snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean } = {}) {
+  snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean;
+  budgetProjectId?: string } = {}) {
   const records = new Map<string, any>();
   const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
     budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
-  const budgetReservations = new Map<string, { id: string; tenantId: string; spaceId: string; status: string; expiresAt: string }>();
+  const budgetReservations = new Map<string, { id: string; tenantId: string; spaceId: string; projectId?: string; status: string; expiresAt: string }>();
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
   const snapshotRetentionWrites: string[] = [];
@@ -75,9 +76,10 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false", CONCURRENCY_DO: capacity.namespace,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({
       first: async () => sql.includes("workflow_budget_reservations") ? (() => {
-        const [id, tenantId, spaceId] = values as [string, string, string];
+        const [id, tenantId, spaceId, projectId] = values as [string, string, string, string];
         const reservation = budgetReservations.get(id);
         return reservation && reservation.tenantId === tenantId && reservation.spaceId === spaceId
+          && reservation.projectId === projectId
           && reservation.status === "held" && Date.parse(reservation.expiresAt) > Date.now() ? { id } : null;
       })() : sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
         : sql.includes("SELECT profile FROM project_main_runtime_profiles") ? options.profile ? { profile: options.profile } : null
@@ -144,7 +146,8 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
         const body = await request.json() as any;
         billing.push({ path, ...body });
         if (path.endsWith("/reserve") && !options.omitBudgetReservationReceipt) budgetReservations.set(body.reservation_id, { id: body.reservation_id,
-          tenantId: request.headers.get("x-naelao-tenant-id") ?? "", spaceId: body.space_id, status: "held", expiresAt: body.expires_at });
+          tenantId: request.headers.get("x-naelao-tenant-id") ?? "", spaceId: body.space_id,
+          projectId: options.budgetProjectId ?? body.project_id, status: "held", expiresAt: body.expires_at });
         if (path.endsWith("/settle") || path.endsWith("/release")) {
           const reservation = budgetReservations.get(body.reservation_id);
           if (reservation) reservation.status = path.endsWith("/settle") ? "settled" : "released";
@@ -213,6 +216,14 @@ describe("Cloudflare dynamic execution", () => {
 
   it("does not claim a project-main allocation when the authoritative budget hold is absent", async () => {
     const r = runtime({ omitBudgetReservationReceipt: true });
+    const response = await r.invoke("/prewarm", { mainComputer: true });
+    expect(response.ok).toBe(false);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 0, state: "registered" });
+  });
+
+  it("does not accept a held budget reservation scoped to a different project", async () => {
+    const r = runtime({ budgetProjectId: "another-project" });
     const response = await r.invoke("/prewarm", { mainComputer: true });
     expect(response.ok).toBe(false);
     expect(r.transport.start).not.toHaveBeenCalled();
