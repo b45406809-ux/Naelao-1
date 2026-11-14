@@ -1,8 +1,10 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P03/P12 customer dunning status; local, verified)
+## Active checkpoint — 2026-11-14 (P03/P12 customer dunning status pushed)
 
-A local cross-service slice now exposes each Product user only their own subscription and recent
+Code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
+`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance. The
+cross-service slice exposes each Product user only their own subscription and recent
 non-PII provider acceptance outcomes. Migration 0252 adds exact product/end-user/provider/subscription
 scope to dunning attempts. The workflow carries the provider event version; Notifications rechecks
 active product/user/subscription state and verified recipient before sending and conditionally records
@@ -21,11 +23,10 @@ policy, inbox delivery, and live acceptance. P01/P02 remain fail-closed on exter
 U06 is blocked by an unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials.
 Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: fetch `origin/Mcbt5s-Backup-2`; if unchanged, commit and push this P03/P12 checkpoint
-without force, then record the pushed SHA in this file, the managed-services progress record and
-`AGENTS.md`. Next inspect the P04 restore caller for a current erasure-tombstone/read-fencing gap; do
-not repeat a completed audit. If no code gap remains, preserve the stated P04 policy/recovery gates
-and advance to the next independently uncoded guided-template requirement.
+Exact next action: inspect the P04 restore preflight and caller for an independent erasure-tombstone/
+read-fencing gap. Implement and locally test it only if current source lacks the fence; otherwise record
+the source evidence and move to the next uncoded guided-template requirement. Preserve P04 retention,
+key/jurisdiction, RPO/RTO and isolated recovery gates, and do not repeat completed archive audits.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

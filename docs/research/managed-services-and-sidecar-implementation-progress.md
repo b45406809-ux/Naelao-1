@@ -1,8 +1,9 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P03/P12 Product-user dunning status; local, verified)
+## Active checkpoint — 2026-11-14 (P03/P12 Product-user dunning status pushed)
 
-The P03/P12 implementation is in the current worktree and is ready for a coherent commit. Migration
+P03/P12 code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
+`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance. Migration
 0252 adds product/end-user/provider/subscription scope to dunning provider-attempt records. Workflow
 messages carry the exact subscription and provider event version. Notifications checks the active
 product, tenant, user, current `past_due` subscription, event version and verified current email before
@@ -25,11 +26,11 @@ pinned-runtime contract (writer admission, drain/flush and generation-bound hand
 gap; no adapter was fabricated. Rollouts remain disabled; preserve untracked
 `infra/scripts/__pycache__/`.
 
-Exact next action: fetch `origin/Mcbt5s-Backup-2`, verify no remote advance, commit and push this P03/P12
-code checkpoint without force. Record its SHA here, in the platform progress record and `AGENTS.md`.
-Then inspect P04's actual restore caller specifically for erasure-tombstone/read fencing; implement it
-only if a current source gap exists. If the safe restore path already enforces it, proceed to the next
-uncoded guided-template requirement and preserve P04's remaining policy and isolated recovery gates.
+Exact next action: inspect P04 restore preflight and its current caller for an independent
+erasure-tombstone/read-fencing gap. Implement and locally test only a demonstrated source gap. If the
+restore path already enforces the fence, record the evidence and proceed to the next uncoded
+guided-template requirement. Keep retention/key/jurisdiction/RPO-RTO and isolated recovery as open
+P04 gates; do not repeat completed archive audits.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

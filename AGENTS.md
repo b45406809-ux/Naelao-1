@@ -16,7 +16,10 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P03/P12 Product-user dunning status; local, verified)
+## Latest checkpoint — 2026-11-14 (P03/P12 Product-user dunning status pushed)
+
+P03/P12 code commit `39c0b9e4a0b1599132e7c0d72dba9e4d4fa2d040` is pushed to
+`origin/Mcbt5s-Backup-2`; the pre-push fetch confirmed remote tip `5c604e60` with no advance.
 
 P03/P12 customer status is implemented locally across the durable notification record, authenticated
 Billing → Spaces → Router path, and Product Shell personal settings. Migration 0252 scopes non-PII
@@ -38,12 +41,12 @@ and live acceptance. P01/P02 inventory/evidence gates remain unchanged. U06 rema
 unsupported pinned-runtime admission/drain/flush/handoff contract, not credentials; do not invent an
 adapter. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: fetch `origin/Mcbt5s-Backup-2`, confirm it has not advanced, commit the verified
-P03/P12 implementation and this checkpoint, then push without force. After recording the resulting
-SHA in both progress records and this runbook, continue P04 recovery by checking the actual restore
-caller for an independent erasure-tombstone/read-fencing code gap; if none exists, leave the existing
-retention/key/jurisdiction/RPO-RTO and isolated-recovery gates explicit and move to the next uncoded
-guided-template requirement. Keep all rollouts disabled; do not deploy, purchase, or create resources.
+Exact next action: inspect P04 restore code and its caller for a concrete erasure-tombstone/read-fencing
+gap, starting at the SpaceDO restore preflight and the current erasure ledger. Implement and locally test
+that gap only if current source lacks the fence. If the caller already enforces it, record the source
+evidence and proceed to the next uncoded guided-template requirement. Preserve P04 retention/key/
+jurisdiction/RPO-RTO and isolated-recovery gates. Keep rollouts disabled; do not deploy, purchase, or
+create resources.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
