@@ -144,7 +144,7 @@ function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
 }
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
-import { resolveWorkerModel, selectWorkerModel, validateWorkerModelRequirements, workerModelMeetsRequirements, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, validateWorkerModelRequirements, workerModelMeetsRequirements, privateWorkerModelMeetsRequirements, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -4848,11 +4848,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ...(modelRequirements ? {requirements:modelRequirements}:{}),
             ...(runtimeEnv?.workerModelPool ? { workerModelPool: runtimeEnv.workerModelPool } : {}),
             ...(runtimeEnv?.workerModelCandidates ? { workerModelCandidates: runtimeEnv.workerModelCandidates } : {}),
+            ...(runtimeEnv?.privateWorkerModels ? { privateWorkerModels: runtimeEnv.privateWorkerModels } : {}),
             ...(typeof t["worker_model"] === "string" ? { requestedWorkerModel: t["worker_model"] } : {}),
           }, runtimeEnv?.fastDecision);
         if (existing && typeof savedConfiguration?.model === "string") {
           modelResolution = { model: savedConfiguration.model, downgraded: false, reason: "resumed_worker_session_policy" };
         }
+        if (modelRequirements && modelResolution.model.startsWith("local/")
+          && !privateWorkerModelMeetsRequirements(runtimeEnv?.privateWorkerModels?.find(profile => `local/${profile.id}` === modelResolution.model), modelRequirements))
+          throw new Error("private_worker_model_capability_unavailable_on_authorized_machine");
         if (modelRequirements && !privateRoute && !workerModelMeetsRequirements(runtimeEnv?.workerModelCandidates?.find(card=>card.model===modelResolution.model),modelRequirements)) throw new Error("worker_model_capability_unavailable_within_configured_pool");
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");
           const depth = ((runtimeEnv.delegationDepth ?? 1) + 1) as 2 | 3;
@@ -6445,7 +6449,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     });
     engineEnv.workerPrebuiltCapabilities = config.scripts.prebuilt.slice(0, 128);
     if (delegation) engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, delegation.maxTier) as ExecutionTier;
-    if (body.localMachineId) engineEnv.localModelMachine = body.localMachineId;
+    if (body.localMachineId) {
+      engineEnv.localModelMachine = body.localMachineId;
+      engineEnv.privateWorkerModels = [];
+      if (userId && engineEnv.localTunnel) {
+        try {
+          const machine = await engineEnv.localTunnel.lookup(body.localMachineId);
+          const inferenceGrant = machine.grants.some(grant => grant.actorId === userId && grant.inference
+            && (!grant.projectId || grant.projectId === projectId) && grant.expiresAt > Date.now());
+          if (inferenceGrant) engineEnv.privateWorkerModels = [...(machine.hardware.modelProfiles ?? [])];
+        } catch {
+          // Missing profile metadata disables capability-based selection. The inference call
+          // independently rechecks the exact machine and grant before dispatch.
+        }
+      }
+    }
     engineEnv.delegationDepth = delegation?.depth ?? 1;
     engineEnv.delegationPlanner = !isLeaf;
     engineEnv.rootRunId = delegation?.rootRunId ?? runId;

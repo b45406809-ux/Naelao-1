@@ -27,8 +27,28 @@ export function createNamedTunnelGateway(
     const body = await response.json<{ machines: NamedMachine[] }>();
     return body.machines.filter(machine => machine.tenantId === scope.tenantId && machine.spaceId === scope.spaceId && machine.status === "active");
   }
+  async function lookup(machineId: string): Promise<NamedMachine> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(machineId) || !scope.actorId || !await scope.authorize())
+      throw new Error("tunnel_actor_grant_required");
+    const response = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(scope.spaceId)}/tunnel-authority`, {
+      method: "POST", headers: await headers(),
+      body: JSON.stringify({ action: "lookup", tenantId: scope.tenantId, spaceId: scope.spaceId, actorId: scope.actorId, machineId }),
+    }));
+    if (!response.ok) throw new Error("tunnel_named_machine_unavailable");
+    const body = await response.json<{ machine?: NamedMachine }>();
+    const machine = body.machine;
+    if (!machine || machine.tenantId !== scope.tenantId || machine.spaceId !== scope.spaceId || machine.machineId !== machineId || machine.status !== "active")
+      throw new Error("tunnel_named_machine_unavailable");
+    return machine;
+  }
   async function selected(alias: string) {
     if (!alias) throw new Error("named_machine_required");
+    // Machine ids are server-generated UUIDs. Exact id lookup lets an already selected local
+    // inference target remain usable in an air-gapped run without enumerating the Space registry.
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(alias)) {
+      const machine = await lookup(alias);
+      return { machine, stub: await namedTunnelStub(env, machine) };
+    }
     const matches = (await list()).filter(machine => machine.name === alias || machine.machineId === alias);
     if (matches.length !== 1) throw new Error("tunnel_named_machine_unavailable");
     const machine = matches[0]!;
@@ -47,6 +67,7 @@ export function createNamedTunnelGateway(
   }
   return {
     list,
+    lookup,
     exec: ({ machine, op, params, requestId }) => call(machine, "/exec", op, params, requestId),
     status: async machineName => {
       const { stub } = await selected(machineName);

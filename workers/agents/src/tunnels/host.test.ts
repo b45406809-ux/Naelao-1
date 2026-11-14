@@ -17,6 +17,7 @@ function fixture() {
       { ...machine, machineId: "other-tenant-machine", tenantId: "other-tenant" },
       { ...machine, machineId: "revoked", status: "revoked" },
     ] });
+    if (new URL(request.url).pathname.endsWith("/tunnel-authority")) return Response.json({ machine });
     if (new URL(request.url).pathname === "/exec") return Response.json({ ok: true, status: "sent", request_id: "request-1" }, { status: 202 });
     if (new URL(request.url).pathname === "/request/status") return Response.json({ ok: true, result: { status: "succeeded" } });
     return Response.json({ connected: true });
@@ -79,6 +80,26 @@ describe("named tunnel host gateway", () => {
     });
     expect(await gateway.list()).toEqual([f.machine]);
     await expect(gateway.exec({ machine: "workstation", op: "exec", params: { command: "test" } })).rejects.toThrow("actor_grant_required");
+  });
+
+  it("looks up a selected UUID directly without enumerating machines", async () => {
+    const f = fixture();
+    const machine = { ...f.machine, machineId: "e808ba38-8f0a-4c8e-99c9-9f7c5cbbf3f0", hardware: {
+      ...f.machine.hardware, modelProfiles: [{ id: "qwen:7b", inputModalities: ["text"], outputModalities: ["text"], contextTokens: 32768, toolCalling: true }],
+    } };
+    f.response.mockImplementation(async request => {
+      f.calls.push(request);
+      if (new URL(request.url).pathname.endsWith("/tunnel-authority")) return Response.json({ machine });
+      if (new URL(request.url).pathname === "/exec") return Response.json({ ok: true, status: "sent", request_id: "request-1" }, { status: 202 });
+      return Response.json({ machines: [] });
+    });
+    const gateway = createNamedTunnelGateway({ PLATFORM_SECRET: "test-secret", LOCAL_TUNNEL: f.namespace as never, SPACES_WORKER: { fetch: f.response } as never }, {
+      tenantId: "tenant-1", spaceId: "space-1", actorId: "actor-1", runId: () => "run-1", authorize: async () => true,
+      authorizeDiscovery: async () => false,
+    });
+    expect(await gateway.lookup(machine.machineId)).toMatchObject({ machineId: machine.machineId, hardware: { modelProfiles: [{ id: "qwen:7b" }] } });
+    await gateway.exec({ machine: machine.machineId, op: "inference", params: { model: "qwen:7b" }, requestId: "request-1" });
+    expect(f.calls.some(request => new URL(request.url).pathname.endsWith("/tunnels"))).toBe(false);
   });
 
 });

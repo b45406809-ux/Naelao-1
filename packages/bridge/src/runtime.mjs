@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rename, realpath, lstat, rm, readdir } from
 import { existsSync } from "node:fs";
 import { dirname, resolve, relative, join, basename, isAbsolute, sep } from "node:path";
 import { homedir, cpus, totalmem, platform, arch } from "node:os";
-import { machineProofBytes, tunnelHash, validateMachineApps } from "@naelao/agent-sdk";
+import { machineProofBytes, tunnelHash, validateMachineApps, validateMachineHardware } from "@naelao/agent-sdk";
 import { createLinuxSandboxExecutor } from "./linux-sandbox.mjs";
 import { createContainerSandboxExecutor } from "./container-sandbox.mjs";
 import { readMachineArtifact, writeMachineArtifact } from "./artifact-transfer.mjs";
@@ -43,7 +43,8 @@ function hardware(options, models = options.models ?? []) {
   const capabilities = new Set(options.capabilities?.length ? options.capabilities : ["storage:folder"]);
   if (options.allowSandboxedShell === true && (platform() === "linux" && existsSync("/usr/bin/bwrap")
     || ["darwin", "win32"].includes(platform()) && PINNED_SANDBOX_IMAGE.test(options.containerImage ?? ""))) capabilities.add("bash");
-  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: [...capabilities].slice(0, 64), models };
+  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: [...capabilities].slice(0, 64), models,
+    ...(options.modelProfiles?.length ? { modelProfiles: options.modelProfiles } : {}) };
 }
 function modelIds(payload) {
   const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
@@ -83,6 +84,7 @@ async function discoveredHardware(options) {
     validateMachineApps(apps);
     result.apps = apps;
   }
+  validateMachineHardware(result);
   return result;
 }
 async function jsonFetch(url, body, fetchImpl = fetch) {
@@ -357,7 +359,7 @@ export async function connectBridge(options, dependencies = {}) {
   }
 }
 export async function runBridge(argv) {
-  const operation = argv[0] ?? "help", options = { allowDirs: [], allowCommands: [], models: [], capabilities: [] };
+  const operation = argv[0] ?? "help", options = { allowDirs: [], allowCommands: [], models: [], modelProfiles: [], capabilities: [] };
   for (let index = 1; index < argv.length; index++) {
     const flag = argv[index], value = argv[index + 1];
     if (flag === "--allow-inference") { options.allowInference = true; continue; }
@@ -368,6 +370,10 @@ export async function runBridge(argv) {
     const encodedArrays = { "--allow-dir-base64": ["allowDirs", 1024], "--allow-command-base64": ["allowCommands", 8192] };
     if (fields[flag]) options[fields[flag]] = value;
     else if (arrays[flag]) options[arrays[flag]].push(value);
+    else if (flag === "--model-profile") {
+      try { options.modelProfiles.push(JSON.parse(value)); }
+      catch { throw new Error("bridge_model_profile_json_invalid"); }
+    }
     else if (encodedArrays[flag]) {
       const [field, maximumBytes] = encodedArrays[flag];
       options[field].push(decodeBridgeArgument(value, maximumBytes));
@@ -375,7 +381,7 @@ export async function runBridge(argv) {
     else throw new Error("bridge_unknown_option:" + flag);
     index++;
   }
-  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path | --allow-dir-base64 utf8-base64] [--allow-command exact-command | --allow-command-base64 utf8-base64 | --allow-sandboxed-shell [--container-image registry/image@sha256:<64-hex>]] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
+  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path | --allow-dir-base64 utf8-base64] [--allow-command exact-command | --allow-command-base64 utf8-base64 | --allow-sandboxed-shell [--container-image registry/image@sha256:<64-hex>]] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions] [--model-profile '{\"id\":\"qwen2.5:7b\",\"inputModalities\":[\"text\"],\"outputModalities\":[\"text\"],\"contextTokens\":32768,\"toolCalling\":true}']\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
   if (!options.identityFile) {
     if (!options.name || !/^[a-z][a-z0-9-]{1,62}$/.test(options.name)) throw new Error("bridge_named_identity_required");
     options.identityFile = join(homedir(), ".naelao", "bridge", options.name + ".json");

@@ -156,6 +156,37 @@ describe("automatic worker model routing", () => {
       downgraded: false,
     });
   });
+
+  it("selects only an owner-declared capable model on the authorized local machine", async () => {
+    const result = await selectWorkerModel({
+      plannerModel: "local/text-only",
+      contextAffinity: "isolated",
+      effort: "medium",
+      privateRoute: true,
+      goal: "inspect this image privately",
+      requirements: validateWorkerModelRequirements({ inputModalities: ["image"], minContextTokens: 32000 }),
+      privateWorkerModels: [
+        { id: "text-only", inputModalities: ["text"], outputModalities: ["text"], contextTokens: 65536, toolCalling: true },
+        { id: "vision-local", inputModalities: ["text", "image"], outputModalities: ["text"], contextTokens: 65536, toolCalling: true },
+      ],
+    });
+    expect(result).toMatchObject({ model: "local/vision-local", downgraded: true });
+  });
+
+  it("fails closed when private capability evidence is absent or the requested model is outside the local inventory", async () => {
+    const input = {
+      plannerModel: "local/qwen",
+      contextAffinity: "isolated" as const,
+      effort: "low" as const,
+      privateRoute: true,
+      goal: "use image input",
+      requirements: validateWorkerModelRequirements({ inputModalities: ["image"], minContextTokens: 16000 }),
+    };
+    await expect(selectWorkerModel(input)).rejects.toThrow("private_worker_model_capability_unavailable_on_authorized_machine");
+    await expect(selectWorkerModel({ ...input, privateWorkerModels: [
+      { id: "qwen", inputModalities: ["text"], outputModalities: ["text"], contextTokens: 32768, toolCalling: true },
+    ], requestedWorkerModel: "openrouter/vendor/model" })).rejects.toThrow("requested_private_worker_model_unavailable_or_incapable");
+  });
   const cards: WorkerModelCard[] = [
     {
       model: "openrouter/vendor/text",
@@ -268,6 +299,7 @@ describe("automatic worker model routing", () => {
           ...visualInput,
           plannerModel: "local/model",
           privateRoute: true,
+          requirements: undefined,
         })
       ).model
     ).toBe("local/model");

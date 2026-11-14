@@ -1,6 +1,15 @@
 export interface MachineAppObservation {
   id: string; version?: string; connectionId?: string; authenticatedAt?: number;
 }
+/** Owner-configured local model metadata used only to select a worker on this exact machine.
+ *  These values are declarations, not independent model-quality evidence or permissions. */
+export interface MachineModelProfile {
+  id: string;
+  inputModalities: readonly ("text" | "image" | "audio" | "video")[];
+  outputModalities: readonly ("text" | "image" | "audio" | "video")[];
+  contextTokens: number;
+  toolCalling: boolean;
+}
 /** The daemon reports metadata only. Reject unknown fields rather than transport secrets. */
 export function validateMachineApps(apps: readonly MachineAppObservation[]): void {
   if (!Array.isArray(apps) || apps.length > 64) throw new Error("tunnel_apps_invalid");
@@ -15,6 +24,7 @@ export function validateMachineApps(apps: readonly MachineAppObservation[]): voi
 export interface MachineHardware {
   platform: "win32" | "linux" | "darwin"; arch: string; cpuCount: number; memoryBytes: number;
   capabilities: readonly string[]; models: readonly string[];
+  modelProfiles?: readonly MachineModelProfile[];
   apps?: readonly MachineAppObservation[];
 }
 export interface MachineGrant {
@@ -46,11 +56,30 @@ export function validateMachinePublicKey(key: JsonWebKey): void {
   if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(key.x) || key.d !== undefined) throw new Error("tunnel_public_key_invalid");
 }
 export function validateMachineHardware(value: MachineHardware): void {
-  if (value?.apps !== undefined) validateMachineApps(value.apps);
   if (!value || !["win32", "linux", "darwin"].includes(value.platform) || typeof value.arch !== "string" || value.arch.length > 32
     || !Number.isSafeInteger(value.cpuCount) || value.cpuCount < 1 || value.cpuCount > 1024 || !Number.isSafeInteger(value.memoryBytes) || value.memoryBytes < 1
     || !Array.isArray(value.capabilities) || value.capabilities.length > 64 || value.capabilities.some(item => !/^[a-z][a-z0-9_:.-]{0,127}$/.test(item))
-    || !Array.isArray(value.models) || value.models.length > 64 || value.models.some(item => typeof item !== "string" || item.length > 128)) throw new Error("tunnel_hardware_invalid");
+    || !Array.isArray(value.models) || value.models.length > 64 || value.models.some(item => typeof item !== "string" || item.length > 128))
+    throw new Error("tunnel_hardware_invalid");
+  if (value.apps !== undefined) validateMachineApps(value.apps);
+  const profiles = value.modelProfiles;
+  if (profiles === undefined) return;
+  if (!Array.isArray(profiles) || profiles.length > 64) throw new Error("tunnel_hardware_invalid");
+  const modalities = ["text", "image", "audio", "video"];
+  const modelIds = new Set<string>();
+  for (const profile of profiles) {
+    if (!profile || typeof profile !== "object"
+      || Object.keys(profile).some(key => !["id", "inputModalities", "outputModalities", "contextTokens", "toolCalling"].includes(key))
+      || typeof profile.id !== "string" || profile.id.length < 1 || profile.id.length > 128 || !value.models.includes(profile.id)
+      || modelIds.has(profile.id)
+      || !Array.isArray(profile.inputModalities) || profile.inputModalities.length < 1 || profile.inputModalities.length > 4
+      || profile.inputModalities.some((modality: unknown) => typeof modality !== "string" || !modalities.includes(modality))
+      || !Array.isArray(profile.outputModalities) || profile.outputModalities.length < 1 || profile.outputModalities.length > 4
+      || profile.outputModalities.some((modality: unknown) => typeof modality !== "string" || !modalities.includes(modality))
+      || !Number.isSafeInteger(profile.contextTokens) || profile.contextTokens < 1024 || profile.contextTokens > 2_000_000
+      || typeof profile.toolCalling !== "boolean") throw new Error("tunnel_hardware_invalid");
+    modelIds.add(profile.id);
+  }
 }
 export function validateMachineGrants(grants: readonly MachineGrant[], now = Date.now()): void {
   if (!Array.isArray(grants) || grants.length > 64) throw new Error("tunnel_grants_invalid");

@@ -85,6 +85,17 @@ export function workerModelMeetsRequirements(
   );
 }
 
+/** Private model declarations are signed by the exact named machine, never fetched from a cloud
+ * catalogue. They narrow selection only; the tunnel still enforces its current grant and model ID. */
+export function privateWorkerModelMeetsRequirements(
+  profile: import("@naelao/agent-sdk").MachineModelProfile | undefined,
+  requirements: WorkerModelRequirements,
+): boolean {
+  return Boolean(profile && profile.toolCalling && profile.outputModalities.includes("text")
+    && profile.contextTokens >= requirements.minContextTokens
+    && requirements.inputModalities.every(modality => profile.inputModalities.includes(modality as "text" | "image" | "audio" | "video")));
+}
+
 /** Catalog discovery is an outbound OpenRouter request. Private/local runs must not make it,
  * even though model selection would later reject every remote candidate. */
 export function mayDiscoverWorkerModelCatalog(input: {
@@ -187,17 +198,32 @@ export async function selectWorkerModel(
       selectionMode: "automatic" | "planner";
     };
     workerModelCandidates?: WorkerModelCard[];
+    privateWorkerModels?: import("@naelao/agent-sdk").MachineModelProfile[];
     requestedWorkerModel?: string;
     requirements?: WorkerModelRequirements;
   },
   decision?: Pick<FastDecisionGateway, "choice">
 ): Promise<WorkerModelResolution> {
   const fallback = resolveWorkerModel(input);
-  if (
-    input.privateRoute ||
-    input.plannerModel.startsWith("local/") ||
-    input.plannerModel.startsWith("custom/")
-  )
+  if (input.plannerModel.startsWith("local/")) {
+    const profiles = input.privateWorkerModels ?? [];
+    const available = new Map(profiles.map(profile => [`local/${profile.id}`, profile]));
+    const eligible = [...available].filter(([, profile]) => !input.requirements
+      || privateWorkerModelMeetsRequirements(profile, input.requirements)).map(([model]) => model);
+    if (input.requestedWorkerModel) {
+      if (!eligible.includes(input.requestedWorkerModel))
+        throw new Error("requested_private_worker_model_unavailable_or_incapable");
+      return { model: input.requestedWorkerModel, downgraded: input.requestedWorkerModel !== input.plannerModel,
+        ...(input.requestedWorkerModel !== input.plannerModel ? { reason: "Selected an owner-declared capable model from the authorized local machine." } : {}) };
+    }
+    if (input.requirements && eligible.length === 0)
+      throw new Error("private_worker_model_capability_unavailable_on_authorized_machine");
+    if (!input.requirements || eligible.includes(input.plannerModel)) return fallback;
+    if (eligible.length) return { model: eligible[0]!, downgraded: true,
+      reason: "Selected a model declared capable by the authorized local machine; inference remains on that machine." };
+    return fallback;
+  }
+  if (input.privateRoute || input.plannerModel.startsWith("custom/"))
     return fallback;
   const cardByModel = new Map(
     (input.workerModelCandidates ?? []).map((card) => [card.model, card])

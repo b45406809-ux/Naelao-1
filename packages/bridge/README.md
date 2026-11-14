@@ -14,7 +14,9 @@ macOS and Windows can opt into a digest-pinned, preloaded Docker Desktop sandbox
    `--allow-command-base64` so special characters are passed literally across terminals.
    Sandboxed shell requires both the host grant and local `--allow-sandboxed-shell`. On
    macOS/Windows also pass `--container-image registry/name@sha256:<64-hex>`; inference needs
-   `--allow-inference`.
+   `--allow-inference`. To enable capability-aware selection among local workers, add one
+   owner-reviewed `--model-profile` JSON value per installed model, for example
+   `--model-profile '{"id":"qwen2.5:7b","inputModalities":["text","image"],"outputModalities":["text"],"contextTokens":32768,"toolCalling":true}'`.
 3. Run `connect --identity IDENTITY.json`. Encrypted Ed25519 credentials and a
    request journal persist beside the identity. Only one daemon can hold its lock.
    Never delete a lock until its recorded process has stopped.
@@ -42,6 +44,13 @@ cookies. This is Linux-container isolation hosted by Docker Desktop, not native 
 or Windows ACL enforcement; without the pinned local image and explicit opt-in, shell execution
 fails closed. This client transports authorized local model calls;
 it is not a disconnected OS.
+
+Model IDs may be discovered from a consented loopback inference endpoint or declared with
+`--model`. Model profiles are owner-supplied capability declarations bound to those exact IDs;
+they are not independently benchmarked claims. Naelao uses them only to narrow local worker
+selection. The exact machine's current `inference` grant and installed model list are rechecked at
+dispatch, and a required capability without a matching profile fails closed. Private runs do not
+query OpenRouter or use a cloud model as fallback.
 
 The same outbound bridge can run on a user's computer, a VM, or a container host such as Modal,
 provided it can run the supported Node client and maintain outbound WSS. Naelao treats each as an

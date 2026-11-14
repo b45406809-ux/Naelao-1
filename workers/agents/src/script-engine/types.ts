@@ -845,6 +845,8 @@ export interface LlmCallerGateway {
  */
 export interface LocalTunnelGateway {
   list(): Promise<import("@naelao/agent-sdk").NamedMachine[]>;
+  /** Resolve one already selected machine without broad registry discovery. */
+  lookup(machineId: string): Promise<import("@naelao/agent-sdk").NamedMachine>;
   exec(params: {
     machine: string;
     requestId?: string;
@@ -1180,6 +1182,8 @@ export interface ScriptEngineEnv {
     supportedParameters?: string[];
     catalogObservedAt?: string;
   }>;
+  /** Owner-declared capability metadata from the exact authorized named local machine. */
+  privateWorkerModels?: import("@naelao/agent-sdk").MachineModelProfile[];
   /** Host resolves advisory capability labels to the current authorized installation. */
   activatePlanRuntime?: (capability?: string) => Promise<void>;
   /** Best-effort exact prewarm for the next planned worker step; never authorizes execution. */
