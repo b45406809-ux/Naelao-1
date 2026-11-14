@@ -1,25 +1,33 @@
 # Platform completion and guided templates progress
 
-## Active continuation — 2026-11-14 (P05 Space-shared provider connection scope)
+## Active continuation — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
-Read-only source reconciliation confirms Space-shared provider connections have no safe current
-caller contract. Migration 0112 makes `project_id` mandatory; the Slack OAuth ticket/callback, owner
-status, Telegram/WhatsApp setup, and revocation routes all revalidate a specific project installation
-(`workers/agents/src/index.ts:5348–5790`; Shell APIs `apps/shell/src/lib/api.ts:2194–2220`). Signed
-SpaceBlueprint dependencies are `SPACE_SHARED`; activation therefore marks required connections
-unsupported and blocks them (`workers/spaces/src/blueprint-activation.ts:124–135`). No Space-scoped
-connection reference or runtime consumer exists. This is a missing product/host authority contract,
-not a credential blocker. Before coding it, the product must identify who authorizes the shared
-provider account, which project/runtime beneficiaries may use it, payer/account-sharing rules, and
-whether revocation drains every dependent installation or only selected beneficiaries. Do not reuse
-UserPort MCP aliases as provider credentials. No code changed and no tests ran for this source trace;
-P05 remains PARTIAL.
+Current official sources: the [JavaScript/Go SDK guide](https://modal.com/docs/guide/sdk-javascript-go)
+marks the SDK Beta; the official [JS package README](https://github.com/modal-labs/modal-client/blob/main/js/README.md)
+requires a server-side Node 22+ or Deno/Bun host. The official [Sandbox API](https://modal.com/docs/sdk/js/latest/Sandbox)
+provides create/exec/terminate and declares CPU/memory/GPU, timeout/idle limit, volume, and region
+options. Official [client source](https://github.com/modal-labs/modal-client/blob/main/js/src/client.ts)
+states the gRPC API is not public and may change without warning. Official [billing docs](https://modal.com/docs/guide/billing)
+limit programmatic reports to Team/Enterprise and warn of collection delays and report totals that
+exclude credits/reservations/network-egress adjustments; they do not provide the per-sandbox
+`actualCredits` receipt assumed by the generic scaffold. Agents is a Cloudflare Worker, and this repo
+has no separately hosted Node/Deno/Bun adapter, service binding, reachable Modal caller, or durable
+provider journal. Thus the scaffold is not provider support. Adopting Modal requires an explicit
+compatible host and Beta/private-API product decision. This is not a credentials blocker. No tests or
+live provider checks ran; MS08d and P06 remain PARTIAL.
 
-Code on the branch remains pushed through `e8a53a97`; no deployment or live provider acceptance ran.
-Exact next action: continue S5/MS08d against current official Modal lifecycle/authentication/hosting,
-region, cancellation, and pricing contracts; add no adapter without a stable supported interface and
-compatible host. If the host/API adoption is a product gate, record it and continue independent
-implementation gaps. Keep rollout flags disabled and fetch before each push.
+P05's Space-shared provider connection gap remains source-reconciled: migration 0112 requires a
+project installation; OAuth/setup/status/revoke all bind to that installation. The signed activation
+preview blocks required Space-shared provider connections. Before implementation, define authorizer,
+beneficiaries, payer/account-sharing and revocation/drain semantics. This is an uncoded product/host
+contract, not missing credentials. UserPort MCP aliases are not provider credentials.
+
+Branch code remains pushed through `76756aca`; no deployment or purchase occurred. Exact next action:
+implement a reachable P05 guided-template cost-scenario slice using only current, operator-verified
+`managed_service_model_entitlements`: server-validate the active model and expected operation count,
+project its pinned Naelao-credit price/version/expiry, and keep direct provider charges/full operating
+total explicitly unknown. Connect the controls to the activation-preview Shell caller. Keep rollout
+flags disabled and fetch before every push.
 
 
 ## Active continuation — 2026-11-14 (U05 main-runtime budget reservation linkage)

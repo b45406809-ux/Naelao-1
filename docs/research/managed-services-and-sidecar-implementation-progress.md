@@ -1,24 +1,31 @@
 # Managed services and sidecar implementation progress
 
-## Active continuation — 2026-11-14 (P05 Space-shared provider connection scope)
+## Active continuation — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
-Read-only source-to-caller trace found no safe implementation path for a Space-shared provider
-connection in the current contract. Migration 0112 requires `project_id`; Slack OAuth ticket/callback,
-connection status, Telegram/WhatsApp setup, routes and revocation all bind to a concrete project
-installation (`workers/agents/src/index.ts:5348–5790`; Shell APIs `apps/shell/src/lib/api.ts:2194–2220`).
-The signed SpaceBlueprint activation preview correctly labels required dependencies unsupported and
-blocks activation (`workers/spaces/src/blueprint-activation.ts:124–135`). A new Space-level reference
-would need an explicit authorizer, beneficiary-project/runtime set, shared-account/payer semantics,
-and revocation/drain behavior. Those are missing product/host authority choices, not unavailable
-credentials. UserPort MCP aliases do not represent these provider credentials. No source code or
-tests changed for this trace; no provider or live acceptance ran.
+The current official [Modal JavaScript/Go guide](https://modal.com/docs/guide/sdk-javascript-go) marks
+the SDK Beta. Its [official JS package README](https://github.com/modal-labs/modal-client/blob/main/js/README.md)
+requires a server-side Node 22+ or Deno/Bun host. The [Sandbox API](https://modal.com/docs/sdk/js/latest/Sandbox)
+documents create/exec/terminate, resource and region options; [official client source](https://github.com/modal-labs/modal-client/blob/main/js/src/client.ts)
+states its gRPC API is not public and may change without warning. [Billing docs](https://modal.com/docs/guide/billing)
+document Team/Enterprise programmatic reports with possible delays and report totals before
+credits/reservations/network-egress adjustments, not an immediate per-sandbox settlement receipt.
+This repo's Agents service is a Cloudflare Worker with no separate compatible host, binding, reachable
+caller or durable Modal journal; `modal-lifecycle.ts` is only a provider-neutral mock-tested scaffold.
+No adapter can safely be called implemented until the product selects/operates a compatible host and
+accepts the Beta/private API dependency. This is a host/product gate, not a credential blocker. No
+tests, provider calls, purchases or deployment ran for this review.
 
-Code remains pushed through `e8a53a97`; preserve untracked `infra/scripts/__pycache__/` and keep
-rollouts disabled. Exact next task: continue S5/MS08d by verifying current official Modal lifecycle,
-authentication, host/runtime, region, cancellation and pricing against `script-engine/modal-lifecycle.ts`.
-Implement only a reachable integration supported by a stable documented interface and compatible
-host; otherwise record the precise host/product gate and proceed to the next independent code gap.
-Fetch and safely integrate remote advances before every push.
+P05's prior Space-shared connection trace remains: `0112` and all Slack/Telegram/WhatsApp owner
+connection routes are project-installation scoped; signed SpaceBlueprint activation blocks required
+Space-shared connections. A Space authority model still needs an authorizer, beneficiary runtime set,
+shared-account/payer semantics, and revocation/drain behavior. This is not a credential blocker.
+
+Branch source remains pushed through `76756aca`; preserve untracked `infra/scripts/__pycache__/` and
+leave rollouts disabled. Exact next task: implement the P05 template activation-preview cost scenario
+from current verified `managed_service_model_entitlements`. Validate model and expected operation
+count server-side; display the exact Naelao-credit price version, allowance and expiry; keep provider
+charges and total operating cost unknown. Wire it through the Shell preview controls. Fetch and safely
+integrate remote advances before every push.
 
 
 ## Active continuation — 2026-11-14 (U05 main-runtime budget reservation linkage)

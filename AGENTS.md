@@ -16,31 +16,37 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 Space-shared provider connection contract)
+## Latest checkpoint — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
-The source-to-caller trace confirms this P05 item is not implementable safely on the existing
-provider-connection authority model. Migration `0112` requires `project_id` and keys connection rows
-by tenant/Space/installation/connection. Slack OAuth tickets and callback revalidation, Telegram and
-WhatsApp setup, owner status, routes, and revocation all identify a concrete project installation
-(`workers/agents/src/index.ts:5348–5790`; Shell API `apps/shell/src/lib/api.ts:2194–2220`). The signed
-Blueprint activation preview correctly marks required Space-shared connections unsupported and
-blocks activation (`workers/spaces/src/blueprint-activation.ts:124–135`). There is no Space-shared
-provider connection reference, runtime consumer, or revocation ownership contract. This is missing
-host/product scope design, not missing credentials. A safe design must choose the authorizing owner,
-runtime/project beneficiaries, provider-account sharing and payer, and revocation effects before a
-schema or caller can be added. UserPort MCP aliases remain unrelated provider credentials.
+P05's Space-shared provider connection gap is source-reconciled and recorded below: the current
+project-installation authority model cannot safely serve a Space-shared runtime without an explicit
+authorizer, beneficiary set, payer, and revocation/drain contract. This is not a credential blocker.
 
-Code remains pushed through `e8a53a97`; no source code changed in this checkpoint. Existing local U05
-evidence remains `bbf9186c` (36/36 focused tests, Agents/Shell typechecks, release/deployment
-validators and diff check); this P05 read-only trace ran no tests. No deployment, browser, provider or
-live acceptance occurred. Preserve untracked `infra/scripts/__pycache__/`; keep rollouts disabled.
+Current official Modal sources still establish a product/host contract gap. The [JavaScript/Go SDK
+guide](https://modal.com/docs/guide/sdk-javascript-go) marks the SDK Beta; the official [JS package
+README](https://github.com/modal-labs/modal-client/blob/main/js/README.md) requires server-side Node
+22+ or Deno/Bun. The official [Sandbox API](https://modal.com/docs/sdk/js/latest/Sandbox) documents
+create/exec/terminate, CPU/memory/GPU, timeout/idle limits, volumes, and region selection. The current
+official [client source](https://github.com/modal-labs/modal-client/blob/main/js/src/client.ts) says
+its gRPC API is not public and may change without warning. [Billing documentation](https://modal.com/docs/guide/billing)
+describes programmatic reports only for Team/Enterprise Workspaces, potentially delayed, and before
+credits/reservations/network-egress adjustments; it is not a per-sandbox actual-cost settlement
+receipt. Agents currently runs as a Cloudflare Worker with `nodejs_compat`; there is no separate Node
+22/Deno/Bun host, binding, adapter caller, or durable Modal operation store. The existing
+`modal-lifecycle.ts` is a provider-neutral scaffold with mocked tests, not a provider integration.
+Therefore no Modal adapter is reachable or safe to wire until Naelao selects and operates a compatible
+host and accepts dependence on the Beta/private API. No credentials were checked or required for this
+code/host review. No tests, deployment, purchase, or live provider acceptance ran.
 
-Exact next action: continue S5/MS08d by checking current official Modal lifecycle, authentication,
-hosting, regions, cancellation, and pricing against the repository's provider-neutral lifecycle
-scaffold. Implement a reachable adapter only for a stable documented interface and compatible host;
-otherwise record the precise product/host gate and move to another independently implementable
-requirement. Then continue all remaining S3–S9/U01–U12 and P01–P24 gaps. Fetch and safely integrate
-remote advances before every push; never force-push.
+P05 and MS08d remain PARTIAL; branch source is still pushed through `76756aca`. Preserve the untracked
+`infra/scripts/__pycache__/` and keep every rollout disabled.
+
+Exact next action: implement a reachable guided-template cost-scenario slice using only current,
+operator-verified `managed_service_model_entitlements`: server-validate the selected active model and
+expected model-operation count, project its pinned Naelao-credit price/version/expiry, and keep direct
+provider charges and the full operating total explicitly unknown. Connect the scenario controls to
+the activation-preview Shell caller. Then continue remaining S3–S9/U01–U12/P01–P24 code gaps. Fetch,
+integrate concurrent remote work safely, and push each coherent checkpoint without force.
 ## Previous checkpoint — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed to `origin/Mcbt5s-Backup-2` from
