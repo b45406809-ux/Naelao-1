@@ -102,8 +102,9 @@ export default function SpacesPage() {
   const [assistantEmailMode,setAssistantEmailMode]=React.useState<""|"none"|"naelao_managed"|"user_connected">("");
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
+  const [activationNotice, setActivationNotice] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
@@ -374,7 +375,7 @@ export default function SpacesPage() {
     if (!creds || !activationReview || !activationReview.preview.ready || activatingTemplate) return;
     const hasExtensionRequirements = activationReview.preview.extension_requirements.knowledge.length > 0 || activationReview.preview.extension_requirements.actions.length > 0;
     if (hasExtensionRequirements && activationReview.extensionRequirementsReviewed !== true) return;
-    setActivatingTemplate(true); setCreateError(null);
+    setActivatingTemplate(true); setCreateError(null); setActivationNotice(null);
     try {
       const approvedSharedFilesystem = Object.fromEntries(Object.entries(activationReview.filesystemGrantSelections ?? {}).flatMap(([extensionId, paths]) => {
         const dependency = activationReview.preview.dependencies.find(item => item.extension_id === extensionId);
@@ -392,8 +393,19 @@ export default function SpacesPage() {
         });
         return [[extensionId, grants]];
       }));
-      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
-        activationReview.applyCoordinationDefault === true, hasExtensionRequirements && activationReview.extensionRequirementsReviewed === true);
+      const result = await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
+        activationReview.applyCoordinationDefault === true, hasExtensionRequirements && activationReview.extensionRequirementsReviewed === true,
+        activationReview.applyCoordinationSingletonDefault === true);
+      if (result.coordinationSingletonPolicyApplication?.status === "active_duplicates") {
+        setActivationNotice("The Space Template was installed, but its singleton suggestion was not applied because multiple active facts use one of those keys. Resolve the duplicates in Space Settings; the owner policy was left unchanged.");
+        setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: false } : current);
+        return;
+      }
+      if (result.coordinationSingletonPolicyApplication?.status === "retry_in_settings") {
+        setActivationNotice("The Space Template was installed, but its singleton suggestion could not be saved. Review and apply it in Space Settings; existing owner rules remain unchanged.");
+        setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: false } : current);
+        return;
+      }
       setCreateOpen(false);
       window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}?next=settings`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
@@ -591,7 +603,7 @@ export default function SpacesPage() {
           <div className="page-title">Spaces</div>
           <div className="page-subtitle">Your Naelao workspaces.</div>
         </div>
-        <Button onClick={() => { setCreateError(null); setCreatedSpaceId(null); setActivationReview(null); setCreateOpen(true); }}>New Space</Button>
+        <Button onClick={() => { setCreateError(null); setActivationNotice(null); setCreatedSpaceId(null); setActivationReview(null); setCreateOpen(true); }}>New Space</Button>
       </div>
 
       {!loading && !listFailed && spaces.length > 0 && (
@@ -748,6 +760,9 @@ export default function SpacesPage() {
           </div>}
           <p style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>You can install additional extensions and configure the Space after it is created.</p>
           {createError && <p role="alert" style={{ margin: 0, fontSize: 12, color: "#dc2626" }}>{createError}</p>}
+          {activationNotice && activationReview && <p role="status" style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>
+            {activationNotice} <a href={`/p/${product.slug}/spaces/${activationReview.spaceId}?next=settings`}>Open Space Settings</a>.
+          </p>}
           {activationReview && <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, fontSize: 12 }}>
             <strong>{activationReview.preview.ready ? "Ready for your approval" : "Cannot install yet"}</strong>
             <p>This preview made no changes and granted no access.</p>
@@ -870,7 +885,7 @@ export default function SpacesPage() {
             {activationReview.preview.coordination_defaults && activationReview.preview.coordination_policy_current && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
               <strong>Space coordination default</strong>
               <p style={{ margin: "4px 0", color: "var(--text3)" }}>
-                This signed template suggests {activationReview.preview.coordination_defaults.memberFactsEnabled ? "allowing owners and admins to publish explicitly approved coordination facts to Space members" : "keeping new member-visible coordination facts disabled"}. These facts are advisory summaries; this setting never grants access to project files or services. Existing approved facts keep their individual visibility.
+                This signed template suggests {activationReview.preview.coordination_defaults.memberFactsEnabled === true ? "allowing owners and admins to publish explicitly approved coordination facts to Space members" : "keeping new member-visible coordination facts disabled"}. These facts are advisory summaries; this setting never grants access to project files or services. Existing approved facts keep their individual visibility.
               </p>
               {activationReview.preview.coordination_policy_current.revision > 0
                 ? <p role="status">This Space already has owner-configured coordination policy revision {activationReview.preview.coordination_policy_current.revision} ({activationReview.preview.coordination_policy_current.member_facts_enabled ? "member publication enabled" : "member publication disabled"}). The template will preserve it.</p>
@@ -881,6 +896,19 @@ export default function SpacesPage() {
                       onChange={event => setActivationReview(current => current ? { ...current, applyCoordinationDefault: event.target.checked } : current)} />
                     <span>Apply this suggested default to new member-visible coordination facts now. This requires explicit owner/admin approval and can be changed later in Space Settings.</span>
                   </label>}
+            </section>}
+            {activationReview.preview.coordination_defaults?.singletonCapabilityKeys && activationReview.preview.coordination_singleton_policy_current && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Suggested singleton rules for coordination facts</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>
+                This signed template suggests one active approved registry fact for each exact key: {activationReview.preview.coordination_defaults.singletonCapabilityKeys.join(", ")}. This rule covers coordination facts only; it does not reserve provider resources or grant access. You can change the policy later in Space Settings.
+              </p>
+              {activationReview.preview.coordination_singleton_policy_current.revision > 0
+                ? <p role="status">This Space already has owner-configured singleton policy revision {activationReview.preview.coordination_singleton_policy_current.revision} ({activationReview.preview.coordination_singleton_policy_current.singleton_capability_keys.join(", ") || "no keys enforced"}). The template will preserve it.</p>
+                : <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <input type="checkbox" checked={activationReview.applyCoordinationSingletonDefault === true}
+                    onChange={event => setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: event.target.checked } : current)} />
+                  <span>Apply these exact singleton rules to approved coordination facts now. This requires explicit owner/admin approval and will not replace an existing policy.</span>
+                </label>}
             </section>}
             <strong>Assistant channel availability defaults</strong>
             {activationReview.preview.assistant_channel_defaults

@@ -1,4 +1,4 @@
-import { validateAssistantChannelDefaults, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateAssistantChannelDefaults, validateBlueprintExtensionRequirements, validateBlueprintSetupSchema, validateSpaceCoordinationSingletonKeys, type AssistantChannelTemplateDefaults, type BlueprintSetupField, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 /** Attach one author's visual setup form to the exact exported project and validate it with the same
  * SDK contract used by activation. Caller-provided schemas remain data; no executable form logic is accepted. */
@@ -54,10 +54,18 @@ export function attachBlueprintAssistantChannelDefaults(
 export function attachBlueprintCoordinationDefaults(source: SpaceBlueprint, input: unknown): SpaceBlueprint {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("blueprint_coordination_defaults_invalid");
   const raw = input as Record<string, unknown>;
-  if (Object.keys(raw).length !== 1 || typeof raw.memberFactsEnabled !== "boolean")
+  if (Object.keys(raw).some(key => key !== "memberFactsEnabled" && key !== "singletonCapabilityKeys")
+    || (raw.memberFactsEnabled !== undefined && typeof raw.memberFactsEnabled !== "boolean"))
+    throw new Error("blueprint_coordination_defaults_invalid");
+  const hasSingletonKeys = raw.singletonCapabilityKeys !== undefined;
+  const singletonKeys = hasSingletonKeys ? validateSpaceCoordinationSingletonKeys(raw.singletonCapabilityKeys) : null;
+  if ((raw.memberFactsEnabled === undefined && !hasSingletonKeys) || (hasSingletonKeys && (!singletonKeys?.ok || singletonKeys.value.length === 0)))
     throw new Error("blueprint_coordination_defaults_invalid");
   const blueprint = structuredClone(source);
-  blueprint.coordinationDefaults = { memberFactsEnabled: raw.memberFactsEnabled };
+  blueprint.coordinationDefaults = {
+    ...(raw.memberFactsEnabled !== undefined ? { memberFactsEnabled: raw.memberFactsEnabled } : {}),
+    ...(singletonKeys?.ok ? { singletonCapabilityKeys: singletonKeys.value } : {}),
+  } as NonNullable<SpaceBlueprint["coordinationDefaults"]>;
   return blueprint;
 }
 

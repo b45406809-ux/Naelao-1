@@ -37,6 +37,10 @@ describe("Foundry dogfood Space Template", () => {
   it("authors a signed coordination suggestion and preserves it in resumable drafts", () => {
     const canvas = DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog!;
     expect(canvas).toContain("coordination-member-facts");
+    expect(canvas).toContain("coordination-singleton-keys");
+    expect(canvas).toContain("singletonCapabilityKeys");
+    expect(canvas).toContain("coordination_singleton_keys");
+    expect(canvas).toContain("collectCoordinationDefaults");
     expect(canvas).toContain("coordinationDefaults");
     expect(canvas).toContain("coordination_member_facts");
     expect(canvas).toContain("extension-requirements");

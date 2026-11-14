@@ -2816,10 +2816,20 @@ export function applySpaceTemplateSetupUpdate(spaceId: string, blueprintId: stri
     method: "POST", session, body: JSON.stringify({ ...input, confirmed: true, confirm_data_loss: input.confirm_data_loss === true }),
   });
 }
+export interface SpaceTemplateActivationResult extends Record<string, unknown> {
+  coordinationSingletonPolicyApplication?: {
+    status: "not_requested" | "applied" | "existing_policy_preserved" | "active_duplicates" | "retry_in_settings";
+    singleton_capability_keys?: string[];
+    revision?: number;
+  };
+}
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
-  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false, confirmExtensionRequirements = false): Promise<unknown> {
-  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
-    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues, apply_coordination_default: applyCoordinationDefault, extension_requirements_reviewed: confirmExtensionRequirements }),
+  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false,
+  confirmExtensionRequirements = false, applyCoordinationSingletonDefault = false): Promise<SpaceTemplateActivationResult> {
+  return apiFetch<SpaceTemplateActivationResult>(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
+    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues,
+      apply_coordination_default: applyCoordinationDefault, apply_coordination_singleton_default: applyCoordinationSingletonDefault,
+      extension_requirements_reviewed: confirmExtensionRequirements }),
   });
 }
 export interface SpaceTemplateSetupDraftSnapshot {
@@ -2872,8 +2882,9 @@ export function listSpaceTemplateInstallations(spaceId: string, session: Session
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
-  coordination_defaults: { memberFactsEnabled: boolean } | null;
+  coordination_defaults: { memberFactsEnabled?: boolean; singletonCapabilityKeys?: string[] } | null;
   coordination_policy_current: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null;
+  coordination_singleton_policy_current: { configured: boolean; singleton_capability_keys: string[]; revision: number } | null;
   setup_schema_version: 1 | 2 | null;
   setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
   assistant_channel_defaults: Pick<import("@naelao/agent-sdk").AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants"> | null;

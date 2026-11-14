@@ -20,6 +20,16 @@ describe("blueprint compiler", () => {
     expect(() => instantiateBlueprint({ ...valid, coordinationDefaults: { memberFactsEnabled: false, publishFacts: true } as never }, "space"))
       .toThrow("Invalid coordination defaults");
   });
+  it("accepts a bounded canonical singleton-key suggestion without requiring a visibility default", () => {
+    expect(instantiateBlueprint({ ...valid, coordinationDefaults: { singletonCapabilityKeys: ["service.phone", "official.website"] } }, "space").coordinationDefaults)
+      .toEqual({ singletonCapabilityKeys: ["official.website", "service.phone"] });
+    expect(() => instantiateBlueprint({ ...valid, coordinationDefaults: { singletonCapabilityKeys: ["Official.Website"] } }, "space"))
+      .toThrow("Invalid coordination defaults");
+    expect(() => instantiateBlueprint({ ...valid, coordinationDefaults: { singletonCapabilityKeys: ["official.website", "official.website"] } }, "space"))
+      .toThrow("Invalid coordination defaults");
+    expect(() => instantiateBlueprint({ ...valid, coordinationDefaults: { singletonCapabilityKeys: [] } }, "space"))
+      .toThrow("Invalid coordination defaults");
+  });
   it("requires dependency pins to name declared dependencies with valid release versions", () => {
     expect(() => instantiateBlueprint({ ...valid, requiredExtensionVersions: { ext_undeclared: "1.0.0" } }, "space")).toThrow("Invalid required extension version");
     expect(() => instantiateBlueprint({ ...valid, requiredExtensions: ["ext_demo"], requiredExtensionVersions: { ext_demo: "latest" } }, "space")).toThrow("Invalid required extension version");

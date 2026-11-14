@@ -3,6 +3,7 @@ import type { BlueprintExtensionActionRequirement, BlueprintExtensionKnowledgeRe
 import { validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning } from "./assistant-channels.js";
 import { PROJECT_KINDS } from "./canvas-runtime.js";
 import { validateBlueprintSetupSchema } from "./blueprint-setup-fields.js";
+import { validateSpaceCoordinationSingletonKeys } from "./space-coordination.js";
 
 const BLUEPRINT_EXTENSION_SCOPES = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const BLUEPRINT_PERMISSION_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
@@ -74,10 +75,22 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (copy.coordinationDefaults !== undefined) {
     const defaults = copy.coordinationDefaults as unknown;
     if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)
-      || Object.keys(defaults).some(key => key !== "memberFactsEnabled")
-      || typeof (defaults as { memberFactsEnabled?: unknown }).memberFactsEnabled !== "boolean") {
+      || Object.keys(defaults).some(key => key !== "memberFactsEnabled" && key !== "singletonCapabilityKeys")) {
       throw new Error("Invalid coordination defaults");
     }
+    const value = defaults as { memberFactsEnabled?: unknown; singletonCapabilityKeys?: unknown };
+    if (value.memberFactsEnabled !== undefined && typeof value.memberFactsEnabled !== "boolean") throw new Error("Invalid coordination defaults");
+    let singletonCapabilityKeys: string[] | undefined;
+    if (value.singletonCapabilityKeys !== undefined) {
+      const parsed = validateSpaceCoordinationSingletonKeys(value.singletonCapabilityKeys);
+      if (!parsed.ok || parsed.value.length === 0) throw new Error("Invalid coordination defaults");
+      singletonCapabilityKeys = parsed.value;
+    }
+    if (value.memberFactsEnabled === undefined && singletonCapabilityKeys === undefined) throw new Error("Invalid coordination defaults");
+    copy.coordinationDefaults = {
+      ...(value.memberFactsEnabled !== undefined ? { memberFactsEnabled: value.memberFactsEnabled } : {}),
+      ...(singletonCapabilityKeys ? { singletonCapabilityKeys } : {}),
+    } as NonNullable<SpaceBlueprint["coordinationDefaults"]>;
   }
   if (copy.requiredExtensionVersions !== undefined) {
     if (!copy.requiredExtensionVersions || typeof copy.requiredExtensionVersions !== "object" || Array.isArray(copy.requiredExtensionVersions)) throw new Error("Invalid required extension versions");

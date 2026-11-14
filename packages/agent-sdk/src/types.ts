@@ -296,8 +296,8 @@ export interface SpaceBlueprint {
   /** Optional signed, data-only migrations for owner-reviewed template setup updates. */
   setupMigrations?: BlueprintSetupMigration[];
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
-  /** Suggested initial Space coordination policy; member visibility still needs target-owner approval. */
-  coordinationDefaults?: { memberFactsEnabled: boolean };
+  /** Suggested initial Space coordination settings; target Space owners/admins must explicitly confirm. */
+  coordinationDefaults?: { memberFactsEnabled?: boolean; singletonCapabilityKeys?: string[] };
   /** Owner-reviewed references into exact signed dependency declarations; not runtime grants. */
   extensionRequirements?: BlueprintExtensionRequirements;
   id: string;

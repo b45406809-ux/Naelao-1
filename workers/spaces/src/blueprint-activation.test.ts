@@ -445,12 +445,15 @@ describe("Space Template activation preview", () => {
 
   it("activates a certified template through the host for a fresh Space", async () => {
     const secret = "fresh-space-activation-secret";
-    const artifact = blueprint({ id: "tpl_fresh_target", projects: [], requiredExtensions: [], requiredCredentials: [], coordinationDefaults: { memberFactsEnabled: true } });
+    const artifact = blueprint({ id: "tpl_fresh_target", projects: [], requiredExtensions: [], requiredCredentials: [],
+      coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["official.website", "service.phone"] } });
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `fresh-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-fresh");
     if (!certificate) throw new Error("test_certificate_not_issued");
     let activationCount = 0, activationBody: Record<string, unknown> | null = null, policyEnabled = false, policyRevision = 0;
     let policyWrite: Record<string, unknown> | null = null;
+    let singletonPolicyRevision = 0, singletonPolicyKeys: string[] = [];
+    let singletonPolicyWrite: Record<string, unknown> | null = null;
     let spaceConfig = "{}";
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
@@ -463,6 +466,15 @@ describe("Space Template activation preview", () => {
         policyEnabled = policyWrite.member_facts_enabled === true; policyRevision = 1;
         return Response.json({ configured: true, member_facts_enabled: policyEnabled, revision: policyRevision, active_member_facts: 0 });
       }
+      if (url.pathname === "/space-coordination-singletons" && request.method === "GET") return Response.json({ configured: singletonPolicyRevision > 0,
+        singleton_capability_keys: singletonPolicyKeys, revision: singletonPolicyRevision, reservations: [] });
+      if (url.pathname === "/space-coordination-singletons" && request.method === "PUT") {
+        singletonPolicyWrite = await request.json() as Record<string, unknown>;
+        if (singletonPolicyRevision !== 0 || singletonPolicyWrite.expected_revision !== 0)
+          return Response.json({ error_code: "coordination_singleton_policy_revision_conflict" }, { status: 409 });
+        singletonPolicyKeys = singletonPolicyWrite.singleton_capability_keys as string[]; singletonPolicyRevision = 1;
+        return Response.json({ configured: true, singleton_capability_keys: singletonPolicyKeys, revision: singletonPolicyRevision, reservations: [] });
+      }
       if (url.pathname === "/blueprints/instantiate") { activationCount++; activationBody = await request.json() as Record<string, unknown>; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
       return new Response("not found", { status: 404 });
     } };
@@ -473,21 +485,29 @@ describe("Space Template activation preview", () => {
     const preview = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
     expect(preview.status).toBe(200);
     expect(await preview.json()).toMatchObject({ ready: true, target_space_id: "fresh-space", requires_human_activation: true,
-      coordination_defaults: { memberFactsEnabled: true }, coordination_policy_current: { configured: false, revision: 0, member_facts_enabled: false } });
+      coordination_defaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["official.website", "service.phone"] },
+      coordination_policy_current: { configured: false, revision: 0, member_facts_enabled: false },
+      coordination_singleton_policy_current: { configured: false, revision: 0, singleton_capability_keys: [] } });
     spaceConfig = JSON.stringify({ template_listing_id: "listing-selected" });
     const activation = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers,
-      body: JSON.stringify({ apply_coordination_default: true }) }), env, {} as ExecutionContext);
+      body: JSON.stringify({ apply_coordination_default: true, apply_coordination_singleton_default: true }) }), env, {} as ExecutionContext);
     expect(activation.status).toBe(201);
     expect(activationCount).toBe(1);
     expect(activationBody).toMatchObject({ listing_id: "listing-selected", blueprint: { id: artifact.id } });
     expect(policyWrite).toMatchObject({ member_facts_enabled: true, expected_revision: 0, actor_id: "owner", actor_role: "owner", confirmed: true });
     expect(policyEnabled).toBe(true);
-    expect(await activation.json()).toMatchObject({ coordinationPolicyApplication: { status: "applied", member_facts_enabled: true, revision: 1 } });
+    expect(singletonPolicyWrite).toMatchObject({ singleton_capability_keys: ["official.website", "service.phone"], expected_revision: 0,
+      actor_id: "owner", actor_role: "owner", confirmed: true });
+    expect(await activation.json()).toMatchObject({ coordinationPolicyApplication: { status: "applied", member_facts_enabled: true, revision: 1 },
+      coordinationSingletonPolicyApplication: { status: "applied", singleton_capability_keys: ["official.website", "service.phone"], revision: 1 } });
+    singletonPolicyKeys = ["owner.custom_resource"];
+    singletonPolicyRevision = 2;
     const replay = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers,
-      body: JSON.stringify({ apply_coordination_default: true }) }), env, {} as ExecutionContext);
+      body: JSON.stringify({ apply_coordination_default: true, apply_coordination_singleton_default: true }) }), env, {} as ExecutionContext);
     expect(replay.status).toBe(201);
     expect(policyEnabled).toBe(true);
-    expect(await replay.json()).toMatchObject({ coordinationPolicyApplication: { status: "existing_policy_preserved", member_facts_enabled: true, revision: 1 } });
+    expect(await replay.json()).toMatchObject({ coordinationPolicyApplication: { status: "existing_policy_preserved", member_facts_enabled: true, revision: 1 },
+      coordinationSingletonPolicyApplication: { status: "existing_policy_preserved", singleton_capability_keys: ["owner.custom_resource"], revision: 2 } });
   });
 
   it("cannot bypass required runtime blockers by calling activation directly", async () => {

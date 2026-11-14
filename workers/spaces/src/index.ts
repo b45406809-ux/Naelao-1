@@ -45,7 +45,7 @@ import { registerGraduationRoutes } from "./routes/graduation.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
   DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, instantiateBlueprint, validateBlueprintSetupMigrationCompatibility,
-  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateExtensionManifest, resolveExtensionDependencyClosure,
+  validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupValues, validateSpaceCoordinationSingletonKeys, validateExtensionManifest, resolveExtensionDependencyClosure,
   type BlueprintSetupMigration, type BlueprintSetupValues, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
@@ -1358,7 +1358,7 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const trustedInstallations = await trustedExtensionInstallations(c.env, tenantId, spaceId, rows.installations ?? []);
   const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedInstallations), await installableSpaceExtensionPins(), runtimeReadiness);
   let coordinationPolicyCurrent: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null = null;
-  if (preview.coordination_defaults) {
+  if (preview.coordination_defaults?.memberFactsEnabled !== undefined) {
     const coordinationPolicyResponse = await stub.fetch(new Request(`http://space-do/space-coordination-policy?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId })}`));
     if (!coordinationPolicyResponse.ok) return c.json({ error_code: "coordination_policy_unavailable" }, 503);
     const current = await coordinationPolicyResponse.json<{ configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number }>();
@@ -1369,6 +1369,16 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
       active_member_facts: Number.isSafeInteger(current.active_member_facts) && current.active_member_facts >= 0 ? current.active_member_facts : 0,
     };
   }
+  let coordinationSingletonPolicyCurrent: { configured: boolean; singleton_capability_keys: string[]; revision: number } | null = null;
+  if (preview.coordination_defaults?.singletonCapabilityKeys) {
+    const singletonResponse = await stub.fetch(new Request(`http://space-do/space-coordination-singletons?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId })}`));
+    if (!singletonResponse.ok) return c.json({ error_code: "coordination_singleton_policy_unavailable" }, 503);
+    const current = await singletonResponse.json<{ configured?: unknown; singleton_capability_keys?: unknown; revision?: unknown }>();
+    const keys = validateSpaceCoordinationSingletonKeys(current.singleton_capability_keys);
+    if (!keys.ok || !Number.isSafeInteger(current.revision) || Number(current.revision) < 0)
+      return c.json({ error_code: "coordination_singleton_policy_unavailable" }, 503);
+    coordinationSingletonPolicyCurrent = { configured: current.configured === true, singleton_capability_keys: keys.value, revision: Number(current.revision) };
+  }
   const conversationsPerMonth = c.req.query("conversations_per_month"), interactionsPerConversation = c.req.query("interactions_per_conversation");
   let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
   if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined) {
@@ -1378,7 +1388,8 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
   }
   const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);
-  return c.json({ ...preview, coordination_policy_current: coordinationPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
+  return c.json({ ...preview, coordination_policy_current: coordinationPolicyCurrent,
+    coordination_singleton_policy_current: coordinationSingletonPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
     cost_estimate: costEstimate,
@@ -1467,9 +1478,11 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; extension_requirements_reviewed?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; extension_requirements_reviewed?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown; apply_coordination_singleton_default?: unknown; extension_requirements_reviewed?: unknown }));
   if (requestBody.apply_coordination_default !== undefined && typeof requestBody.apply_coordination_default !== "boolean")
     return c.json({ error_code: "coordination_default_confirmation_invalid" }, 400);
+  if (requestBody.apply_coordination_singleton_default !== undefined && typeof requestBody.apply_coordination_singleton_default !== "boolean")
+    return c.json({ error_code: "coordination_singleton_default_confirmation_invalid" }, 400);
   if (requestBody.extension_requirements_reviewed !== undefined && typeof requestBody.extension_requirements_reviewed !== "boolean")
     return c.json({ error_code: "extension_requirements_confirmation_invalid" }, 400);
   const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
@@ -1487,8 +1500,10 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const hasExtensionRequirements = (blueprint.extensionRequirements?.knowledge?.length ?? 0) > 0 || (blueprint.extensionRequirements?.actions?.length ?? 0) > 0;
   if (hasExtensionRequirements && requestBody.extension_requirements_reviewed !== true)
     return c.json({ error_code: "extension_requirements_confirmation_required" }, 400);
-  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults === undefined)
+  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults?.memberFactsEnabled === undefined)
     return c.json({ error_code: "coordination_default_not_declared" }, 400);
+  if (requestBody.apply_coordination_singleton_default === true && !blueprint.coordinationDefaults?.singletonCapabilityKeys?.length)
+    return c.json({ error_code: "coordination_singleton_default_not_declared" }, 400);
   let setupValues: BlueprintSetupValues;
   try { setupValues = validateBlueprintSetupValues(blueprint, requestBody.setup_values ?? {}); }
   catch (error) { return c.json({ error_code: "template_setup_values_invalid", message: (error as Error).message.slice(0, 240) }, 400); }
@@ -1646,7 +1661,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     }
   }
   let coordinationPolicyApplication: { status: "not_requested" | "applied" | "existing_policy_preserved" | "needs_manual_unpublish" | "retry_in_settings"; member_facts_enabled?: boolean; revision?: number } = { status: "not_requested" };
-  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults) {
+  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults?.memberFactsEnabled !== undefined) {
     const actorRole = identity.role === "product_end_user"
       ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
       : identity.role;
@@ -1677,7 +1692,44 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
       } else coordinationPolicyApplication = { status: "retry_in_settings" };
     }
   }
-  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication},{status:response.status});
+  let coordinationSingletonPolicyApplication: { status: "not_requested" | "applied" | "existing_policy_preserved" | "active_duplicates" | "retry_in_settings"; singleton_capability_keys?: string[]; revision?: number } = { status: "not_requested" };
+  if (requestBody.apply_coordination_singleton_default === true && blueprint.coordinationDefaults?.singletonCapabilityKeys) {
+    const actorRole = identity.role === "product_end_user"
+      ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+      : identity.role;
+    if (actorRole !== "owner" && actorRole !== "admin") coordinationSingletonPolicyApplication = { status: "retry_in_settings" };
+    else {
+      const singletonQuery = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId });
+      const policyResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/space-coordination-singletons?${singletonQuery}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ singleton_capability_keys: blueprint.coordinationDefaults.singletonCapabilityKeys, expected_revision: 0,
+          actor_id: identity.userId, actor_role: actorRole, confirmed: true }),
+      }));
+      if (policyResponse.ok) {
+        const saved = await policyResponse.json<{ singleton_capability_keys?: unknown; revision?: unknown }>().catch(() => ({} as { singleton_capability_keys?: unknown; revision?: unknown }));
+        const keys = validateSpaceCoordinationSingletonKeys(saved.singleton_capability_keys);
+        coordinationSingletonPolicyApplication = keys.ok
+          ? { status: "applied", singleton_capability_keys: keys.value,
+            revision: Number.isSafeInteger(saved.revision) && Number(saved.revision) >= 0 ? Number(saved.revision) : 1 }
+          : { status: "retry_in_settings" };
+      } else if (policyResponse.status === 409) {
+        const failure = await policyResponse.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));
+        if (failure.error_code === "coordination_singleton_active_duplicates") {
+          coordinationSingletonPolicyApplication = { status: "active_duplicates" };
+        } else {
+          const current = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/space-coordination-singletons?${singletonQuery}`));
+          const state = current.ok
+            ? await current.json<{ singleton_capability_keys?: unknown; revision?: unknown }>().catch(() => ({} as { singleton_capability_keys?: unknown; revision?: unknown }))
+            : {};
+          const keys = validateSpaceCoordinationSingletonKeys(state.singleton_capability_keys);
+          coordinationSingletonPolicyApplication = keys.ok && Number.isSafeInteger(state.revision)
+            ? { status: "existing_policy_preserved", singleton_capability_keys: keys.value, revision: Number(state.revision) }
+            : { status: "retry_in_settings" };
+        }
+      } else coordinationSingletonPolicyApplication = { status: "retry_in_settings" };
+    }
+  }
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication,coordinationSingletonPolicyApplication},{status:response.status});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,

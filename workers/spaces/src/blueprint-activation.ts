@@ -20,7 +20,7 @@ export interface BlueprintActivationDependency {
 
 export interface BlueprintActivationPreview {
   ready: boolean;
-  coordination_defaults: { memberFactsEnabled: boolean } | null;
+  coordination_defaults: SpaceBlueprint["coordinationDefaults"] | null;
   dependencies: BlueprintActivationDependency[];
   extension_connections: Array<{ extension_id: string; connection_id: string; provider: string; purpose: string; required: boolean; status: "unsupported" | "optional_unsupported" }>;
   extension_requirements: {
@@ -175,7 +175,7 @@ export function previewBlueprintActivation(
     : null;
   return {
     ready: blockers.length === 0,
-    coordination_defaults: blueprint.coordinationDefaults ? { ...blueprint.coordinationDefaults } : null,
+    coordination_defaults: blueprint.coordinationDefaults ? structuredClone(blueprint.coordinationDefaults) : null,
     dependencies,
     extension_connections,
     extension_requirements: { knowledge: knowledgeRequirements, actions: actionRequirements },

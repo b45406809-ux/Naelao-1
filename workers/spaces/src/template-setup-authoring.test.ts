@@ -131,6 +131,16 @@ describe("visual Template setup authoring export", () => {
     expect(() => attachBlueprintCoordinationDefaults(source, { memberFactsEnabled: false, revealProjects: true })).toThrow("blueprint_coordination_defaults_invalid");
   });
 
+  it("attaches only canonical bounded singleton-key suggestions, including without a member visibility default", () => {
+    const source = sourceBlueprint();
+    const authored = attachBlueprintCoordinationDefaults(source, { singletonCapabilityKeys: ["service.phone", "official.website"] });
+    expect(authored.coordinationDefaults).toEqual({ singletonCapabilityKeys: ["official.website", "service.phone"] });
+    expect(source.coordinationDefaults).toBeUndefined();
+    expect(() => attachBlueprintCoordinationDefaults(source, { singletonCapabilityKeys: [] })).toThrow("blueprint_coordination_defaults_invalid");
+    expect(() => attachBlueprintCoordinationDefaults(source, { singletonCapabilityKeys: ["official.website", "official.website"] })).toThrow("blueprint_coordination_defaults_invalid");
+    expect(() => attachBlueprintCoordinationDefaults(source, { singletonCapabilityKeys: ["Official.Website"] })).toThrow("blueprint_coordination_defaults_invalid");
+  });
+
   it("authors only exact dependency knowledge and action references", () => {
     const source = sourceBlueprint();
     source.requiredExtensions = ["ext_support"];
@@ -166,7 +176,7 @@ describe("visual Template setup authoring export", () => {
       body: JSON.stringify({ projectId: "support", requiredExtensions: [], name: "Support", description: "Support template",
         setupSchemaVersion: 2, setupFields,
         assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
-        coordinationDefaults: { memberFactsEnabled: true },
+        coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["service.phone", "official.website"] },
         extensionRequirements,
         stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
@@ -178,7 +188,7 @@ describe("visual Template setup authoring export", () => {
     const payload = JSON.parse(h.writes[0]!.text) as { blueprint: SpaceBlueprint };
     expect(payload.blueprint).toMatchObject({ setupSchemaVersion: 2, projects: expect.arrayContaining([expect.objectContaining({ id: "support", setupFields })]),
       assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
-      coordinationDefaults: { memberFactsEnabled: true },
+      coordinationDefaults: { memberFactsEnabled: true, singletonCapabilityKeys: ["official.website", "service.phone"] },
       extensionRequirements,
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
   });
