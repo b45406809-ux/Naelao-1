@@ -14143,6 +14143,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         has_canvas: Boolean(canvas),
         name: gadgetName ?? canvas?.id ?? row.extension_id, requested_shared_filesystem: manifest.shared_filesystem ?? [],
         dependencies: manifest.dependencies ?? [],
+        features: [
+          ...manifest.commands.map(command => ({ kind: "command", id: command.name })),
+          ...manifest.daemons.map(daemon => ({ kind: "workflow", id: daemon.id, name: daemon.name })),
+          ...(manifest.bundle?.primitives ?? []).map(primitive => ({ kind: primitive.kind, id: primitive.id,
+            ...(primitive.kind === "channel" && "provider" in primitive ? { provider: primitive.provider } : {}) })),
+        ].slice(0, 128),
         publisher: { id: row.publisher_id, key_id: row.publisher_key_id }, created_at: row.created_at };
     }));
     return Response.json({ releases: releases.filter((row): row is NonNullable<typeof row> => row !== null) });

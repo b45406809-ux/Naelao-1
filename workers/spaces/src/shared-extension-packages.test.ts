@@ -37,6 +37,7 @@ function harness(activePublisher = true, artifactSource = html, microAppStatus =
     const path = new URL(request.url).pathname;
     if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: release.extension_id, version: release.version,
       manifest_sha256: await digestExtensionManifest(manifest), permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements,
+      features: [{ kind: "canvas", id: "voice_dashboard" }, { kind: "channel", id: "phone_handler", provider: "phone" }],
       has_canvas: true, name: "voice_dashboard", requested_shared_filesystem: [], publisher: { id: "pub_voice", key_id: "a".repeat(64) } }] });
     if (path === "/extension-package-release") return Response.json({ release });
     if (path === "/extension-installations") return Response.json({ installations: installedRows.filter(row => row.status !== "removed") });
@@ -439,7 +440,8 @@ describe("signed Space-shared extension packages", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toMatchObject({ extensions: [{ id: "ext_customer_voice", name: "voice_dashboard", version: "1.2.0",
       manifest_sha256: await digestExtensionManifest(manifest), publisher_id: "pub_voice", publisher_key_id: "a".repeat(64),
-      permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements }] });
+      permissions: manifest.declaredPermissions, capabilities: manifest.capabilityRequirements,
+      features: [{ kind: "canvas", id: "voice_dashboard" }, { kind: "channel", id: "phone_handler", provider: "phone" }] }] });
 
     const denied = await spacesWorker.fetch(await signedRequest(path, "GET", undefined, "member"), h.env);
     expect(denied.status).toBe(403);

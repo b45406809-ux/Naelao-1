@@ -27,6 +27,8 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("collectAssistantChannelDefaults");
     expect(foundry).toContain("blueprint.dependencies");
     expect(foundry).toContain("manifest_sha256");
+    expect(foundry).toContain("Declared package features (installed together; no per-feature grant)");
+    expect(foundry).not.toContain('id="required-extensions"');
     expect(DOGFOOD_EXTENSIONS.find(manifest => manifest.id === "ext_foundry_catalog")?.capabilityRequirements).toContain("blueprint.dependencies");
     expect(foundry).toContain("do not connect accounts");
     expect(foundry).toContain("setup-form-preview");

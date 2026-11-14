@@ -674,7 +674,7 @@ app.get("/spaces/:spaceId/template-extension-candidates", async c => {
   if (!installedResponse.ok || !catalogResponse.ok) return c.json({ error_code: "template_extension_candidates_unavailable" }, 503);
   const installed = await readBoundedResponseJson<{ extensions?: Array<{ manifest?: unknown }> }>(installedResponse, 2 * 1024 * 1024).catch(() => null);
   const catalog = await readBoundedResponseJson<{ releases?: Array<{ extension_id?: unknown; version?: unknown; manifest_sha256?: unknown;
-    name?: unknown; permissions?: unknown; capabilities?: unknown; publisher?: { id?: unknown; key_id?: unknown } }> }>(catalogResponse, 2 * 1024 * 1024).catch(() => null);
+    name?: unknown; permissions?: unknown; capabilities?: unknown; features?: unknown; publisher?: { id?: unknown; key_id?: unknown } }> }>(catalogResponse, 2 * 1024 * 1024).catch(() => null);
   if (!installed || !catalog || !Array.isArray(installed.extensions) || !Array.isArray(catalog.releases))
     return c.json({ error_code: "template_extension_candidates_unavailable" }, 503);
   const installedDigests = new Map<string, string>();
@@ -700,6 +700,14 @@ app.get("/spaces/:spaceId/template-extension-candidates", async c => {
     publisher_id: release.publisher!.id as string, publisher_key_id: release.publisher!.key_id as string,
     permissions: Array.isArray(release.permissions) ? release.permissions.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
     capabilities: Array.isArray(release.capabilities) ? release.capabilities.filter((item): item is string => typeof item === "string").slice(0, 128) : [],
+    features: Array.isArray(release.features) ? release.features.flatMap(item => {
+      if (!item || typeof item !== "object") return [];
+      const feature = item as Record<string, unknown>;
+      if (!["command", "workflow", "canvas", "gadget", "channel", "container"].includes(String(feature.kind))
+        || typeof feature.id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(feature.id)) return [];
+      return [{ kind: String(feature.kind), id: feature.id, ...(typeof feature.name === "string" ? { name: feature.name.slice(0, 100) } : {}),
+        ...(typeof feature.provider === "string" ? { provider: feature.provider.slice(0, 80) } : {}) }];
+    }).slice(0, 128) : [],
   })).sort((a, b) => a.id.localeCompare(b.id));
   return c.json({ extensions }, 200, { "cache-control": "private, no-store" });
 });
