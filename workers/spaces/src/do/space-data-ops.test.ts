@@ -246,12 +246,21 @@ describe("SpaceDO owner data operations", () => {
     await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
     const key = "spaces/space-a/projects/project-a/assets/readme-a.txt", secondKey = "spaces/space-a/projects/project-a/assets/readme-b.txt";
     const extensionArtifactKey = "spaces/space-a/extensions/ext_example/1.0.0/dashboard.html";
+    const agentConfigKeys = ["agents.md", "scripts.json", "skills.json", "system-prompt.md"].map(name => `spaces/space-a/agents/agent-a/${name}`);
+    const assistantWorkspaceKey = "spaces/space-a/workspace/reports/summary.md";
+    const learnedSkillKeys = ["code.ts", "SCRIPT.md"].map(name => `spaces/space-a/scripts/research/${name}`);
     const otherSpaceKey = "spaces/space-b/projects/project-b/assets/private.txt";
     const original = new TextEncoder().encode("canonical workspace object contents"), secondOriginal = new TextEncoder().encode("second canonical workspace object");
     const extensionArtifact = new TextEncoder().encode("<main>signed package dashboard artifact</main>");
+    const agentConfigOriginals = agentConfigKeys.map((_, index) => new TextEncoder().encode(`agent configuration ${index + 1}`));
+    const assistantWorkspaceOriginal = new TextEncoder().encode("Space Assistant report");
+    const learnedSkillOriginals = learnedSkillKeys.map((_, index) => new TextEncoder().encode(`learned skill source ${index + 1}`));
     await r2.put(key, original, { httpMetadata: { contentType: "text/plain", cacheControl: "private, max-age=60", cacheExpiry: new Date("2027-01-02T03:04:05.000Z") }, customMetadata: { uploadedBy: "owner-a" } });
     await r2.put(secondKey, secondOriginal);
     await r2.put(extensionArtifactKey, extensionArtifact, { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { releaseVersion: "1.0.0" } });
+    for (const [index, agentConfigKey] of agentConfigKeys.entries()) await r2.put(agentConfigKey, agentConfigOriginals[index]!);
+    await r2.put(assistantWorkspaceKey, assistantWorkspaceOriginal);
+    for (const [index, learnedSkillKey] of learnedSkillKeys.entries()) await r2.put(learnedSkillKey, learnedSkillOriginals[index]!);
     await r2.put(otherSpaceKey, new TextEncoder().encode("must stay outside the archive"));
 
     const exported = await post({ action: "export", request_id: "workspace-object-archive-1" });
@@ -259,16 +268,19 @@ describe("SpaceDO owner data operations", () => {
     const { archive_id: archiveId } = await exported.json() as { archive_id: string };
     const archiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
     const archivedPayload = await decodeSpaceArchive(r2.objects.get(archiveKey)!.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
-    expect(archivedPayload.objectReferences.map(ref => ref.key)).toEqual([key, secondKey, extensionArtifactKey]);
-    expect(archivedPayload.objectSnapshots).toHaveLength(3);
+    expect(archivedPayload.objectReferences.map(ref => ref.key)).toEqual([key, secondKey, extensionArtifactKey, ...agentConfigKeys, assistantWorkspaceKey, ...learnedSkillKeys]);
+    expect(archivedPayload.objectSnapshots).toHaveLength(10);
     await r2.delete(key);
     await r2.delete(secondKey);
     await r2.delete(extensionArtifactKey);
+    for (const agentConfigKey of agentConfigKeys) await r2.delete(agentConfigKey);
+    await r2.delete(assistantWorkspaceKey);
+    for (const learnedSkillKey of learnedSkillKeys) await r2.delete(learnedSkillKey);
 
     const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
     expect(previewResponse.status).toBe(200);
     const preview = await previewResponse.json() as { preview_id: string; object_restore_required_count: number };
-    expect(preview.object_restore_required_count).toBe(3);
+    expect(preview.object_restore_required_count).toBe(10);
 
     await r2.put(key, new TextEncoder().encode("concurrent replacement must not be overwritten"));
     const conflicted = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
@@ -285,14 +297,21 @@ describe("SpaceDO owner data operations", () => {
 
     const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(restored.status).toBe(200);
-    expect(await restored.json()).toMatchObject({ restored_object_count: 3 });
+    expect(await restored.json()).toMatchObject({ restored_object_count: 10 });
     expect(new Uint8Array(await (await r2.get(key))!.arrayBuffer())).toEqual(original);
     expect(new Uint8Array(await (await r2.get(secondKey))!.arrayBuffer())).toEqual(secondOriginal);
     expect(new Uint8Array(await (await r2.get(extensionArtifactKey))!.arrayBuffer())).toEqual(extensionArtifact);
+    for (const [index, agentConfigKey] of agentConfigKeys.entries()) {
+      expect(new Uint8Array(await (await r2.get(agentConfigKey))!.arrayBuffer())).toEqual(agentConfigOriginals[index]);
+    }
+    expect(new Uint8Array(await (await r2.get(assistantWorkspaceKey))!.arrayBuffer())).toEqual(assistantWorkspaceOriginal);
+    for (const [index, learnedSkillKey] of learnedSkillKeys.entries()) {
+      expect(new Uint8Array(await (await r2.get(learnedSkillKey))!.arrayBuffer())).toEqual(learnedSkillOriginals[index]);
+    }
     expect(r2.objects.get(extensionArtifactKey)).toMatchObject({ httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { releaseVersion: "1.0.0" } });
     expect(r2.objects.get(key)).toMatchObject({ httpMetadata: { contentType: "text/plain", cacheControl: "private, max-age=60", cacheExpiry: new Date("2027-01-02T03:04:05.000Z") }, customMetadata: { uploadedBy: "owner-a" } });
     expect(r2.objects.has(otherSpaceKey)).toBe(true);
-    expect(storage.sql.exec<{ status: string; restored_object_count: number }>("SELECT status,restored_object_count FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]).toEqual({ status: "completed", restored_object_count: 3 });
+    expect(storage.sql.exec<{ status: string; restored_object_count: number }>("SELECT status,restored_object_count FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]).toEqual({ status: "completed", restored_object_count: 10 });
   });
 
   it("retries a failed archive write with the same request and archive identity", async () => {

@@ -3656,7 +3656,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       const objectReferences: Array<{ key: string; etag: string; size: number }> = [];
       if (kind === "full") {
-        for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`, `spaces/${spaceId}/extensions/`]) {
+        for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`, `spaces/${spaceId}/extensions/`, `spaces/${spaceId}/agents/`, `spaces/${spaceId}/workspace/`, `spaces/${spaceId}/scripts/`]) {
           let cursor: string | undefined;
           do {
             const page = await this.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
