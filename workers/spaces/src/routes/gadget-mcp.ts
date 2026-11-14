@@ -221,7 +221,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       ));
       if (!phoneStatus.ok) return c.json({ error_code: phoneStatus.status === 403 ? "phone_dashboard_forbidden" : "phone_dashboard_data_unavailable" }, phoneStatus.status === 403 ? 403 : 503);
       const status = await readBoundedResponseJson<{
-        extension_lines?: Array<{ id?: unknown; provider?: unknown; phone_number?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown }>;
+        extension_lines?: Array<{ id?: unknown; provider?: unknown; phone_number?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown; speech_input_allowed?: unknown }>;
         recent_telnyx_extension_calls?: Array<{ binding_id?: unknown; state?: unknown; turn_count?: unknown; started_at?: unknown;
           duration_seconds?: unknown; caller_hint?: unknown; cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; leg_count?: unknown } }>;
       }>(phoneStatus, 512 * 1024);
@@ -249,6 +249,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         });
       const safeLines = lines.map(line => ({ provider: line.provider, status: line.status,
         handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
+        speech_input_allowed: line.provider === "twilio" && line.speech_input_allowed === true,
         number_hint: typeof line.phone_number === "string" && line.phone_number.length >= 4 ? `•••• ${line.phone_number.slice(-4)}` : null }));
       return new Response(JSON.stringify({ installation_status: safeLines.some(line => line.handler_status === "active") ? "assigned" : "not_assigned",
         signed_release: { extension_id: runtime.extensionId, version: runtime.releaseVersion, publisher_id: runtime.publisherId,
@@ -265,16 +266,18 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (c.req.method !== "POST") return c.json({ error_code: "method_not_allowed" }, 405);
     if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
-    let body: { event_type?: unknown; digits?: unknown };
+    let body: { event_type?: unknown; digits?: unknown; input?: unknown };
     try {
-      const bytes = await readBoundedRequestBytes(c.req.raw, 4 * 1024);
+      const bytes = await readBoundedRequestBytes(c.req.raw, 12 * 1024);
       body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body;
     } catch { return c.json({ error_code: "bad_request" }, 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)
-      || Object.keys(body).some(key => !["event_type", "digits"].includes(key))
-      || (body.event_type !== "call.received" && body.event_type !== "call.digits")
-      || (body.event_type === "call.received" && body.digits !== undefined)
-      || (body.event_type === "call.digits" && (typeof body.digits !== "string" || !/^[0-9]{1,8}$/.test(body.digits))))
+      || Object.keys(body).some(key => !["event_type", "digits", "input"].includes(key))
+      || (body.event_type !== "call.received" && body.event_type !== "call.digits" && body.event_type !== "call.speech")
+      || (body.event_type === "call.received" && (body.digits !== undefined || body.input !== undefined))
+      || (body.event_type === "call.digits" && (typeof body.digits !== "string" || !/^[0-9]{1,8}$/.test(body.digits) || body.input !== undefined))
+      || (body.event_type === "call.speech" && (typeof body.input !== "string" || !body.input.trim()
+        || new TextEncoder().encode(body.input).byteLength > 2_000 || body.input.includes("\0") || body.digits !== undefined)))
       return c.json({ error_code: "phone_simulation_input_invalid" }, 400);
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
@@ -297,15 +300,18 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const phoneStatus = await c.env.AGENTS_WORKER.fetch(new Request(
         `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-status`, { headers }));
       if (!phoneStatus.ok) return c.json({ error_code: phoneStatus.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_data_unavailable" }, phoneStatus.status === 403 ? 403 : 503);
-      const status = await readBoundedResponseJson<{ extension_lines?: Array<{ id?: unknown; provider?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown }> }>(phoneStatus, 512 * 1024);
+      const status = await readBoundedResponseJson<{ extension_lines?: Array<{ id?: unknown; provider?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown; speech_input_allowed?: unknown }> }>(phoneStatus, 512 * 1024);
       const matchingLines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
         .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
           && (line.provider === "telnyx" || line.provider === "twilio") && line.status === "active" && line.handler_status === "active");
       if (matchingLines.length !== 1) return c.json({ error_code: matchingLines.length ? "phone_simulation_line_ambiguous" : "phone_simulation_line_unavailable" }, 409);
+      if (body.event_type === "call.speech" && matchingLines[0]!.provider !== "twilio") return c.json({ error_code: "phone_simulation_speech_unsupported_for_provider" }, 409);
+      if (body.event_type === "call.speech" && matchingLines[0]!.speech_input_allowed !== true) return c.json({ error_code: "phone_simulation_speech_disabled" }, 409);
       const simulation = await c.env.AGENTS_WORKER.fetch(new Request(
         `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-handler-test`,
         { method: "POST", headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ action: "phone-handler-test", binding_id: matchingLines[0]!.id, event_type: body.event_type,
+            ...(body.event_type === "call.speech" ? { input: (body.input as string).trim() } : {}),
             ...(body.event_type === "call.digits" ? { digits: body.digits } : {}) }) }
       ));
       if (!simulation.ok) return c.json({ error_code: simulation.status === 403 ? "phone_simulation_forbidden" : "phone_simulation_failed" }, simulation.status === 403 ? 403 : 409);

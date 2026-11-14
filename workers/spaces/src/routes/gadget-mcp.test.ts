@@ -202,7 +202,7 @@ describe("gadget MCP host adapter", () => {
     const result = await response.json();
     expect(result).toEqual({ installation_status: "assigned", signed_release: { extension_id: "ext_phone_menu", version: "1.2.0",
       publisher_id: "pub_phone", publisher_key_id: "a".repeat(64), publisher_key_status: "active" }, lines: [
-      { provider: "telnyx", status: "active", handler_status: "active", number_hint: "•••• 0123" },
+      { provider: "telnyx", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0123" },
     ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
       cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." });
@@ -249,18 +249,22 @@ describe("gadget MCP host adapter", () => {
       ? Response.json({ acquired: true, released: true }) : Response.json(runtime));
     let lineInstallation = "install-a";
     let secondInstallation = "install-b";
+    let lineProvider: "telnyx" | "twilio" = "telnyx";
+    let speechAllowed = false;
     const agentsFetch = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (request.method === "GET") {
         expect(url.searchParams.get("action")).toBe("phone-status");
         return Response.json({ extension_lines: [
-          { id: "binding-a", provider: "telnyx", installation_id: lineInstallation, status: "active", handler_status: "active" },
+          { id: "binding-a", provider: lineProvider, installation_id: lineInstallation, status: "active", handler_status: "active", speech_input_allowed: speechAllowed },
           { id: "binding-b", provider: "twilio", installation_id: secondInstallation, status: "active", handler_status: "active" },
         ] });
       }
       expect(url.searchParams.get("action")).toBe("phone-handler-test");
       const body = await request.json() as Record<string, unknown>;
-      expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.digits", digits: "1" });
+      expect(body).toMatchObject({ action: "phone-handler-test", binding_id: "binding-a" });
+      if (body.event_type === "call.digits") expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.digits", digits: "1" });
+      if (body.event_type === "call.speech") expect(body).toEqual({ action: "phone-handler-test", binding_id: "binding-a", event_type: "call.speech", input: "sales please" });
       expect(request.headers.get("x-naelao-user-id")).toBe("space-owner");
       expect(request.headers.get("x-naelao-role")).toBe("owner");
       return Response.json({ simulation: true, response: { schema_version: 1, actions: [{ type: "say", text: "Sales" }, { type: "hangup" }] } });
@@ -281,39 +285,62 @@ describe("gadget MCP host adapter", () => {
       disclosure: "Synthetic local handler run using saved installation settings; no carrier request or call session was created." });
     expect(agentsFetch).toHaveBeenCalledTimes(2);
 
+    lineProvider = "twilio";
+    speechAllowed = true;
+    const speechResponse = await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ event_type: "call.speech", input: "  sales please  " }) }, env);
+    expect(speechResponse.status).toBe(200);
+    expect(await speechResponse.json()).toMatchObject({ event_type: "call.speech", simulation: true });
+    expect(agentsFetch).toHaveBeenCalledTimes(4);
+
+    speechAllowed = false;
+    const disabledSpeech = await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ event_type: "call.speech", input: "sales please" }) }, env);
+    expect(disabledSpeech.status).toBe(409);
+    expect(await disabledSpeech.json()).toMatchObject({ error_code: "phone_simulation_speech_disabled" });
+    expect(agentsFetch).toHaveBeenCalledTimes(5); // Status read only; no handler execution when policy is disabled.
+
+    lineProvider = "telnyx";
+    speechAllowed = true;
+    const telnyxSpeech = await app.request(path, { method: "POST", headers,
+      body: JSON.stringify({ event_type: "call.speech", input: "sales please" }) }, env);
+    expect(telnyxSpeech.status).toBe(409);
+    expect(await telnyxSpeech.json()).toMatchObject({ error_code: "phone_simulation_speech_unsupported_for_provider" });
+    expect(agentsFetch).toHaveBeenCalledTimes(6);
+
     const malformed = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.digits", digits: "1#" }) }, env);
     expect(malformed.status).toBe(400);
-    expect(agentsFetch).toHaveBeenCalledTimes(2);
+    expect(agentsFetch).toHaveBeenCalledTimes(6);
 
     const member = await app.request(path, { method: "POST", headers: await auth("t", { "x-naelao-user-id": "member", "x-naelao-role": "member", "content-type": "application/json" }),
       body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(member.status).toBe(403);
-    expect(agentsFetch).toHaveBeenCalledTimes(2);
+    expect(agentsFetch).toHaveBeenCalledTimes(6);
 
     lineInstallation = "install-other";
     const crossInstall = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(crossInstall.status).toBe(409);
     expect(await crossInstall.json()).toMatchObject({ error_code: "phone_simulation_line_unavailable" });
-    expect(agentsFetch).toHaveBeenCalledTimes(3); // Status read only; no handler invocation for another install.
+    expect(agentsFetch).toHaveBeenCalledTimes(7); // Status read only; no handler invocation for another install.
 
     lineInstallation = "install-a";
     secondInstallation = "install-a";
     const ambiguous = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(ambiguous.status).toBe(409);
     expect(await ambiguous.json()).toMatchObject({ error_code: "phone_simulation_line_ambiguous" });
-    expect(agentsFetch).toHaveBeenCalledTimes(4);
+    expect(agentsFetch).toHaveBeenCalledTimes(8);
     secondInstallation = "install-b";
 
     runtime.phoneSimulationAllowed = false;
     const undeclared = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(undeclared.status).toBe(404);
-    expect(agentsFetch).toHaveBeenCalledTimes(4);
+    expect(agentsFetch).toHaveBeenCalledTimes(8);
 
     runtime.phoneSimulationAllowed = true;
     runtime.active = false;
     const revoked = await app.request(path, { method: "POST", headers, body: JSON.stringify({ event_type: "call.received" }) }, env);
     expect(revoked.status).toBe(503);
-    expect(agentsFetch).toHaveBeenCalledTimes(4);
+    expect(agentsFetch).toHaveBeenCalledTimes(8);
 
     const isolatedApp = testApp(); registerGadgetMcpRoutes(isolatedApp as never);
     const foreign = await isolatedApp.request(path, { method: "POST", headers: await auth("foreign", {
@@ -321,7 +348,7 @@ describe("gadget MCP host adapter", () => {
       body: JSON.stringify({ event_type: "call.received" }) }, { ...env,
         PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } } as never);
     expect(foreign.status).toBe(404);
-    expect(agentsFetch).toHaveBeenCalledTimes(4);
+    expect(agentsFetch).toHaveBeenCalledTimes(8);
   });
 
   it("forwards the exact Template setup project query and restricts writes to administrators", async () => {

@@ -683,11 +683,16 @@ export async function handlePhoneAction(
       extension_lines: manager
         ? (
             await env.PLATFORM_DB.prepare(
-              "SELECT b.id,b.provider,b.phone_number,b.provider_number_sid,b.status,h.installation_id,h.handler_sha256,h.status AS handler_status FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
+              "SELECT b.id,b.provider,b.phone_number,b.provider_number_sid,b.status,b.policy_json,h.installation_id,h.handler_sha256,h.status AS handler_status FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
             )
               .bind(identity.id)
-              .all<{ id: string; provider: "twilio" | "telnyx"; phone_number: string | null; provider_number_sid: string | null; status: string; installation_id: string | null; handler_sha256: string | null; handler_status: string | null }>()
-          ).results
+              .all<{ id: string; provider: "twilio" | "telnyx"; phone_number: string | null; provider_number_sid: string | null; status: string; policy_json: string; installation_id: string | null; handler_sha256: string | null; handler_status: string | null }>()
+          ).results.map(({ policy_json, ...line }) => {
+            let speechInputAllowed = false;
+            try { speechInputAllowed = line.provider === "twilio" && validatePhonePolicy(JSON.parse(policy_json)).allowSpeechInput === true; }
+            catch { /* Invalid policy remains disabled in the read-only dashboard. */ }
+            return { ...line, speech_input_allowed: speechInputAllowed };
+          })
         : [],
       phone_handler_candidates: phoneHandlerCandidates,
       recent_telnyx_extension_calls: recentExtensionCalls,

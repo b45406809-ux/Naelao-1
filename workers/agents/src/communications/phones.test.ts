@@ -1107,11 +1107,15 @@ describe("assistant telephone safety and lifecycle", () => {
   const status = await f.act("phone-status") as {
     enabled: boolean;
     phone: unknown;
-    extension_lines: Array<{ handler_status: string }>;
+    extension_lines: Array<{ handler_status: string; speech_input_allowed: boolean }>;
   };
   expect(status.enabled).toBe(false);
   expect(status.phone).toBeNull();
-  expect(status.extension_lines).toMatchObject([{ handler_status: "active" }]);
+  expect(status.extension_lines).toMatchObject([{ handler_status: "active", speech_input_allowed: false }]);
+  await f.db.prepare("UPDATE assistant_phone_bindings SET policy_json=? WHERE id=?")
+    .bind(JSON.stringify({ ...defaultPhonePolicy, allowSpeechInput: true }), f.binding.id).run();
+  const speechStatus = await f.act("phone-status") as { extension_lines: Array<{ speech_input_allowed: boolean }> };
+  expect(speechStatus.extension_lines).toMatchObject([{ speech_input_allowed: true }]);
  });
 
  it("migrates a retired customer voice number while Space Assistant phone is disabled", async () => {
@@ -1187,6 +1191,7 @@ describe("assistant telephone safety and lifecycle", () => {
   const next = await invoke("menu", { SpeechResult: "Check my order", Confidence: "0.91" });
   expect(next.status).toBe(200);
   expect(await next.text()).toContain("I heard: Check my order");
+  expect((await invoke("menu", { SpeechResult: "x".repeat(2_001) })).status).toBe(403);
   const dispatched = dispatchedRequests
    .filter((request) => request.url.endsWith("/phone-extension-dispatch"));
   expect(dispatched).toHaveLength(3); // validation plus two voice turns
@@ -1196,7 +1201,8 @@ describe("assistant telephone safety and lifecycle", () => {
    voiceEvents.push(body.event.type);
   }
   expect(voiceEvents).toEqual(["call.received", "call.speech"]);
-  expect((await dispatched[2]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload).toMatchObject({ speech: "Check my order", confidence: 0.91 });
+  expect((await dispatched[2]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload)
+   .toMatchObject({ speech: "Check my order", confidence: 0.91 });
  });
 
 });

@@ -386,11 +386,12 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           .run();
       }
       const digits = form.get("Digits") ?? "";
-      const speech = (form.get("SpeechResult") ?? "").slice(0, 8_000);
+      const speech = form.get("SpeechResult") ?? "";
       const confidenceRaw = form.get("Confidence");
       const confidence = confidenceRaw !== null && Number.isFinite(Number(confidenceRaw))
         ? Math.max(0, Math.min(1, Number(confidenceRaw))) : undefined;
       if (event === "menu" && !( /^[0-9]{1,8}$/.test(digits) || speech.length > 0)) return reject();
+      if (new TextEncoder().encode(speech).byteLength > 2_000) return reject();
       const voiceEvent = event === "answer" ? "call.received" : speech ? "call.speech" : "call.digits";
       const callbackToken = c.req.header("i-twilio-idempotency-token") ?? form.get("SequenceNumber") ?? `${digits}:${speech}`;
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(callbackToken));

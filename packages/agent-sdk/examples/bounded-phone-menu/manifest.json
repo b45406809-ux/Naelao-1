@@ -1,7 +1,7 @@
 {
   "id": "ext_bounded_phone_menu",
   "type": "extension",
-  "releaseVersion": "1.0.3",
+  "releaseVersion": "1.0.4",
   "declaredPermissions": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"],
   "capabilityRequirements": ["extension.settings.read", "extension.settings.configure", "assistant.phone.read", "assistant.phone.simulate"],
   "gadgets": [],
@@ -22,18 +22,18 @@
     "schemaVersion": "1.0",
     "kind": "extension_bundle",
     "id": "ext_bounded_phone_menu",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "primitives": [
       {
-        "schemaVersion": "1.0", "kind": "canvas", "id": "phone_menu_dashboard", "version": "1.0.3",
+        "schemaVersion": "1.0", "kind": "canvas", "id": "phone_menu_dashboard", "version": "1.0.4",
         "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "layout": "CanvasMount",
         "component": "./dashboard.html", "dynamicPage": false
       },
       {
-        "schemaVersion": "1.0", "kind": "channel", "id": "phone_menu_handler", "version": "1.0.3",
+        "schemaVersion": "1.0", "kind": "channel", "id": "phone_menu_handler", "version": "1.0.4",
         "permissions": [], "capabilityRequirements": [], "lifecycle": {}, "provider": "phone",
         "handlerScript": "./handler.ts", "context": "channel_only",
-        "inboundEvents": ["message.received", "call.received", "call.digits"],
+        "inboundEvents": ["message.received", "call.received", "call.digits", "call.speech"],
         "outboundEvents": ["message.reply", "voice.reply"]
       }
     ]

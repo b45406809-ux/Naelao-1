@@ -13,8 +13,18 @@ function setting(values: Settings, key: string, fallback: string, maximum: numbe
   return typeof value === "string" ? value.trim().slice(0, maximum) || fallback : fallback;
 }
 
-/** Deterministic two-choice keypad menu. It does not call an LLM, collect speech, transfer calls,
- * or dial another number. The host validates the data-only response and renders carrier actions. */
+function normalizePhrase(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+}
+
+function matchesLabel(input: string, label: string): boolean {
+  const phrase = normalizePhrase(label);
+  if (!phrase) return false;
+  return ` ${normalizePhrase(input)} `.includes(` ${phrase} `);
+}
+
+/** Deterministic two-choice phone menu. Twilio speech is a single host-collected turn and routes
+ * only when the owner enables it. This handler never calls an LLM, transfers, or dials calls. */
 export async function run(_args: Record<string, never>, ctx: PhoneChannelContext) {
   const values = ctx.channel.settings?.values ?? {};
   const greeting = setting(values, "greeting", "Thank you for calling.", 160);
@@ -22,12 +32,13 @@ export async function run(_args: Record<string, never>, ctx: PhoneChannelContext
   const second = setting(values, "option_2_label", "Support", 60);
   const payload = ctx.channel.event.payload;
   const voiceEvent = payload.voice_event;
+  const speechEnabled = payload.provider === "twilio" && payload.speech_input_allowed === true;
 
   let response: { schema_version: 1; actions: Array<Record<string, string | number>> };
   if (voiceEvent === "call.received") {
     response = { schema_version: 1, actions: [{
-      type: "gather", input: "dtmf", digits: 1,
-      text: `${greeting} Press 1 for ${first}. Press 2 for ${second}.`,
+      type: "gather", input: speechEnabled ? "dtmf speech" : "dtmf", digits: 1,
+      text: `${greeting} Press 1 for ${first}${speechEnabled ? ` or say ${first}` : ""}. Press 2 for ${second}${speechEnabled ? ` or say ${second}` : ""}.`,
     }] };
   } else if (voiceEvent === "call.digits") {
     const digits = typeof payload.digits === "string" ? payload.digits : "";
@@ -36,6 +47,13 @@ export async function run(_args: Record<string, never>, ctx: PhoneChannelContext
       : digits === "2"
         ? setting(values, "option_2_response", "Please contact our support team for help.", 240)
         : setting(values, "fallback_response", "Sorry, that selection is not available.", 240);
+    response = { schema_version: 1, actions: [{ type: "say", text }, { type: "hangup" }] };
+  } else if (voiceEvent === "call.speech" && speechEnabled && typeof payload.speech === "string") {
+    const spoken = payload.speech.slice(0, 2_000);
+    const matches = [matchesLabel(spoken, first), matchesLabel(spoken, second)];
+    const text = matches[0] !== matches[1]
+      ? setting(values, matches[0] ? "option_1_response" : "option_2_response", matches[0] ? "Please contact our sales team for help." : "Please contact our support team for help.", 240)
+      : setting(values, "fallback_response", "Sorry, that selection is not available.", 240);
     response = { schema_version: 1, actions: [{ type: "say", text }, { type: "hangup" }] };
   } else {
     response = { schema_version: 1, actions: [{ type: "hangup" }] };

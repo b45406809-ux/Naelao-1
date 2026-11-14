@@ -118,7 +118,8 @@ describe("phone extension scope dispatch", () => {
         tenantId: "tenant",
         spaceId: "space",
         installationId: "install",
-        channel: { provider: "phone", settings: { schemaVersion: 2, revision: 7, values: { greeting: "Welcome" } } },
+        channel: { provider: "phone", settings: { schemaVersion: 2, revision: 7, values: { greeting: "Welcome" } },
+          event: { payload: { provider: "twilio", speech_input_allowed: true } } },
       });
       expect(f.runtimeWork.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual([
         "/internal/extensions/runtime-work", "/internal/extensions/runtime-work",
@@ -166,7 +167,8 @@ describe("phone extension scope dispatch", () => {
     const call = f.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ installationId: "install", channel: {
       provider: "phone",
-      event: { type: "message.received", payload: { voice_event: "call.speech", speech: "Can you help with order 42?", caller: "simulation" } },
+      event: { type: "message.received", payload: { voice_event: "call.speech", speech: "Can you help with order 42?", caller: "simulation",
+        provider: "twilio", speech_input_allowed: true } },
       settings: { schemaVersion: 2, revision: 7, values: { greeting: "Welcome" } },
     } });
     expect((call.channel as Record<string, unknown>).session).toBeUndefined();
@@ -196,7 +198,7 @@ describe("phone extension scope dispatch", () => {
     const start = setup(null);
     expect((await invokeSimulation(start.agent, "", true, "call.received")).status).toBe(200);
     const startCall = start.runChannel.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
-    expect(startCall).toMatchObject({ channel: { event: { payload: { voice_event: "call.received", caller: "simulation" } } } });
+    expect(startCall).toMatchObject({ channel: { event: { payload: { voice_event: "call.received", caller: "simulation", provider: "twilio", speech_input_allowed: true } } } });
 
     const digit = setup(null);
     expect((await invokeSimulation(digit.agent, "", true, "call.digits", "1")).status).toBe(200);

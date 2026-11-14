@@ -9887,7 +9887,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "phone_simulation_input_invalid" }, { status: 400 });
     const event = simulation
       ? { id: `simulation-${crypto.randomUUID()}`, type: eventType, payload: {
-        caller: "simulation", ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
+        caller: "simulation",
+        ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
       } }
       : body.event;
     if (!body.validateOnly && (row.status !== "active" || !event ||
@@ -9944,7 +9945,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         maxConcurrency: handler.maxConcurrency, limits: handler.limits,
         channel: {
           provider: "phone",
-          event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: { ...event.payload, voice_event: event.type } },
+          event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: {
+            ...event.payload, voice_event: event.type, provider: row.provider,
+            speech_input_allowed: row.provider === "twilio" && (() => { try { return JSON.parse(row.policy_json).allowSpeechInput === true; } catch { return false; } })(),
+          } },
           conversation: { id: `simulation:${crypto.randomUUID()}` },
           ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion, revision: handler.settings.revision, values: handler.settings.values } } : {}),
         },
@@ -10023,7 +10027,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       maxConcurrency: handler.maxConcurrency, limits: handler.limits,
       channel: {
         provider: "phone",
-        event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: { ...event.payload, voice_event: event.type } },
+        event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: {
+          ...event.payload, voice_event: event.type, provider: row.provider,
+          speech_input_allowed: row.provider === "twilio" && (() => { try { return JSON.parse(row.policy_json).allowSpeechInput === true; } catch { return false; } })(),
+        } },
         conversation: { id: conversationId },
         ...(handler.settings ? { settings: { schemaVersion: handler.settings.schemaVersion, revision: handler.settings.revision, values: handler.settings.values } } : {}),
         ...(handler.session ? {
