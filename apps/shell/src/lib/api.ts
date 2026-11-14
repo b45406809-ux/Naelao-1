@@ -1759,9 +1759,10 @@ export interface SpaceSharedExtensionUpdateReview {
   shared_filesystem: { current: SharedFilesystemGrant[]; candidate: SharedFilesystemGrant[]; added: string[]; removed: string[]; changed: string[] };
   authority_expansion: { permissions: string[]; capabilities: string[] };
   authority_expansion_supported: boolean;
+  dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }>;
   price_terms: { current: null; candidate: null; status: string };
-  dependency_resolution: { current: { resolved: true } | { resolved: false; error: string };
-    candidate: { resolved: true } | { resolved: false; error: string } };
+  dependency_resolution: { current: { resolved: true; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }> } | { resolved: false; error: string };
+    candidate: { resolved: true; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }> } | { resolved: false; error: string } };
   review: { authority_expanded: boolean; authority_expansion_supported: boolean; publisher_changed: boolean; explicit_owner_approval_required: boolean; mutates_installation: false;
     apply_supported: boolean; apply_block_reason: string | null; active_work_count: number; runtime_work_drained: boolean };
   update_review_token?: string; update_review_expires_at?: number;
@@ -1770,6 +1771,8 @@ export interface SpaceSharedExtensionUpdateReceipt {
   request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
   source_manifest_sha256: string; candidate_manifest_sha256: string; source_artifact_sha256: string; artifact_sha256: string;
   publisher_key_id: string; actor_id: string; authority_expansion: { permissions: string[]; capabilities: string[] };
+  dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+  dependency_closure: Array<{ extensionId: string; version: string; manifestSha256: string }>;
   schema_migrations_retained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }>;
   created_at: string;
 }
@@ -1816,11 +1819,11 @@ export function previewSpaceSharedExtensionUpdate(spaceId: string, installationI
   });
 }
 export function applySpaceSharedExtensionUpdate(spaceId: string, installationId: string, session: SessionCredentials, reviewToken: string,
-  confirmAuthorityExpansion: boolean, confirmSchemaMigrationsRetained: boolean) {
+  confirmAuthorityExpansion: boolean, confirmSchemaMigrationsRetained: boolean, confirmDependencyExpansion: boolean) {
   return apiFetch<{ updated: true; replayed: boolean; receipt: SpaceSharedExtensionUpdateReceipt }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update`, {
       method: "POST", session, body: JSON.stringify({ review_token: reviewToken, confirm_authority_expansion: confirmAuthorityExpansion,
-        confirm_schema_migrations_retained: confirmSchemaMigrationsRetained }),
+        confirm_schema_migrations_retained: confirmSchemaMigrationsRetained, confirm_dependency_expansion: confirmDependencyExpansion }),
     });
 }
 export function listSpaceSharedExtensionUpdateReceipts(spaceId: string, session: SessionCredentials) {

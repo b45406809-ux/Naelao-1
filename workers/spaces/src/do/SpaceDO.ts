@@ -45,8 +45,10 @@ import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
-import { isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedAuthorityExpansion,
+import { isSpaceSharedDependencyPinList, isSpaceSharedGadgetMigrationRetentionPlan, spaceSharedAuthorityExpansion,
+  spaceSharedDependencyExpansion,
   spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
+  supportsOwnerApprovedSpaceSharedDependencyExpansion,
   supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
 
 type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
@@ -2958,6 +2960,12 @@ const MIGRATIONS: Migration[] = [
     version: 139,
     description: "record retained additive Gadget migrations for owner-approved code rollbacks",
     up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN schema_migrations_retained_json TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    version: 140,
+    description: "record exact dependency expansion and trusted active closure for shared extension updates",
+    up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN dependency_expansion_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE space_shared_extension_update_receipts ADD COLUMN dependency_closure_json TEXT NOT NULL DEFAULT '[]';`,
   },
 ];
 
@@ -13841,9 +13849,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ apps });
   }
 
-  private async extensionDependencyClosureActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
-    scope: string, projectId?: string): Promise<boolean> {
-    if (!manifest.dependencies?.length) return true;
+  private async extensionDependencyClosureSnapshotActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
+    scope: string, projectId?: string): Promise<{ resolved: boolean; dependencies: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+      manifestJsonByPin: Map<string, string> }> {
+    const empty = { resolved: false, dependencies: [], manifestJsonByPin: new Map<string, string>() };
+    if (!manifest.dependencies?.length) return { ...empty, resolved: true };
     const rows = queryAll<{ extension_id: string; release_version: string | null; manifest_json: string;
       artifact_sha256: string | null; host_signature: string | null } & PublisherReleaseFields>(this.ctx.storage.sql as never,
       `SELECT i.extension_id,i.release_version,i.manifest_json,r.artifact_sha256,r.host_signature,
@@ -13852,20 +13862,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (
          (i.scope='SPACE_SHARED' AND i.project_id IS NULL)${scope === "SPACE_SHARED" ? "" : " OR (i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED'))"}
        ) ORDER BY i.extension_id,i.instance_id LIMIT 129`, tenantId, spaceId, ...(scope === "SPACE_SHARED" ? [] : [projectId ?? ""]));
-    if (rows.length > 128) return false;
+    if (rows.length > 128) return empty;
     const activeKeyIds = new Set<string>();
     const keyIds = [...new Set(rows.flatMap(row => row.publisher_key_id ? [row.publisher_key_id] : []))];
     if (keyIds.length) {
       try {
-        if (!this.env.PLATFORM_DB) return false;
+        if (!this.env.PLATFORM_DB) return empty;
         const placeholders = keyIds.map(() => "?").join(",");
         const active = await this.env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
           WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`)
           .bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
         for (const row of active.results ?? []) activeKeyIds.add(row.key_id);
-      } catch { return false; }
+      } catch { return empty; }
     }
     const pins: Array<{ extensionId: string; releaseVersion: string; manifestSha256: string; manifest: ExtensionManifest }> = [];
+    const manifestJsonByPin = new Map<string, string>();
     for (const row of rows) {
       if (!row.release_version || !row.artifact_sha256 || !row.host_signature || !publisherReleaseFieldsValid(row)
         || row.publisher_key_id && !activeKeyIds.has(row.publisher_key_id)) continue;
@@ -13873,11 +13884,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed = validateExtensionManifest(JSON.parse(row.manifest_json));
         if (!parsed.bundle || parsed.id !== row.extension_id || parsed.bundle.version !== row.release_version
           || await this.signExtensionRelease(row.extension_id, row.release_version, row.manifest_json, row.artifact_sha256) !== row.host_signature) continue;
-        pins.push({ extensionId: row.extension_id, releaseVersion: row.release_version,
-          manifestSha256: await digestExtensionManifest(parsed), manifest: parsed });
+        const manifestSha256 = await digestExtensionManifest(parsed);
+        pins.push({ extensionId: row.extension_id, releaseVersion: row.release_version, manifestSha256, manifest: parsed });
+        manifestJsonByPin.set(`${row.extension_id}@${row.release_version}@${manifestSha256}`, row.manifest_json);
       } catch { /* An invalid or untrusted installation cannot satisfy a dependency pin. */ }
     }
-    return (await resolveExtensionDependencyClosure(manifest, pins)).resolved;
+    const closure = await resolveExtensionDependencyClosure(manifest, pins);
+    return closure.resolved ? { resolved: true, dependencies: closure.dependencies, manifestJsonByPin } : empty;
+  }
+
+  private async extensionDependencyClosureActive(tenantId: string, spaceId: string, manifest: ExtensionManifest,
+    scope: string, projectId?: string): Promise<boolean> {
+    return (await this.extensionDependencyClosureSnapshotActive(tenantId, spaceId, manifest, scope, projectId)).resolved;
   }
 
   private async spaceSharedExtensionRuntime(params: URLSearchParams): Promise<Response> {
@@ -14559,11 +14577,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       installationId?: unknown; extensionId?: unknown; fromVersion?: unknown; toVersion?: unknown; artifactSha256?: unknown;
       sourceManifestSha256?: unknown; candidateManifestSha256?: unknown; sourceArtifactSha256?: unknown;
       publisherId?: unknown; publisherKeyId?: unknown; authorityExpansion?: unknown; schemaMigrationsRetained?: unknown;
+      dependencyExpansion?: unknown; dependencyClosure?: unknown;
       expiresAt?: unknown; requestId?: unknown };
     const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown;
-      confirmAuthorityExpansion?: unknown; confirmSchemaMigrationsRetained?: unknown }>()
+      confirmAuthorityExpansion?: unknown; confirmSchemaMigrationsRetained?: unknown; confirmDependencyExpansion?: unknown }>()
       .catch((): { tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown;
-        confirmAuthorityExpansion?: unknown; confirmSchemaMigrationsRetained?: unknown } => ({}));
+        confirmAuthorityExpansion?: unknown; confirmSchemaMigrationsRetained?: unknown; confirmDependencyExpansion?: unknown } => ({}));
     const claims = body.claims;
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     if (!tenantId || body.tenantId !== tenantId || typeof body.spaceId !== "string" || typeof body.actorId !== "string"
@@ -14580,10 +14599,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const hasAuthorityExpansion = Array.isArray(authorityPermissions) && authorityPermissions.length > 0
       || Array.isArray(authorityCapabilities) && authorityCapabilities.length > 0;
     const schemaMigrationsRetained = claims?.schemaMigrationsRetained;
+    const dependencyExpansion = claims?.dependencyExpansion;
+    const dependencyClosure = claims?.dependencyClosure;
     if (!claims || !authorityExpansion || !validAuthorityList(authorityPermissions) || !validAuthorityList(authorityCapabilities)
       || !isSpaceSharedGadgetMigrationRetentionPlan(schemaMigrationsRetained)
+      || !isSpaceSharedDependencyPinList(dependencyExpansion) || !isSpaceSharedDependencyPinList(dependencyClosure)
       || body.confirmAuthorityExpansion !== hasAuthorityExpansion
       || body.confirmSchemaMigrationsRetained !== (schemaMigrationsRetained.length > 0)
+      || body.confirmDependencyExpansion !== (dependencyExpansion.length > 0)
       || claims.version !== 2 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
       || claims.spaceId !== body.spaceId || claims.actorId !== body.actorId || typeof claims.installationId !== "string"
       || typeof claims.extensionId !== "string" || typeof claims.fromVersion !== "string" || typeof claims.toVersion !== "string"
@@ -14617,7 +14640,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const readReceipt = () => queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
       source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
-      authority_expansion_json: string; schema_migrations_retained_json: string }>(
+      authority_expansion_json: string; schema_migrations_retained_json: string;
+      dependency_expansion_json: string; dependency_closure_json: string }>(
       this.ctx.storage.sql as never, "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=?", requestId);
     const expectedReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => row.tenant_id === tenantId && row.space_id === body.spaceId
       && row.installation_id === claims.installationId && row.extension_id === claims.extensionId && row.from_version === claims.fromVersion
@@ -14626,10 +14650,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       && row.artifact_sha256 === claims.artifactSha256
       && row.authority_expansion_json === JSON.stringify(claims.authorityExpansion)
       && row.schema_migrations_retained_json === JSON.stringify(schemaMigrationsRetained)
+      && row.dependency_expansion_json === JSON.stringify(dependencyExpansion)
+      && row.dependency_closure_json === JSON.stringify(dependencyClosure)
       && row.publisher_key_id === claims.publisherKeyId
       && row.actor_id === body.actorId;
     const publicReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => {
-      const { authority_expansion_json, schema_migrations_retained_json, ...fields } = row;
+      const { authority_expansion_json, schema_migrations_retained_json, dependency_expansion_json, dependency_closure_json, ...fields } = row;
       let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
       try {
         const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
@@ -14643,7 +14669,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed: unknown = JSON.parse(schema_migrations_retained_json);
         if (isSpaceSharedGadgetMigrationRetentionPlan(parsed)) schema_migrations_retained = parsed;
       } catch { /* corrupt historic receipt presents without an inferred retention plan */ }
-      return { ...fields, authority_expansion, schema_migrations_retained };
+      let dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      let dependency_closure: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      try { const parsed: unknown = JSON.parse(dependency_expansion_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_expansion = parsed; }
+      catch { /* corrupt/legacy receipt presents without inferred dependency changes */ }
+      try { const parsed: unknown = JSON.parse(dependency_closure_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_closure = parsed; }
+      catch { /* corrupt/legacy receipt presents without inferred dependency closure */ }
+      return { ...fields, authority_expansion, schema_migrations_retained, dependency_expansion, dependency_closure };
     };
     const prior = readReceipt();
     if (prior) return expectedReceipt(prior)
@@ -14681,6 +14713,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const recomputedAuthorityExpansion = spaceSharedAuthorityExpansion(currentManifest, candidateManifest);
     const expectedAuthorityExpansion = recomputedAuthorityExpansion ?? { permissions: [], capabilities: [] };
     const recomputedRetention = spaceSharedGadgetMigrationRetentionPlan(currentManifest, candidateManifest) ?? [];
+    const recomputedDependencyExpansion = spaceSharedDependencyExpansion(currentManifest, candidateManifest) ?? [];
+    const candidateDependencyClosure = await this.extensionDependencyClosureSnapshotActive(tenantId, body.spaceId as string,
+      candidateManifest, "SPACE_SHARED");
+    if (JSON.stringify(dependencyExpansion) !== JSON.stringify(recomputedDependencyExpansion))
+      return Response.json({ error_code: "extension_update_dependency_expansion_changed" }, { status: 409 });
+    if (!candidateDependencyClosure.resolved)
+      return Response.json({ error_code: "extension_update_dependency_closure_untrusted" }, { status: 409 });
+    if (JSON.stringify(dependencyClosure) !== JSON.stringify(candidateDependencyClosure.dependencies))
+      return Response.json({ error_code: "extension_update_dependency_closure_changed" }, { status: 409 });
     if (current.publisher_key_id !== claims.publisherKeyId || candidateManifest.id !== claims.extensionId
       || currentManifest.bundle?.version !== claims.fromVersion || candidateManifest.bundle?.version !== claims.toVersion
       || await digestExtensionManifest(currentManifest) !== claims.sourceManifestSha256
@@ -14688,7 +14729,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || JSON.stringify(claims.authorityExpansion) !== JSON.stringify(expectedAuthorityExpansion)
       || JSON.stringify(schemaMigrationsRetained) !== JSON.stringify(recomputedRetention)
       || (!supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest)
-        && !supportsOwnerApprovedSpaceSharedAuthorityExpansion(currentManifest, candidateManifest)))
+        && !supportsOwnerApprovedSpaceSharedAuthorityExpansion(currentManifest, candidateManifest)
+        && !supportsOwnerApprovedSpaceSharedDependencyExpansion(currentManifest, candidateManifest)))
       return Response.json({ error_code: "extension_update_contract_not_supported" }, { status: 409 });
 
     const createdAt = new Date().toISOString();
@@ -14696,7 +14738,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
       source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
       authority_expansion: { permissions: string[]; capabilities: string[] };
-      schema_migrations_retained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }> } | null = null;
+      schema_migrations_retained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }>;
+      dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+      dependency_closure: Array<{ extensionId: string; version: string; manifestSha256: string }> } | null = null;
     let replayed = false;
     try {
       this.ctx.storage.transactionSync(() => {
@@ -14707,6 +14751,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         if (this.activeExtensionRuntimeWorkCount(claims.installationId as string) > 0)
           throw new Error("extension_runtime_work_not_drained");
+        for (const pin of dependencyClosure) {
+          const manifestJson = candidateDependencyClosure.manifestJsonByPin.get(`${pin.extensionId}@${pin.version}@${pin.manifestSha256}`);
+          const activePin = manifestJson && queryOne<{ instance_id: string }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id FROM extension_instances i JOIN extension_releases r
+                ON r.extension_id=i.extension_id AND r.version=i.release_version
+             WHERE i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED' AND i.status='active'
+               AND i.extension_id=? AND i.release_version=? AND r.manifest_json=? AND r.publisher_revoked_at IS NULL LIMIT 1`,
+            tenantId, body.spaceId, pin.extensionId, pin.version, manifestJson);
+          if (!activePin) throw new Error("extension_update_dependency_pin_changed");
+        }
         const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET release_version=?
           WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND project_id IS NULL AND scope='SPACE_SHARED'
             AND status='disabled' AND release_version=?
@@ -14718,23 +14772,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(this.ctx.storage.sql as never, `INSERT INTO space_shared_extension_update_receipts
           (request_id,tenant_id,space_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,
            candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json,
-           schema_migrations_retained_json)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
+           schema_migrations_retained_json,dependency_expansion_json,dependency_closure_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
         claims.fromVersion, claims.toVersion, claims.sourceManifestSha256, claims.candidateManifestSha256,
         claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt,
-        JSON.stringify(claims.authorityExpansion), JSON.stringify(schemaMigrationsRetained));
+        JSON.stringify(claims.authorityExpansion), JSON.stringify(schemaMigrationsRetained), JSON.stringify(dependencyExpansion), JSON.stringify(dependencyClosure));
         receipt = { request_id: requestId, tenant_id: tenantId, space_id: body.spaceId as string, installation_id: claims.installationId as string,
           extension_id: claims.extensionId as string, from_version: claims.fromVersion as string, to_version: claims.toVersion as string,
           source_manifest_sha256: claims.sourceManifestSha256 as string, candidate_manifest_sha256: claims.candidateManifestSha256 as string,
           source_artifact_sha256: claims.sourceArtifactSha256 as string, artifact_sha256: claims.artifactSha256 as string,
           publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt,
           authority_expansion: claims.authorityExpansion as { permissions: string[]; capabilities: string[] },
-          schema_migrations_retained: schemaMigrationsRetained };
+          schema_migrations_retained: schemaMigrationsRetained, dependency_expansion: dependencyExpansion, dependency_closure: dependencyClosure };
       });
     } catch (error) {
       const errorCode = error instanceof Error && error.message === "extension_update_request_id_conflict"
         ? error.message : error instanceof Error && error.message === "extension_runtime_work_not_drained"
-          ? error.message : "extension_update_installation_must_be_paused_at_reviewed_version";
+          ? error.message : error instanceof Error && error.message === "extension_update_dependency_pin_changed"
+            ? error.message : "extension_update_installation_must_be_paused_at_reviewed_version";
       return Response.json({ error_code: errorCode }, { status: 409 });
     }
     return receipt ? Response.json({ updated: true, replayed, receipt }, { status: 200, headers: { "cache-control": "private, no-store" } })
@@ -14751,21 +14806,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ? queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
         source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
         source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string; authority_expansion_json: string;
-        schema_migrations_retained_json: string }>(this.ctx.storage.sql as never,
+        schema_migrations_retained_json: string; dependency_expansion_json: string; dependency_closure_json: string }>(this.ctx.storage.sql as never,
         `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
-          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json,schema_migrations_retained_json
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json,schema_migrations_retained_json,
+          dependency_expansion_json,dependency_closure_json
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=? AND installation_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 20`, tenantId, spaceId, instanceId)
       : queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
         source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
         source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string; authority_expansion_json: string;
-        schema_migrations_retained_json: string }>(this.ctx.storage.sql as never,
+        schema_migrations_retained_json: string; dependency_expansion_json: string; dependency_closure_json: string }>(this.ctx.storage.sql as never,
         `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
-          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json,schema_migrations_retained_json
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json,schema_migrations_retained_json,
+          dependency_expansion_json,dependency_closure_json
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 50`, tenantId, spaceId);
     const publicReceipts = receipts.map(row => {
-      const { authority_expansion_json, schema_migrations_retained_json, ...fields } = row;
+      const { authority_expansion_json, schema_migrations_retained_json, dependency_expansion_json, dependency_closure_json, ...fields } = row;
       let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
       try {
         const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
@@ -14778,7 +14835,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed: unknown = JSON.parse(schema_migrations_retained_json);
         if (isSpaceSharedGadgetMigrationRetentionPlan(parsed)) schema_migrations_retained = parsed;
       } catch { /* legacy/corrupt receipt remains visible without inferred schema retention */ }
-      return { ...fields, authority_expansion, schema_migrations_retained };
+      let dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      let dependency_closure: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      try { const parsed: unknown = JSON.parse(dependency_expansion_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_expansion = parsed; }
+      catch { /* legacy/corrupt receipt remains visible without inferred dependency changes */ }
+      try { const parsed: unknown = JSON.parse(dependency_closure_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_closure = parsed; }
+      catch { /* legacy/corrupt receipt remains visible without inferred dependency closure */ }
+      return { ...fields, authority_expansion, schema_migrations_retained, dependency_expansion, dependency_closure };
     });
     return Response.json({ receipts: publicReceipts }, { headers: { "cache-control": "private, no-store" } });
   }
@@ -14791,12 +14854,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const receipt = queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
       source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
-      authority_expansion_json: string; schema_migrations_retained_json: string }>(
+      authority_expansion_json: string; schema_migrations_retained_json: string;
+      dependency_expansion_json: string; dependency_closure_json: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=? AND tenant_id=? AND space_id=?", requestId, tenantId, spaceId);
     let publicReceipt: Record<string, unknown> | null = null;
     if (receipt) {
-      const { authority_expansion_json, schema_migrations_retained_json, ...fields } = receipt;
+      const { authority_expansion_json, schema_migrations_retained_json, dependency_expansion_json, dependency_closure_json, ...fields } = receipt;
       let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
       try {
         const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
@@ -14809,7 +14873,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const parsed: unknown = JSON.parse(schema_migrations_retained_json);
         if (isSpaceSharedGadgetMigrationRetentionPlan(parsed)) schema_migrations_retained = parsed;
       } catch { /* legacy/corrupt receipt remains visible without inferred schema retention */ }
-      publicReceipt = { ...fields, authority_expansion, schema_migrations_retained };
+      let dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      let dependency_closure: Array<{ extensionId: string; version: string; manifestSha256: string }> = [];
+      try { const parsed: unknown = JSON.parse(dependency_expansion_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_expansion = parsed; }
+      catch { /* legacy/corrupt receipt remains visible without inferred dependency changes */ }
+      try { const parsed: unknown = JSON.parse(dependency_closure_json); if (isSpaceSharedDependencyPinList(parsed)) dependency_closure = parsed; }
+      catch { /* legacy/corrupt receipt remains visible without inferred dependency closure */ }
+      publicReceipt = { ...fields, authority_expansion, schema_migrations_retained, dependency_expansion, dependency_closure };
     }
     return publicReceipt ? Response.json({ receipt: publicReceipt }, { headers: { "cache-control": "private, no-store" } })
       : Response.json({ error_code: "extension_update_receipt_not_found" }, { status: 404 });

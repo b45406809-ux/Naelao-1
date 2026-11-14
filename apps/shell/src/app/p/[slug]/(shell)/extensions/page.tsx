@@ -210,11 +210,15 @@ export default function ExtensionsPage() {
     const authorityDetails = review.authority_expansion.permissions.length || review.authority_expansion.capabilities.length
       ? ` This adds Space-wide package authority: permissions [${review.authority_expansion.permissions.join(", ") || "none"}] and capabilities [${review.authority_expansion.capabilities.join(", ") || "none"}]. The extension will remain paused after the update.`
       : "";
-    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}?${retainedMigrations.length ? retentionDetails : authorityDetails || retentionDetails}`)) return;
+    const dependencyExpansion = review.dependency_expansion;
+    const dependencyDetails = dependencyExpansion.length
+      ? ` This adds only these exact dependency pins, which must already be active, signed and trusted in this Space: ${dependencyExpansion.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256})`).join(", ")}. No dependency installation is created, changed or removed; the exact resolved closure is recorded in the receipt. The extension will remain paused.`
+      : "";
+    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}?${retainedMigrations.length ? retentionDetails : authorityDetails || retentionDetails}${dependencyDetails}`)) return;
     setApplyingUpdate(app.installation_id); setError(null);
     try {
       const result = await applySpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, review.update_review_token,
-        review.review.authority_expanded, retainedMigrations.length > 0);
+        review.review.authority_expanded, retainedMigrations.length > 0, dependencyExpansion.length > 0);
       setUpdateReceipts(current => [result.receipt, ...current.filter(receipt => receipt.request_id !== result.receipt.request_id)].slice(0, 50));
       setUpdateReviews(current => { const next = { ...current }; delete next[app.installation_id]; return next; });
       await refresh();
@@ -310,6 +314,12 @@ export default function ExtensionsPage() {
               {gadget.migrations.map(migration => <p key={`${gadget.gadget_id}:${migration.version}`}>Retained version {migration.version} · {migration.description}</p>)}
             </section>)}
             <p>Package dependencies: {review.dependencies.package.status}. Candidate pins: {review.dependencies.package.candidate_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") || "none"}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
+            {review.dependency_expansion.length > 0 && <section aria-label="Owner-approved dependency pin expansion">
+              <strong>Owner approval required: add exact dependency pins</strong>
+              <p>Only dependencies already active, signed and trusted in this Space are eligible. The update does not install, remove or change a child package. The resolved dependency closure is rechecked before the root package pin changes and stored in the durable receipt.</p>
+              <ul>{review.dependency_expansion.map(pin => <li key={pin.extensionId}><code>{pin.extensionId}@{pin.version}</code> · manifest SHA-256 {pin.manifestSha256}</li>)}</ul>
+            </section>}
+            {review.dependency_resolution.candidate.resolved && review.dependency_resolution.candidate.dependencies?.length > 0 && <p>Verified active dependency closure: {review.dependency_resolution.candidate.dependencies.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ")}.</p>}
             {!review.dependency_resolution.candidate.resolved && <p role="alert">Dependency closure is unresolved: {review.dependency_resolution.candidate.error}. The host will not activate this package.</p>}
             <p>Shared folders — added: {review.shared_filesystem.added.join(", ") || "none"}; removed: {review.shared_filesystem.removed.join(", ") || "none"}; changed: {review.shared_filesystem.changed.join(", ") || "none"}</p>
             <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
@@ -317,7 +327,9 @@ export default function ExtensionsPage() {
             {review.review.apply_supported
               ? <><p>{review.review.authority_expanded
                 ? <>This update adds only the listed top-level permissions and capabilities. It does not change publisher, dependencies, settings, provider connections, shared-drive grants or package configuration. Applying it records your approval against the exact source and candidate manifests and artifact. The installation stays paused; review the authority again before enabling it.</>
-                : <>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration.</>} {review.schema_migrations_retained.length
+                : review.dependency_expansion.length
+                  ? <>This candidate adds only the listed exact dependency pins. The current active dependency pins and all other permissions, capabilities, settings, provider connections, shared-drive grants and package configuration stay unchanged.</>
+                  : <>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration.</>} {review.schema_migrations_retained.length
                 ? <>This code rollback leaves every listed schema migration and its data applied; no schema rollback SQL runs. Only the signed package release pin changes. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</>
                 : <>Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</>}</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
@@ -330,7 +342,7 @@ export default function ExtensionsPage() {
         </section>;
       })()}
       {updateReceipts.filter(receipt => receipt.installation_id === app.installation_id).slice(0, 5).map(receipt => <p key={receipt.request_id}
-        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · authority added: {(receipt.authority_expansion?.permissions ?? []).concat(receipt.authority_expansion?.capabilities ?? []).join(", ") || "none"} · schema migrations retained: {receipt.schema_migrations_retained?.flatMap(gadget => gadget.migrations.map(migration => `${gadget.id} v${migration.version}`)).join(", ") || "none"} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
+        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · authority added: {(receipt.authority_expansion?.permissions ?? []).concat(receipt.authority_expansion?.capabilities ?? []).join(", ") || "none"} · dependency pins added: {(receipt.dependency_expansion ?? []).map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") || "none"} · exact dependency closure: {(receipt.dependency_closure ?? []).map(pin => `${pin.extensionId}@${pin.version}`).join(", ") || "none"} · schema migrations retained: {receipt.schema_migrations_retained?.flatMap(gadget => gadget.migrations.map(migration => `${gadget.id} v${migration.version}`)).join(", ") || "none"} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null || app.status === "disabled" && app.publisher_trusted === false} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : app.publisher_trusted === false ? "Resume blocked" : "Resume extension"}</Button>

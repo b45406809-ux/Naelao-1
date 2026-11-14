@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
-  spaceSharedGadgetMigrationRetentionPlan, supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
+  spaceSharedDependencyExpansion, spaceSharedGadgetMigrationRetentionPlan, supportsOwnerApprovedSpaceSharedDependencyExpansion,
+  supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 
 function packageManifest(version: string, options: { channel?: boolean; gadget?: boolean; dynamicCanvas?: boolean; permission?: string } = {}) {
   return validateExtensionManifest({
@@ -114,5 +115,23 @@ describe("Space-shared code-only update contract", () => {
         ? { ...primitive, version: "1.2.0", handlerScript: "./other.ts" } : { ...primitive, version: "1.2.0" }) },
     }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
     expect(spaceSharedAuthorityExpansion(current, changedHandler)).toBeNull();
+  });
+
+  it("allows only additive dependency pins in the owner-reviewed package update contract", () => {
+    const current = packageManifest("1.0.0", { channel: true });
+    const dependency = { extensionId: "ext_calendar", version: "1.2.0", manifestSha256: "a".repeat(64) };
+    const candidate = validateExtensionManifest({ ...current, channels: undefined, dependencies: [dependency],
+      bundle: { ...current.bundle!, version: "1.1.0", primitives: current.bundle!.primitives.map(primitive => ({ ...primitive, version: "1.1.0" })) } });
+    expect(supportsOwnerApprovedSpaceSharedDependencyExpansion(current, candidate)).toBe(true);
+    expect(spaceSharedDependencyExpansion(current, candidate)).toEqual([dependency]);
+    expect(supportsVersionOnlySpaceSharedPackageUpdate(current, candidate)).toBe(false);
+
+    const replaced = validateExtensionManifest({ ...candidate, channels: undefined, dependencies: [{ ...dependency, version: "1.3.0" }] });
+    expect(spaceSharedDependencyExpansion(candidate, replaced)).toBeNull();
+    const changedHandler = validateExtensionManifest({ ...candidate, channels: undefined, bundle: { ...candidate.bundle!, version: "1.2.0",
+      primitives: candidate.bundle!.primitives.map(primitive => primitive.kind === "channel"
+        ? { ...primitive, version: "1.2.0", handlerScript: "./changed.ts" } : { ...primitive, version: "1.2.0" }) } });
+    expect(spaceSharedDependencyExpansion(current, changedHandler)).toBeNull();
+    expect(spaceSharedDependencyExpansion(candidate, current)).toBeNull();
   });
 });

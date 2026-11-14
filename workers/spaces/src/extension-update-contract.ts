@@ -50,6 +50,12 @@ export interface SpaceSharedGadgetMigrationRetentionPlanEntry {
   migrations: Array<{ version: number; description: string }>;
 }
 
+export interface SpaceSharedDependencyPin {
+  extensionId: string;
+  version: string;
+  manifestSha256: string;
+}
+
 export function isSpaceSharedGadgetMigrationRetentionPlan(value: unknown): value is SpaceSharedGadgetMigrationRetentionPlanEntry[] {
   if (!Array.isArray(value) || value.length > 32) return false;
   let totalMigrations = 0;
@@ -72,6 +78,21 @@ export function isSpaceSharedGadgetMigrationRetentionPlan(value: unknown): value
       totalMigrations++;
       if (totalMigrations > 32) return false;
     }
+  }
+  return true;
+}
+
+export function isSpaceSharedDependencyPinList(value: unknown): value is SpaceSharedDependencyPin[] {
+  if (!Array.isArray(value) || value.length > 32) return false;
+  let previous = "";
+  for (const pin of value) {
+    if (!pin || typeof pin !== "object" || Array.isArray(pin)
+      || Object.keys(pin).sort().join(",") !== "extensionId,manifestSha256,version"
+      || typeof pin.extensionId !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(pin.extensionId)
+      || pin.extensionId <= previous
+      || typeof pin.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pin.version)
+      || typeof pin.manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.manifestSha256)) return false;
+    previous = pin.extensionId;
   }
   return true;
 }
@@ -174,6 +195,35 @@ export function spaceSharedGadgetMigrationRetentionPlan(
   return plan.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
 }
 
+/** Permit only additive dependency pins on an otherwise identical Space-shared signed package.
+ * The caller must separately prove the complete candidate closure is already active in this Space. */
+export function spaceSharedDependencyExpansion(current: ExtensionManifest, candidate: ExtensionManifest): SpaceSharedDependencyPin[] | null {
+  if (!current.bundle || !candidate.bundle || current.bundle.version === candidate.bundle.version
+    || !isSpaceSharedPackageShape(current, true) || !isSpaceSharedPackageShape(candidate, true)) return null;
+  const currentPins = current.dependencies ?? [], candidatePins = candidate.dependencies ?? [];
+  if (candidatePins.length <= currentPins.length || currentPins.length > 32 || candidatePins.length > 32) return null;
+  const byId = new Map(candidatePins.map(pin => [pin.extensionId, pin]));
+  if (byId.size !== candidatePins.length || currentPins.some(pin => {
+    const next = byId.get(pin.extensionId);
+    return !next || next.version !== pin.version || next.manifestSha256 !== pin.manifestSha256;
+  })) return null;
+  const normalize = (manifest: ExtensionManifest) => {
+    const copy = JSON.parse(JSON.stringify(manifest)) as ExtensionManifest;
+    if (!copy.bundle) return "";
+    copy.bundle.version = "__release_version__";
+    for (const primitive of copy.bundle.primitives) primitive.version = "__release_version__";
+    for (const channel of copy.channels ?? []) channel.version = "__release_version__";
+    delete copy.dependencies;
+    return JSON.stringify(copy);
+  };
+  if (normalize(current) !== normalize(candidate)) return null;
+  const priorIds = new Set(currentPins.map(pin => pin.extensionId));
+  const additions = candidatePins.filter(pin => !priorIds.has(pin.extensionId))
+    .map(pin => ({ extensionId: pin.extensionId, version: pin.version, manifestSha256: pin.manifestSha256 }))
+    .sort((left, right) => left.extensionId < right.extensionId ? -1 : left.extensionId > right.extensionId ? 1 : 0);
+  return additions.length && isSpaceSharedDependencyPinList(additions) ? additions : null;
+}
+
 function isCodeOnlySpaceSharedPackage(manifest: ExtensionManifest): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.length
@@ -272,14 +322,23 @@ export function supportsOwnerApprovedSpaceSharedAuthorityExpansion(
   return spaceSharedAuthorityExpansion(current, candidate) !== null;
 }
 
-function isSpaceSharedPackageShape(manifest: ExtensionManifest): boolean {
+export function supportsOwnerApprovedSpaceSharedDependencyExpansion(
+  current: ExtensionManifest,
+  candidate: ExtensionManifest,
+): boolean {
+  return spaceSharedDependencyExpansion(current, candidate) !== null;
+}
+
+function isSpaceSharedPackageShape(manifest: ExtensionManifest, allowDependencies = false): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.some(part => part.kind === "canvas")
     || manifest.declaredPermissions.some(permission => !SPACE_SHARED_PACKAGE_PERMISSIONS.has(permission))
     || manifest.capabilityRequirements.some(capability => !SPACE_SHARED_PACKAGE_CAPABILITIES.has(capability))
     || (manifest.daemons?.length ?? 0) > 0 || (manifest.commands?.length ?? 0) > 0
     || (manifest.containers?.length ?? 0) > 0 || (manifest.widgetSubscriptions?.length ?? 0) > 0
-    || (manifest.dependencies?.length ?? 0) > 0 || (manifest.shared_filesystem?.length ?? 0) > 0
+    || (!allowDependencies && (manifest.dependencies?.length ?? 0) > 0)
+    || (allowDependencies && ((manifest.dependencies?.length ?? 0) > 32 || new Set((manifest.dependencies ?? []).map(pin => pin.extensionId)).size !== (manifest.dependencies?.length ?? 0)))
+    || (manifest.shared_filesystem?.length ?? 0) > 0
     || manifest.settingsSchema || (bundle.workerRoles?.length ?? 0) > 0) return false;
   return bundle.primitives.every(part => {
     if (part.version !== bundle.version) return false;

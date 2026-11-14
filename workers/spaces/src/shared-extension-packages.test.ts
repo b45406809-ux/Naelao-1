@@ -104,7 +104,8 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
 
 async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled";
   currentVersion?: string; candidateVersion?: string; candidateReleaseAvailable?: boolean; endUserSpaceRole?: string; activeWorkCount?: number;
-  gadgetMigration?: boolean; gadgetMigrationRollback?: boolean; authorityExpansionOnly?: boolean; instanceKey?: string; migrationFailOnceForAppId?: string } = {}) {
+  gadgetMigration?: boolean; gadgetMigrationRollback?: boolean; authorityExpansionOnly?: boolean; instanceKey?: string; migrationFailOnceForAppId?: string;
+  dependencyMode?: "active" | "missing" | "revoked" | "conflicting" | "cross_space" } = {}) {
   const currentVersion = options.currentVersion ?? "1.0.0", candidateVersion = options.candidateVersion ?? "1.2.0";
   const passiveManifest = (version: string) => validateExtensionManifest({ id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
     gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version,
@@ -135,7 +136,7 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     old.capabilityRequirements = old.capabilityRequirements.filter(capability => capability !== "assistant.phone.simulate");
   }
   const oldManifest = validateExtensionManifest(old);
-  const candidateManifest = options.authorityExpansionOnly
+  const candidateBaseManifest = options.authorityExpansionOnly
     ? validateExtensionManifest({ ...passiveManifest(candidateVersion), declaredPermissions: ["assistant.phone.simulate"],
       capabilityRequirements: ["extension.project_canvas", "assistant.phone.simulate"] })
     : options.gadgetMigration || options.gadgetMigrationRollback
@@ -144,11 +145,25 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     primitives: [...manifest.bundle!.primitives.map(primitive => ({ ...primitive, version: candidateVersion })),
       { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: candidateVersion, permissions: [], capabilityRequirements: [], lifecycle: {},
         scope: "SPACE_SHARED", schemaSql: "CREATE TABLE usage_stats (id TEXT PRIMARY KEY);", migrations: [] }] } });
+  const dependencyBase = passiveManifest("1.0.0");
+  const dependencyManifest = validateExtensionManifest({ ...dependencyBase, channels: undefined, id: "ext_calendar", bundle: { ...dependencyBase.bundle!, id: "ext_calendar",
+    primitives: [dependencyBase.bundle!.primitives.find(primitive => primitive.kind === "canvas")!].map(primitive => ({ ...primitive,
+      id: "calendar_dashboard", version: "1.0.0" })) } });
+  const dependencyManifestSha256 = await digestExtensionManifest(dependencyManifest);
+  const candidateDependencyPins = options.dependencyMode ? [{ extensionId: "ext_calendar",
+    version: options.dependencyMode === "conflicting" ? "1.1.0" : "1.0.0",
+    manifestSha256: options.dependencyMode === "conflicting" ? "d".repeat(64) : dependencyManifestSha256 }] : [];
+  const candidateManifest = options.dependencyMode
+    ? validateExtensionManifest({ ...candidateBaseManifest, dependencies: candidateDependencyPins }) : candidateBaseManifest;
   const artifacts = { "./dashboard.html": html, "./handler.ts": handler };
   const artifactEntries = Object.entries(artifacts).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
   const artifactSha256 = await digest(JSON.stringify(artifactEntries));
   const keyPair = await generateExtensionPublisherKeyPair();
   const publicKey = await exportExtensionPublisherPublicKey(keyPair.publicKey);
+  const dependencyKeyPair = await generateExtensionPublisherKeyPair();
+  const dependencyPublicKey = await exportExtensionPublisherPublicKey(dependencyKeyPair.publicKey);
+  const dependencySignature = await signExtensionPublisherRelease({ privateKey: dependencyKeyPair.privateKey, publicKey: dependencyKeyPair.publicKey,
+    manifestJson: JSON.stringify(dependencyManifest), artifacts });
   const signature = await signExtensionPublisherRelease({ privateKey: keyPair.privateKey, publicKey: keyPair.publicKey,
     manifestJson: JSON.stringify(candidateManifest), artifacts });
   const publisherPayloadSha256 = await digest(extensionPublisherSigningPayload(JSON.stringify(candidateManifest), artifacts));
@@ -167,11 +182,20 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     if (path === "/extension-runtime-work") return Response.json({ active_work_count: options.activeWorkCount ?? 0, drained: (options.activeWorkCount ?? 0) === 0 });
     if (path === "/extension-installations") {
       if (url.searchParams.get("space_id") !== "space-a") return Response.json({ installations: [] });
-      return Response.json({ installations: [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
+      const installations: Array<Record<string, unknown>> = [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
         instance_key: options.instanceKey ?? "default", status: options.installationStatus ?? "active", release_version: currentVersion, publisher_id: "pub_voice",
         publisher_key_id: options.passive ? signature.keyId : "c".repeat(64), publisher_attestation_valid: true,
         manifest_sha256: await digestExtensionManifest(oldManifest),
-        manifest: oldManifest }] });
+        manifest: oldManifest }];
+      if (["active", "revoked", "conflicting"].includes(options.dependencyMode ?? "")) installations.push({ instance_id: "install-calendar",
+        extension_id: "ext_calendar", project_id: null, scope: "SPACE_SHARED", status: "active", release_version: "1.0.0",
+        publisher_id: "pub_calendar", publisher_key_id: dependencySignature.keyId, publisher_attestation_valid: true,
+        manifest_sha256: dependencyManifestSha256, manifest: dependencyManifest });
+      if (options.dependencyMode === "cross_space") installations.push({ instance_id: "install-calendar-other-space",
+        extension_id: "ext_calendar", project_id: "project-other", scope: "PROJECT_SHARED", status: "active", release_version: "1.0.0",
+        publisher_id: "pub_calendar", publisher_key_id: dependencySignature.keyId, publisher_attestation_valid: true,
+        manifest_sha256: dependencyManifestSha256, manifest: dependencyManifest });
+      return Response.json({ installations });
     }
     if (path === "/extension-releases") return Response.json({ releases: [
       { version: candidateVersion, signatureValid: options.signatureValid !== false, artifactSha256, hostSignature: "host",
@@ -183,6 +207,12 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     ] });
     if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: candidateManifest.id, version: candidateVersion }] });
     if (path === "/extension-package-release") {
+      if (url.searchParams.get("extension_id") === "ext_calendar" && url.searchParams.get("version") === "1.0.0") return Response.json({ release: {
+        extension_id: dependencyManifest.id, version: dependencyManifest.bundle!.version, manifest: dependencyManifest,
+        manifest_json: JSON.stringify(dependencyManifest), artifact_sha256: await digest(JSON.stringify(artifactEntries)),
+        publisher: { id: "pub_calendar", key_id: dependencySignature.keyId, signature: dependencySignature.signature,
+          payload_sha256: await digest(extensionPublisherSigningPayload(JSON.stringify(dependencyManifest), artifacts)) },
+      } });
       if (url.searchParams.get("version") === currentVersion) return Response.json({ release: sourceRelease });
       return options.candidateReleaseAvailable === false
         ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json({ release: candidateRelease });
@@ -192,12 +222,15 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
       const body = await request.clone().json() as { actorId: string; claims: { requestId: string; installationId: string; extensionId: string;
         fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
         artifactSha256: string; publisherKeyId: string; authorityExpansion: { permissions: string[]; capabilities: string[] };
+        dependencyExpansion: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+        dependencyClosure: Array<{ extensionId: string; version: string; manifestSha256: string }>;
         schemaMigrationsRetained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }> } };
       return Response.json({ updated: true, replayed: false, receipt: { request_id: body.claims.requestId, tenant_id: "tenant-a", space_id: "space-a",
         installation_id: body.claims.installationId, extension_id: body.claims.extensionId, from_version: body.claims.fromVersion,
         to_version: body.claims.toVersion, source_manifest_sha256: body.claims.sourceManifestSha256,
         candidate_manifest_sha256: body.claims.candidateManifestSha256, artifact_sha256: body.claims.artifactSha256,
         publisher_key_id: body.claims.publisherKeyId, authority_expansion: body.claims.authorityExpansion,
+        dependency_expansion: body.claims.dependencyExpansion, dependency_closure: body.claims.dependencyClosure,
         schema_migrations_retained: body.claims.schemaMigrationsRetained,
         actor_id: body.actorId, created_at: new Date().toISOString() } });
     }
@@ -206,12 +239,24 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   const env = {
     PLATFORM_SECRET: secret,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...params: unknown[]) => ({
-      first: async () => sql.includes("FROM spaces WHERE id") ? { name: "Workspace", spacetype_id: "space", config_json: "{}" }
-        : sql.includes("JOIN space_members") && options.endUserSpaceRole ? { role: options.endUserSpaceRole }
-        : sql.includes("FROM extension_publisher_keys") && options.activePublisher !== false
-          ? { publisher_id: "pub_voice", public_key_b64url: publicKey } : null,
-      all: async () => ({ results: sql.includes("FROM extension_publisher_keys") && options.activePublisher !== false
-        ? [{ key_id: signature.keyId }] : [] }),
+      first: async () => {
+        if (sql.includes("FROM spaces WHERE id")) return { name: "Workspace", spacetype_id: "space", config_json: "{}" };
+        if (sql.includes("JOIN space_members") && options.endUserSpaceRole) return { role: options.endUserSpaceRole };
+        if (!sql.includes("FROM extension_publisher_keys")) return null;
+        const keyId = params[2];
+        if (keyId === dependencySignature.keyId) return options.dependencyMode === "revoked" ? null
+          : { publisher_id: "pub_calendar", public_key_b64url: dependencyPublicKey };
+        return options.activePublisher !== false && keyId === signature.keyId
+          ? { publisher_id: "pub_voice", public_key_b64url: publicKey } : null;
+      },
+      all: async () => {
+        if (!sql.includes("FROM extension_publisher_keys")) return { results: [] };
+        const keyIds = new Set(params.slice(2));
+        return { results: [
+          ...(options.activePublisher !== false && keyIds.has(signature.keyId) ? [{ key_id: signature.keyId }] : []),
+          ...(options.dependencyMode !== "revoked" && keyIds.has(dependencySignature.keyId) ? [{ key_id: dependencySignature.keyId }] : []),
+        ] };
+      },
     }) }) },
     SPACE_DO: { idFromName: () => "space-do-id", get: () => spaceStub },
     MICRO_APP_DO: { idFromName: (name: string) => { microAppActorNames.push(name); return name; }, get: (_actor: unknown) => ({ fetch: async (request: Request) => {
@@ -649,7 +694,7 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, replayed: false, receipt: {
       installation_id: "install-voice", extension_id: "ext_customer_voice", from_version: "1.0.0", to_version: "1.2.0",
@@ -671,19 +716,19 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const adminAttempt = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false,
+      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false,
     }, "admin"), h.env);
     expect(adminAttempt.status).toBe(403);
     expect(await adminAttempt.json()).toMatchObject({ error_code: "extension_update_owner_confirmation_required" });
 
     const unconfirmed = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false,
     }), h.env);
     expect(unconfirmed.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
 
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false,
+      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false,
     }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, replayed: false, receipt: {
@@ -704,6 +749,54 @@ describe("signed Space-shared package update review", () => {
       apply_block_reason: "a verified Space owner must approve this authority expansion" } });
   });
 
+  it("requires an owner to confirm additive dependency pins that are already active and trusted in the same Space", async () => {
+    const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", dependencyMode: "active" });
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
+    expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
+    const review = await reviewResponse.json() as { dependency_expansion: Array<{ extensionId: string; version: string; manifestSha256: string }>;
+      dependency_resolution: { candidate: { resolved: boolean; dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> } };
+      review: { apply_supported: boolean }; update_review_token: string };
+    expect(review.review.apply_supported).toBe(true);
+    expect(review.dependency_expansion).toEqual([{ extensionId: "ext_calendar", version: "1.0.0", manifestSha256: expect.any(String) }]);
+    expect(review.dependency_resolution.candidate).toMatchObject({ resolved: true, dependencies: review.dependency_expansion });
+
+    const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
+    const adminAttempt = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: true }, "admin"), h.env);
+    expect(adminAttempt.status).toBe(403);
+    expect(await adminAttempt.json()).toMatchObject({ error_code: "extension_update_owner_confirmation_required" });
+    const unconfirmed = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
+    expect(unconfirmed.status).toBe(409);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
+
+    const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: true }), h.env);
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ updated: true, receipt: {
+      dependency_expansion: review.dependency_expansion, dependency_closure: review.dependency_expansion,
+    } });
+    const forwarded = h.spaceRequests.filter(request => new URL(request.url).pathname === "/space-shared-extension-update").at(-1)!;
+    expect(await forwarded.clone().json()).toMatchObject({ confirmDependencyExpansion: true,
+      claims: { dependencyExpansion: review.dependency_expansion, dependencyClosure: review.dependency_expansion } });
+  });
+
+  it.each(["missing", "revoked", "conflicting", "cross_space"] as const)(
+    "does not issue an apply token when a candidate dependency is %s in this Space", async dependencyMode => {
+      const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", dependencyMode });
+      const response = await spacesWorker.fetch(await signedRequest(path, "POST",
+        { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
+      expect(response.status).toBe(200);
+      const review = await response.json() as { dependency_resolution: { candidate: { resolved: boolean; error?: string } };
+        review: { apply_supported: boolean; apply_block_reason: string | null }; update_review_token?: string };
+      expect(review.dependency_resolution.candidate.resolved).toBe(false);
+      expect(review.review).toMatchObject({ apply_supported: false });
+      expect(review.review.apply_block_reason).toContain("dependency closure is unresolved");
+      expect(review.update_review_token).toBeUndefined();
+      expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
+    });
+
   it("rejects an authority-expansion review when its signed release key is revoked before apply", async () => {
     const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", authorityExpansionOnly: true });
     const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
@@ -713,7 +806,7 @@ describe("signed Space-shared package update review", () => {
     h.options.activePublisher = false;
     const applied = await spacesWorker.fetch(await signedRequest(
       "/spaces/space-a/shared-extension-installations/install-voice/update", "POST",
-      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false }), h.env);
+      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(applied.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
   });
@@ -727,7 +820,7 @@ describe("signed Space-shared package update review", () => {
     h.candidateRelease.artifact_sha256 = "d".repeat(64);
     const applied = await spacesWorker.fetch(await signedRequest(
       "/spaces/space-a/shared-extension-installations/install-voice/update", "POST",
-      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false }), h.env);
+      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(applied.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
   });
@@ -749,11 +842,11 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const interrupted = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(interrupted.status).toBe(503);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
     const retry = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(retry.status, JSON.stringify(await retry.clone().json())).toBe(200);
     const result = await retry.json() as { receipt: { source_manifest_sha256: string; candidate_manifest_sha256: string;
       artifact_sha256: string } };
@@ -779,7 +872,7 @@ describe("signed Space-shared package update review", () => {
     expect(review.review.apply_supported).toBe(true);
     expect(review.candidate.version).toBe("1.0.0");
     const applied = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extension-installations/install-voice/update",
-      "POST", { review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
+      "POST", { review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, receipt: {
       from_version: "1.2.0", to_version: "1.0.0", artifact_sha256: review.candidate.artifact_sha256,
@@ -808,17 +901,17 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const adminApply = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true, confirm_dependency_expansion: false,
     }, "admin"), h.env);
     expect(adminApply.status).toBe(403);
     const unconfirmed = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false, confirm_dependency_expansion: false,
     }), h.env);
     expect(unconfirmed.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
 
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true, confirm_dependency_expansion: false,
     }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ receipt: { from_version: "1.2.0", to_version: "1.0.0",
@@ -837,7 +930,7 @@ describe("signed Space-shared package update review", () => {
     const review = await reviewResponse.json() as { update_review_token: string };
     h.revokePublisher();
     const applied = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extension-installations/install-voice/update", "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true, confirm_dependency_expansion: false,
     }), h.env);
     expect(applied.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);

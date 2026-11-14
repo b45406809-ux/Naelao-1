@@ -187,7 +187,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(139);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(140);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
@@ -199,6 +199,10 @@ describe("SpaceDO migration replay", () => {
       .toContain("authority_expansion_json");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_shared_extension_update_receipts')").toArray().map(column => column.name))
       .toContain("schema_migrations_retained_json");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_shared_extension_update_receipts')").toArray().map(column => column.name))
+      .toContain("dependency_expansion_json");
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_shared_extension_update_receipts')").toArray().map(column => column.name))
+      .toContain("dependency_closure_json");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_blueprint_installations')").toArray().map(column => column.name)).toContain("setup_schema_version");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_template_setup_update_events'").toArray()).toHaveLength(1);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='extension_runtime_work_leases'").toArray()).toHaveLength(1);
