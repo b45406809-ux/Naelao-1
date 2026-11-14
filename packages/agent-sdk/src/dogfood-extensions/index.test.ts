@@ -22,6 +22,11 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("Customer setup form");
     expect(foundry).toContain("Add setup field");
     expect(foundry).toContain("Setup contract preview");
+    expect(foundry).toContain("Customer form preview");
+    expect(foundry).toContain("setup-form-preview");
+    expect(foundry).toContain("setup-preview-locale");
+    expect(foundry).toContain("updateCustomerPreviewValues");
+    expect(foundry).not.toContain(".innerHTML");
     expect(foundry).toContain("setupSchemaVersion,setupFields");
     expect(foundry).toContain("blueprint.export");
     expect(foundry.toLowerCase()).toContain("provider credentials");
