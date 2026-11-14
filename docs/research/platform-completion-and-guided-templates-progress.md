@@ -1,29 +1,26 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P04 durable Space R2 coverage)
+## Active continuation — 2026-11-14 (P04 committed workspace archive/restore)
 
-Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
-`origin/Mcbt5s-Backup-2`. Full Space archive enumeration now includes persisted agent configuration,
-the Space Assistant file workspace and learned skill-library objects. The existing local recovery
-test proves their encrypted snapshot inclusion and restoration through checksum-verified partial retry
-without overwriting a concurrent conflicting object. Archive caps and additive merge remain unchanged.
+Source `cf375473a11b8a344193ee661aad7b11baa6ceac` is pushed to `origin/Mcbt5s-Backup-2`. Space owner
+archives now include bounded WorkspaceCoordinatorDO committed heads, merge bases, manifests and
+referenced R2 content through authenticated Agents routes. Export excludes active sessions, staging
+and orphaned CAS; restore verifies content and scope and uses a stable retry receipt while refusing
+conflicting heads. Existing archive caps and rollout gates remain in effect.
 
-Local evidence: Space archive suite **11/11**, Spaces typecheck and `git diff --check`. No deployed
-restore or live acceptance ran. P04 is PARTIAL: jurisdiction-scoped canonical project
-WorkspaceCoordinatorDO heads/manifests/content, other service D1/DO state, provider/runtime stores,
-RPO/RTO, retention/legal/key policy and isolated recovery are not covered. Temporary channel/email
-attachments and private communications bodies remain under independent retention/erasure paths.
-P05 signed requirement references/review are still only one implemented slice of guided setup;
-collection/action/provider scopes remain open. P01/P02 actual resource binding and receipt evidence
-gates remain. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+Local verification: Agents workspace/archive routes **62/62**, Space archive integration **12/12**,
+Agents/Spaces typechecks, and `git diff --check`. No deployed/isolated recovery or live RPO/RTO
+acceptance ran. P04 remains partial for archive caps, other service/provider stores, communication
+retention boundaries and legal/key/jurisdiction policy. P01/P02 implementation is local, but actual
+resource separation, operator-attested baseline and resource receipts are external evidence gates.
+Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: add bounded, authenticated WorkspaceCoordinatorDO backup/restore of committed
-project branch heads, manifests and referenced content through the owner Space archive flow. First
-verify per-project jurisdiction, generation/erasure fencing, retention and current checked-publish
-semantics; exclude active sessions, staging and orphaned content. Preserve archive caps and
-no-overwrite restore, and test interrupted retry plus tombstone isolation. Then continue P01–P24 and
-S2–S9/U01–U12.
+Exact next action: close the concrete P06 operations-history gap by recording signed Twilio extension
+call completion/failure, duration, and the exact admitted installation/release; expose those records in
+the owner dashboard with route and UI coverage. This does not assert provider cost or live carrier
+acceptance. Then continue uncoded requirements across both plans, prioritizing independent work over
+blocked operator evidence or unresolved product policy.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 

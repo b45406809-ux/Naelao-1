@@ -1,32 +1,28 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P04 durable Space R2 coverage)
+## Active continuation — 2026-11-14 (P04 committed workspace archive/restore)
 
-Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
-`origin/Mcbt5s-Backup-2`. Full Space archives now enumerate `spaces/{space}/agents/`, `workspace/` and
-`scripts/`, preserving the current tenant/Space R2 envelope and existing limits. This covers persisted
-agent config, Space Assistant files and the learned skill library through their current R2 callers.
-The existing SQLite/R2-mock recovery test now exercises all four agent files plus assistant and skill
-objects, checksum-verified partial retry, a concurrent conflicting object, exact restored bytes, and
-foreign-Space exclusion.
+Source `cf375473a11b8a344193ee661aad7b11baa6ceac` is pushed to `origin/Mcbt5s-Backup-2`. Authenticated
+Agents routes connect Space archive export/restore to WorkspaceCoordinatorDO committed branch heads,
+merge bases, manifests and referenced R2 objects. Scope, jurisdiction, policy generation, erasure and
+GC barriers are checked; active sessions, staging and orphaned CAS are excluded. Restore verifies
+object hashes, rejects conflicting heads/bases, records a stable replay receipt and leaves rollouts
+disabled.
 
-Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **11/11**, Spaces typecheck, and
-`git diff --check`. No isolated restore, deployed D1/DO/R2, jurisdiction or live RPO/RTO acceptance
-ran. P04 remains PARTIAL: WorkspaceCoordinatorDO's canonical `workspace-v1` heads/manifests/content
-are not archived, nor are Agents Worker D1 or provider/runtime state. `email-inbound/`,
-`channel-inbound/` and `communications/` objects remain in their independent 30-day retention and
-erasure lifecycle and are not copied into Space archives. Legal/retention/RPO/RTO and regional
-recovery policy remain unresolved; no credential blocked this source work. P01/P02 retain the actual
-resource and operator-receipt gates. Rollouts remain disabled; preserve
-`infra/scripts/__pycache__/`.
+Local evidence: WorkspaceCoordinator/archive-route suites **62/62**, Space archive integration
+**12/12**, Agents and Spaces typechecks, `git diff --check`. No deployed or isolated restore, regional
+RPO/RTO drill, or live acceptance ran. P04 remains partial for existing archive size caps, other
+service D1/DO and provider/runtime state, separate 30-day communication/attachment retention, and
+legal/key/retention/jurisdiction policy. These are coverage and policy/acceptance gaps, not credential
+blockers. P01/P02 retain actual resource/receipt gates. Rollouts stay disabled; preserve the
+intentionally untracked `infra/scripts/__pycache__/`.
 
-Exact next action: trace current WorkspaceCoordinatorDO committed main/branch heads, manifests and
-R2 content; confirm the existing per-project jurisdiction, generation and erasure fences, then add a
-bounded authenticated export/restore contract reachable through Agents and the Space owner archive.
-Export committed content only (no active sessions, staging or orphaned CAS), replay tombstones before
-reads, retain no-overwrite and existing archive caps, then add retry/isolation tests. Continue P01–P24
-and S2–S9/U01–U12.
+Exact next action: implement the source-confirmed P06 gap: persist signed Twilio public-extension call
+final status and duration against the admitted call, preserve its exact installation/release pin, and
+show the bounded owner-scoped call history in the phone dashboard. Add migration and local route/UI
+checks. Then continue remaining independent code gaps in P01–P24 and S2–S9/U01–U12; keep provider,
+deployed and live acceptance distinct.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 

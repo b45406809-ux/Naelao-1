@@ -16,30 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 durable Space R2 coverage)
+## Latest checkpoint — 2026-11-14 (P04 committed workspace archive/restore)
 
-Source commit `c310ae03669e4110196f59f0116672818e557883` is pushed to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Full Space archives now include
-the Space Assistant workspace, learned skill-library files and all four persisted agent configuration
-files, in addition to project/shared workspace and Space extension data. Existing archive size/object
-caps, tenant/Space binding, checksum verification, partial retry and no-overwrite restore semantics
-remain unchanged. The agent config, assistant file and learned-script callers are reachable today.
+Source commit `cf375473a11b8a344193ee661aad7b11baa6ceac` is pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The owner Space archive path now
+captures and restores bounded, jurisdiction-scoped WorkspaceCoordinatorDO committed branch heads,
+merge bases, manifests and referenced R2 content through authenticated Agents routes. It excludes
+sessions, staging and orphaned CAS; checks hashes and policy/head stability; preserves tombstone,
+conflict and retry behavior; and respects existing archive caps without enabling rollout.
 
-Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **11/11**, Spaces typecheck and
-`git diff --check`. These are local SQLite/R2-mock checks; no isolated restore, deployed D1/DO/R2,
-jurisdiction or live RPO/RTO acceptance ran. P04 remains PARTIAL: archive does not yet capture
-WorkspaceCoordinatorDO state or jurisdiction-scoped canonical `workspace-v1` manifests/content,
-Agents Worker D1, provider/runtime state, or task-scoped communication/attachment objects. The latter
-have separate 30-day retention and erasure paths. Retention/RPO/RTO and legal/key/jurisdiction policy
-remain open; these are not credential blockers. P01/P02 retain their actual resource/receipt gates.
-Preserve intentionally untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
+Local evidence after the source change: Agents WorkspaceCoordinator/archive-route tests **62/62**,
+Spaces archive integration tests **12/12**, Agents and Spaces typechecks, and `git diff --check`.
+These are local SQLite/DO/R2 mocks and static checks. P04 remains PARTIAL: archive caps can reject
+larger projects; other service D1/DO, provider/runtime and private communication data are outside this
+slice; isolated restore, deployed stores, regional recovery, legal/key/retention policy and RPO/RTO
+acceptance remain open. P01/P02 source safety is implemented locally; actual environment separation,
+operator-attested baselines and exact-resource receipts remain external evidence gates. Preserve
+intentionally untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
 
-Exact next action: trace how the current project workspace's committed main/branch heads, manifests
-and content are persisted in WorkspaceCoordinatorDO, confirm its per-project jurisdiction binding and
-existing generation/erasure fences, then implement a bounded authenticated archive-export/restore
-contract through the reachable Agents/Space owner export path. It must export live committed content
-only, avoid active sessions, staging and orphaned CAS data, preserve tombstone replay and no-overwrite
-semantics, and keep existing archive caps. Continue P01–P24 and S2–S9/U01–U12 after that slice.
+Exact next action: close the reachable P06 Twilio extension call-history gap. Persist signed callback
+completion/failure and duration against the already-admitted inbound extension call, pin the exact
+installation/release observed at admission, and expose that scoped history in the owner phone dashboard.
+Add migration, route/UI coverage and meaningful local verification. Do not claim call-cost receipts or
+live carrier acceptance unless independently implemented and verified. Then continue remaining P01–P24
+and S2–S9/U01–U12 code gaps without repeating completed audits.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 
