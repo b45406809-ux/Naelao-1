@@ -1,22 +1,30 @@
 # Managed services and sidecar implementation progress
 
 
-## Current checkpoint — 2026-11-13
+## Current checkpoint — 2026-11-14
 
-Code `eea08cc7` is pushed to `origin/Mcbt5s-Backup-2`. P05/P10/P23 cleanup retries now use migration
-0241's unique operation ID and immutable snapshot of the randomized credential/webhook-secret names,
-account and routing scope. A reconnect cannot cause an older retry to revoke or delete the newer
-credential generation. Migration 0240 pending rows without a saved generation are retained as
-`legacy_generation_unknown`, never replayed against an ambiguous credential. Release preflight
-checks the required cleanup table. Shared Telegram bot cleanup keeps the webhook while any active
-connection still uses that bot. The earlier `a75c0862` work remains: local routes are revoked first,
-cleanup outcomes are durable/retryable, and uninstall can recover from an ambiguous SpaceDO removal.
+Code `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff` is pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. Migration 0242 adds a setup operation kind and partial unique
+indexes for one unresolved setup per installed connection and provider account. Telegram and
+WhatsApp setup now persist exact credential-generation intent before vault writes or provider-side
+mutation, keep local routing inactive until provider acceptance, and commit active connection state
+with the completed receipt. Failed or ambiguous setup revokes local state and compensates from the
+saved generation; pending cleanup retains credentials and is visible/retryable in the owner panel.
 
-Local verification: Agents cleanup tests **11/11**, Agents/Spaces/Shell typechecks, Spaces uninstall
-tests **3/3**, release migration tests **15/15** including local SQLite replay of 0240/0241, release
-manifest and deployment validators, and `git diff --check`. Provider calls are mocked. No D1
-migration, deployment, provider account or live acceptance ran. Preserve the pre-existing untracked
-Python cache and keep rollouts disabled.
+Local verification: Agents setup/cleanup/auth tests **23/23**; Agents, Spaces and Shell typechecks;
+Spaces uninstall tests **3/3**; release migration tests **15/15** including local SQLite replay
+through 0242 and provider-account uniqueness; schema/deployment manifest validators; `git diff
+--check`. Provider calls are mocked. No D1 migration, deployment, live provider or live acceptance
+ran. Preserve the pre-existing untracked Python cache and keep rollouts disabled.
+
+Setup compensation is IMPLEMENTED_LOCAL for Telegram/WhatsApp; P05/P10/P23 remain PARTIAL for other
+provider journeys, broader update/uninstall effects, token revocation, retention/replay policy and
+deployed/live acceptance. S2 remains local for supported lanes; S3–S9/U01–U12 retain the row-level
+gaps below. Exact next action: reconcile U11 settlement/cost/alert sources, persistence and reachable
+owner controls against current code; implement any specific independent gap, mark unsupported
+invoice and Cloudflare billed-idle/CPU-size feeds precisely, then audit U12 and finish the remaining
+S4–S9/U01–U12 caller gaps. Continue platform P01/P02 release/environment safety after the managed
+audit. Preserve `infra/scripts/__pycache__/`.
 
 Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
 `origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions

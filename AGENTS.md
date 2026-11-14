@@ -12,31 +12,34 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Active checkpoint — 2026-11-13
+## Active checkpoint — 2026-11-14
 
-Code `eea08cc7` is pushed to `origin/Mcbt5s-Backup-2`. It adds migration 0241 and changes cleanup
-receipts from a reusable installation/connection key to a unique operation ID with an immutable
-snapshot of that credential generation. Telegram, WhatsApp and Slack retries resolve only the
-saved randomized vault names; a reconnect cannot redirect an old retry to a newer token. Old
-pending migration-0240 receipts whose generation was never recorded are preserved as
-`legacy_generation_unknown` and are not replayed. Release preflight now checks the new required
-table. Shared Telegram bots retain a webhook while another active connection uses that bot; the
-owner sees that state explicitly. This builds on `a75c0862`, which records provider cleanup outcomes,
-revokes local routes first, and supports retryable disconnect/uninstall cleanup.
+Code `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. Migration 0242 distinguishes
+setup-compensation receipts from cleanup receipts and serializes pending setup by provider account.
+Telegram and WhatsApp now persist setup intent and exact randomized credential names before saving
+credentials or calling `setWebhook` / `subscribed_apps`; local routes remain inactive until provider
+acceptance and the active connection plus completed receipt are committed together. Rejection,
+ambiguous response or failed local commit removes local access and compensates from the saved
+generation. Unconfirmed cleanup retains credentials and remains owner-retryable. The Shell refreshes
+the owner receipt view after setup success or failure.
 
-Local evidence for `eea08cc7`: Agents cleanup tests **11/11**, Agents/Spaces/Shell typechecks, Spaces
-uninstall tests **3/3**, release migration tests **15/15** including SQLite replay of migrations 0240
-and 0241, schema/deployment manifest validators, and `git diff --check`. Provider calls were mocked;
-no D1 migration was applied, deployment or live provider acceptance occurred. The worktree keeps the
-pre-existing `infra/scripts/__pycache__/` untracked; rollouts remain disabled.
+Local evidence for `c1c5e0d4`: Agents setup/cleanup/auth suites **23/23**; Agents, Spaces and Shell
+typechecks; Spaces uninstall **3/3**; release migration tests **15/15** with SQLite replay through
+0242; release/deployment manifest validators and `git diff --check`. Provider calls were mocked. No
+D1 migration, deployment or live provider acceptance occurred. The existing untracked
+`infra/scripts/__pycache__/` is preserved. Rollouts remain disabled.
 
-The exact next action is to make Telegram `setWebhook` and WhatsApp `subscribed_apps` setup durable
-before either external side effect. Persist a pending operation and exact randomized credential
-generation first; commit an active connection only after provider acceptance; on rejection or
-ambiguous outcome revoke local routing, compensate through the saved operation, retain credentials
-when cleanup is unconfirmed, and expose the outcome to the owner retry view. Then continue the
-remaining S3–S9/U01–U12 and platform-plan code gaps. Ordinary unwritten code is not a credential
-blocker. Keep live rollout disabled until its acceptance gates pass.
+Setup compensation is IMPLEMENTED_LOCAL for these two provider lanes; P05/P10/P23 remain PARTIAL for
+broader provider journeys, update/uninstall effects, token revocation, retention/replay policy and
+deployed/live acceptance. S2 remains IMPLEMENTED_LOCAL only for its supported lanes. Exact next
+action: reconcile U11's durable settlement, provider-cost, threshold, alert-delivery and owner-control
+callers against current code; implement only a concrete independent gap, record absent invoice and
+Cloudflare billed-idle/CPU-size feeds as unsupported sources, then audit U12 and complete the
+remaining S4–S9/U01–U12 source-to-caller gaps. After the managed-services audit, continue platform
+P01/P02 release/environment safety and the remaining plan queue. Ordinary unwritten code is not a
+credential blocker. After compaction/interruption/new session, read both plans and both progress
+records, inspect the actual worktree, and resume from the exact next action recorded there.
 
 P08's bounded video-frame code is pushed to `origin/Mcbt5s-Backup-2` as
 `87374fc2da4ae44a4c361ea145109308782571e5`. It adds a separate default-off owner setting, task-owned
