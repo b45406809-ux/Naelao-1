@@ -8,6 +8,7 @@ import { useProductAuth } from "@/lib/auth-provider";
 import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
+import { createLatestRequestFence, parseTemplateExpectedUsageInput } from "@/lib/template-usage-estimate";
 import { modelLabel } from "@/components/ModelSelector";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
@@ -126,6 +127,9 @@ export default function SpacesPage() {
   const [templateSetupUpdateDataLossConfirmed, setTemplateSetupUpdateDataLossConfirmed] = React.useState<Record<string, boolean>>({});
   const [templateSetupUpdateBusy, setTemplateSetupUpdateBusy] = React.useState<string | null>(null);
   const pendingPreviewed = React.useRef(new Set<string>());
+  const expectedUsageEstimateRequests = React.useRef(createLatestRequestFence()).current;
+  const expectedUsageSpaceId = activationReview?.spaceId ?? null;
+  const expectedUsageBlueprintId = activationReview?.blueprintId ?? null;
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
 
@@ -247,24 +251,52 @@ export default function SpacesPage() {
     } finally { setSavingSetupDraft(false); }
   }
 
-  async function updateExpectedUsageEstimate() {
-    if (!creds || !activationReview || updatingUsageEstimate) return;
-    const usage: SpaceTemplateExpectedUsageV1 = {
-      conversations_per_month: Number(expectedConversations),
-      interactions_per_conversation: Number(expectedInteractions),
-    };
-    if (!Number.isSafeInteger(usage.conversations_per_month) || usage.conversations_per_month < 1 || usage.conversations_per_month > 1_000_000
-      || !Number.isSafeInteger(usage.interactions_per_conversation) || usage.interactions_per_conversation < 1 || usage.interactions_per_conversation > 500) {
-      setUsageEstimateError("Enter 1–1,000,000 conversations per month and 1–500 interactions per conversation.");
+  const fetchExpectedUsageEstimate = React.useCallback(async (
+    usage: SpaceTemplateExpectedUsageV1 | null, requestId: number, validationError: string | null,
+  ) => {
+    if (!creds || !expectedUsageSpaceId || !expectedUsageBlueprintId || !expectedUsageEstimateRequests.isCurrent(requestId)) return;
+    setUpdatingUsageEstimate(true);
+    setUsageEstimateError(validationError ?? "");
+    try {
+      const preview = await previewSpaceTemplateActivation(expectedUsageSpaceId, expectedUsageBlueprintId, creds, usage ?? undefined);
+      if (!expectedUsageEstimateRequests.isCurrent(requestId)) return;
+      setActivationReview(current => current && current.spaceId === expectedUsageSpaceId && current.blueprintId === expectedUsageBlueprintId
+        ? { ...current, preview: { ...current.preview, cost_estimate: preview.cost_estimate } } : current);
+    } catch (error) {
+      if (expectedUsageEstimateRequests.isCurrent(requestId)) setUsageEstimateError(validationError
+        ? `${validationError} The previous projection may be stale until the estimate refreshes.`
+        : `Usage estimate was not refreshed: ${error instanceof Error ? error.message : "request failed"}`);
+    } finally {
+      if (expectedUsageEstimateRequests.isCurrent(requestId)) setUpdatingUsageEstimate(false);
+    }
+  }, [creds, expectedUsageBlueprintId, expectedUsageEstimateRequests, expectedUsageSpaceId]);
+
+  function updateExpectedUsageEstimate() {
+    if (!expectedUsageSpaceId || !expectedUsageBlueprintId) return;
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions);
+    const requestId = expectedUsageEstimateRequests.issue();
+    void fetchExpectedUsageEstimate(input.usage, requestId, input.valid ? null : input.message);
+  }
+
+  React.useEffect(() => {
+    if (!creds || !expectedUsageSpaceId || !expectedUsageBlueprintId) {
+      expectedUsageEstimateRequests.invalidate();
+      setUpdatingUsageEstimate(false);
+      setUsageEstimateError("");
       return;
     }
-    setUpdatingUsageEstimate(true); setUsageEstimateError("");
-    try {
-      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds, usage);
-      setActivationReview(current => current ? { ...current, preview } : current);
-    } catch (error) { setUsageEstimateError(`Usage estimate was not refreshed: ${error instanceof Error ? error.message : "request failed"}`); }
-    finally { setUpdatingUsageEstimate(false); }
-  }
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions);
+    const requestId = expectedUsageEstimateRequests.issue();
+    if (!input.valid) setUsageEstimateError(input.message);
+    const timer = window.setTimeout(() => {
+      void fetchExpectedUsageEstimate(input.usage, requestId, input.valid ? null : input.message);
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      if (expectedUsageEstimateRequests.isCurrent(requestId)) expectedUsageEstimateRequests.invalidate();
+    };
+  }, [creds, expectedConversations, expectedInteractions, expectedUsageBlueprintId, expectedUsageEstimateRequests,
+    expectedUsageSpaceId, fetchExpectedUsageEstimate]);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -858,12 +890,12 @@ export default function SpacesPage() {
             </li>)}</ul> : <p>{activationReview.preview.cost_estimate.reason === "selected_listing_not_recorded" ? "This older Space has no saved Marketplace listing ID, so its template license price cannot be matched." : "No exact template license price is available for this installation."}</p>}
             <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
               <strong>Expected monthly usage</strong>
-              <p style={{ margin: "4px 0", color: "var(--text3)" }}>Enter your planning assumptions. Interactions are not billable units; one interaction can use multiple model or provider operations.</p>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>Enter planning assumptions. The projection refreshes automatically after you change them. Interactions are not billable units; one interaction can use multiple model or provider operations.</p>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
                 <label>Customer conversations per month<input aria-label="Expected conversations per month" type="number" min={1} max={1_000_000} step={1} value={expectedConversations} onChange={event => setExpectedConversations(event.target.value)} /></label>
                 <label>Interactions per conversation<input aria-label="Expected interactions per conversation" type="number" min={1} max={500} step={1} value={expectedInteractions} onChange={event => setExpectedInteractions(event.target.value)} /></label>
               </div>
-              <Button variant="secondary" onClick={() => void updateExpectedUsageEstimate()} disabled={updatingUsageEstimate}>{updatingUsageEstimate ? "Updating…" : "Update usage estimate"}</Button>
+              <Button variant="secondary" onClick={() => void updateExpectedUsageEstimate()} disabled={updatingUsageEstimate}>{updatingUsageEstimate ? "Updating…" : "Refresh estimate"}</Button>
               {usageEstimateError && <p role="alert">{usageEstimateError}</p>}
               {activationReview.preview.cost_estimate.expected_monthly_usage && <p role="status">Customer-entered projection: {activationReview.preview.cost_estimate.expected_monthly_usage.conversations.toLocaleString()} conversations × {activationReview.preview.cost_estimate.expected_monthly_usage.interactions_per_conversation} interactions = {activationReview.preview.cost_estimate.expected_monthly_usage.projected_interactions.toLocaleString()} interactions/month. Estimated cost remains unknown.</p>}
             </section>
