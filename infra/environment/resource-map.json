@@ -28,7 +28,7 @@
     },
     {
       "path": "workers/auth/wrangler.toml",
-      "sha256": "1383050540b0649d700ee59fd892b43d092c1c1e8d3226d2362ea37ca81e3128"
+      "sha256": "66b11fce0528a3d1810d8ea2b1f653c305dc7c6324ef8321ddc2eec436b39405"
     },
     {
       "path": "workers/billing/wrangler.toml",
