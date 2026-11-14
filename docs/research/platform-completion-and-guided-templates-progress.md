@@ -1,7 +1,29 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (template coordination defaults; Modal/P06 reconciliation)
+## Active continuation — 2026-11-14 (template coordination defaults completed locally)
+
+Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
+`origin/Mcbt5s-Backup-2`. The signed optional `SpaceBlueprint.coordinationDefaults` now has Foundry
+authoring/draft persistence, SDK validation, export persistence and activation preview. Owners/admins
+review the current revision and must explicitly confirm; activation writes through the existing policy
+API only at revision zero, preserving existing policy and facts. Local checks: Agent SDK **7/7**,
+Spaces authoring/activation **32/32**, Spaces and Shell typechecks, and `git diff --check`. These are
+local mocks/static checks; no browser, deployed Worker or live multi-user acceptance ran. Preserve
+untracked `infra/scripts/__pycache__/`.
+
+The platform plan §10.3 template-default slice is IMPLEMENTED_LOCAL; broader §10 coordination and P05
+remain PARTIAL. P01/P02 release/environment gates, P03/P20 product decisions, and P06 streaming,
+managed billing and live provider acceptance remain open as indexed below. Rollouts remain disabled.
+
+Exact next action: continue the managed-services S5/MS08d Modal lifecycle/authentication/hosting/
+region/cancellation/cost contract audit against official documentation. Implement only a reachable
+adapter supported by a stable documented interface and host; record the precise gate otherwise, then
+proceed through independent release/environment safety and other uncoded P01–P24 and S3–S9/U01–U12
+requirements. Keep rollouts disabled.
+
+
+## Previous continuation — 2026-11-14 (template coordination defaults; Modal/P06 reconciliation)
 
 The current pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
 `autonomous-managed-services-20261111` / `origin/Mcbt5s-Backup-2`; preserve untracked

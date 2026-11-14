@@ -1,7 +1,30 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (MS08d Modal host contract; P06 voice path)
+## Active continuation — 2026-11-14 (signed template coordination defaults)
+
+Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The signed optional
+`SpaceBlueprint.coordinationDefaults` now flows through Foundry authoring/draft restore, SDK schema
+validation, export and activation preview. Shell review shows the current owner policy and explicit
+confirmation control. Activation reuses the existing policy API, requires owner/admin authority and
+`expected_revision: 0`; current owner policy is preserved and no project/service access is implied.
+Local evidence: Agent SDK **7/7**, Spaces authoring/activation **32/32**, Spaces and Shell
+typechecks, and `git diff --check`. No browser, deployed Worker or live multi-user test ran. Preserve
+untracked `infra/scripts/__pycache__/`.
+
+This closes the §10.3 template coordination-default handoff locally; P05 and shared-Space coordination
+remain partial for their other requirements. S2 is local only for supported lanes. S3–S9/U01–U12 and
+P01–P24 remain at their specific implementation, product/contract and acceptance gaps in the current
+status matrices. Rollouts remain disabled.
+
+Exact next action: continue S5/MS08d against official Modal lifecycle, authentication, compatible host,
+region, cancellation and cost/usage contracts. Implement a reachable adapter only where both a
+documented interface and supported host exist; otherwise record the precise external contract gate,
+then continue independent S3–S9/U01–U12 and platform code gaps, including release/environment safety.
+
+
+## Previous continuation — 2026-11-14 (MS08d Modal host contract; P06 voice path)
 
 The current pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
 `autonomous-managed-services-20261111` / `origin/Mcbt5s-Backup-2`; preserve untracked

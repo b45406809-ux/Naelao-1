@@ -12,7 +12,30 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (Modal host contract; P06 voice caller reconciliation)
+## Latest checkpoint — 2026-11-14 (signed template coordination defaults)
+
+Code `a3791d51fc92b2d353d6e7b0b3bbd694f84e1f6b` is pushed to
+`origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`. The optional coordination
+default is part of the signed `SpaceBlueprint`; Foundry authoring saves/restores it, SDK validation
+rejects malformed fields, and owner activation review shows the suggestion and current policy. Only
+explicit owner/admin confirmation calls the existing revisioned policy API with `expected_revision: 0`;
+existing policy revisions are preserved, and no access to projects or services is granted. Local
+verification: Agent SDK **7/7**, Spaces authoring/activation **32/32**, Spaces and Shell typechecks,
+and `git diff --check`. No browser, deployed Worker or live multi-user acceptance ran. Preserve the
+intentionally untracked `infra/scripts/__pycache__/`.
+
+The §10.3 template-default handoff is IMPLEMENTED_LOCAL; P05 and shared-Space coordination remain
+PARTIAL for their other scoped requirements and live acceptance. S2 remains local only for supported
+lanes; S3–S9/U01–U12 and P01–P24 retain their row-specific code, policy, contract and acceptance gaps
+in the ledgers. No rollout was enabled.
+
+Exact next action: continue S5/MS08d by checking official Modal lifecycle, authentication, compatible
+hosting, region, cancellation and cost/usage contracts against the provider-neutral scaffold. Add a
+reachable adapter only if the documented contract and host support it; otherwise record the precise
+gate and continue the next independent code gap, prioritizing release/environment safety and other
+P01/P02 work without repeating completed audits. Keep rollouts disabled.
+
+## Previous checkpoint — 2026-11-14 (Modal host contract; P06 voice caller reconciliation)
 
 The pushed source baseline is `57eea1aa37dbcc9db5c802544e01d7fdf945b38e` on
 `autonomous-managed-services-20261111`, tracking `origin/Mcbt5s-Backup-2`. The only untracked path is
