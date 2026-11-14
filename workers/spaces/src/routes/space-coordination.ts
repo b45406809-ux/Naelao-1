@@ -52,6 +52,54 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-policy/history?${params}`)));
   });
 
+  app.get(`${v2Path}/requests`, async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    const after = c.req.query("after");
+    if (after !== undefined && (!after || after.length > 256)) return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, viewer_id: auth.userId,
+      viewer_role: auth.role, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-use-requests?${params}`)));
+  });
+
+  app.post(`${v2Path}/:entryId/requests`, async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    const entryId = c.req.param("entryId");
+    if (!entryId || !/^[A-Za-z0-9_-]{1,128}$/.test(entryId)) return c.json({ error_code: "coordination_entry_unavailable" }, 404);
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    if (!input || Object.keys(input).some(key => key !== "confirm_identity_sharing") || input.confirm_identity_sharing !== true)
+      return c.json({ error_code: "coordination_identity_sharing_confirmation_required" }, 400);
+    const response = await auth.stub.fetch(new Request("http://space/space-coordination-use-requests", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, entry_id: entryId, request_id: crypto.randomUUID(),
+        requester_id: auth.userId, requester_role: auth.role, confirm_identity_sharing: true }),
+    }));
+    return noStore(response);
+  });
+
+  app.patch(`${v2Path}/requests/:requestId`, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const requestId = c.req.param("requestId");
+    if (!/^[0-9a-f-]{36}$/i.test(requestId)) return c.json({ error_code: "coordination_request_unavailable" }, 404);
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    if (!input || Object.keys(input).some(key => !["expected_revision", "resolution"].includes(key))
+      || !Number.isSafeInteger(input.expected_revision) || Number(input.expected_revision) < 1
+      || (input.resolution !== "contacted" && input.resolution !== "unavailable"))
+      return c.json({ error_code: "coordination_request_invalid" }, 400);
+    const response = await auth.stub.fetch(new Request(`http://space/space-coordination-use-requests/${encodeURIComponent(requestId)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, actor_role: auth.role,
+        expected_revision: input.expected_revision, resolution: input.resolution }),
+    }));
+    return noStore(response);
+  });
+
   app.put(policyPath, async c => {
     const auth = await authorize(c, true);
     if (auth instanceof Response) return auth;

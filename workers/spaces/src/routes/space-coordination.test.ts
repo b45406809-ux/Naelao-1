@@ -171,4 +171,40 @@ describe("Space coordination registry gateway", () => {
     expect(await owner.calls[3]!.json()).toMatchObject({ schema_version: 2, expected_version: 1, confirmed: true, approved_role: "owner",
       draft: { label: "Updated company site", audience: "space_admins" } });
   });
+
+  it("host-stamps collaboration requests, shares requester identity only with owners, and keeps review separate from access", async () => {
+    const member = env("member");
+    const path = "/spaces/space/coordination-registry/v2/entry-a/requests";
+    expect((await app.fetch(await request(path, "product_end_user", "POST", { confirm_identity_sharing: false }), member.bindings)).status).toBe(400);
+    expect(member.calls).toHaveLength(0);
+    const created = await app.fetch(await request(path, "product_end_user", "POST", { confirm_identity_sharing: true }), member.bindings);
+    expect(created.status).toBe(201);
+    expect(created.headers.get("cache-control")).toBe("no-store");
+    const forwarded = await member.calls[0]!.json() as Record<string, unknown>;
+    expect(forwarded).toMatchObject({ tenant_id: "tenant", space_id: "space", entry_id: "entry-a", requester_id: "user",
+      requester_role: "member", confirm_identity_sharing: true });
+    expect(forwarded).not.toHaveProperty("actor_id");
+    expect(typeof forwarded.request_id).toBe("string");
+
+    const memberQueue = await app.fetch(await request("/spaces/space/coordination-registry/v2/requests?after=cursor"), member.bindings);
+    expect(memberQueue.status).toBe(200);
+    const memberQueueUrl = new URL(member.calls[1]!.url);
+    expect(memberQueueUrl.pathname).toBe("/space-coordination-use-requests");
+    expect(memberQueueUrl.searchParams.get("viewer_id")).toBe("user");
+    expect(memberQueueUrl.searchParams.get("viewer_role")).toBe("member");
+    expect(memberQueueUrl.searchParams.get("after")).toBe("cursor");
+
+    const owner = env("owner");
+    const resolved = await app.fetch(await request("/spaces/space/coordination-registry/v2/requests/10000000-0000-4000-8000-000000000001", "product_end_user", "PATCH", {
+      expected_revision: 1, resolution: "contacted",
+    }), owner.bindings);
+    expect(resolved.status).toBe(200);
+    expect(await owner.calls[0]!.json()).toEqual({ tenant_id: "tenant", space_id: "space", actor_id: "user", actor_role: "owner",
+      expected_revision: 1, resolution: "contacted" });
+    const memberResolve = env("member");
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/requests/10000000-0000-4000-8000-000000000001", "product_end_user", "PATCH", {
+      expected_revision: 1, resolution: "contacted",
+    }), memberResolve.bindings)).status).toBe(403);
+    expect(memberResolve.calls).toHaveLength(0);
+  });
 });

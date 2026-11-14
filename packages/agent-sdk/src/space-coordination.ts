@@ -175,6 +175,29 @@ export interface SpaceCoordinationPolicyHistoryPageV2 {
   next_after: string | null;
 }
 
+export type SpaceCoordinationUseRequestStatus = "pending" | "resolved";
+export type SpaceCoordinationUseRequestResolution = "contacted" | "unavailable";
+export interface SpaceCoordinationUseRequest {
+  request_id: string;
+  entry_id: string;
+  status: SpaceCoordinationUseRequestStatus;
+  resolution: SpaceCoordinationUseRequestResolution | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  /** Owner/admin-only identity for requests in their review queue. */
+  requester_id?: string;
+  /** Owner/admin-only label from the approved fact. */
+  entry_label?: string;
+  resolved_by?: string | null;
+  resolved_role?: "owner" | "admin" | null;
+}
+export interface SpaceCoordinationUseRequestPage {
+  requests: SpaceCoordinationUseRequest[];
+  next_after: string | null;
+  access_granted: false;
+}
+
 export interface SpaceCoordinationClientOptions {
   spaceId: string;
   request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }): Promise<T>;
@@ -210,6 +233,20 @@ export function createSpaceCoordinationClientV2(options: SpaceCoordinationClient
     policyHistory(after?: string): Promise<SpaceCoordinationPolicyHistoryPageV2> {
       const query = after ? `?after=${encodeURIComponent(after)}` : "";
       return options.request(`${base}/policy/history${query}`);
+    },
+    useRequests(after?: string): Promise<SpaceCoordinationUseRequestPage> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${base}/requests${query}`);
+    },
+    requestCollaboration(entryId: string, confirmIdentitySharing: boolean): Promise<{ request: SpaceCoordinationUseRequest; access_granted: false }> {
+      return options.request(`${base}/${encodeURIComponent(entryId)}/requests`, { method: "POST", body: {
+        confirm_identity_sharing: confirmIdentitySharing,
+      } });
+    },
+    resolveUseRequest(requestId: string, expectedRevision: number, resolution: SpaceCoordinationUseRequestResolution): Promise<{ request: SpaceCoordinationUseRequest; access_granted: false }> {
+      return options.request(`${base}/requests/${encodeURIComponent(requestId)}`, { method: "PATCH", body: {
+        expected_revision: expectedRevision, resolution,
+      } });
     },
     updatePolicy(memberFactsEnabled: boolean, expectedRevision: number, confirm: boolean): Promise<SpaceCoordinationPolicyV2> {
       return options.request(`${base}/policy`, { method: "PUT", body: {

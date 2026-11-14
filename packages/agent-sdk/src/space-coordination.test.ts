@@ -63,6 +63,9 @@ describe("Space coordination registry v2 audience contract", () => {
     await client.revoke("entry/1", 3);
     await client.amend("entry/1", 3, { ...draft, label: "Company website" }, true);
     await client.history("entry/1", "event cursor");
+    await client.useRequests("request cursor");
+    await client.requestCollaboration("entry/1", true);
+    await client.resolveUseRequest("request/1", 2, "contacted");
     expect(calls).toEqual([
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy/history?after=1", method: "GET", body: undefined },
@@ -73,6 +76,9 @@ describe("Space coordination registry v2 audience contract", () => {
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1", method: "DELETE", body: { schema_version: 2, expected_version: 3 } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1", method: "PATCH", body: { ...draft, label: "Company website", expected_version: 3, confirm_disclosure: true } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1/history?after=event%20cursor", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/requests?after=request%20cursor", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1/requests", method: "POST", body: { confirm_identity_sharing: true } },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/requests/request%2F1", method: "PATCH", body: { expected_revision: 2, resolution: "contacted" } },
     ]);
   });
 });

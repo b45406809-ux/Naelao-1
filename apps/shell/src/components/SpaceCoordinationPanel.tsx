@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2, SpaceCoordinationUseRequest, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
 import { ApiError } from "@/lib/request";
-import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
+import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, listSpaceCoordinationUseRequests, previewSpaceCoordination, publishSpaceCoordination, requestSpaceCoordinationCollaboration, resolveSpaceCoordinationRequest, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -13,6 +13,9 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
 }) {
   const [entries, setEntries] = React.useState<SpaceCoordinationEntryV2[]>([]);
   const [nextAfter, setNextAfter] = React.useState<string | null>(null);
+  const [useRequests, setUseRequests] = React.useState<SpaceCoordinationUseRequest[]>([]);
+  const [requestsNextAfter, setRequestsNextAfter] = React.useState<string | null>(null);
+  const [requestError, setRequestError] = React.useState<string | null>(null);
   const [capabilityKey, setCapabilityKey] = React.useState("");
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -54,6 +57,18 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   }, [spaceId, session.sessionToken, session.endUserId, canManage]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
+
+  const refreshUseRequests = React.useCallback(async () => {
+    try {
+      const page = await listSpaceCoordinationUseRequests(spaceId, session);
+      setUseRequests(page.requests);
+      setRequestsNextAfter(page.next_after);
+      setRequestError(null);
+    } catch {
+      setRequestError("Collaboration requests could not be loaded. Try again.");
+    }
+  }, [spaceId, session.sessionToken, session.endUserId]);
+  React.useEffect(() => { void refreshUseRequests(); }, [refreshUseRequests]);
 
   const refreshPolicy = React.useCallback(async () => {
     if (!canManage) return;
@@ -169,6 +184,41 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     } finally { setBusy(false); }
   }
 
+  async function requestCollaboration(entry: SpaceCoordinationEntryV2) {
+    if (!window.confirm(`Send a collaboration request for “${entry.label}”? Space owners and administrators will see your account identifier. This request does not grant access to any project or service.`)) return;
+    setBusy(true); setRequestError(null);
+    try {
+      await requestSpaceCoordinationCollaboration(spaceId, session, entry.entry_id, true);
+      await refreshUseRequests();
+    } catch (error) {
+      setRequestError(error instanceof ApiError && error.errorCode === "coordination_request_limit_reached"
+        ? "This Space has reached its open collaboration request limit. Ask an administrator to review existing requests."
+        : "The collaboration request could not be saved. The fact may have changed; refresh and try again.");
+    } finally { setBusy(false); }
+  }
+
+  async function resolveUseRequest(request: SpaceCoordinationUseRequest, resolution: SpaceCoordinationUseRequestResolution) {
+    setBusy(true); setRequestError(null);
+    try {
+      await resolveSpaceCoordinationRequest(spaceId, session, request.request_id, request.revision, resolution);
+      await refreshUseRequests();
+    } catch {
+      setRequestError("The request changed or could not be updated. Reload the request list and try again.");
+    } finally { setBusy(false); }
+  }
+
+  async function loadMoreUseRequests() {
+    if (!requestsNextAfter || busy) return;
+    setBusy(true); setRequestError(null);
+    try {
+      const page = await listSpaceCoordinationUseRequests(spaceId, session, requestsNextAfter);
+      setUseRequests(current => [...current, ...page.requests]);
+      setRequestsNextAfter(page.next_after);
+    } catch {
+      setRequestError("More collaboration requests could not be loaded. Try again.");
+    } finally { setBusy(false); }
+  }
+
   async function savePolicy() {
     if (!policy || !policyConfirmed || policyEnabledDraft === policy.member_facts_enabled) return;
     setBusy(true); setPolicyError(null);
@@ -244,6 +294,19 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
           {entry.approved_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Last approved by actor {entry.approved_by} ({entry.approved_role ?? "owner/admin"})</div>}
           {entry.provenance && <div className="settings-row-sub" style={{ marginTop: 3 }}>Provenance: {entry.provenance}</div>}
           {entry.status === "revoked" && entry.revoked_by && <div className="settings-row-sub" style={{ marginTop: 3 }}>Revoked by actor {entry.revoked_by}{entry.revoked_at ? ` · ${formatConfirmationTime(entry.revoked_at)}` : ""}</div>}
+          {!canManage && entry.audience === "space_members" && entry.status === "active" && (() => {
+            const existingRequest = useRequests.find(request => request.entry_id === entry.entry_id);
+            return <div style={{ marginTop: 8 }}>
+              {existingRequest?.status === "pending"
+                ? <span className="settings-row-sub" role="status">Collaboration request pending.</span>
+                : existingRequest?.status === "resolved"
+                  ? <span className="settings-row-sub" role="status">Request reviewed: {existingRequest.resolution === "contacted" ? "the owner marked that they contacted you" : "the owner marked the service unavailable"}. This did not change your access. </span>
+                  : null}
+              {existingRequest?.status !== "pending" && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void requestCollaboration(entry)}>
+                {existingRequest ? "Request collaboration again" : "Request collaboration"}
+              </button>}
+            </div>;
+          })()}
           {canManage && <div style={{ marginTop: 8 }}>
             <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadAuditHistory(entry.entry_id)}>
               {auditHistory[entry.entry_id]?.open ? "Hide audit history" : "View audit history"}
@@ -269,6 +332,23 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadMore()}>Load more facts</button>
       </div>}
     </div> : <p className="settings-row-sub" style={{ padding: "0 16px 14px", margin: 0 }}>No coordination facts have been published.</p>}
+
+    {requestError && <p role="alert" style={{ padding: "0 16px" }}>{requestError}</p>}
+    {canManage && <section style={{ borderTop: "1px solid var(--border)", padding: 16 }} aria-label="Collaboration requests">
+      <div className="settings-row-label">Requests to collaborate</div>
+      <p className="settings-row-sub" style={{ margin: "6px 0 10px" }}>Reviewing a request only records that it was reviewed or that you contacted the requester. It does not grant access to a project or service.</p>
+      {useRequests.length ? <div style={{ display: "grid", gap: 8 }}>
+        {useRequests.map(request => <article key={request.request_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}>
+          <div className="settings-row-label">{request.entry_label ?? request.entry_id}</div>
+          <div className="settings-row-sub" style={{ marginTop: 3 }}>Requester actor {request.requester_id} · {formatConfirmationTime(request.created_at)} · {request.status}{request.resolution ? ` (${request.resolution})` : ""}</div>
+          {request.status === "pending" && <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void resolveUseRequest(request, "contacted")}>Mark contacted</button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void resolveUseRequest(request, "unavailable")}>Mark unavailable</button>
+          </div>}
+        </article>)}
+        {requestsNextAfter && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadMoreUseRequests()}>Load older requests</button>}
+      </div> : <p className="settings-row-sub">No collaboration requests have been made.</p>}
+    </section>}
 
     {canManage && <div style={{ borderTop: "1px solid var(--border)", padding: 16, display: "grid", gap: 10 }}>
       <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>

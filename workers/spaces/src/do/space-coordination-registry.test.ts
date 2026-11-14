@@ -341,6 +341,100 @@ describe("Space-owned advisory coordination registry", () => {
     await expect((await readPolicy()).json()).resolves.toMatchObject({ configured: false, member_facts_enabled: false, revision: 0 });
     expect(storagePolicyEvents(space)).toEqual([]);
   });
+
+  it("stores member collaboration requests without granting access and restricts requester identity to administrators", async () => {
+    const { space, publishV2, storage } = await setup();
+    expect((await publishV2("collab-fact", "space_members", "Official service")).status).toBe(201);
+    const requestPath = "http://space/space-coordination-use-requests";
+    const create = (requestId: string, requesterId = "member-1") => space.fetch(new Request(requestPath, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant_id: "tenant", space_id: "space",
+        entry_id: "collab-fact", request_id: requestId, requester_id: requesterId, requester_role: "member", confirm_identity_sharing: true }),
+    }));
+    const requestId = "10000000-0000-4000-8000-000000000001";
+    const created = await create(requestId);
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({ request: { request_id: requestId, entry_id: "collab-fact", status: "pending", revision: 1 }, access_granted: false });
+
+    const duplicate = await create("10000000-0000-4000-8000-000000000002");
+    expect(duplicate.status).toBe(200);
+    await expect(duplicate.json()).resolves.toMatchObject({ request: { request_id: requestId }, access_granted: false });
+    const secondRequestId = "10000000-0000-4000-8000-000000000003";
+    expect((await create(secondRequestId, "member-2")).status).toBe(201);
+    storage.sql.exec("UPDATE space_coordination_use_requests SET created_at=CASE request_id WHEN ? THEN ? ELSE ? END WHERE space_id='space'",
+      requestId, "2026-11-13T00:00:01.000Z", "2026-11-13T00:00:02.000Z");
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_use_requests WHERE status='pending'").toArray()).toEqual([{ count: 2 }]);
+
+    const memberList = (viewerId: string, role = "member") => space.fetch(new Request(`${requestPath}?${new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", viewer_id: viewerId, viewer_role: role,
+    })}`));
+    const own = await memberList("member-1").then(response => response.json()) as { requests: Array<Record<string, unknown>> };
+    expect(own.requests).toMatchObject([{ request_id: requestId, status: "pending" }]);
+    expect(own.requests[0]).not.toHaveProperty("requester_id");
+    expect(own.requests[0]).not.toHaveProperty("entry_label");
+    const otherMember = await memberList("member-2").then(response => response.json()) as { requests: Array<Record<string, unknown>> };
+    expect(otherMember.requests).toMatchObject([{ request_id: secondRequestId, status: "pending" }]);
+    expect(otherMember.requests[0]).not.toHaveProperty("requester_id");
+    expect(otherMember.requests[0]).not.toHaveProperty("entry_label");
+
+    const adminQueue = await memberList("owner", "owner").then(response => response.json()) as { requests: Array<Record<string, unknown>> };
+    expect(adminQueue.requests).toMatchObject([
+      { request_id: secondRequestId, requester_id: "member-2", entry_label: "Official service" },
+      { request_id: requestId, requester_id: "member-1", entry_label: "Official service" },
+    ]);
+    const firstAdminPage = await space.fetch(new Request(`${requestPath}?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", viewer_id: "owner", viewer_role: "owner", limit: "1" })}`))
+      .then(response => response.json()) as { requests: Array<Record<string, unknown>>; next_after: string | null };
+    expect(firstAdminPage.requests).toMatchObject([{ request_id: secondRequestId }]);
+    expect(firstAdminPage.next_after).toMatch(/^v1~administrators~/);
+    const secondAdminPage = await space.fetch(new Request(`${requestPath}?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", viewer_id: "owner", viewer_role: "owner", limit: "1", after: firstAdminPage.next_after ?? "" })}`))
+      .then(response => response.json()) as { requests: Array<Record<string, unknown>>; next_after: string | null };
+    expect(secondAdminPage.requests).toMatchObject([{ request_id: requestId }]);
+    expect(secondAdminPage.next_after).toBeNull();
+    const wrongAudienceCursor = await space.fetch(new Request(`${requestPath}?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", viewer_id: "member-1", viewer_role: "member", after: firstAdminPage.next_after ?? "" })}`));
+    expect(wrongAudienceCursor.status).toBe(400);
+    const resolve = (revision: number) => space.fetch(new Request(`${requestPath}/${requestId}`, { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", actor_role: "owner", expected_revision: revision, resolution: "contacted" }) }));
+    expect(await (await resolve(1)).json()).toMatchObject({ request: { status: "resolved", resolution: "contacted", revision: 2, resolved_by: "owner" }, access_granted: false });
+    expect((await resolve(1)).status).toBe(409);
+    const memberAfter = await memberList("member-1").then(response => response.json()) as { requests: Array<Record<string, unknown>> };
+    expect(memberAfter.requests).toMatchObject([{ status: "resolved", resolution: "contacted" }]);
+    expect(memberAfter.requests[0]).not.toHaveProperty("resolved_by");
+  });
+
+  it("rejects requests for admin-only, expired, revoked or absent facts", async () => {
+    const { space, storage, root, publishV2 } = await setup();
+    expect((await publishV2("admin-only-request", "space_admins")).status).toBe(201);
+    expect((await publishV2("expired-request", "space_members", "Expired fact", new Date(Date.now() + 60_000).toISOString())).status).toBe(201);
+    expect((await publishV2("revoked-request", "space_members")).status).toBe(201);
+    storage.sql.exec("UPDATE space_coordination_entries SET expires_at=? WHERE entry_id='expired-request'", new Date(Date.now() - 1_000).toISOString());
+    await space.fetch(new Request(`${root}/revoked-request`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1,
+    }) }));
+    const path = "http://space/space-coordination-use-requests";
+    const create = (entryId: string) => space.fetch(new Request(path, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, request_id: crypto.randomUUID(), requester_id: "member", requester_role: "member", confirm_identity_sharing: true }) }));
+    expect((await create("admin-only-request")).status).toBe(404);
+    expect((await create("expired-request")).status).toBe(404);
+    expect((await create("revoked-request")).status).toBe(404);
+    expect((await create("not-published")).status).toBe(404);
+  });
+
+  it("deduplicates concurrent pending requests from the same member", async () => {
+    const { space, publishV2, storage } = await setup();
+    expect((await publishV2("concurrent-request-fact", "space_members")).status).toBe(201);
+    const create = (requestId: string) => space.fetch(new Request("http://space/space-coordination-use-requests", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant_id: "tenant", space_id: "space",
+        entry_id: "concurrent-request-fact", request_id: requestId, requester_id: "member-race", requester_role: "member", confirm_identity_sharing: true }),
+    }));
+    const [first, second] = await Promise.all([
+      create("20000000-0000-4000-8000-000000000001"), create("20000000-0000-4000-8000-000000000002"),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 201]);
+    const [firstBody, secondBody] = await Promise.all([first.json(), second.json()]) as Array<{ request: { request_id: string }; access_granted: false }>;
+    expect(firstBody.request.request_id).toBe(secondBody.request.request_id);
+    expect(firstBody.access_granted).toBe(false);
+    expect(secondBody.access_granted).toBe(false);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM space_coordination_use_requests WHERE requester_id='member-race'").toArray()).toEqual([{ count: 1 }]);
+  });
 });
 
 function storageRow(space: SpaceDO) {

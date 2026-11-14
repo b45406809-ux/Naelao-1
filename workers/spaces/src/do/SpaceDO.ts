@@ -2706,6 +2706,32 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_space_coordination_policy_events_recent
       ON space_coordination_policy_events(tenant_id,space_id,created_at DESC,event_id);`,
   },
+  {
+    version: 131,
+    description: "persist advisory Space coordination requests without granting service access",
+    up: `CREATE TABLE space_coordination_use_requests (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      entry_id TEXT NOT NULL,
+      requester_id TEXT NOT NULL,
+      requested_entry_version INTEGER NOT NULL CHECK(requested_entry_version >= 1),
+      status TEXT NOT NULL CHECK(status IN ('pending','resolved')),
+      resolution TEXT CHECK(resolution IS NULL OR resolution IN ('contacted','unavailable')),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT,
+      resolved_role TEXT CHECK(resolved_role IS NULL OR resolved_role IN ('owner','admin')),
+      PRIMARY KEY(tenant_id,space_id,request_id),
+      FOREIGN KEY(tenant_id,space_id,entry_id) REFERENCES space_coordination_entries(tenant_id,space_id,entry_id)
+    );
+    CREATE UNIQUE INDEX idx_space_coordination_one_pending_request
+      ON space_coordination_use_requests(tenant_id,space_id,entry_id,requester_id) WHERE status='pending';
+    CREATE INDEX idx_space_coordination_use_requests_recent
+      ON space_coordination_use_requests(tenant_id,space_id,status,created_at,request_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3230,6 +3256,126 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       updatedAt,
       body.tenant_id, body.space_id, entryId);
     return Response.json({ entry: { ...entry, advisory_only: true } });
+  }
+
+  private listSpaceCoordinationUseRequests(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const viewerId = params.get("viewer_id") ?? "", viewerRole = params.get("viewer_role") ?? "";
+    if (!tenantId || !spaceId || !/^[A-Za-z0-9._:-]{1,160}$/.test(viewerId)
+      || !["owner", "admin", "member", "viewer", "editor", "operator", "moderator"].includes(viewerRole))
+      return Response.json({ error_code: "coordination_request_scope_invalid" }, { status: 400 });
+    const after = params.get("after");
+    let cursorTime = "", cursorId = "";
+    const ownerView = viewerRole === "owner" || viewerRole === "admin";
+    if (after) {
+      try {
+        const [version, audienceClass, encodedTime, encodedId, ...rest] = after.split("~");
+        if (version !== "v1" || audienceClass !== (ownerView ? "administrators" : "requester") || !encodedTime || !encodedId || rest.length)
+          throw new Error("invalid_cursor");
+        cursorTime = decodeURIComponent(encodedTime);
+        cursorId = decodeURIComponent(encodedId);
+        if (!Number.isFinite(Date.parse(cursorTime)) || !/^[0-9a-f-]{36}$/i.test(cursorId)) throw new Error("invalid_cursor");
+      } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+    }
+    const requested = Number(params.get("limit") ?? "50");
+    const limit = Number.isInteger(requested) ? Math.min(100, Math.max(1, requested)) : 50;
+    const rows = queryAll<Record<string, unknown>>(this.ctx.storage.sql as never,
+      `SELECT r.request_id,r.entry_id,r.status,r.resolution,r.revision,r.created_at,r.updated_at
+        ${ownerView ? ",r.requester_id,r.resolved_by,r.resolved_role,e.label AS entry_label" : ""}
+       FROM space_coordination_use_requests r JOIN space_coordination_entries e
+         ON e.tenant_id=r.tenant_id AND e.space_id=r.space_id AND e.entry_id=r.entry_id
+       WHERE r.tenant_id=? AND r.space_id=? ${ownerView ? "" : "AND r.requester_id=?"}
+       ${after ? "AND (r.created_at<? OR (r.created_at=? AND r.request_id<?))" : ""}
+       ORDER BY r.created_at DESC,r.request_id DESC LIMIT ?`,
+      ...(ownerView ? [tenantId, spaceId] : [tenantId, spaceId, viewerId]),
+      ...(after ? [cursorTime, cursorTime, cursorId] : []), limit + 1);
+    const hasMore = rows.length > limit;
+    const requests = rows.slice(0, limit);
+    const last = requests.at(-1);
+    return Response.json({ requests, next_after: !hasMore || !last ? null
+      : `v1~${ownerView ? "administrators" : "requester"}~${encodeURIComponent(String(last.created_at))}~${encodeURIComponent(String(last.request_id))}`, access_granted: false });
+  }
+
+  private async createSpaceCoordinationUseRequest(request: Request): Promise<Response> {
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; entry_id?: unknown; request_id?: unknown;
+      requester_id?: unknown; requester_role?: unknown; confirm_identity_sharing?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["tenant_id", "space_id", "entry_id", "request_id", "requester_id", "requester_role", "confirm_identity_sharing"].includes(key))
+      || typeof body.tenant_id !== "string" || !body.tenant_id || typeof body.space_id !== "string" || !body.space_id
+      || typeof body.entry_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.entry_id)
+      || typeof body.request_id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.request_id)
+      || typeof body.requester_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.requester_id)
+      || typeof body.requester_role !== "string" || !["owner", "admin", "member", "viewer", "editor", "operator", "moderator"].includes(body.requester_role)
+      || body.confirm_identity_sharing !== true) return Response.json({ error_code: "coordination_request_invalid" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    let result: "created" | "duplicate" | "entry_unavailable" | "limit";
+    let requestId = body.request_id;
+    try {
+      result = this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ request_id: string }>(sql,
+          `SELECT request_id FROM space_coordination_use_requests WHERE tenant_id=? AND space_id=? AND entry_id=? AND requester_id=? AND status='pending'`,
+          body.tenant_id, body.space_id, body.entry_id, body.requester_id);
+        if (existing) { requestId = existing.request_id; return "duplicate"; }
+        const entry = queryOne<{ version: number }>(sql,
+          `SELECT version FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?
+             AND schema_version IN (1,2) AND audience='space_members' AND status='active' AND (expires_at IS NULL OR expires_at>?)`,
+          body.tenant_id, body.space_id, body.entry_id, now);
+        if (!entry) return "entry_unavailable";
+        const pendingCount = queryOne<{ count: number }>(sql,
+          `SELECT COUNT(*) AS count FROM space_coordination_use_requests WHERE tenant_id=? AND space_id=? AND status='pending'`,
+          body.tenant_id, body.space_id)?.count ?? 0;
+        if (pendingCount >= 500) return "limit";
+        execute(sql, `INSERT INTO space_coordination_use_requests
+          (tenant_id,space_id,request_id,entry_id,requester_id,requested_entry_version,status,resolution,revision,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,'pending',NULL,1,?,?)`,
+          body.tenant_id, body.space_id, body.request_id, body.entry_id, body.requester_id, entry.version, now, now);
+        return "created";
+      });
+    } catch {
+      return Response.json({ error_code: "coordination_request_storage_unavailable" }, { status: 503 });
+    }
+    if (result === "entry_unavailable") return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
+    if (result === "limit") return Response.json({ error_code: "coordination_request_limit_reached" }, { status: 429 });
+    const row = queryOne<Record<string, unknown>>(sql,
+      `SELECT request_id,entry_id,status,resolution,revision,created_at,updated_at FROM space_coordination_use_requests
+       WHERE tenant_id=? AND space_id=? AND request_id=?`, body.tenant_id, body.space_id, requestId);
+    return Response.json({ request: row, access_granted: false }, { status: result === "created" ? 201 : 200 });
+  }
+
+  private async resolveSpaceCoordinationUseRequest(request: Request, requestId: string): Promise<Response> {
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; actor_id?: unknown; actor_role?: unknown;
+      expected_revision?: unknown; resolution?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["tenant_id", "space_id", "actor_id", "actor_role", "expected_revision", "resolution"].includes(key))
+      || typeof body.tenant_id !== "string" || !body.tenant_id || typeof body.space_id !== "string" || !body.space_id
+      || typeof body.actor_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.actor_id)
+      || (body.actor_role !== "owner" && body.actor_role !== "admin")
+      || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 1
+      || (body.resolution !== "contacted" && body.resolution !== "unavailable"))
+      return Response.json({ error_code: "coordination_request_invalid" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    let outcome: "resolved" | "missing" | "conflict";
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const current = queryOne<{ status: string; revision: number }>(sql,
+          `SELECT status,revision FROM space_coordination_use_requests WHERE tenant_id=? AND space_id=? AND request_id=?`,
+          body.tenant_id, body.space_id, requestId);
+        if (!current) return "missing";
+        if (current.status !== "pending" || current.revision !== body.expected_revision) return "conflict";
+        const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_use_requests SET status='resolved',resolution=?,revision=revision+1,
+          updated_at=?,resolved_at=?,resolved_by=?,resolved_role=? WHERE tenant_id=? AND space_id=? AND request_id=? AND status='pending' AND revision=?`,
+          body.resolution, now, now, body.actor_id, body.actor_role, body.tenant_id, body.space_id, requestId, body.expected_revision).rowsWritten;
+        return changed === 1 ? "resolved" : "conflict";
+      });
+    } catch {
+      return Response.json({ error_code: "coordination_request_storage_unavailable" }, { status: 503 });
+    }
+    if (outcome === "missing") return Response.json({ error_code: "coordination_request_unavailable" }, { status: 404 });
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_request_revision_conflict" }, { status: 409 });
+    const row = queryOne<Record<string, unknown>>(sql,
+      `SELECT request_id,entry_id,status,resolution,revision,created_at,updated_at,requester_id,resolved_by,resolved_role
+       FROM space_coordination_use_requests WHERE tenant_id=? AND space_id=? AND request_id=?`, body.tenant_id, body.space_id, requestId);
+    return Response.json({ request: row, access_granted: false });
   }
 
   private listSpaceCoordinationAuditHistory(params: URLSearchParams, entryId: string): Response {
@@ -3917,6 +4063,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-coordination-registry" && method === "POST") return this.publishSpaceCoordination(request);
       if (url.pathname === "/space-coordination-policy" && (method === "GET" || method === "PUT")) return this.spaceCoordinationPolicy(request, url);
       if (url.pathname === "/space-coordination-policy/history" && method === "GET") return this.listSpaceCoordinationPolicyHistory(url.searchParams);
+      if (url.pathname === "/space-coordination-use-requests" && method === "GET") return this.listSpaceCoordinationUseRequests(url.searchParams);
+      if (url.pathname === "/space-coordination-use-requests" && method === "POST") return this.createSpaceCoordinationUseRequest(request);
+      const coordinationUseRequest = url.pathname.match(/^\/space-coordination-use-requests\/([^/]+)$/);
+      if (coordinationUseRequest?.[1] && method === "PATCH") {
+        try { return this.resolveSpaceCoordinationUseRequest(request, decodeURIComponent(coordinationUseRequest[1])); }
+        catch { return Response.json({ error_code: "coordination_request_unavailable" }, { status: 404 }); }
+      }
       const coordinationHistory = url.pathname.match(/^\/space-coordination-registry\/([^/]+)\/history$/);
       if (coordinationHistory?.[1] && method === "GET") {
         try { return this.listSpaceCoordinationAuditHistory(url.searchParams, decodeURIComponent(coordinationHistory[1])); }
