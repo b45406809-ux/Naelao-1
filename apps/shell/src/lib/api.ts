@@ -1664,6 +1664,35 @@ export function saveProjectMainRuntimeProfile(spaceId: string, projectId: string
     method: "PUT", session, body: JSON.stringify(input),
   });
 }
+export interface ProjectMainRestartRecipe {
+  id: string;
+  label: string;
+  workingDirectory: string;
+  argv: string[];
+  manualVerification: string;
+}
+export interface ProjectMainRestartRecipeSet {
+  recipes: ProjectMainRestartRecipe[];
+  version: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  executionSupported: false;
+  runtimeEnabled?: boolean;
+  changed?: boolean;
+}
+function projectMainRestartRecipesPath(spaceId: string, projectId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/main-runtime-restart-recipes`;
+}
+export function getProjectMainRestartRecipes(spaceId: string, projectId: string, session: SessionCredentials) {
+  return apiFetch<ProjectMainRestartRecipeSet>(projectMainRestartRecipesPath(spaceId, projectId), { session, cache: "no-store" });
+}
+export function saveProjectMainRestartRecipes(spaceId: string, projectId: string, session: SessionCredentials, input: {
+  recipes: ProjectMainRestartRecipe[]; expected_version: number;
+}) {
+  return apiFetch<ProjectMainRestartRecipeSet>(projectMainRestartRecipesPath(spaceId, projectId), {
+    method: "PUT", session, body: JSON.stringify(input),
+  });
+}
 export interface WorkspaceRetentionPolicy {
   version: 1;
   stagingRetentionDays: number;

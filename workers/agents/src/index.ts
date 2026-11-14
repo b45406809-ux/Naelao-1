@@ -18,7 +18,7 @@ import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-pub
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
 import { recordLiveRuntimeObservation, searchAndVerifyLiveRuntime } from "./workspace/live-capability-verifier.js";
-import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRuntimeProfile } from "./workspace/project-main-runtime-profile.js";
+import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, readProjectMainRestartRecipes, saveProjectMainRuntimeProfile, saveProjectMainRestartRecipes } from "./workspace/project-main-runtime-profile.js";
 import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
 import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage } from "./workspace/erasure-backup.js";
 import { readLatestRuntimeSnapshotRetention, sweepRuntimeSnapshotRetention } from "./workspace/runtime-snapshot-retention.js";
@@ -5302,6 +5302,42 @@ app.put("/spaces/:spaceId/projects/:projectId/main-runtime-profile", async c => 
     if (code === "project_main_runtime_profile_version_conflict") return c.json({ error_code: code }, 409);
     if (code === "project_main_runtime_profile_plan_limit") return c.json({ error_code: code }, 403);
     if (code === "project_main_runtime_profile_invalid") return c.json({ error_code: code }, 400);
+    throw error;
+  }
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/main-runtime-restart-recipes", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  try {
+    const restartRecipes = await readProjectMainRestartRecipes(c.env.PLATFORM_DB, { tenantId, spaceId, projectId });
+    return c.json({ ...restartRecipes, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true" });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "project_main_restart_recipes_failed";
+    if (code === "project_main_restart_recipes_corrupt") return c.json({ error_code: code }, 503);
+    throw error;
+  }
+});
+
+app.put("/spaces/:spaceId/projects/:projectId/main-runtime-restart-recipes", async c => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as Record<string, unknown>; }
+  catch { return c.json({ error_code: "project_main_restart_recipes_invalid" }, 400); }
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).some(key => !["recipes", "expected_version"].includes(key))
+    || !Array.isArray(body.recipes) || typeof body.expected_version !== "number")
+    return c.json({ error_code: "project_main_restart_recipes_invalid" }, 400);
+  try {
+    const result = await saveProjectMainRestartRecipes(c.env.PLATFORM_DB, { tenantId, spaceId, projectId },
+      { recipes: body.recipes, expectedVersion: body.expected_version, actorId: userId });
+    return c.json({ ...result, runtimeEnabled: c.env.DYNAMIC_CONTAINERS_ENABLED === "true" });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "project_main_restart_recipes_failed";
+    if (code === "project_main_restart_recipes_invalid") return c.json({ error_code: code }, 400);
+    if (code === "project_main_restart_recipes_version_conflict") return c.json({ error_code: code }, 409);
+    if (code === "project_main_restart_recipes_corrupt") return c.json({ error_code: code }, 503);
     throw error;
   }
 });

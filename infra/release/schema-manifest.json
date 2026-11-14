@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0249_project_main_runtime_budget_reservations",
+  "requiredSchemaVersion": "0250_project_main_restart_recipes",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -999,6 +999,10 @@
     {
       "filename": "0249_project_main_runtime_budget_reservations.sql",
       "sha256": "4939758ef544a45973d22ad9d1a53654e4e791a7e8ec4e5fccd5be58f224afe1"
+    },
+    {
+      "filename": "0250_project_main_restart_recipes.sql",
+      "sha256": "2a39cc8fd55ef157133aaa5f06ee5427d44302f852e3da6511ef8d2ddc40f794"
     }
   ]
 }

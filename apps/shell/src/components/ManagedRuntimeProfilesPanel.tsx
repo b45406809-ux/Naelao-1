@@ -19,6 +19,7 @@ import {
   type SessionCredentials,
   type WorkspaceRetentionPolicy,
 } from "@/lib/api";
+import { ProjectMainRestartRecipesEditor } from "@/components/ProjectMainRestartRecipesEditor";
 
 type ProfileRow = { installationId: string; extensionName: string; containerId: string; branch?: string; profile?: ManagedRuntimeProfile; error?: string;
   executionProfile?: SidecarRuntimeExecutionProfile; executionProfileDraft?: number; executionProfileError?: string;
@@ -242,6 +243,7 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
             : mainProfile.snapshotRetention.state === "reference_dropped" ? "The local restore reference was removed. " : "A provider snapshot is recorded. "}
             Its recorded retention window ends {new Date(mainProfile.snapshotRetention.expiresAt).toLocaleString()}; provider-side deletion is not supported or verified.</>}
     </p>}
+    {mainProfile && <ProjectMainRestartRecipesEditor spaceId={spaceId} projectId={projectId} session={stableSession} />}
     <div className="section-label">Workspace retention and legal hold</div>
     <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
       This project policy controls staged-artifact cleanup and canonical workspace-content collection, and an active hold blocks project-erasure admission. It does not retain or delete opaque Cloudflare Container snapshots or third-party backups; snapshot export, extension and physical purge are unsupported or unverified.

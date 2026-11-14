@@ -28,17 +28,19 @@ describe("project managed-runtime routing", () => {
       app.request(`${base}/runtime-installations/install-1/containers/web/execution-profile`, { method: "PUT", headers, body: JSON.stringify({ max_execution_seconds: 30, expected_version: 0 }) }, env),
       app.request(`${base}/runtime-installations/install-1/containers/web/artifact-transfers`, { headers }, env),
       app.request(`${base}/workspace-retention`, { headers }, env),
+      app.request(`${base}/main-runtime-restart-recipes`, { headers }, env),
     ]);
-    expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200, 200, 200]);
     expect(paths.sort()).toEqual([
       "GET /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/profile",
       "POST /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/profile/reset",
       "PUT /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/execution-profile",
       "GET /spaces/space-1/projects/project-1/runtime-installations/install-1/containers/web/artifact-transfers",
       "GET /spaces/space-1/projects/project-1/main-runtime-profile",
+      "GET /spaces/space-1/projects/project-1/main-runtime-restart-recipes",
       "GET /spaces/space-1/projects/project-1/workspace-retention",
     ].sort());
-    expect(agentsFetch).toHaveBeenCalledTimes(6);
+    expect(agentsFetch).toHaveBeenCalledTimes(7);
     expect(spacesFetch).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,7 @@
   },
   "schema": {
     "manifest": "infra/release/schema-manifest.json",
-    "requiredSchemaVersion": "0249_project_main_runtime_budget_reservations",
+    "requiredSchemaVersion": "0250_project_main_restart_recipes",
     "migrationExecution": "infra/scripts/release_migrations.py",
     "compatibilityPolicy": "expand_contract_required",
     "rollbackPolicy": "never reverse an applied schema migration; deploy compatible code or use a reviewed forward repair"

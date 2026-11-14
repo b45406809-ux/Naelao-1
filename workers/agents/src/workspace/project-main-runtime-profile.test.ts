@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFakeD1 } from "../../../../tests/stubs/d1-sqlite.js";
-import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRuntimeProfile } from "./project-main-runtime-profile.js";
+import { readProjectMainRestartRecipes, readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRestartRecipes,
+  saveProjectMainRuntimeProfile, validateProjectMainRestartRecipes } from "./project-main-runtime-profile.js";
 
 const db = () => createFakeD1([
   readFileSync(new URL("../../../../infra/migrations/0081_workflow_budget_reservations.sql", import.meta.url), "utf8"),
@@ -9,8 +10,11 @@ const db = () => createFakeD1([
   readFileSync(new URL("../../../../infra/migrations/0197_project_main_runtime_allocation_tokens.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0198_project_main_runtime_profiles.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0249_project_main_runtime_budget_reservations.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../infra/migrations/0250_project_main_restart_recipes.sql", import.meta.url), "utf8"),
 ]);
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project" };
+const recipes = [{ id: "web", label: "Web server", workingDirectory: "apps/web", argv: ["npm", "run", "start"],
+  manualVerification: "Open /health and confirm it returns ready." }];
 
 describe("project main runtime profile preference", () => {
   it("stores audited versioned preferences and exposes only plan-allowed Cloudflare sizes", async () => {
@@ -75,5 +79,57 @@ describe("project main runtime profile preference", () => {
       budgetReservation: { status: "held", expiresAt: "2099-01-01T00:00:00.000Z" },
     });
     await expect(readProjectMainRuntimeStatus(fixture, { ...scope, projectId: "other-project" })).resolves.toBeNull();
+  });
+
+  it("stores owner-reviewed inert restart recipes with compare-and-set revisions and actor audit", async () => {
+    const fixture = db();
+    expect(await readProjectMainRestartRecipes(fixture, scope)).toEqual({ recipes: [], version: 0, updatedBy: null, updatedAt: null, executionSupported: false });
+    await expect(saveProjectMainRestartRecipes(fixture, scope, { recipes, expectedVersion: 0, actorId: "owner" },
+      new Date("2026-11-14T12:00:00.000Z"))).resolves.toMatchObject({ recipes, version: 1, updatedBy: "owner", changed: true, executionSupported: false });
+    await expect(readProjectMainRestartRecipes(fixture, scope)).resolves.toMatchObject({ recipes, version: 1, updatedBy: "owner", executionSupported: false });
+    await expect(saveProjectMainRestartRecipes(fixture, scope, { recipes, expectedVersion: 1, actorId: "owner" }))
+      .resolves.toMatchObject({ version: 1, changed: false, updatedBy: "owner" });
+
+    const changedRecipes = [{ ...recipes[0]!, manualVerification: "Check the service health page manually." }];
+    await expect(saveProjectMainRestartRecipes(fixture, scope, { recipes: changedRecipes, expectedVersion: 1, actorId: "admin" }))
+      .resolves.toMatchObject({ recipes: changedRecipes, version: 2, updatedBy: "admin", changed: true });
+    await expect(saveProjectMainRestartRecipes(fixture, scope, { recipes, expectedVersion: 1, actorId: "owner" }))
+      .rejects.toThrow("project_main_restart_recipes_version_conflict");
+    expect(await fixture.prepare(`SELECT previous_version,new_version,recipe_count,recipes_sha256,actor_id
+      FROM project_main_restart_recipe_audit ORDER BY new_version`).all()).toMatchObject({ results: [
+      { previous_version: 0, new_version: 1, recipe_count: 1, recipes_sha256: expect.stringMatching(/^[0-9a-f]{64}$/), actor_id: "owner" },
+      { previous_version: 1, new_version: 2, recipe_count: 1, recipes_sha256: expect.stringMatching(/^[0-9a-f]{64}$/), actor_id: "admin" },
+    ] });
+    await expect(readProjectMainRestartRecipes(fixture, { ...scope, tenantId: "other-tenant" }))
+      .resolves.toMatchObject({ recipes: [], version: 0 });
+  });
+
+  it("allows only one concurrent save at an expected revision and writes one audit receipt", async () => {
+    const fixture = db();
+    const results = await Promise.allSettled([
+      saveProjectMainRestartRecipes(fixture, scope, { recipes, expectedVersion: 0, actorId: "owner" }),
+      saveProjectMainRestartRecipes(fixture, scope, { recipes: [{ ...recipes[0]!, label: "Web" }], expectedVersion: 0, actorId: "owner" }),
+    ]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+    await expect(readProjectMainRestartRecipes(fixture, scope)).resolves.toMatchObject({ version: 1 });
+    expect(await fixture.prepare("SELECT COUNT(*) AS count FROM project_main_restart_recipe_audit").first())
+      .toEqual({ count: 1 });
+  });
+
+  it("rejects unsafe, shell-evaluated, secret-shaped and out-of-project restart recipe values", () => {
+    expect(validateProjectMainRestartRecipes(recipes)).toEqual(recipes);
+    const invalid = [
+      [{ ...recipes[0]!, workingDirectory: "../outside" }],
+      [{ ...recipes[0]!, workingDirectory: "/etc" }],
+      [{ ...recipes[0]!, argv: ["/bin/npm", "run", "start"] }],
+      [{ ...recipes[0]!, argv: ["sh", "-c", "npm start"] }],
+      [{ ...recipes[0]!, argv: ["npm", "run", "start; curl example.test"] }],
+      [{ ...recipes[0]!, argv: ["npm", "--api-key=private-value"] }],
+      [{ ...recipes[0]!, environment: { TOKEN: "secret" } }],
+      [recipes[0], recipes[0]],
+      Array.from({ length: 11 }, (_, index) => ({ ...recipes[0]!, id: `service-${index}` })),
+    ];
+    for (const value of invalid) expect(() => validateProjectMainRestartRecipes(value)).toThrow("project_main_restart_recipes_invalid");
   });
 });
