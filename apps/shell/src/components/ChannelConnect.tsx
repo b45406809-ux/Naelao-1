@@ -1040,10 +1040,10 @@ export function ChannelConnect({
           if (!instanceId || !extensionId) return null;
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.status === "active" ? "enabled" : item.instance.status === "staging" ? "setup incomplete" : "paused"}</span>
+              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.publisher_trusted === false ? "publisher trust blocked" : item.instance.status === "active" ? "enabled" : item.instance.status === "staging" ? "setup incomplete" : "paused"}</span>
               <div style={{ display: "flex", gap: 5 }}>
-              {item.instance.status !== "staging" && <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
-                {changingExtension === instanceId ? "Updating…" : item.instance.status === "active" ? "Pause" : "Resume"}
+              {item.instance.status !== "staging" && <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension || item.instance.status === "disabled" && item.instance.publisher_trusted === false} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
+                {changingExtension === instanceId ? "Updating…" : item.instance.status === "active" ? "Pause" : item.instance.publisher_trusted === false ? "Resume blocked" : "Resume"}
               </button>}
               <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!removingExtension} onClick={() => void uninstallChannelExtension(instanceId)}>
                 {removingExtension === instanceId ? "Uninstalling…" : "Uninstall"}
@@ -1051,6 +1051,7 @@ export function ChannelConnect({
               </div>
             </div>
             {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
+            {item.instance.publisher_trusted === false && <div role="alert" style={{ color: "var(--text2)", fontSize: 11 }}>The publisher key for this installed release is no longer trusted{item.instance.publisher_revoked_at ? ` (revoked ${new Date(item.instance.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new work and resume attempts. Review a release signed by a currently trusted key before reinstalling.</div>}
             {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ instance_id: instanceId, extension_id: extensionId,
               version: item.manifest.bundle.version, release_version: item.instance.release_version ?? null,
               permissions: item.manifest.declaredPermissions ?? [], capabilities: item.manifest.capabilityRequirements ?? [] }} />}

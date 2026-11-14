@@ -4104,10 +4104,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const scopeParams = projectLifecycleView
           ? [projectId]
           : [projectId, url.searchParams.get("user_id"), projectId, projectId, projectId, url.searchParams.get("user_id")];
-        const rows = queryAll<{ manifest_json: string; instance_id: string }>(this.ctx.storage.sql as never,
-          `SELECT i.* FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND ${statusFilter} AND ${scopeFilter}`,
+        const rows = queryAll<{ manifest_json: string; instance_id: string; publisher_key_id: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+          `SELECT i.*,r.publisher_key_id,r.publisher_revoked_at FROM extension_installation_manifests i
+           LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+           WHERE i.tenant_id=? AND i.space_id=? AND ${statusFilter} AND ${scopeFilter}`,
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), ...scopeParams);
-        return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json),
+        return Response.json({ installations: rows.map(row => { const { manifest_json, publisher_key_id, publisher_revoked_at, ...baseInstance } = row;
+          const instance = { ...baseInstance, ...(includeDisabled && publisher_key_id ? { publisher_key_id, publisher_revoked_at } : {}) };
+          return { instance, manifest: JSON.parse(manifest_json),
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
       }
       if (url.pathname === "/widget-event-subscribers" && method === "POST") {
@@ -4307,7 +4311,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             manifest, row.scope, row.project_id ?? undefined);
           return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, instance_key: row.instance_key, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy", release_version: row.release_version,
             dependencies_resolved: dependenciesResolved,
-            ...(publisher?.publisher_key_id ? { publisher_key_id: publisher.publisher_key_id } : {}), publisher_attestation_valid: publisher ? publisherReleaseFieldsValid(publisher) : row.release_version === null,
+            ...(publisher?.publisher_key_id ? { publisher_key_id: publisher.publisher_key_id } : {}),
+            ...(publisher?.publisher_revoked_at ? { publisher_revoked_at: publisher.publisher_revoked_at } : {}),
+            publisher_attestation_valid: publisher ? publisherReleaseFieldsValid(publisher) : row.release_version === null,
             permissions: [...new Set(manifest.declaredPermissions)].sort(), capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.attachmentAccess ? { attachment_access: { mode: channel.attachmentAccess.mode, max_files: channel.attachmentAccess.maxFiles ?? 3, max_total_bytes: channel.attachmentAccess.maxTotalBytes ?? 2 * 1024 * 1024 } } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
@@ -12846,10 +12852,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSpaceSharedExtensions(params: URLSearchParams): Response {
     const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
     if (!tenantId || !spaceId) return Response.json({ error_code: "extension_scope_required" }, { status: 400 });
-    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string; release_version: string | null }>(
+    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string; release_version: string | null; publisher_key_id: string | null; publisher_revoked_at: string | null }>(
       this.ctx.storage.sql as never,
-      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,i.manifest_json,i.release_version
-       FROM extension_installation_manifests i
+      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,i.manifest_json,i.release_version,
+          r.publisher_key_id,r.publisher_revoked_at
+       FROM extension_installation_manifests i LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status IN ('active','disabled')
        ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
     );
@@ -12869,6 +12876,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
         app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
         name: item.name, runtime_primitive: item.runtime_primitive, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status, release_version: row.release_version,
+        ...(row.publisher_key_id ? { publisher_key_id: row.publisher_key_id } : {}),
+        ...(row.publisher_revoked_at ? { publisher_revoked_at: row.publisher_revoked_at } : {}),
         ...(dependencyPins ? { dependency_pins: dependencyPins } : {}),
         // Filesystem grants are worker-only and must never flow into the iframe's host API list.
         capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],

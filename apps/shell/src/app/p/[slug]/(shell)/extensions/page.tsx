@@ -241,7 +241,7 @@ export default function ExtensionsPage() {
       {lifecycleNotice && <p role="status" style={{ color: "var(--text3)", fontSize: 13 }}>{lifecycleNotice}</p>}
       <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
-      <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.publisher_trusted === false ? "Blocked by publisher trust" : app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Runtime: Space-shared {app.runtime_primitive === "gadget" ? "Gadget tier 3" : app.runtime_primitive === "canvas" ? "Canvas" : "runtime details unavailable"} · hosted extension view with Space-scoped app state</p>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Installation: <code>{app.installation_id}</code> · instance key: <code>{app.instance_key}</code></p>
       {app.dependency_pins === undefined
@@ -249,6 +249,7 @@ export default function ExtensionsPage() {
         : <p style={{ color: "var(--text3)", fontSize: 12 }}>Declared exact dependency pins: {app.dependency_pins.length
           ? app.dependency_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") : "none"}</p>}
       {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Previously admitted work must finish before a package update; saved data and grants are retained.</p>}
+      {app.publisher_trusted === false && <p role="alert" style={{ color: "var(--text2)", fontSize: 12 }}>The publisher signing key for this installed release is no longer trusted{app.publisher_revoked_at ? ` (revoked ${new Date(app.publisher_revoked_at).toLocaleString()})` : "."} The host blocks new invocations and resume attempts. Review a release signed by a currently trusted key before reinstalling.</p>}
       {app.release_version && <p style={{ color: "var(--text3)", fontSize: 12 }}>Installed signed release: {app.release_version}</p>}
       {app.release_version && (() => {
         const releases = releaseHistory[app.installation_id];
@@ -304,10 +305,10 @@ export default function ExtensionsPage() {
         style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · {new Date(receipt.created_at).toLocaleString()} · signed artifact {receipt.artifact_sha256.slice(0, 12)} · installation remains paused unless enabled.</p>)}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
-      <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : "Resume extension"}</Button>
+      <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null || app.status === "disabled" && app.publisher_trusted === false} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : app.publisher_trusted === false ? "Resume blocked" : "Resume extension"}</Button>
       {app.status === "disabled" && <Button variant="secondary" disabled={changingLifecycle !== null} onClick={() => void waitForDrain(app)}>{changingLifecycle === app.installation_id ? "Checking drain…" : "Wait for running work"}</Button>}
       <Button variant="secondary" disabled={removing !== null} onClick={() => void remove(app)}>{removing === app.installation_id ? "Removing…" : "Remove extension"}</Button>
-      <Button disabled={app.status !== "active"} onClick={() => setActive(app)}>Open extension</Button>
+      <Button disabled={app.status !== "active" || app.publisher_trusted === false} onClick={() => setActive(app)}>Open extension</Button>
       </Card>)}</div>
     </> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => {

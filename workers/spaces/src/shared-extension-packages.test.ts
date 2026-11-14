@@ -781,3 +781,27 @@ describe("owner-authorized cross-Space package import", () => {
     expect(h.destinationReleases.size).toBe(0);
   });
 });
+
+describe("Space-shared installed package trust notice", () => {
+  it("rechecks the current publisher registry and returns a revocation notice without exposing the key id", async () => {
+    const keyId = "a".repeat(64), revokedAt = "2026-11-14T12:30:00.000Z";
+    const spaceStub = { fetch: vi.fn(async () => Response.json({ apps: [{ extension_id: "ext_shared", installation_id: "install-1",
+      app_id: "dashboard", name: "Dashboard", scope: "SPACE_SHARED", status: "disabled", release_version: "1.0.0",
+      publisher_key_id: keyId, publisher_revoked_at: null }] })) };
+    const env = { PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: (sql: string) => ({ bind: (..._params: unknown[]) => ({
+        first: async () => sql.includes("FROM spaces") ? { name: "Workspace", spacetype_id: "space", config_json: "{}" } : null,
+        all: async () => ({ results: sql.includes("FROM extension_publisher_keys")
+          ? [{ key_id: keyId, status: "revoked", revoked_at: revokedAt }] : [] }),
+      }) }) },
+      SPACE_DO: { idFromName: () => "space-do-id", get: () => spaceStub },
+    } as never;
+    const response = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extension-apps"), env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ apps: [{ app_id: "dashboard", publisher_trusted: false, publisher_revoked_at: revokedAt }] });
+    expect(body).not.toContain(keyId);
+    expect(spaceStub.fetch).toHaveBeenCalledTimes(1);
+  });
+});

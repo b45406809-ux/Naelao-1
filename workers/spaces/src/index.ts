@@ -2321,7 +2321,28 @@ app.get("/spaces/:spaceId/shared-extension-apps", async c => {
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
-  return forwardToSpaceDO(stub, `/space-shared-extensions?${new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId })}`, "GET");
+  const response = await stub.fetch(new Request(`http://space-do/space-shared-extensions?${new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId })}`));
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+  const result = await response.json<{ apps?: Array<{ publisher_key_id?: string; publisher_revoked_at?: string | null }> }>().catch(() => null);
+  if (!result || !Array.isArray(result.apps)) return c.json({ error_code: "shared_extension_list_unavailable" }, 503);
+  const keyIds = [...new Set(result.apps.flatMap(app => app.publisher_key_id ? [app.publisher_key_id] : []))];
+  const registry = new Map<string, { status: string; revoked_at: string | null }>();
+  if (keyIds.length) {
+    const placeholders = keyIds.map(() => "?").join(",");
+    const keys = await c.env.PLATFORM_DB.prepare(`SELECT key_id,status,revoked_at FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND key_id IN (${placeholders})`).bind(owned.tenantId, spaceId, ...keyIds)
+      .all<{ key_id: string; status: string; revoked_at: string | null }>();
+    for (const key of keys.results ?? []) registry.set(key.key_id, key);
+  }
+  const apps = result.apps.map(app => {
+    const { publisher_key_id: keyId, ...publicApp } = app;
+    if (!keyId) return publicApp;
+    const key = registry.get(keyId);
+    return { ...publicApp, publisher_trusted: key?.status === "active" && !app.publisher_revoked_at,
+      publisher_revoked_at: app.publisher_revoked_at ?? (key?.status === "revoked" ? key.revoked_at : null) };
+  });
+  c.header("cache-control", "private, no-store");
+  return c.json({ ...result, apps });
 });
 app.use("/spaces/:spaceId/shared-extension-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/shared-extension-catalog", requireSpaceMembership({ GET: "member" }));
@@ -3668,7 +3689,29 @@ app.get("/spaces/:spaceId/container-installations", async (c) => {
     }
   }
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
-  return stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "", ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
+  const includeDisabled = c.req.query("include_disabled") === "1";
+  const response = await stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "", ...(includeDisabled ? { include_disabled: "1" } : {}) })));
+  if (!response.ok || !includeDisabled) return response;
+  const result = await response.json<{ installations?: Array<{ instance: { publisher_key_id?: string; publisher_revoked_at?: string | null; [key: string]: unknown }; [key: string]: unknown }> }>().catch(() => null);
+  if (!result || !Array.isArray(result.installations)) return c.json({ error_code: "extension_installation_list_unavailable" }, 503);
+  const keyIds = [...new Set(result.installations.flatMap(item => item.instance.publisher_key_id ? [item.instance.publisher_key_id] : []))];
+  const registry = new Map<string, { status: string; revoked_at: string | null }>();
+  if (keyIds.length) {
+    const placeholders = keyIds.map(() => "?").join(",");
+    const keys = await c.env.PLATFORM_DB.prepare(`SELECT key_id,status,revoked_at FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND key_id IN (${placeholders})`).bind(tenantId, c.req.param("spaceId"), ...keyIds)
+      .all<{ key_id: string; status: string; revoked_at: string | null }>();
+    for (const key of keys.results ?? []) registry.set(key.key_id, key);
+  }
+  const installations = result.installations.map(item => {
+    const keyId = item.instance.publisher_key_id;
+    if (!keyId) return item;
+    const key = registry.get(keyId);
+    return { ...item, instance: { ...item.instance, publisher_trusted: key?.status === "active" && !item.instance.publisher_revoked_at,
+      publisher_revoked_at: item.instance.publisher_revoked_at ?? (key?.status === "revoked" ? key.revoked_at : null) } };
+  });
+  c.header("cache-control", "private, no-store");
+  return c.json({ ...result, installations });
 });
 
 app.use("/spaces/:spaceId/runtime-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

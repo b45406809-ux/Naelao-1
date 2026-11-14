@@ -1514,7 +1514,8 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
   return apiFetch<{ images: RuntimeCatalogueEntry[]; installed_slots_per_workspace: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
 export interface ContainerInstallation {
-  instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null };
+  instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string; release_version?: string | null;
+    publisher_key_id?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null };
   manifest: { id?: string; name?: string; declaredPermissions?: string[]; capabilityRequirements?: string[]; settingsSchema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
@@ -1659,7 +1660,7 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; runtime_primitive?: "gadget" | "canvas"; dependency_pins?: Array<{ extensionId: string; version: string; manifestSha256: string }>; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; runtime_primitive?: "gadget" | "canvas"; dependency_pins?: Array<{ extensionId: string; version: string; manifestSha256: string }>; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; release_version?: string | null; publisher_trusted?: boolean; publisher_revoked_at?: string | null; capabilities: string[]; settings_schema?: import("@naelao/agent-sdk").ExtensionSettingsSchema; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; version?: string; publisher_id?: string; requested_shared_filesystem: SharedFilesystemGrant[];
   dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> }
 export interface SpaceSharedExtensionUpdateReview {

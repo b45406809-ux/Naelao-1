@@ -273,6 +273,13 @@ describe("runtime extension installation", () => {
     expect(await afterRevoke.json()).toMatchObject({ error_code: "extension_installation_inactive" });
     expect(await (await install()).json()).toMatchObject({ error: "extension_publisher_key_revoked" });
     expect(await (await work("release", "before-revoke")).json()).toMatchObject({ released: true, status: "released" });
+    const installedView = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a&include_disabled=1"));
+    expect(await installedView.json()).toMatchObject({ installations: [expect.objectContaining({ instance: expect.objectContaining({
+      instance_id: instanceId, status: "disabled", publisher_key_id: "a".repeat(64), publisher_revoked_at: expect.any(String),
+    }) })] });
+    const channelView = await space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=project-a&include_disabled=1"));
+    expect(await channelView.json()).toMatchObject({ installations: [expect.objectContaining({ extension_id: "ext_publisher_lifecycle",
+      status: "disabled", publisher_key_id: "a".repeat(64), publisher_revoked_at: expect.any(String) })] });
     const receiptRead = (spaceId: string, tokenValue = token) => space.fetch(new Request(`http://space/extension-publisher-revocation?${new URLSearchParams({
       tenant_id: "tenant", space_id: spaceId, key_id: "a".repeat(64),
     })}`, { headers: { "x-naelao-internal-token": tokenValue } }));
@@ -689,6 +696,8 @@ describe("runtime extension installation", () => {
       installationId, extensionId: "ext_shared_package", phoneChannel: true,
       phoneDashboardAllowed: true, phoneSimulationAllowed: true });
     storage.sql.exec("UPDATE extension_releases SET publisher_revoked_at='revoked' WHERE extension_id='ext_shared_package' AND version='1.0.0'");
+    expect(await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))
+      .then(response => response.json())).toMatchObject({ apps: [{ app_id: "dashboard", publisher_key_id: "a".repeat(64), publisher_revoked_at: "revoked" }] });
     expect(await runtime().then(response => response.json())).toMatchObject({ managed: true, active: false, releaseValid: false });
     const abort = await space.fetch(new Request("http://space/extension-installation/abort", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
