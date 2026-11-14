@@ -13,9 +13,12 @@ install/update/uninstall lifecycle, full cost/rate authoring and live acceptance
 persistence is covered by `6693d380914d248ac7885a90a10ddfc055d665ba`: the target DO writes
 `channels:template`, the owner channel-preferences endpoint resolves those values, and email stays
 `none` / `provisionOnCreate:false`. Spaces activation tests pass **3/3** and Spaces typecheck passes;
-no provider or deployment ran. Exact next action: add validated channel defaults to the activation
-preview API and pre-install review UI, explicitly distinguishing availability preferences from
-account connections and provisioning. Then continue P05 lifecycle. Rollouts remain disabled.
+no provider or deployment ran. Activation preview/review code `1aff67dee97b5d835c8e4cb55c58c44a0721b16f`
+returns only channel availability and phone-prompt defaults and explicitly separates account
+connections/provisioning. Spaces preview tests pass **21/21** and Spaces/Shell typechecks pass; no
+browser or deployed acceptance ran. Exact next action: extend Foundry Studio from one setup-field
+project to bounded multi-project setup groups with the same SDK validation and exported-project
+checks, then continue P05 lifecycle. Rollouts remain disabled.
 
 
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)

@@ -15,9 +15,12 @@ covered by
 `6693d380914d248ac7885a90a10ddfc055d665ba`: the target DO writes `channels:template`, the existing
 owner preferences endpoint resolves the defaults, and no provisioning state is created (email stays
 `none` / false). Activation tests pass **3/3**, Spaces typecheck passes. No provider or deployment
-ran. Exact next action: expose validated defaults in the activation preview and review UI, then resume
-remaining guided-template lifecycle and S3–S9/U01–U12 gaps. Preserve the untracked
-`infra/scripts/__pycache__/`; rollouts remain disabled.
+ran. Activation preview/review code `1aff67dee97b5d835c8e4cb55c58c44a0721b16f` now returns only
+channel availability and phone-prompt defaults and explains that provider connections/provisioning
+are separate. Spaces preview **21/21**, Spaces/Shell typechecks, and `git diff --check` pass; no browser,
+deployment or live acceptance ran. Exact next action: extend Foundry Studio from one setup-field
+project to bounded multi-project setup groups using the same SDK validator and exported-project
+checks. Preserve `infra/scripts/__pycache__/`; rollouts remain disabled.
 
 
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)

@@ -32,6 +32,15 @@ API and render an explicit pre-install review in Shell, clearly separating prefe
 connections/provisioning. Then continue the next uncoded guided-template lifecycle item and S3–S9 /
 U01–U12. Keep rollouts disabled.
 
+The activation-preview API and owner review are now implemented in pushed commit
+`1aff67dee97b5d835c8e4cb55c58c44a0721b16f`. The preview exposes only channel availability and phone
+prompt defaults; the Shell says connections/provisioning are separate. Spaces activation preview
+tests pass **21/21**, Spaces and Shell typechecks pass, and `git diff --check` passes. No browser,
+deployed or live acceptance ran. Exact next action: extend Foundry Studio from one setup-field project
+to bounded multi-project groups, reusing the current SDK setup validator and rejecting unknown
+project IDs; verify saved export and customer preview. Keep credentials, provider connection and
+provisioning flows outside this form. Then continue S3–S9/U01–U12. Keep rollouts disabled.
+
 The U12 typing fix is pushed to `origin/Mcbt5s-Backup-2` as
 `6ee3a16577fba9c14304aae4d4b24cb43050c254`.
 
