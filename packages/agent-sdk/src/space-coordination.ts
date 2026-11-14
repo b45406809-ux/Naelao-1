@@ -128,11 +128,11 @@ export interface SpaceCoordinationPageV2 {
 export interface SpaceCoordinationAuditEventV2 {
   event_id: string;
   entry_id: string;
-  action: "published" | "amended" | "revoked";
+  action: "published" | "amended" | "revoked" | "source_retired";
   prior_version: number | null;
   version: number;
   actor_id: string;
-  actor_role: "owner" | "admin";
+  actor_role: "owner" | "admin" | "system";
   audience_before: SpaceCoordinationAudienceV2 | null;
   audience_after: SpaceCoordinationAudienceV2;
   expires_at_before: string | null;
@@ -198,9 +198,62 @@ export interface SpaceCoordinationUseRequestPage {
   access_granted: false;
 }
 
+export type SpaceCoordinationProposalStatus = "pending" | "approved" | "rejected" | "withdrawn" | "retired";
+export type SpaceCoordinationProposalAction = "approve" | "reject";
+export interface SpaceCoordinationPublicationProposal {
+  proposal_id: string;
+  project_id: string;
+  draft: SpaceCoordinationDraftV2;
+  status: SpaceCoordinationProposalStatus;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  /** Reviewer-only provenance; requester reads do not expose another person's identity. */
+  requester_id?: string;
+  reviewed_by?: string | null;
+  reviewed_role?: "owner" | "admin" | null;
+  entry_id?: string | null;
+}
+export interface SpaceCoordinationPublicationProposalPage {
+  proposals: SpaceCoordinationPublicationProposal[];
+  next_after: string | null;
+}
+
 export interface SpaceCoordinationClientOptions {
   spaceId: string;
   request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }): Promise<T>;
+}
+
+export type SpaceCoordinationProposalClientOptions = SpaceCoordinationClientOptions;
+
+/** Caller-neutral client for private, project-authored Space disclosure proposals. */
+export function createSpaceCoordinationProposalClient(options: SpaceCoordinationProposalClientOptions) {
+  const spaceBase = `/spaces/${encodeURIComponent(options.spaceId)}/coordination-proposals`;
+  const projectBase = (projectId: string) => `/spaces/${encodeURIComponent(options.spaceId)}/projects/${encodeURIComponent(projectId)}/coordination-proposals`;
+  return {
+    reviewQueue(after?: string): Promise<SpaceCoordinationPublicationProposalPage> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${spaceBase}${query}`);
+    },
+    listProject(projectId: string, after?: string): Promise<SpaceCoordinationPublicationProposalPage> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${projectBase(projectId)}${query}`);
+    },
+    submit(projectId: string, draft: SpaceCoordinationDraftV2, confirmDisclosure: boolean,
+      requestId: string): Promise<{ proposal: SpaceCoordinationPublicationProposal }> {
+      return options.request(projectBase(projectId), { method: "POST", body: { request_id: requestId, ...draft, confirm_disclosure: confirmDisclosure } });
+    },
+    withdraw(projectId: string, proposalId: string, expectedRevision: number): Promise<{ proposal: SpaceCoordinationPublicationProposal }> {
+      return options.request(`${projectBase(projectId)}/${encodeURIComponent(proposalId)}`, { method: "DELETE", body: { expected_revision: expectedRevision } });
+    },
+    review(proposalId: string, expectedRevision: number, action: SpaceCoordinationProposalAction,
+      draft?: SpaceCoordinationDraftV2): Promise<{ proposal: SpaceCoordinationPublicationProposal; entry?: SpaceCoordinationEntryV2; access_granted: false }> {
+      return options.request(`${spaceBase}/${encodeURIComponent(proposalId)}`, {
+        method: "PATCH", body: { expected_revision: expectedRevision, action,
+          ...(action === "approve" ? { confirm_disclosure: true, draft } : {}) },
+      });
+    },
+  };
 }
 
 /** Small caller-neutral API client. The caller supplies its authenticated host transport. */

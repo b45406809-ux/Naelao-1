@@ -28,7 +28,7 @@ import type {
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, readBoundedResponseJson, RequestBodyTooLargeError } from "@naelao/http";
 import { verifyHmac } from "@naelao/crypto";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2768,6 +2768,87 @@ const MIGRATIONS: Migration[] = [
     description: "persist owner review of signed Space Template knowledge and action requirements",
     up: `ALTER TABLE space_blueprint_installations ADD COLUMN extension_requirements_review_json TEXT;`,
   },
+  {
+    version: 133,
+    description: "persist private revisioned project-owner Space fact proposals and source lifecycle",
+    up: `
+      ALTER TABLE space_coordination_entries ADD COLUMN source_project_id TEXT;
+      ALTER TABLE space_coordination_entries ADD COLUMN source_proposal_id TEXT;
+      CREATE UNIQUE INDEX idx_space_coordination_source_proposal
+        ON space_coordination_entries(tenant_id,space_id,source_proposal_id) WHERE source_proposal_id IS NOT NULL;
+      CREATE INDEX idx_space_coordination_source_project
+        ON space_coordination_entries(tenant_id,space_id,source_project_id,status) WHERE source_project_id IS NOT NULL;
+
+      ALTER TABLE space_coordination_audit_events RENAME TO space_coordination_audit_events_v132;
+      CREATE TABLE space_coordination_audit_events (
+        tenant_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('published','amended','revoked','source_retired')),
+        prior_version INTEGER CHECK(prior_version IS NULL OR prior_version >= 1),
+        version INTEGER NOT NULL CHECK(version >= 1),
+        actor_id TEXT NOT NULL,
+        actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','system')),
+        audience_before TEXT CHECK(audience_before IS NULL OR audience_before IN ('space_members','space_admins')),
+        audience_after TEXT NOT NULL CHECK(audience_after IN ('space_members','space_admins')),
+        expires_at_before TEXT,
+        expires_at_after TEXT,
+        status_after TEXT NOT NULL CHECK(status_after IN ('active','revoked')),
+        provenance TEXT NOT NULL CHECK(provenance='explicit_owner_or_admin_approval'),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(tenant_id,space_id,event_id)
+      );
+      INSERT INTO space_coordination_audit_events
+        SELECT tenant_id,space_id,event_id,entry_id,action,prior_version,version,actor_id,actor_role,
+          audience_before,audience_after,expires_at_before,expires_at_after,status_after,provenance,created_at
+        FROM space_coordination_audit_events_v132;
+      DROP TABLE space_coordination_audit_events_v132;
+      CREATE INDEX idx_space_coordination_audit_entry
+        ON space_coordination_audit_events(tenant_id,space_id,entry_id,created_at,event_id);
+
+      CREATE TABLE space_coordination_publication_proposals (
+        tenant_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        requester_id TEXT NOT NULL,
+        draft_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','withdrawn','retired')),
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        reviewed_role TEXT CHECK(reviewed_role IS NULL OR reviewed_role IN ('owner','admin')),
+        entry_id TEXT,
+        withdrawn_at TEXT,
+        PRIMARY KEY(tenant_id,space_id,proposal_id)
+      );
+      CREATE INDEX idx_space_coordination_proposals_review
+        ON space_coordination_publication_proposals(tenant_id,space_id,status,created_at DESC,proposal_id DESC);
+      CREATE INDEX idx_space_coordination_proposals_project
+        ON space_coordination_publication_proposals(tenant_id,space_id,project_id,requester_id,created_at DESC,proposal_id DESC);
+
+      CREATE TABLE space_coordination_proposal_revisions (
+        tenant_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        action TEXT NOT NULL CHECK(action IN ('submitted','approved','rejected','withdrawn','retired')),
+        status_after TEXT NOT NULL CHECK(status_after IN ('pending','approved','rejected','withdrawn','retired')),
+        draft_json TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin','project_manager','system')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(tenant_id,space_id,proposal_id,revision),
+        FOREIGN KEY(tenant_id,space_id,proposal_id)
+          REFERENCES space_coordination_publication_proposals(tenant_id,space_id,proposal_id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_space_coordination_proposal_revisions_recent
+        ON space_coordination_proposal_revisions(tenant_id,space_id,proposal_id,revision);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3410,6 +3491,257 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `SELECT request_id,entry_id,status,resolution,revision,created_at,updated_at,requester_id,resolved_by,resolved_role
        FROM space_coordination_use_requests WHERE tenant_id=? AND space_id=? AND request_id=?`, body.tenant_id, body.space_id, requestId);
     return Response.json({ request: row, access_granted: false });
+  }
+
+  private listSpaceCoordinationProposals(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const viewerId = params.get("viewer_id") ?? "", viewerRole = params.get("viewer_role") ?? "";
+    const projectId = params.get("project_id");
+    const reviewer = viewerRole === "owner" || viewerRole === "admin";
+    if (!tenantId || !spaceId || !/^[A-Za-z0-9._:-]{1,160}$/.test(viewerId)
+      || !["owner", "admin", "member", "viewer", "editor", "operator", "moderator"].includes(viewerRole)
+      || (projectId !== null && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)))
+      return Response.json({ error_code: "coordination_proposal_scope_invalid" }, { status: 400 });
+    if (!projectId && !reviewer) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (reviewer && !this.isSpaceOwnerOrAdmin(viewerId, spaceId)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+
+    const after = params.get("after");
+    let cursorTime = "", cursorId = "";
+    const audienceClass = reviewer ? "reviewers" : "requester";
+    if (after) {
+      try {
+        const [version, cursorAudience, encodedTime, encodedId, ...rest] = after.split("~");
+        if (version !== "v1" || cursorAudience !== audienceClass || !encodedTime || !encodedId || rest.length) throw new Error("invalid_cursor");
+        cursorTime = decodeURIComponent(encodedTime); cursorId = decodeURIComponent(encodedId);
+        if (!Number.isFinite(Date.parse(cursorTime)) || !/^[0-9a-f-]{36}$/i.test(cursorId)) throw new Error("invalid_cursor");
+      } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+    }
+    const requested = Number(params.get("limit") ?? "50");
+    const limit = Number.isInteger(requested) ? Math.min(100, Math.max(1, requested)) : 50;
+    const project = projectId ? queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never,
+      "SELECT id,space_id FROM projects WHERE id=? AND space_id=?", projectId, spaceId) : null;
+    if (projectId && !project) return reviewer ? Response.json({ proposals: [], next_after: null }) : Response.json({ error_code: "not_found" }, { status: 404 });
+    const requesterCanReadProject = !reviewer && projectId !== null &&
+      (this.getProjectMemberRole(projectId, viewerId) === "owner" || this.getProjectMemberRole(projectId, viewerId) === "editor");
+    const requesterOwnsProposal = projectId !== null && queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT proposal_id AS id FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND project_id=? AND requester_id=? LIMIT 1",
+      tenantId, spaceId, projectId, viewerId);
+    if (!reviewer && !requesterCanReadProject && !requesterOwnsProposal) return Response.json({ proposals: [], next_after: null });
+
+    const rows = queryAll<Record<string, unknown>>(this.ctx.storage.sql as never,
+      `SELECT proposal_id,project_id,requester_id,draft_json,status,revision,created_at,updated_at,reviewed_by,reviewed_role,entry_id
+       FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=?
+         ${projectId ? "AND project_id=?" : "AND status='pending'"}
+         ${reviewer ? "" : "AND requester_id=?"}
+         ${after ? "AND (created_at<? OR (created_at=? AND proposal_id<?))" : ""}
+       ORDER BY created_at DESC,proposal_id DESC LIMIT ?`,
+      tenantId, spaceId, ...(projectId ? [projectId] : []), ...(!reviewer ? [viewerId] : []),
+      ...(after ? [cursorTime, cursorTime, cursorId] : []), limit + 1);
+    const hasMore = rows.length > limit;
+    const proposals = rows.slice(0, limit).map(row => {
+      let draft: unknown = null;
+      try { draft = JSON.parse(String(row.draft_json)); } catch { /* An invalid persisted draft is kept private and not projected. */ }
+      return { proposal_id: String(row.proposal_id), project_id: String(row.project_id), draft,
+        status: String(row.status), revision: Number(row.revision), created_at: String(row.created_at), updated_at: String(row.updated_at),
+        ...(reviewer ? { requester_id: String(row.requester_id), reviewed_by: row.reviewed_by ?? null,
+          reviewed_role: row.reviewed_role ?? null, entry_id: row.entry_id ?? null } : {}) };
+    });
+    const last = rows.slice(0, limit).at(-1);
+    return Response.json({ proposals, next_after: !hasMore || !last ? null
+      : `v1~${audienceClass}~${encodeURIComponent(String(last.created_at))}~${encodeURIComponent(String(last.proposal_id))}` });
+  }
+
+  private async createSpaceCoordinationProposal(request: Request): Promise<Response> {
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; proposal_id?: unknown; project_id?: unknown;
+      requester_id?: unknown; requester_role?: unknown; confirm_disclosure?: unknown; draft?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["tenant_id", "space_id", "proposal_id", "project_id", "requester_id", "requester_role", "confirm_disclosure", "draft"].includes(key))
+      || typeof body.tenant_id !== "string" || !body.tenant_id || typeof body.space_id !== "string" || !body.space_id
+      || typeof body.proposal_id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.proposal_id)
+      || typeof body.project_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.project_id)
+      || typeof body.requester_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.requester_id)
+      || !["owner", "admin", "project_manager"].includes(String(body.requester_role)) || body.confirm_disclosure !== true)
+      return Response.json({ error_code: "coordination_proposal_invalid" }, { status: 400 });
+    const parsed = validateSpaceCoordinationDraftV2(body.draft);
+    if (!parsed.ok) return Response.json({ error_code: parsed.error }, { status: 400 });
+    if (parsed.value.expires_at && Date.parse(parsed.value.expires_at) <= Date.now())
+      return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
+    const draftJson = JSON.stringify(parsed.value);
+    const sql = this.ctx.storage.sql as never;
+    const project = queryOne<{ id: string; space_id: string; status: string }>(sql,
+      "SELECT id,space_id,status FROM projects WHERE id=? AND space_id=?", body.project_id, body.space_id);
+    const projectRole = this.getProjectMemberRole(body.project_id, body.requester_id);
+    const spaceManager = this.isSpaceOwnerOrAdmin(body.requester_id, body.space_id);
+    if (!project || project.status !== "active" || (!spaceManager && projectRole !== "owner" && projectRole !== "editor"))
+      return Response.json({ error_code: "project_manager_required" }, { status: 404 });
+    const actorRole = spaceManager ? (projectRole === null ? String(body.requester_role) : String(body.requester_role)) : "project_manager";
+    const now = new Date().toISOString();
+    let outcome: "created" | "replayed" | "conflict" | "limit";
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ project_id: string; requester_id: string; draft_json: string }>(sql,
+          "SELECT project_id,requester_id,draft_json FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+          body.tenant_id, body.space_id, body.proposal_id);
+        if (existing) return existing.project_id === body.project_id && existing.requester_id === body.requester_id && existing.draft_json === draftJson
+          ? "replayed" : "conflict";
+        const pending = queryOne<{ count: number }>(sql,
+          "SELECT COUNT(*) AS count FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND status='pending'",
+          body.tenant_id, body.space_id)?.count ?? 0;
+        if (pending >= 500) return "limit";
+        execute(sql, `INSERT INTO space_coordination_publication_proposals
+          (tenant_id,space_id,proposal_id,project_id,requester_id,draft_json,status,revision,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,'pending',1,?,?)`, body.tenant_id, body.space_id, body.proposal_id, body.project_id, body.requester_id, draftJson, now, now);
+        execute(sql, `INSERT INTO space_coordination_proposal_revisions
+          (tenant_id,space_id,proposal_id,revision,action,status_after,draft_json,actor_id,actor_role,created_at)
+          VALUES(?,?,?,1,'submitted','pending',?,?,?,?)`, body.tenant_id, body.space_id, body.proposal_id, draftJson, body.requester_id, actorRole, now);
+        return "created";
+      });
+    } catch { return Response.json({ error_code: "coordination_proposal_storage_unavailable" }, { status: 503 }); }
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_proposal_id_conflict" }, { status: 409 });
+    if (outcome === "limit") return Response.json({ error_code: "coordination_proposal_limit_reached" }, { status: 429 });
+    const proposal = queryOne<Record<string, unknown>>(sql,
+      "SELECT proposal_id,project_id,draft_json,status,revision,created_at,updated_at FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+      body.tenant_id, body.space_id, body.proposal_id);
+    return Response.json({ proposal: { proposal_id: proposal?.proposal_id, project_id: proposal?.project_id,
+      draft: JSON.parse(String(proposal?.draft_json)), status: proposal?.status, revision: proposal?.revision,
+      created_at: proposal?.created_at, updated_at: proposal?.updated_at }, access_granted: false }, { status: outcome === "created" ? 201 : 200 });
+  }
+
+  private async withdrawSpaceCoordinationProposal(request: Request, proposalId: string): Promise<Response> {
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; project_id?: unknown; requester_id?: unknown; expected_revision?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["tenant_id", "space_id", "project_id", "requester_id", "expected_revision"].includes(key))
+      || typeof body.tenant_id !== "string" || !body.tenant_id || typeof body.space_id !== "string" || !body.space_id
+      || (body.project_id !== undefined && (typeof body.project_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.project_id)))
+      || typeof body.requester_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.requester_id)
+      || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 1)
+      return Response.json({ error_code: "coordination_proposal_invalid" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    let outcome: "withdrawn" | "missing" | "conflict" | "forbidden" = "missing";
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const current = queryOne<{ requester_id: string; project_id: string; draft_json: string; status: string; revision: number }>(sql,
+          "SELECT requester_id,project_id,draft_json,status,revision FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+          body.tenant_id, body.space_id, proposalId);
+        if (!current) return "missing";
+        if (current.requester_id !== body.requester_id || (typeof body.project_id === "string" && current.project_id !== body.project_id)) return "forbidden";
+        if (current.status !== "pending" || current.revision !== body.expected_revision) return "conflict";
+        const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_publication_proposals
+          SET status='withdrawn',revision=revision+1,updated_at=?,withdrawn_at=?
+          WHERE tenant_id=? AND space_id=? AND proposal_id=? AND requester_id=? AND status='pending' AND revision=?`,
+          now, now, body.tenant_id, body.space_id, proposalId, body.requester_id, body.expected_revision).rowsWritten;
+        if (changed !== 1) return "conflict";
+        execute(sql, `INSERT INTO space_coordination_proposal_revisions
+          (tenant_id,space_id,proposal_id,revision,action,status_after,draft_json,actor_id,actor_role,created_at)
+          VALUES(?,?,?,?, 'withdrawn','withdrawn',?,?,'project_manager',?)`,
+          body.tenant_id, body.space_id, proposalId, Number(body.expected_revision) + 1, current.draft_json, body.requester_id, now);
+        return "withdrawn";
+      });
+    } catch { return Response.json({ error_code: "coordination_proposal_storage_unavailable" }, { status: 503 }); }
+    if (outcome === "missing") return Response.json({ error_code: "coordination_proposal_unavailable" }, { status: 404 });
+    if (outcome === "forbidden") return Response.json({ error_code: "coordination_proposal_unavailable" }, { status: 404 });
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_proposal_revision_conflict" }, { status: 409 });
+    const proposal = queryOne<Record<string, unknown>>(sql,
+      "SELECT proposal_id,project_id,draft_json,status,revision,created_at,updated_at FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+      body.tenant_id, body.space_id, proposalId);
+    return Response.json({ proposal: { proposal_id: proposal?.proposal_id, project_id: proposal?.project_id,
+      draft: JSON.parse(String(proposal?.draft_json)), status: proposal?.status, revision: proposal?.revision,
+      created_at: proposal?.created_at, updated_at: proposal?.updated_at }, access_granted: false });
+  }
+
+  private async reviewSpaceCoordinationProposal(request: Request, proposalId: string): Promise<Response> {
+    const body = await request.json<{ tenant_id?: unknown; space_id?: unknown; actor_id?: unknown; actor_role?: unknown;
+      expected_revision?: unknown; action?: unknown; confirm_disclosure?: unknown; draft?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["tenant_id", "space_id", "actor_id", "actor_role", "expected_revision", "action", "confirm_disclosure", "draft"].includes(key))
+      || typeof body.tenant_id !== "string" || !body.tenant_id || typeof body.space_id !== "string" || !body.space_id
+      || typeof body.actor_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.actor_id)
+      || (body.actor_role !== "owner" && body.actor_role !== "admin")
+      || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 1
+      || (body.action !== "approve" && body.action !== "reject"))
+      return Response.json({ error_code: "coordination_proposal_invalid" }, { status: 400 });
+    if (!this.isSpaceOwnerOrAdmin(body.actor_id, body.space_id)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    let parsed: SpaceCoordinationDraftV2 | null = null;
+    if (body.action === "approve") {
+      const validation = validateSpaceCoordinationDraftV2(body.draft);
+      if (!validation.ok) return Response.json({ error_code: validation.error }, { status: 400 });
+      if (body.confirm_disclosure !== true) return Response.json({ error_code: "coordination_disclosure_confirmation_required" }, { status: 400 });
+      parsed = validation.value;
+    }
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    let outcome: "approved" | "rejected" | "replayed" | "missing" | "conflict" | "draft_changed" | "project_retired" | "member_facts_disabled" | "expired" | "id_conflict" = "missing";
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const current = queryOne<{ project_id: string; requester_id: string; draft_json: string; status: string; revision: number; entry_id: string | null }>(sql,
+          "SELECT project_id,requester_id,draft_json,status,revision,entry_id FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+          body.tenant_id, body.space_id, proposalId);
+        if (!current) return "missing";
+        if (body.action === "approve" && parsed && current.status === "approved" && current.entry_id && current.draft_json === JSON.stringify(parsed)
+          && Number(body.expected_revision) + 1 === current.revision) return "replayed";
+        if (current.status !== "pending" || current.revision !== body.expected_revision) return "conflict";
+        const project = queryOne<{ status: string }>(sql,
+          "SELECT status FROM projects WHERE id=? AND space_id=?", current.project_id, body.space_id);
+        if (!project || project.status !== "active") return "project_retired";
+        const savedDraft = validateSpaceCoordinationDraftV2(JSON.parse(current.draft_json));
+        if (!savedDraft.ok) return "draft_changed";
+        if (body.action === "reject") {
+          execute(sql, `UPDATE space_coordination_publication_proposals SET status='rejected',revision=revision+1,updated_at=?,reviewed_at=?,reviewed_by=?,reviewed_role=?
+            WHERE tenant_id=? AND space_id=? AND proposal_id=? AND status='pending' AND revision=?`,
+            now, now, body.actor_id, body.actor_role, body.tenant_id, body.space_id, proposalId, body.expected_revision);
+          execute(sql, `INSERT INTO space_coordination_proposal_revisions
+            (tenant_id,space_id,proposal_id,revision,action,status_after,draft_json,actor_id,actor_role,created_at)
+            VALUES(?,?,?,?, 'rejected','rejected',?,?,?,?)`, body.tenant_id, body.space_id, proposalId, Number(body.expected_revision) + 1,
+            current.draft_json, body.actor_id, body.actor_role, now);
+          return "rejected";
+        }
+        if (!parsed) return "draft_changed";
+        if (current.draft_json !== JSON.stringify(parsed)) return "draft_changed";
+        if (parsed.expires_at && Date.parse(parsed.expires_at) <= Date.parse(now)) return "expired";
+        if (parsed.audience === "space_members") {
+          const policy = queryOne<{ member_facts_enabled: number }>(sql,
+            "SELECT member_facts_enabled FROM space_coordination_policies WHERE tenant_id=? AND space_id=?", body.tenant_id, body.space_id);
+          if (policy?.member_facts_enabled !== 1) return "member_facts_disabled";
+        }
+        const existingEntry = queryOne<{ source_proposal_id: string | null }>(sql,
+          "SELECT source_proposal_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?", body.tenant_id, body.space_id, proposalId);
+        if (existingEntry) return existingEntry.source_proposal_id === proposalId ? "replayed" : "id_conflict";
+        execute(sql, `INSERT INTO space_coordination_entries
+          (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at,source_project_id,source_proposal_id)
+          VALUES(?,?,?,2,?,?,?,?,'active',1,1,'explicit_owner_or_admin_approval',?,?,?,?,?,?,?,?,?,?)`,
+          body.tenant_id, body.space_id, proposalId, parsed.capability_key, parsed.label, parsed.description ?? null, parsed.audience,
+          current.requester_id, body.actor_id, body.actor_role, now, now, now, body.actor_id, parsed.expires_at ?? null, current.project_id, proposalId);
+        execute(sql, `INSERT INTO space_coordination_audit_events
+          (tenant_id,space_id,event_id,entry_id,action,prior_version,version,actor_id,actor_role,audience_before,audience_after,expires_at_before,expires_at_after,status_after,provenance,created_at)
+          VALUES(?,?,?,?,'published',NULL,1,?,?,NULL,?,NULL,?,'active','explicit_owner_or_admin_approval',?)`,
+          body.tenant_id, body.space_id, crypto.randomUUID(), proposalId, body.actor_id, body.actor_role, parsed.audience, parsed.expires_at ?? null, now);
+        execute(sql, `UPDATE space_coordination_publication_proposals SET status='approved',revision=revision+1,updated_at=?,reviewed_at=?,reviewed_by=?,reviewed_role=?,entry_id=?
+          WHERE tenant_id=? AND space_id=? AND proposal_id=? AND status='pending' AND revision=?`,
+          now, now, body.actor_id, body.actor_role, proposalId, body.tenant_id, body.space_id, proposalId, body.expected_revision);
+        execute(sql, `INSERT INTO space_coordination_proposal_revisions
+          (tenant_id,space_id,proposal_id,revision,action,status_after,draft_json,actor_id,actor_role,created_at)
+          VALUES(?,?,?,?, 'approved','approved',?,?,?,?)`, body.tenant_id, body.space_id, proposalId, Number(body.expected_revision) + 1,
+          current.draft_json, body.actor_id, body.actor_role, now);
+        return "approved";
+      });
+    } catch { return Response.json({ error_code: "coordination_proposal_review_storage_unavailable" }, { status: 503 }); }
+    if (outcome === "missing") return Response.json({ error_code: "coordination_proposal_unavailable" }, { status: 404 });
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_proposal_revision_conflict" }, { status: 409 });
+    if (outcome === "draft_changed") return Response.json({ error_code: "coordination_proposal_draft_changed" }, { status: 409 });
+    if (outcome === "project_retired") return Response.json({ error_code: "coordination_proposal_source_retired" }, { status: 409 });
+    if (outcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
+    if (outcome === "expired") return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
+    if (outcome === "id_conflict") return Response.json({ error_code: "coordination_entry_id_conflict" }, { status: 409 });
+    const proposal = queryOne<Record<string, unknown>>(sql,
+      "SELECT proposal_id,project_id,requester_id,draft_json,status,revision,created_at,updated_at,reviewed_by,reviewed_role,entry_id FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND proposal_id=?",
+      body.tenant_id, body.space_id, proposalId);
+    let draft: unknown = null; try { draft = JSON.parse(String(proposal?.draft_json)); } catch { /* persisted JSON was validated before review */ }
+    const publicProposal = { proposal_id: proposal?.proposal_id, project_id: proposal?.project_id, requester_id: proposal?.requester_id,
+      draft, status: proposal?.status, revision: proposal?.revision, created_at: proposal?.created_at, updated_at: proposal?.updated_at,
+      reviewed_by: proposal?.reviewed_by ?? null, reviewed_role: proposal?.reviewed_role ?? null, entry_id: proposal?.entry_id ?? null };
+    const entry = outcome === "approved" || outcome === "replayed" ? queryOne<Record<string, unknown>>(sql,
+      "SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at,created_by,approved_by,approved_role,provenance,revoked_by FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+      body.tenant_id, body.space_id, proposalId) : undefined;
+    return Response.json({ proposal: publicProposal, ...(entry ? { entry: { ...entry, advisory_only: true } } : {}), access_granted: false,
+      replayed: outcome === "replayed" });
   }
 
   private listSpaceCoordinationAuditHistory(params: URLSearchParams, entryId: string): Response {
@@ -4252,6 +4584,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-coordination-policy/history" && method === "GET") return this.listSpaceCoordinationPolicyHistory(url.searchParams);
       if (url.pathname === "/space-coordination-use-requests" && method === "GET") return this.listSpaceCoordinationUseRequests(url.searchParams);
       if (url.pathname === "/space-coordination-use-requests" && method === "POST") return this.createSpaceCoordinationUseRequest(request);
+      if (url.pathname === "/space-coordination-proposals" && method === "GET") return this.listSpaceCoordinationProposals(url.searchParams);
+      if (url.pathname === "/space-coordination-proposals" && method === "POST") return this.createSpaceCoordinationProposal(request);
+      const coordinationProposals = url.pathname.match(/^\/space-coordination-proposals\/([^/]+)$/);
+      if (coordinationProposals?.[1] && method === "PATCH") {
+        try { return this.reviewSpaceCoordinationProposal(request, decodeURIComponent(coordinationProposals[1])); }
+        catch { return Response.json({ error_code: "coordination_proposal_unavailable" }, { status: 404 }); }
+      }
+      if (coordinationProposals?.[1] && method === "DELETE") {
+        try { return this.withdrawSpaceCoordinationProposal(request, decodeURIComponent(coordinationProposals[1])); }
+        catch { return Response.json({ error_code: "coordination_proposal_unavailable" }, { status: 404 }); }
+      }
       const coordinationUseRequest = url.pathname.match(/^\/space-coordination-use-requests\/([^/]+)$/);
       if (coordinationUseRequest?.[1] && method === "PATCH") {
         try { return this.resolveSpaceCoordinationUseRequest(request, decodeURIComponent(coordinationUseRequest[1])); }
@@ -8287,11 +8630,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const existing = queryOne<{
       id: string;
       space_id: string;
+      status: string;
       default_agent_id: string | null;
       allowed_agent_ids: string | null;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, space_id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?",
+      "SELECT id, space_id, status, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?",
       projectId
     );
     if (!existing)
@@ -8343,14 +8687,47 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           { status: 400 }
         );
       }
-      // Archiving removes a project from listProjects and from dedup candidates (both filter
-      // on status != 'archived') without deleting its threads/history.
-      execute(
-        this.ctx.storage.sql as never,
-        "UPDATE projects SET status = ? WHERE id = ?",
-        body.status,
-        projectId
-      );
+      // Archiving also retires any private publication request and approved registry fact
+      // sourced from this project in the same DO transaction. Reopening the project does not
+      // silently republish a fact; its owner must submit and obtain a fresh approval.
+      const sql = this.ctx.storage.sql as never;
+      const now = new Date().toISOString();
+      const coordinationTenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
+      try {
+        this.ctx.storage.transactionSync(() => {
+          execute(sql, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
+          if (body.status !== "archived" || existing.status === "archived") return;
+          const proposals = queryAll<{ proposal_id: string; draft_json: string; revision: number }>(sql,
+            "SELECT proposal_id,draft_json,revision FROM space_coordination_publication_proposals WHERE tenant_id=? AND space_id=? AND project_id=? AND status IN ('pending','approved')",
+            coordinationTenantId, existing.space_id, projectId);
+          for (const proposal of proposals) {
+            const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_publication_proposals SET status='retired',revision=revision+1,updated_at=?
+              WHERE tenant_id=? AND space_id=? AND proposal_id=? AND status IN ('pending','approved') AND revision=?`,
+              now, coordinationTenantId, existing.space_id, proposal.proposal_id, proposal.revision).rowsWritten;
+            if (changed !== 1) continue;
+            execute(sql, `INSERT INTO space_coordination_proposal_revisions
+              (tenant_id,space_id,proposal_id,revision,action,status_after,draft_json,actor_id,actor_role,created_at)
+              VALUES(?,?,?,?,'retired','retired',?,'system:source_project_retirement','system',?)`,
+              coordinationTenantId, existing.space_id, proposal.proposal_id, Number(proposal.revision) + 1, proposal.draft_json, now);
+          }
+          const entries = queryAll<{ entry_id: string; version: number; audience: string; expires_at: string | null }>(sql,
+            "SELECT entry_id,version,audience,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND source_project_id=? AND status='active'",
+            coordinationTenantId, existing.space_id, projectId);
+          for (const entry of entries) {
+            const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_entries SET status='revoked',version=version+1,updated_at=?,revoked_at=?,revoked_by=?
+              WHERE tenant_id=? AND space_id=? AND entry_id=? AND status='active' AND version=?`,
+              now, now, "system:source_project_retirement", coordinationTenantId, existing.space_id, entry.entry_id, entry.version).rowsWritten;
+            if (changed !== 1) continue;
+            execute(sql, `INSERT INTO space_coordination_audit_events
+              (tenant_id,space_id,event_id,entry_id,action,prior_version,version,actor_id,actor_role,audience_before,audience_after,expires_at_before,expires_at_after,status_after,provenance,created_at)
+              VALUES(?,?,?,?,'source_retired',?,?,'system:source_project_retirement','system',?,?,?,?,'revoked','explicit_owner_or_admin_approval',?)`,
+              coordinationTenantId, existing.space_id, crypto.randomUUID(), entry.entry_id, entry.version, Number(entry.version) + 1, entry.audience, entry.audience,
+              entry.expires_at, entry.expires_at, now);
+          }
+        });
+      } catch {
+        return Response.json({ error_code: "project_coordination_retirement_failed" }, { status: 503 });
+      }
     }
     if (body.lead_user_id !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET lead_user_id = ? WHERE id = ?", body.lead_user_id?.trim() || null, projectId);

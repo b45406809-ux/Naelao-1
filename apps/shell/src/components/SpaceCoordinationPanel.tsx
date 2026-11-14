@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2, SpaceCoordinationUseRequest, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2, SpaceCoordinationPublicationProposal, SpaceCoordinationUseRequest, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
 import { ApiError } from "@/lib/request";
-import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, listSpaceCoordinationUseRequests, previewSpaceCoordination, publishSpaceCoordination, requestSpaceCoordinationCollaboration, resolveSpaceCoordinationRequest, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
+import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, listSpaceCoordinationProposalQueue, listSpaceCoordinationUseRequests, previewSpaceCoordination, publishSpaceCoordination, requestSpaceCoordinationCollaboration, resolveSpaceCoordinationRequest, reviewSpaceCoordinationProposal, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -16,6 +16,9 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [useRequests, setUseRequests] = React.useState<SpaceCoordinationUseRequest[]>([]);
   const [requestsNextAfter, setRequestsNextAfter] = React.useState<string | null>(null);
   const [requestError, setRequestError] = React.useState<string | null>(null);
+  const [proposals, setProposals] = React.useState<SpaceCoordinationPublicationProposal[]>([]);
+  const [proposalsNextAfter, setProposalsNextAfter] = React.useState<string | null>(null);
+  const [proposalError, setProposalError] = React.useState<string | null>(null);
   const [capabilityKey, setCapabilityKey] = React.useState("");
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -69,6 +72,19 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     }
   }, [spaceId, session.sessionToken, session.endUserId]);
   React.useEffect(() => { void refreshUseRequests(); }, [refreshUseRequests]);
+
+  const refreshProposalQueue = React.useCallback(async () => {
+    if (!canManage) return;
+    try {
+      const page = await listSpaceCoordinationProposalQueue(spaceId, session);
+      setProposals(page.proposals);
+      setProposalsNextAfter(page.next_after);
+      setProposalError(null);
+    } catch {
+      setProposalError("Private project publication proposals could not be loaded. Try again.");
+    }
+  }, [canManage, spaceId, session]);
+  React.useEffect(() => { void refreshProposalQueue(); }, [refreshProposalQueue]);
 
   const refreshPolicy = React.useCallback(async () => {
     if (!canManage) return;
@@ -207,6 +223,39 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     } finally { setBusy(false); }
   }
 
+  async function reviewProposal(proposal: SpaceCoordinationPublicationProposal, action: "approve" | "reject") {
+    const audienceName = proposal.draft.audience === "space_members" ? "all active Space members" : "Space owners and administrators";
+    const disclosure = action === "approve"
+      ? `Publish this exact advisory fact to ${audienceName}?\n\n${proposal.draft.capability_key}\n${proposal.draft.label}${proposal.draft.description ? `\n${proposal.draft.description}` : ""}\n\nThis grants no project or service access.`
+      : `Reject the private proposal “${proposal.draft.label}”?`;
+    if (!window.confirm(disclosure)) return;
+    setBusy(true); setProposalError(null); setNotice(null);
+    try {
+      await reviewSpaceCoordinationProposal(spaceId, session, proposal.proposal_id, proposal.revision, action, action === "approve" ? proposal.draft : undefined);
+      setNotice(action === "approve" ? `The fact was published to ${audienceName}. No project or service access was granted.` : "The proposal was rejected and remains private to its requester and reviewers.");
+      await Promise.all([refreshProposalQueue(), refresh(), refreshPolicy()]);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.errorCode ?? "" : "";
+      setProposalError(code.includes("coordination_member_facts_disabled")
+        ? "Space-member visibility is disabled. Keep the proposal pending or reject it; an owner must enable member visibility before this audience can be approved."
+        : code.includes("coordination_proposal_revision_conflict")
+          ? "This proposal changed in another review session. Reload the queue before deciding."
+          : "The proposal could not be reviewed. Its current state was preserved.");
+      await refreshProposalQueue();
+    } finally { setBusy(false); }
+  }
+
+  async function loadMoreProposals() {
+    if (!canManage || !proposalsNextAfter || busy) return;
+    setBusy(true); setProposalError(null);
+    try {
+      const page = await listSpaceCoordinationProposalQueue(spaceId, session, proposalsNextAfter);
+      setProposals(current => [...current, ...page.proposals]);
+      setProposalsNextAfter(page.next_after);
+    } catch { setProposalError("More publication proposals could not be loaded. Try again."); }
+    finally { setBusy(false); }
+  }
+
   async function loadMoreUseRequests() {
     if (!requestsNextAfter || busy) return;
     setBusy(true); setRequestError(null);
@@ -282,6 +331,25 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         These are explicitly approved advisory notices. Each fact shows whether it is visible to all active Space members or only Space owners and administrators. A notice does not grant access to a project or service; private project details are never read to create one.
       </p>
     </div>
+    {canManage && <div style={{ borderTop: "1px solid var(--border)", padding: "14px 16px" }}>
+      <div className="settings-row-label">Private project proposals for review</div>
+      <p className="settings-row-sub" style={{ margin: "4px 0 10px" }}>Only Space owners and administrators and each proposal's requester can see pending text. Review the exact fact and audience before approval.</p>
+      {proposalError && <div className="settings-row-sub" role="alert" style={{ marginBottom: 8, color: "var(--danger, #b42318)" }}>{proposalError}</div>}
+      {proposals.length ? <div style={{ display: "grid", gap: 8 }}>
+        {proposals.map(proposal => <article key={proposal.proposal_id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+          <div className="settings-row-label">{proposal.draft.label}</div>
+          <div className="settings-row-sub" style={{ marginTop: 4 }}>{proposal.draft.capability_key}{proposal.draft.description ? ` · ${proposal.draft.description}` : ""}</div>
+          <div className="settings-row-sub" style={{ marginTop: 4 }}>Source project {proposal.project_id} · requester {proposal.requester_id} · revision {proposal.revision}</div>
+          <div className="settings-row-sub" style={{ marginTop: 4 }}>If approved: {proposal.draft.audience === "space_members" ? "all active Space members" : "Space owners and administrators"} · advisory only · no access granted</div>
+          {proposal.draft.expires_at && <div className="settings-row-sub" style={{ marginTop: 4 }}>Expires {formatConfirmationTime(proposal.draft.expires_at)}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy || proposal.status !== "pending"} onClick={() => void reviewProposal(proposal, "approve")}>Review and approve exact disclosure</button>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={busy || proposal.status !== "pending"} onClick={() => void reviewProposal(proposal, "reject")}>Reject</button>
+          </div>
+        </article>)}
+        {proposalsNextAfter && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadMoreProposals()}>Load more proposals</button>}
+      </div> : !proposalError ? <div className="settings-row-sub">No pending project proposals.</div> : null}
+    </div>}
     {visibleEntries.length ? <div style={{ display: "grid", gap: 0 }}>
       {visibleEntries.map(entry => <article key={entry.entry_id} style={{ borderTop: "1px solid var(--border)", padding: "12px 16px", display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
         <div style={{ minWidth: 0 }}>

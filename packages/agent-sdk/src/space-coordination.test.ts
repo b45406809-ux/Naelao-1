@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSpaceCoordinationClient, createSpaceCoordinationClientV2, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2 } from "./space-coordination.js";
+import { createSpaceCoordinationClient, createSpaceCoordinationClientV2, createSpaceCoordinationProposalClient, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2 } from "./space-coordination.js";
 
 describe("Space coordination registry v1 contract", () => {
   it("normalizes bounded facts and rejects authority or hidden-source fields", () => {
@@ -79,6 +79,34 @@ describe("Space coordination registry v2 audience contract", () => {
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/requests?after=request%20cursor", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/entry%2F1/requests", method: "POST", body: { confirm_identity_sharing: true } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/requests/request%2F1", method: "PATCH", body: { expected_revision: 2, resolution: "contacted" } },
+    ]);
+  });
+});
+
+describe("private project publication proposal contract", () => {
+  it("uses project-scoped submit/withdraw and reviewer-only review routes with optimistic revisions", async () => {
+    const calls: Array<{ path: string; method: string; body?: unknown }> = [];
+    const client = createSpaceCoordinationProposalClient({
+      spaceId: "space / one",
+      request: async <T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }) => {
+        calls.push({ path, method: init?.method ?? "GET", body: init?.body });
+        return {} as T;
+      },
+    });
+    const draft = { schema_version: 2 as const, capability_key: "official.website", label: "Company site", audience: "space_members" as const, expires_at: null };
+    await client.submit("private/project", draft, true, "10000000-0000-4000-8000-000000000001");
+    await client.listProject("private/project", "cursor/1");
+    await client.reviewQueue("cursor/2");
+    await client.review("10000000-0000-4000-8000-000000000001", 1, "approve", draft);
+    await client.withdraw("private/project", "10000000-0000-4000-8000-000000000001", 1);
+    expect(calls).toEqual([
+      { path: "/spaces/space%20%2F%20one/projects/private%2Fproject/coordination-proposals", method: "POST",
+        body: { request_id: "10000000-0000-4000-8000-000000000001", ...draft, confirm_disclosure: true } },
+      { path: "/spaces/space%20%2F%20one/projects/private%2Fproject/coordination-proposals?after=cursor%2F1", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-proposals?after=cursor%2F2", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-proposals/10000000-0000-4000-8000-000000000001", method: "PATCH",
+        body: { expected_revision: 1, action: "approve", confirm_disclosure: true, draft } },
+      { path: "/spaces/space%20%2F%20one/projects/private%2Fproject/coordination-proposals/10000000-0000-4000-8000-000000000001", method: "DELETE", body: { expected_revision: 1 } },
     ]);
   });
 });

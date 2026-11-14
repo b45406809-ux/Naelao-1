@@ -8,6 +8,7 @@ import { resolveEndUserSpaceRole } from "../space-auth.js";
 const basePath = "/spaces/:spaceId/coordination-registry";
 const v2Path = `${basePath}/v2`;
 const policyPath = `${v2Path}/policy`;
+const proposalsPath = "/spaces/:spaceId/coordination-proposals";
 
 export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
   const noStoreHeader = async (c: Context<{ Bindings: Env }>, next: () => Promise<void>) => {
@@ -16,6 +17,10 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
   };
   app.use(basePath, noStoreHeader);
   app.use(`${basePath}/*`, noStoreHeader);
+  app.use(proposalsPath, noStoreHeader);
+  app.use(`${proposalsPath}/*`, noStoreHeader);
+  app.use("/spaces/:spaceId/projects/:projectId/coordination-proposals", noStoreHeader);
+  app.use("/spaces/:spaceId/projects/:projectId/coordination-proposals/*", noStoreHeader);
 
   app.get(basePath, async c => {
     const auth = await authorize(c, false);
@@ -98,6 +103,111 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
         expected_revision: input.expected_revision, resolution: input.resolution }),
     }));
     return noStore(response);
+  });
+
+  app.get(proposalsPath, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const after = c.req.query("after");
+    if (after !== undefined && (!after || after.length > 256)) return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, viewer_id: auth.userId,
+      viewer_role: auth.role, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-proposals?${params}`)));
+  });
+
+  app.get("/spaces/:spaceId/projects/:projectId/coordination-proposals", async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    const projectId = c.req.param("projectId");
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_not_found" }, 404);
+    const after = c.req.query("after");
+    if (after !== undefined && (!after || after.length > 256)) return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, project_id: projectId,
+      viewer_id: auth.userId, viewer_role: auth.role, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-proposals?${params}`)));
+  });
+
+  app.post("/spaces/:spaceId/projects/:projectId/coordination-proposals", async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    const projectId = c.req.param("projectId");
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_not_found" }, 404);
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    if (!input || Object.keys(input).some(key => !["request_id", "schema_version", "capability_key", "label", "description", "audience", "expires_at", "confirm_disclosure"].includes(key))
+      || typeof input.request_id !== "string" || !/^[0-9a-f-]{36}$/i.test(input.request_id) || input.confirm_disclosure !== true)
+      return c.json({ error_code: "coordination_proposal_invalid" }, 400);
+    const draftInput = { schema_version: input.schema_version, capability_key: input.capability_key, label: input.label,
+      ...(input.description === undefined ? {} : { description: input.description }), audience: input.audience,
+      ...(input.expires_at === undefined ? {} : { expires_at: input.expires_at }) };
+    const parsed = validateSpaceCoordinationDraftV2(draftInput);
+    if (!parsed.ok) return c.json({ error_code: parsed.error }, 400);
+    if (isExpired(parsed.value.expires_at)) return c.json({ error_code: "coordination_expiry_must_be_future" }, 400);
+    const requesterRole = auth.role === "owner" || auth.role === "admin" ? auth.role : "project_manager";
+    const response = await auth.stub.fetch(new Request("http://space/space-coordination-proposals", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, proposal_id: input.request_id, project_id: projectId,
+        requester_id: auth.userId, requester_role: requesterRole, confirm_disclosure: true, draft: parsed.value }),
+    }));
+    return noStore(response);
+  });
+
+  app.delete("/spaces/:spaceId/projects/:projectId/coordination-proposals/:proposalId", async c => {
+    const auth = await authorize(c, false);
+    if (auth instanceof Response) return auth;
+    const projectId = c.req.param("projectId"), proposalId = c.req.param("proposalId");
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[0-9a-f-]{36}$/i.test(proposalId))
+      return c.json({ error_code: "coordination_proposal_unavailable" }, 404);
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    if (!input || Object.keys(input).some(key => key !== "expected_revision")
+      || !Number.isSafeInteger(input.expected_revision) || Number(input.expected_revision) < 1)
+      return c.json({ error_code: "coordination_proposal_invalid" }, 400);
+    const response = await auth.stub.fetch(new Request(`http://space/space-coordination-proposals/${encodeURIComponent(proposalId)}`, {
+      method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, project_id: projectId,
+        requester_id: auth.userId, expected_revision: input.expected_revision }),
+    }));
+    return noStore(response);
+  });
+
+  app.patch(`${proposalsPath}/:proposalId`, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const proposalId = c.req.param("proposalId");
+    if (!/^[0-9a-f-]{36}$/i.test(proposalId)) return c.json({ error_code: "coordination_proposal_unavailable" }, 404);
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    if (!input || Object.keys(input).some(key => !["expected_revision", "action", "confirm_disclosure", "draft"].includes(key))
+      || !Number.isSafeInteger(input.expected_revision) || Number(input.expected_revision) < 1
+      || (input.action !== "approve" && input.action !== "reject")) return c.json({ error_code: "coordination_proposal_invalid" }, 400);
+    let draft: unknown;
+    if (input.action === "approve") {
+      const draftInput = input.draft as Record<string, unknown> | null;
+      if (!draftInput || typeof draftInput !== "object" || Array.isArray(draftInput)) return c.json({ error_code: "invalid_coordination_draft" }, 400);
+      const normalized = { schema_version: draftInput.schema_version, capability_key: draftInput.capability_key, label: draftInput.label,
+        ...(draftInput.description === undefined ? {} : { description: draftInput.description }), audience: draftInput.audience,
+        ...(draftInput.expires_at === undefined ? {} : { expires_at: draftInput.expires_at }) };
+      const parsed = validateSpaceCoordinationDraftV2(normalized);
+      if (!parsed.ok) return c.json({ error_code: parsed.error }, 400);
+      if (isExpired(parsed.value.expires_at)) return c.json({ error_code: "coordination_expiry_must_be_future" }, 400);
+      if (input.confirm_disclosure !== true) return c.json({ error_code: "coordination_disclosure_confirmation_required",
+        disclosure: spaceCoordinationDisclosureV2(parsed.value.audience) }, 400);
+      draft = parsed.value;
+    } else if (input.draft !== undefined || input.confirm_disclosure !== undefined) {
+      return c.json({ error_code: "coordination_proposal_invalid" }, 400);
+    }
+    const response = await auth.stub.fetch(new Request(`http://space/space-coordination-proposals/${encodeURIComponent(proposalId)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.userId, actor_role: auth.role,
+        expected_revision: input.expected_revision, action: input.action, ...(input.action === "approve" ? { confirm_disclosure: true, draft } : {}) }),
+    }));
+    if (!response.ok) return noStore(response);
+    const result = await response.json<Record<string, unknown>>();
+    return c.json({ ...result, ...(input.action === "approve" ? { disclosure: spaceCoordinationDisclosureV2((draft as { audience: "space_members" | "space_admins" }).audience) } : {}) });
   });
 
   app.put(policyPath, async c => {

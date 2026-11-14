@@ -207,4 +207,52 @@ describe("Space coordination registry gateway", () => {
     }), memberResolve.bindings)).status).toBe(403);
     expect(memberResolve.calls).toHaveLength(0);
   });
+
+  it("routes private project proposals with host-stamped submitter and reviewer identities", async () => {
+    const member = env("member");
+    const proposalPath = "/spaces/space/projects/project-private/coordination-proposals";
+    const draft = { schema_version: 2, capability_key: "official.website", label: "Explicit website fact", audience: "space_admins", expires_at: null };
+    const unconfirmed = await app.fetch(await request(proposalPath, "product_end_user", "POST", {
+      request_id: "10000000-0000-4000-8000-000000000001", ...draft, confirm_disclosure: false,
+    }), member.bindings);
+    expect(unconfirmed.status).toBe(400);
+    expect(member.calls).toHaveLength(0);
+    const invalid = await app.fetch(await request(proposalPath, "product_end_user", "POST", {
+      request_id: "10000000-0000-4000-8000-000000000001", ...draft, audience: "private_project", confirm_disclosure: true,
+    }), member.bindings);
+    expect(invalid.status).toBe(400);
+    expect(member.calls).toHaveLength(0);
+    const created = await app.fetch(await request(proposalPath, "product_end_user", "POST", {
+      request_id: "10000000-0000-4000-8000-000000000001", ...draft, confirm_disclosure: true,
+    }), member.bindings);
+    expect(created.status).toBe(201);
+    expect(created.headers.get("cache-control")).toBe("no-store");
+    expect(await member.calls[0]!.json()).toEqual({ tenant_id: "tenant", space_id: "space",
+      proposal_id: "10000000-0000-4000-8000-000000000001", project_id: "project-private", requester_id: "user",
+      requester_role: "project_manager", confirm_disclosure: true, draft });
+
+    const requesterRead = await app.fetch(await request(`${proposalPath}?after=cursor`), member.bindings);
+    expect(requesterRead.status).toBe(200);
+    const readUrl = new URL(member.calls[1]!.url);
+    expect(readUrl.pathname).toBe("/space-coordination-proposals");
+    expect(readUrl.searchParams.get("viewer_id")).toBe("user");
+    expect(readUrl.searchParams.get("viewer_role")).toBe("member");
+    expect(readUrl.searchParams.get("project_id")).toBe("project-private");
+    expect(readUrl.searchParams.get("after")).toBe("cursor");
+
+    const memberReview = env("member");
+    const forbiddenQueue = await app.fetch(await request("/spaces/space/coordination-proposals", "product_end_user"), memberReview.bindings);
+    expect(forbiddenQueue.status).toBe(403);
+    expect(memberReview.calls).toHaveLength(0);
+    const owner = env("owner");
+    const queue = await app.fetch(await request("/spaces/space/coordination-proposals?after=cursor", "product_end_user"), owner.bindings);
+    expect(queue.status).toBe(200);
+    expect(new URL(owner.calls[0]!.url).searchParams.get("viewer_role")).toBe("owner");
+    const approved = await app.fetch(await request("/spaces/space/coordination-proposals/10000000-0000-4000-8000-000000000001", "product_end_user", "PATCH", {
+      expected_revision: 1, action: "approve", confirm_disclosure: true, draft,
+    }), owner.bindings);
+    expect(approved.status).toBe(200);
+    await expect(owner.calls[1]!.json()).resolves.toEqual({ tenant_id: "tenant", space_id: "space", actor_id: "user", actor_role: "owner",
+      expected_revision: 1, action: "approve", confirm_disclosure: true, draft });
+  });
 });

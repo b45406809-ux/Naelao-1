@@ -1,6 +1,6 @@
 import { ApiError, requestJson } from "./request";
 import type { ProjectKind } from "@naelao/agent-sdk";
-import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationPublicationProposal, SpaceCoordinationPublicationProposalPage, SpaceCoordinationProposalAction, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -147,6 +147,34 @@ export function resolveSpaceCoordinationRequest(spaceId: string, session: Sessio
   return apiFetch<{ request: SpaceCoordinationUseRequestPage["requests"][number]; access_granted: false }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/requests/${encodeURIComponent(requestId)}`,
     { method: "PATCH", session, body: JSON.stringify({ expected_revision: expectedRevision, resolution }) });
+}
+export function listSpaceCoordinationProposalQueue(spaceId: string, session: SessionCredentials, after?: string) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return apiFetch<SpaceCoordinationPublicationProposalPage>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-proposals${query}`, { session, cache: "no-store" });
+}
+export function listProjectCoordinationProposals(spaceId: string, projectId: string, session: SessionCredentials, after?: string) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return apiFetch<SpaceCoordinationPublicationProposalPage>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/coordination-proposals${query}`, { session, cache: "no-store" });
+}
+export function submitProjectCoordinationProposal(spaceId: string, projectId: string, session: SessionCredentials,
+  requestId: string, draft: SpaceCoordinationDraftV2) {
+  return apiFetch<{ proposal: SpaceCoordinationPublicationProposal; access_granted: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/coordination-proposals`,
+    { method: "POST", session, body: JSON.stringify({ request_id: requestId, ...draft, confirm_disclosure: true }) });
+}
+export function withdrawProjectCoordinationProposal(spaceId: string, projectId: string, session: SessionCredentials,
+  proposalId: string, expectedRevision: number) {
+  return apiFetch<{ proposal: SpaceCoordinationPublicationProposal; access_granted: false }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/coordination-proposals/${encodeURIComponent(proposalId)}`,
+    { method: "DELETE", session, body: JSON.stringify({ expected_revision: expectedRevision }) });
+}
+export function reviewSpaceCoordinationProposal(spaceId: string, session: SessionCredentials, proposalId: string,
+  expectedRevision: number, action: SpaceCoordinationProposalAction, draft?: SpaceCoordinationDraftV2) {
+  return apiFetch<{ proposal: SpaceCoordinationPublicationProposal; entry?: SpaceCoordinationEntryV2; access_granted: false;
+    disclosure?: { audience: string; effect: string }; replayed?: boolean }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-proposals/${encodeURIComponent(proposalId)}`,
+    { method: "PATCH", session, body: JSON.stringify({ expected_revision: expectedRevision, action,
+      ...(action === "approve" ? { confirm_disclosure: true, draft } : {}) }) });
 }
 export function previewSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV2) {
   return apiFetch<{ schema_version: 2; draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string }; no_project_source: true }>(
