@@ -39,10 +39,23 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("setupSchemaVersion,setupFieldsByProject");
     expect(foundry).toContain("setup-project-select");
     expect(foundry).toContain("blueprint.export");
+    expect(foundry).toContain("Save authoring draft");
+    expect(foundry).toContain("MAX_DRAFT_BYTES=49152");
+    expect(foundry).toContain("function validateSavedDraft");
+    expect(foundry).toContain("function restoreProductDraft");
+    expect(foundry).toContain("function saveAuthoringDraft");
+    expect(foundry).toContain("draft_json:raw");
+    expect(foundry).toContain("Local preview values were cleared");
+    expect(foundry).not.toContain("preview_values:");
     expect(foundry.toLowerCase()).toContain("provider credentials");
     const foundryScript = foundry.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     expect(foundryScript).toBeTruthy();
     expect(() => new Function(foundryScript!)).not.toThrow();
+    const foundryManifest = DOGFOOD_EXTENSIONS.find(manifest => manifest.id === "ext_foundry_catalog");
+    expect(foundryManifest?.releaseVersion).toBe("1.2.0");
+    expect(foundryManifest?.gadgets[0]?.migrations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: 2, up: expect.stringContaining("ADD COLUMN draft_json TEXT NOT NULL DEFAULT '{}'" ) }),
+    ]));
   });
 
   it("limits commercial first-party claims to CRM and e-sign", () => {
