@@ -16,31 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P20 template-subscription refund evidence)
+## Latest checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
-Code `5a4626268020d3f795b04df38117a78cb8246170` is pushed to `origin/Mcbt5s-Backup-2` after a
-pre-push fetch confirmed the remote was at `a25109cd` with no concurrent advance. Lemon Squeezy's
-documented `subscription_payment_refunded` event now normalizes with its event and invoice identity.
-Migration 0251 stores an idempotent signed-body refund receipt, links only an exact matching Space and
-subscription, and preserves unknown/invalid amounts for review. Marketplace exposes bounded no-store
-buyer/author case status; Billing has a separately keyed, audited operator read. The path does not
-change template access, paid cycles, creator earnings or payouts. Release schema/deployment manifests
-pin migration 0251.
+Code `502618ca` is pushed to `origin/Mcbt5s-Backup-2`; a pre-push fetch showed remote tip `ac444bf8`
+with no concurrent advance. Signed SpaceBlueprint activation review now accepts bounded owner-selected
+external Knowledge IDs per blueprint Project and extension, validates them against the certified
+declaration before installation side effects, and persists the normalized choice in the existing
+resumable activation receipt. Installation status maps blueprint Project IDs to created Project IDs.
+Project controls surface the choice as pending setup intent and prefill it only when the matching
+collection is currently published. Activation writes no grant; the owner must save through the existing
+migration-137 path, which rechecks the active signed declaration and current published ID. Omitted
+choices stay empty, and changed selections conflict on retry.
 
-Local verification: billing-core provider **11/11**, template renewal/refund webhook **3/3**,
-Marketplace case routes **6/6**, Billing operator refund route **5/5**, fixed-license settlement
-regression **8/8**, affected Billing/Marketplace/Marketplace-web/billing-core typechecks, release
-migration suite **20/20**, release/deployment validators, and `git diff --check`. No provider sandbox,
-deployment, buyer browser, carrier or live acceptance ran. P20 remains PARTIAL for license/access and
-creator-accounting policy, disputes, payout recovery and live acceptance. P21's encrypted Product and
-builder auth-email outboxes/status paths were already present in pushed source; no P21 code was repeated.
+Local verification: Spaces activation/setup/extension-grant suites **57/57**, Spaces and Shell
+typechecks, and `git diff --check`. No browser, deployment, multi-user, or Knowledge provider
+acceptance ran. P05 remains PARTIAL for broad guided lifecycle, the Space-wide provider-connection
+authority/payer/beneficiary/revocation contract, other cost/lifecycle gaps, and live acceptance. P20
+refund evidence remains pushed in `5a462626`; access/accounting/payout policy and disputes remain
+unresolved. All rollouts remain disabled.
 
-Exact next action: continue P05 guided-template activation. Carry explicit owner/admin selections of
-currently published Project Knowledge collections from signed SpaceBlueprint activation review into
-the existing migration-137 per-Project grant ledger. Revalidate the active signed declaration and
-publication at commit/retry, keep omitted selections empty, and add authorization/retry/revocation
-coverage. Preserve separate provider-connection authority/payer/revocation gates. Then continue the
-next uncoded P01–P24 and S3–S9/U01–U12 requirements. Rollouts remain disabled; preserve
+Exact next action: start P01 release/environment safety. Reconcile the current production migration
+command and required-schema verifiers against the full pinned manifest; remove any failure-suppressing
+migration path and add failure-injection verification proving a failed migration cannot produce a
+successful release receipt. Then reconcile P02 resource-identity/evidence gaps before continuing
+independent S3–S9/U01–U12 code. Keep live database/deployment acceptance distinct. Preserve
 `infra/scripts/__pycache__/`; fetch and safely integrate before every push; never force-push or deploy.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)

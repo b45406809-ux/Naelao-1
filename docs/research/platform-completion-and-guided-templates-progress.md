@@ -1,28 +1,30 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P20 template-subscription refund evidence)
+## Active checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 
-Code `5a4626268020d3f795b04df38117a78cb8246170` is pushed to `origin/Mcbt5s-Backup-2` after a
-pre-push fetch confirmed the remote at `a25109cd` with no concurrent advance. Lemon Squeezy's
-documented `subscription_payment_refunded` event now normalizes with its provider event and explicit
-invoice identity. Migration 0251 persists idempotent signed-body evidence and exact matching
-template-subscription/Space links; missing invoices and unknown or invalid amounts remain visible as
-review cases. Marketplace exposes no-store buyer/author status, and Billing exposes a separately
-operator-keyed, actor-audited read. Access, paid cycles, creator earnings and payouts are unchanged.
+Code `502618ca` is pushed to `origin/Mcbt5s-Backup-2`; immediately before pushing, fetch confirmed
+remote tip `ac444bf8` with no concurrent change. Signed SpaceBlueprint activation records explicit
+owner/admin choices of external Knowledge IDs per blueprint Project and extension, rejects undeclared
+IDs before dependency-install side effects, and persists normalized intent in the existing retry
+receipt. Owner/admin installation status maps the intent to the created Project ID. Project settings
+show pending selections and prefill only currently published declared IDs. Activation never grants
+access; a human must save the intent through the existing migration-137 path, which rechecks the
+current publication and active signed declaration. Omission remains empty; retry with changed choices
+conflicts.
 
-Local evidence: billing-core provider **11/11**, template webhook **3/3**, Marketplace case routes
-**6/6**, Billing operator review **5/5**, fixed-license settlement regression **8/8**, affected
-typechecks, release migration suite **20/20**, release/deployment validators and `git diff --check`.
-No provider sandbox, deployment or live acceptance ran. P20 remains PARTIAL for unresolved fixed-license
-and template subscription access/accounting/payout policy, disputes, and live reconciliation. P21's
-encrypted auth-email outboxes/status paths were already present and were verified in current source.
+Local evidence: Spaces activation/setup/grant suites **57/57**, Spaces and Shell typechecks, and
+`git diff --check`. No browser, deployment, multi-user, provider or live acceptance ran. The P05
+activation handoff slice is locally implemented; broader guided lifecycle/cost work and the Space-wide
+provider-connection authorizer/beneficiary/payer/revocation contract remain PARTIAL. P20's review-only
+subscription refund evidence remains pushed; its access/accounting/dispute policy remains unresolved.
+Rollouts remain disabled.
 
-Exact next action: carry explicit owner/admin choices of current published Project Knowledge
-collections from signed SpaceBlueprint activation review into the existing migration-137 per-Project
-grant ledger. Revalidate the active signed declaration and current publication at commit/retry, leave
-omitted selections empty, and add authorization/retry/revocation coverage. Preserve the separate
-Space-wide provider connection authority, payer and revocation contract gate. Keep rollouts disabled;
-fetch and safely integrate before every push.
+Exact next action: start P01 release/environment safety. Reconcile the current production migration
+workflow and required-schema verifiers against the full pinned manifest. Remove any failure-suppressing
+migration path and add failure injection proving release cannot pass after a migration failure. Then
+reconcile P02 resource identity/receipt gaps; continue S3–S9/U01–U12 independent code after the active
+release-safety action. Fetch before every push; preserve remote history, keep rollouts disabled and do
+not deploy.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
