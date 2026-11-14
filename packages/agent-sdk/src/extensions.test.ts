@@ -190,8 +190,12 @@ describe("composed extension bundle contract", () => {
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], session: { enabled: false } }] })).toThrow("channel_session_must_be_opt_in");
     expect(parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_text", maxFiles: 3, maxTotalBytes: 2 * 1024 * 1024 } }] }).primitives[1])
       .toMatchObject({ attachmentAccess: { mode: "read_text", maxFiles: 3 } });
+    expect(parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_image", maxFiles: 1, maxTotalBytes: 480 * 1024 } }] }).primitives[1])
+      .toMatchObject({ attachmentAccess: { mode: "read_image", maxFiles: 1, maxTotalBytes: 480 * 1024 } });
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_binary" } }] })).toThrow("invalid_channel_attachment_mode");
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_text", maxFiles: 4 } }] })).toThrow("invalid_channel_attachment_max_files");
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_image", maxFiles: 2 } }] })).toThrow("invalid_channel_image_max_files");
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], attachmentAccess: { mode: "read_image", maxTotalBytes: 480 * 1024 + 1 } }] })).toThrow("invalid_channel_image_max_bytes");
   });
   it("keeps invocation role and execution tier distinct and rejects dangling references", () => {
     expect(() => parseExtensionBundle({ ...bundle, workerRoles: [{ ...bundle.workerRoles[0], primitiveIds: ["missing"] }] })).toThrow("invalid_worker_primitive_reference");

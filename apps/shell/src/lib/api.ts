@@ -2168,7 +2168,7 @@ export interface ChannelExtensionInstallation {
   release_version: string | null;
   permissions?: string[];
   capabilities?: string[];
-  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; attachment_access?: { mode: "read_text"; max_files: number; max_total_bytes: number }; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
+  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; attachment_access?: { mode: "read_text" | "read_image"; max_files: number; max_total_bytes: number }; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
 }
 

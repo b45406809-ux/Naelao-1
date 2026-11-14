@@ -5,7 +5,7 @@ import { app } from "../index.js";
 const secret = "attachment-index-secret";
 const row = { id: "opaque-id", channel: "email", filename: "scan.pdf", mime_type: "application/pdf", size_bytes: 2048, created_at: "2026-10-15T00:00:00.000Z", expires_at: "2026-11-14T00:00:00.000Z" };
 
-function env(options: { owned?: boolean; attachment?: typeof row; objectBytes?: Uint8Array } = {}) {
+function env(options: { owned?: boolean; attachment?: typeof row; objectBytes?: Uint8Array; attachmentMode?: "read_text" | "read_image"; maxFiles?: number; maxTotalBytes?: number } = {}) {
   const queries: Array<{ sql: string; values: unknown[] }> = [];
   const attachment = options.attachment ?? row;
   const objectBytes = options.objectBytes;
@@ -15,7 +15,10 @@ function env(options: { owned?: boolean; attachment?: typeof row; objectBytes?: 
       PLATFORM_SECRET: secret,
       SPACES_WORKER: { fetch: async () => Response.json({
         instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active" },
-        manifest: { channels: [{ kind: "channel", provider: "whatsapp", attachmentAccess: { mode: "read_text" } }] },
+        manifest: { channels: [{ kind: "channel", provider: "whatsapp", attachmentAccess: {
+          mode: options.attachmentMode ?? "read_text", ...(options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles }),
+          ...(options.maxTotalBytes === undefined ? {} : { maxTotalBytes: options.maxTotalBytes }),
+        } }] },
       }) },
       PLATFORM_DB: {
         prepare(sql: string) {
@@ -31,7 +34,8 @@ function env(options: { owned?: boolean; attachment?: typeof row; objectBytes?: 
           } };
         },
       },
-      ...(objectBytes ? { SCRIPTS_R2: { get: async () => ({ size: objectBytes.byteLength, httpMetadata: { contentType: "text/plain" }, arrayBuffer: async () => objectBytes.buffer }) } } : {}),
+      ...(objectBytes ? { SCRIPTS_R2: { get: async () => ({ size: objectBytes.byteLength,
+        httpMetadata: { contentType: options.attachment?.mime_type ?? "text/plain" }, arrayBuffer: async () => objectBytes.buffer }) } } : {}),
     } as never,
   };
 }
@@ -92,6 +96,12 @@ describe("scoped attachment metadata routes", () => {
     });
     expect(staleInstall.status).toBe(403);
     expect(await staleInstall.json()).toMatchObject({ error_code: "channel_attachment_access_not_granted" });
+
+    const exceedsDeclaration = await post("/internal/attachments/channel-list", env({ maxFiles: 2, maxTotalBytes: 3_000 }), {
+      channel: "whatsapp", projectId: "project-a", installationId: "install-a", providerConnectionId: "connection-a", maxFiles: 3,
+    });
+    expect(exceedsDeclaration.status).toBe(403);
+    expect(await exceedsDeclaration.json()).toMatchObject({ error_code: "channel_attachment_declared_limit_exceeded" });
   });
 
   it("reads text only after the exact binding, installation, message and expiry all match", async () => {
@@ -112,5 +122,27 @@ describe("scoped attachment metadata routes", () => {
       id: row.id, extensionScope: { channel: "whatsapp", projectId: "project-a", installationId: "install-b", providerConnectionId: "connection-a" },
     });
     expect(staleInstall.status).toBe(403);
+  });
+
+  it("reads one declared image only for its exact live message and verifies MIME, bytes, and package caps", async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const imageRow = { ...row, mime_type: "image/png", size_bytes: png.byteLength };
+    const scope = { channel: "whatsapp", projectId: "project-a", installationId: "install-a", providerConnectionId: "connection-a" };
+    const context = env({ attachment: imageRow, attachmentMode: "read_image", objectBytes: png });
+    const response = await post("/internal/attachments/read-image", context, { id: row.id, extensionScope: scope });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ attachment_id: row.id, mime_type: "image/png", size_bytes: png.byteLength, image_base64: "iVBORw0KGgo=" });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(context.queries.some(query => query.sql.includes("channel=? AND project_id IS ?") && query.sql.includes("installation_id=? AND provider_connection_id IS ?") && query.sql.includes("expires_at>?"))).toBe(true);
+
+    const undeclared = await post("/internal/attachments/read-image", env({ attachment: imageRow, objectBytes: png }), { id: row.id, extensionScope: scope });
+    expect(undeclared.status).toBe(403);
+    const wrongSignature = await post("/internal/attachments/read-image", env({ attachment: imageRow, attachmentMode: "read_image", objectBytes: new TextEncoder().encode("notimage") }), { id: row.id, extensionScope: scope });
+    expect(wrongSignature.status).toBe(415);
+    expect(await wrongSignature.json()).toMatchObject({ error_code: "channel_attachment_image_signature_mismatch" });
+    const tooLargeForPackage = await post("/internal/attachments/read-image", env({ attachment: imageRow, attachmentMode: "read_image", maxTotalBytes: png.byteLength - 1, objectBytes: png }), { id: row.id, extensionScope: scope });
+    expect(tooLargeForPackage.status).toBe(413);
+    const staleBinding = await post("/internal/attachments/read-image", env({ owned: false, attachment: imageRow, attachmentMode: "read_image", objectBytes: png }), { id: row.id, extensionScope: scope });
+    expect(staleBinding.status).toBe(403);
   });
 });

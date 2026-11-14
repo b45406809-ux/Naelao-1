@@ -10091,7 +10091,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -10135,9 +10135,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       || (session.maxBytes !== undefined && (!Number.isInteger(session.maxBytes) || session.maxBytes < 1 || session.maxBytes > 4_096))
       || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
     const attachmentAccess = declaration.attachmentAccess;
-    if (attachmentAccess && (attachmentAccess.mode !== "read_text"
-      || (attachmentAccess.maxFiles !== undefined && (!Number.isInteger(attachmentAccess.maxFiles) || attachmentAccess.maxFiles < 1 || attachmentAccess.maxFiles > 3))
+    if (attachmentAccess && (attachmentAccess.mode !== "read_text" && attachmentAccess.mode !== "read_image")) return null;
+    if (attachmentAccess?.mode === "read_text" && ((attachmentAccess.maxFiles !== undefined && (!Number.isInteger(attachmentAccess.maxFiles) || attachmentAccess.maxFiles < 1 || attachmentAccess.maxFiles > 3))
       || (attachmentAccess.maxTotalBytes !== undefined && (!Number.isInteger(attachmentAccess.maxTotalBytes) || attachmentAccess.maxTotalBytes < 1 || attachmentAccess.maxTotalBytes > 2 * 1024 * 1024)))) return null;
+    if (attachmentAccess?.mode === "read_image" && ((attachmentAccess.maxFiles !== undefined && attachmentAccess.maxFiles !== 1)
+      || (attachmentAccess.maxTotalBytes !== undefined && (!Number.isInteger(attachmentAccess.maxTotalBytes) || attachmentAccess.maxTotalBytes < 1 || attachmentAccess.maxTotalBytes > 480 * 1024)))) return null;
     let settings: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> } | undefined;
     const settingsCapability = installation.manifest.capabilityRequirements?.includes("extension.settings.read") ?? false;
     const settingsPermission = installation.manifest.declaredPermissions?.includes("extension.settings.read") ?? false;
@@ -10175,10 +10177,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (actual !== input.scriptSha256) return null;
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
-      ...(attachmentAccess ? { attachmentAccess: { maxFiles: attachmentAccess.maxFiles ?? 3, maxTotalBytes: attachmentAccess.maxTotalBytes ?? 2 * 1024 * 1024 } } : {}),
+      ...(attachmentAccess ? { attachmentAccess: { mode: attachmentAccess.mode as "read_text" | "read_image",
+        maxFiles: attachmentAccess.maxFiles ?? (attachmentAccess.mode === "read_image" ? 1 : 3),
+        maxTotalBytes: attachmentAccess.maxTotalBytes ?? (attachmentAccess.mode === "read_image" ? 480 * 1024 : 2 * 1024 * 1024) } } : {}),
       ...(settings ? { settings } : {}),
       ...(session?.enabled ? { session: { maxBytes: session.maxBytes ?? 1_024, ttlDays: session.ttlDays ?? 30 } } : {}),
-      limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
+      limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000),
+        inputBytes: attachmentAccess?.mode === "read_image" ? 1_048_576 : 16_384, outputBytes: 8_192 } };
   }
 
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
@@ -10523,14 +10528,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             escalated++; continue;
           }
         }
-        let channelAttachments: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number; expiresAt: string }> = [];
+        let channelAttachments: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number; expiresAt: string; image_base64?: string }> = [];
         if (handler.attachmentAccess && msg.task_id && msg.channel_extension_instance_id && this.env.AGENTS_WORKER) {
           try {
             const listing = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/channel-list", {
               method: "POST", headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
               body: JSON.stringify({ tenantId, spaceId, taskId: msg.task_id, channel: msg.channel,
                 projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
-                providerConnectionId: msg.provider_connection_id, maxFiles: handler.attachmentAccess.maxFiles,
+                providerConnectionId: msg.provider_connection_id, mode: handler.attachmentAccess.mode, maxFiles: handler.attachmentAccess.maxFiles,
                 maxTotalBytes: handler.attachmentAccess.maxTotalBytes }),
             }));
             if (listing.ok) {
@@ -10546,6 +10551,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               }
             }
           } catch { /* Attachment access remains unavailable; the handler receives no handles. */ }
+        }
+        if (handler.attachmentAccess?.mode === "read_image" && channelAttachments.length > 0) {
+          let attachmentReadFailed = false;
+          for (let index = 0; index < channelAttachments.length; index++) {
+            const metadata = channelAttachments[index]!;
+            try {
+              const response = await this.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/attachments/read-image", {
+                method: "POST", headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
+                body: JSON.stringify({ tenantId, spaceId, taskId: msg.task_id, id: metadata.id,
+                  extensionScope: { channel: msg.channel, projectId: msg.project_id,
+                    installationId: msg.channel_extension_instance_id, providerConnectionId: msg.provider_connection_id } }),
+              }));
+              if (!response.ok) { attachmentReadFailed = true; break; }
+              const image = await readBoundedResponseJson<{ attachment_id?: string; mime_type?: string; size_bytes?: number; image_base64?: string }>(response, 768 * 1024);
+              if (image.attachment_id !== metadata.id || image.mime_type !== metadata.mimeType || image.size_bytes !== metadata.sizeBytes
+                || typeof image.image_base64 !== "string" || image.image_base64.length > 640 * 1024) { attachmentReadFailed = true; break; }
+              channelAttachments[index] = { ...metadata, image_base64: image.image_base64 };
+            } catch { attachmentReadFailed = true; break; }
+          }
+          if (attachmentReadFailed) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='attachment_image_read_failed' WHERE message_id=?", msg.id);
+            takeover("The approved image attachment could not be read within its declared scope and size limit. Review the conversation manually."); escalated++; continue;
+          }
         }
         let channelSessionState: unknown = null;
         let channelNamedSessionStates: Record<string, unknown> = {};

@@ -208,6 +208,17 @@ describe("project channel-only extension install route", () => {
     expect(accepted.status).toBe(201);
     const install = h.forwarded.find(request => new URL(request.url).pathname === "/extensions");
     expect(await install?.json()).toMatchObject({ manifest: { bundle: { primitives: [{ attachmentAccess: { mode: "read_text", maxFiles: 2 } }] } } });
+
+    const imageManifest = packageManifest();
+    Object.assign(imageManifest.bundle.primitives[0]!, { attachmentAccess: { mode: "read_image", maxFiles: 1, maxTotalBytes: 480 * 1024 } });
+    const imageDenied = await post(setup("owner").env, "owner", imageManifest);
+    expect(imageDenied.status).toBe(409);
+    expect(await imageDenied.json()).toMatchObject({ error_code: "channel_attachment_access_approval_required" });
+    const imageSetup = setup("owner");
+    const imageAccepted = await post(imageSetup.env, "owner", imageManifest, { attachmentAccessApproved: true });
+    expect(imageAccepted.status).toBe(201);
+    const imageInstall = imageSetup.forwarded.find(request => new URL(request.url).pathname === "/extensions");
+    expect(await imageInstall?.json()).toMatchObject({ manifest: { bundle: { primitives: [{ attachmentAccess: { mode: "read_image", maxFiles: 1, maxTotalBytes: 480 * 1024 } }] } } });
   });
 
   it("rejects packages that mix in unsupported UI or member-level primitives", async () => {

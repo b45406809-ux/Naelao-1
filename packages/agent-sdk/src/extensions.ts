@@ -423,8 +423,8 @@ export interface ChannelContract extends ExtensionContractBase {
   outboundEvents: readonly string[];
   /** Named owner-published project collections the channel host may retrieve before dispatch. */
   knowledgeCollections?: readonly string[];
-  /** Explicit opt-in to bounded host-mediated text extraction from this exact inbound message. */
-  attachmentAccess?: { mode: "read_text"; maxFiles?: number; maxTotalBytes?: number };
+  /** Explicit opt-in to bounded host-mediated access to files on this exact inbound message. */
+  attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles?: number; maxTotalBytes?: number };
   /** Optional host-managed per-conversation state; disabled unless explicitly enabled. */
   session?: { enabled: true; maxBytes?: number; ttlDays?: number };
 }
@@ -622,9 +622,14 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
       contractAssert(raw.attachmentAccess !== null && typeof raw.attachmentAccess === "object" && !Array.isArray(raw.attachmentAccess), "invalid_channel_attachment_access");
       const access = raw.attachmentAccess as Record<string, unknown>;
       rejectUnknownContractKeys(access, new Set(["mode", "maxFiles", "maxTotalBytes"]));
-      contractAssert(access.mode === "read_text", "invalid_channel_attachment_mode");
-      contractAssert(access.maxFiles === undefined || (Number.isInteger(access.maxFiles) && Number(access.maxFiles) >= 1 && Number(access.maxFiles) <= 3), "invalid_channel_attachment_max_files");
-      contractAssert(access.maxTotalBytes === undefined || (Number.isInteger(access.maxTotalBytes) && Number(access.maxTotalBytes) >= 1 && Number(access.maxTotalBytes) <= 2 * 1024 * 1024), "invalid_channel_attachment_max_bytes");
+      contractAssert(access.mode === "read_text" || access.mode === "read_image", "invalid_channel_attachment_mode");
+      if (access.mode === "read_text") {
+        contractAssert(access.maxFiles === undefined || (Number.isInteger(access.maxFiles) && Number(access.maxFiles) >= 1 && Number(access.maxFiles) <= 3), "invalid_channel_attachment_max_files");
+        contractAssert(access.maxTotalBytes === undefined || (Number.isInteger(access.maxTotalBytes) && Number(access.maxTotalBytes) >= 1 && Number(access.maxTotalBytes) <= 2 * 1024 * 1024), "invalid_channel_attachment_max_bytes");
+      } else {
+        contractAssert(access.maxFiles === undefined || access.maxFiles === 1, "invalid_channel_image_max_files");
+        contractAssert(access.maxTotalBytes === undefined || (Number.isInteger(access.maxTotalBytes) && Number(access.maxTotalBytes) >= 1 && Number(access.maxTotalBytes) <= 480 * 1024), "invalid_channel_image_max_bytes");
+      }
     }
     if (raw.session !== undefined) {
       contractAssert(raw.session !== null && typeof raw.session === "object" && !Array.isArray(raw.session), "invalid_channel_session");

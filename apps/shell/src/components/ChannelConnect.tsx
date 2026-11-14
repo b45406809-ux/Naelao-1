@@ -23,15 +23,15 @@ import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
 
-function declaresChannelTextAttachmentAccess(manifestText: string): boolean {
+function declaredChannelAttachmentModes(manifestText: string): Set<"read_text" | "read_image"> {
   try {
     const value = JSON.parse(manifestText) as {
       channels?: Array<{ attachmentAccess?: { mode?: unknown } }>;
       bundle?: { primitives?: Array<{ kind?: string; attachmentAccess?: { mode?: unknown } }> };
     };
-    return [...(Array.isArray(value.channels) ? value.channels : []), ...(Array.isArray(value.bundle?.primitives) ? value.bundle.primitives.filter(item => item.kind === "channel") : [])]
-      .some(channel => channel?.attachmentAccess?.mode === "read_text");
-  } catch { return false; }
+    return new Set([...((Array.isArray(value.channels) ? value.channels : [])), ...(Array.isArray(value.bundle?.primitives) ? value.bundle.primitives.filter(item => item.kind === "channel") : [])]
+      .flatMap(channel => channel?.attachmentAccess?.mode === "read_text" || channel?.attachmentAccess?.mode === "read_image" ? [channel.attachmentAccess.mode] : []));
+  } catch { return new Set(); }
 }
 
 export const CHANNELS: Array<{
@@ -711,7 +711,7 @@ export function ChannelConnect({
 
   async function installChannelExtension(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const requestsAttachmentRead = declaresChannelTextAttachmentAccess(installManifestDraft);
+    const requestsAttachmentRead = declaredChannelAttachmentModes(installManifestDraft).size > 0;
     if (!projectId || installingExtension || !installManifestDraft.trim() || (requestsAttachmentRead && !attachmentAccessApproved)) return;
     setInstallingExtension(true); setError(null); setExtensionNotice(null);
     try {
@@ -933,9 +933,14 @@ export function ChannelConnect({
           <textarea id="channel-extension-sources" value={installSourcesDraft} onChange={event => setInstallSourcesDraft(event.target.value)} rows={8} spellCheck={false}
             placeholder={'{\n  "./student-answer.ts": "export async function run(args, ctx) { ... }"\n}'}
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
-          {declaresChannelTextAttachmentAccess(installManifestDraft) && <label style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11.5 }}><input type="checkbox" checked={attachmentAccessApproved} onChange={event => setAttachmentAccessApproved(event.target.checked)} />Allow this signed handler to request bounded text extraction from supported files attached to its exact inbound message. The host returns untrusted extracted text only; it does not expose provider URLs or storage keys. Limits are at most 3 files and 2 MiB total.</label>}
+          {declaredChannelAttachmentModes(installManifestDraft).size > 0 && <div style={{ border: "1px solid var(--border)", borderRadius: 7, padding: 8, fontSize: 11.5 }}>
+            <strong>Attachment access requested by this package</strong>
+            {declaredChannelAttachmentModes(installManifestDraft).has("read_text") && <p style={{ margin: "5px 0" }}>Text access can return untrusted text extracted from supported files attached to the exact inbound message, up to 3 files and 2 MiB total. Provider URLs and storage keys are never exposed.</p>}
+            {declaredChannelAttachmentModes(installManifestDraft).has("read_image") && <p style={{ margin: "5px 0" }}>Image access sends untrusted PNG, JPEG or WebP bytes from the exact inbound message to this installed handler, up to 1 image and 480 KiB. The handler can read the image content. Provider URLs and storage keys are never exposed.</p>}
+            <label style={{ display: "flex", gap: 7, alignItems: "flex-start" }}><input type="checkbox" checked={attachmentAccessApproved} onChange={event => setAttachmentAccessApproved(event.target.checked)} />I approve the attachment access described above for this package.</label>
+          </div>}
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
-          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim() || (declaresChannelTextAttachmentAccess(installManifestDraft) && !attachmentAccessApproved)}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
+          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim() || (declaredChannelAttachmentModes(installManifestDraft).size > 0 && !attachmentAccessApproved)}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
         </form>
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
           <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>Installed project handlers</div>
@@ -954,7 +959,8 @@ export function ChannelConnect({
               </div>
             </div>
             {installation.status === "disabled" && <div style={{ color: "var(--text3)", fontSize: 11 }}>New handler invocations are paused. Existing work may finish; data and grants are retained.</div>}
-            {installation.channels.some(channel => channel.attachment_access) && <div style={{ color: "var(--text3)", fontSize: 11 }}>This package may request host-extracted text from supported attachments on its exact inbound message. Extracted content is untrusted and limited to the declared file and byte caps.</div>}
+            {installation.channels.some(channel => channel.attachment_access?.mode === "read_text") && <div style={{ color: "var(--text3)", fontSize: 11 }}>This package may request untrusted host-extracted text from supported files on its exact inbound message, within the declared file and byte caps.</div>}
+            {installation.channels.some(channel => channel.attachment_access?.mode === "read_image") && <div style={{ color: "var(--warning, #b54708)", fontSize: 11 }}>This package can read untrusted PNG, JPEG or WebP bytes from its exact inbound message, within the declared file and byte caps.</div>}
             {installation.status === "active" && <>{installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} onProviderRevocationsChanged={refreshProviderRevocations} />)}
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
@@ -1027,7 +1033,7 @@ export function ChannelConnect({
             <input id="canvas-publisher-signature" value={canvasPublisherSignature} onChange={event => setCanvasPublisherSignature(event.target.value)} required placeholder="Sign the canonical manifest and original artifact map with @naelao/agent-sdk" />
           </label>
           <div style={{ fontSize: 10.5, color: "var(--text3)" }}>Create and retain your P-256 private key outside Naelao. Sign the host-canonical manifest and exact original path-to-source map, then paste the returned signature. Example: <code>const manifestJson = canonicalExtensionManifestForPublisher(manifest); const signed = await signExtensionPublisherRelease(signingInput); signed.signature</code>. These helpers are exported by <code>@naelao/agent-sdk</code>. Only the signature is sent to Naelao.</div>
-          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, each workflow toolNames grant, and any channel attachment text access. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, each workflow toolNames grant, and any channel attachment access, including image bytes sent to the channel handler. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
           <div><button type="submit" className="btn-ghost" disabled={installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed || !canvasPublisherKeyId || !canvasPublisherSignature.trim()}>{installingExtension ? "Installing…" : "Review and install Canvas bundle"}</button></div>
         </form>
@@ -1139,7 +1145,7 @@ export function ChannelConnect({
                   ? `Attachments: ephemeral uploads only · Naelao limit ${attachments.max_files} files, ${mib(attachments.max_file_bytes)} each and ${mib(attachments.max_total_bytes)} total · private storage for up to ${attachments.retained_up_to_days} days.`
                   : "Inbound attachments are not supported."}
                 {!attachments.ordinary_server_attachments_supported && " Ordinary server attachments are unavailable."}
-                {!attachments.extension_file_handles && " Channel extensions do not receive file handles."}
+                {attachments.extension_file_handles && " An installed channel handler can receive exact-message attachment access only after an owner approves its declared text or image mode; image access is limited to one PNG, JPEG or WebP up to 480 KiB."}
                 {` ${attachments.content_type_behavior}`}
               </p>;
             })()}

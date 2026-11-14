@@ -5,6 +5,28 @@ import type { CodeRpcBinding } from "./code-rpc-broker.js";
 import type { ExecutionTier, ScriptRunResult, TieredCodeRunner } from "./types.js";
 
 export type CodeRunParams = Parameters<TieredCodeRunner["run"]>[0];
+
+/** Channel events stay text-sized unless they contain exactly one host-verified, bounded image. */
+export function channelSerializedEventLimit(channel: unknown): number {
+  if (!channel || typeof channel !== "object" || Array.isArray(channel)) return 32_768;
+  const event = (channel as Record<string, unknown>).event;
+  if (!event || typeof event !== "object" || Array.isArray(event)) return 32_768;
+  const payload = (event as Record<string, unknown>).payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 32_768;
+  const attachments = (payload as Record<string, unknown>).attachments;
+  if (!Array.isArray(attachments) || attachments.length !== 1) return 32_768;
+  const attachment = attachments[0];
+  if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return 32_768;
+  const image = attachment as Record<string, unknown>;
+  const base64 = image.image_base64;
+  const sizeBytes = image.sizeBytes;
+  if (!(["image/png", "image/jpeg", "image/webp"].includes(String(image.mimeType))
+    && typeof sizeBytes === "number" && Number.isSafeInteger(sizeBytes) && sizeBytes > 0 && sizeBytes <= 480 * 1024
+    && typeof base64 === "string" && base64.length <= 640 * 1024 && base64.length % 4 === 0
+    && base64.length === Math.ceil(sizeBytes / 3) * 4 && /^[A-Za-z0-9+/]*={0,2}$/.test(base64))) return 32_768;
+  return 768 * 1024;
+}
+
 const activeByTenant = new Map<string, number>();
 const activeByChannelInstallation = new Map<string, number>();
 let activeIsolates = 0;
@@ -93,7 +115,8 @@ async function runIsolateInternal(opts: CodeRunnerOptions, params: CodeRunParams
     const deadline = Date.now() + limits.wallMs;
     timer = setTimeout(cancel, limits.wallMs);
     if (channel && (python || (params.capabilities?.length ?? 0) > 0)) return codeFailure(params, started, "channel_handler_capability_forbidden");
-    if (channel && new TextEncoder().encode(JSON.stringify(channel)).byteLength > 32_768) return codeFailure(params, started, "channel_event_limit");
+    if (channel && new TextEncoder().encode(JSON.stringify(channel)).byteLength > channelSerializedEventLimit(channel))
+      return codeFailure(params, started, "channel_event_limit");
     const requestBody = JSON.stringify({ args: python ? { ...params.args, code: String(params.args["code"] ?? params.code) } : params.args,
       ...(channel ? { channel } : {}) });
     if (new TextEncoder().encode(requestBody).byteLength > limits.inputBytes) return codeFailure(params, started, "code_input_limit");

@@ -7487,6 +7487,16 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(output);
 }
 
+function imageBytesMatchMime(mime: string, bytes: Uint8Array): boolean {
+  if (mime === "image/png") return bytes.length >= 8
+    && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value);
+  if (mime === "image/jpeg") return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mime === "image/webp") return bytes.length >= 12
+    && String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF"
+    && String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP";
+  return false;
+}
+
 app.post("/internal/attachments/list", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
@@ -7505,24 +7515,27 @@ app.post("/internal/attachments/list", async (c) => {
   return c.json({ attachments: rows.results ?? [] });
 });
 
-// Channel extensions may opt into text-only media access. This route returns only opaque
+// Channel extensions may opt into bounded, mode-specific attachment access. This route returns only opaque
 // metadata for the exact active installation and exact provider message; it never returns a key.
-async function activeChannelAttachmentGrant(env: { PLATFORM_SECRET: string; SPACES_WORKER?: { fetch(request: Request): Promise<Response> } }, input: { tenantId: string; spaceId: string; projectId: string | null; installationId: string; channel: string }): Promise<boolean> {
-  if (!env.SPACES_WORKER) return false;
+async function activeChannelAttachmentGrant(env: { PLATFORM_SECRET: string; SPACES_WORKER?: { fetch(request: Request): Promise<Response> } }, input: { tenantId: string; spaceId: string; projectId: string | null; installationId: string; channel: string; mode: "read_text" | "read_image" }): Promise<{ maxFiles: number; maxTotalBytes: number } | null> {
+  if (!env.SPACES_WORKER) return null;
   const response = await env.SPACES_WORKER.fetch(new Request(
     `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.installationId)}`,
     { headers: { "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, input.tenantId) } },
   ));
-  if (!response.ok) return false;
+  if (!response.ok) return null;
   const installation = await readBoundedResponseJson<{
     instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string };
-    manifest?: { channels?: Array<{ kind?: string; provider?: string; attachmentAccess?: { mode?: string } }> };
+    manifest?: { channels?: Array<{ kind?: string; provider?: string; attachmentAccess?: { mode?: string; maxFiles?: number; maxTotalBytes?: number } }> };
   }>(response, 2 * 1024 * 1024).catch(() => null);
   const instance = installation?.instance;
-  return Boolean(instance?.instance_id === input.installationId && instance.tenant_id === input.tenantId
-    && instance.space_id === input.spaceId && (instance.project_id ?? null) === input.projectId && instance.status === "active"
-    && installation?.manifest?.channels?.some(channel => channel.kind === "channel" && channel.provider === input.channel
-      && channel.attachmentAccess?.mode === "read_text"));
+  if (!(instance?.instance_id === input.installationId && instance.tenant_id === input.tenantId
+    && instance.space_id === input.spaceId && (instance.project_id ?? null) === input.projectId && instance.status === "active")) return null;
+  const access = installation?.manifest?.channels?.find(channel => channel.kind === "channel" && channel.provider === input.channel
+    && channel.attachmentAccess?.mode === input.mode)?.attachmentAccess;
+  if (!access) return null;
+  return { maxFiles: access.maxFiles ?? (input.mode === "read_image" ? 1 : 3),
+    maxTotalBytes: access.maxTotalBytes ?? (input.mode === "read_image" ? 480 * 1024 : 2 * 1024 * 1024) };
 }
 
 app.post("/internal/attachments/channel-list", async (c) => {
@@ -7532,20 +7545,23 @@ app.post("/internal/attachments/channel-list", async (c) => {
   }
   const body = await c.req.json<{
     tenantId?: string; spaceId?: string; taskId?: string; channel?: string; projectId?: string | null;
-    installationId?: string; providerConnectionId?: string | null; maxFiles?: number; maxTotalBytes?: number;
+    installationId?: string; providerConnectionId?: string | null; mode?: unknown; maxFiles?: number; maxTotalBytes?: number;
   }>().catch(() => null);
   if (!body?.spaceId || !body.taskId || body.tenantId !== tenantId || !body.channel || !/^[a-z][a-z0-9_-]{1,31}$/.test(body.channel)
     || !body.installationId || !/^[A-Za-z0-9_-]{1,128}$/.test(body.installationId)
     || (body.projectId !== null && body.projectId !== undefined && (typeof body.projectId !== "string" || body.projectId.length > 128))
     || (body.providerConnectionId !== null && body.providerConnectionId !== undefined && (typeof body.providerConnectionId !== "string" || body.providerConnectionId.length > 128))
-    || (body.maxFiles !== undefined && (!Number.isSafeInteger(body.maxFiles) || body.maxFiles < 1 || body.maxFiles > 3))
-    || (body.maxTotalBytes !== undefined && (!Number.isSafeInteger(body.maxTotalBytes) || body.maxTotalBytes < 1 || body.maxTotalBytes > 2 * 1024 * 1024))) {
+    || (body.mode !== undefined && body.mode !== "read_text" && body.mode !== "read_image")
+    || (body.maxFiles !== undefined && (!Number.isSafeInteger(body.maxFiles) || body.maxFiles < 1 || body.maxFiles > (body.mode === "read_image" ? 1 : 3)))
+    || (body.maxTotalBytes !== undefined && (!Number.isSafeInteger(body.maxTotalBytes) || body.maxTotalBytes < 1 || body.maxTotalBytes > (body.mode === "read_image" ? 480 * 1024 : 2 * 1024 * 1024)))) {
     return c.json({ error_code: "bad_request" }, 400);
   }
   if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const projectId = body.projectId ?? null;
   const connectionId = body.providerConnectionId ?? null;
-  if (!await activeChannelAttachmentGrant(c.env, { tenantId, spaceId: body.spaceId, projectId, installationId: body.installationId, channel: body.channel })) {
+  const mode = body.mode === "read_image" ? "read_image" : "read_text";
+  const attachmentGrant = await activeChannelAttachmentGrant(c.env, { tenantId, spaceId: body.spaceId, projectId, installationId: body.installationId, channel: body.channel, mode });
+  if (!attachmentGrant) {
     return c.json({ error_code: "channel_attachment_access_not_granted" }, 403);
   }
   const activeBinding = connectionId
@@ -7564,10 +7580,13 @@ app.post("/internal/attachments/channel-list", async (c) => {
   ).bind(tenantId, body.spaceId, body.taskId, body.channel, projectId, body.installationId, connectionId, new Date().toISOString()).all<{
     id: string; filename: string; mime_type: string; size_bytes: number; created_at: string; expires_at: string;
   }>();
-  const supported = new Set(["text/plain", "text/csv", "text/markdown", "application/json", "application/xml", "text/xml",
-    "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]);
-  const maxFiles = body.maxFiles ?? 3;
-  const maxTotalBytes = body.maxTotalBytes ?? 2 * 1024 * 1024;
+  const supported = mode === "read_image" ? new Set(["image/png", "image/jpeg", "image/webp"])
+    : new Set(["text/plain", "text/csv", "text/markdown", "application/json", "application/xml", "text/xml",
+      "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]);
+  const maxFiles = body.maxFiles ?? attachmentGrant.maxFiles;
+  const maxTotalBytes = body.maxTotalBytes ?? attachmentGrant.maxTotalBytes;
+  if (maxFiles > attachmentGrant.maxFiles || maxTotalBytes > attachmentGrant.maxTotalBytes)
+    return c.json({ error_code: "channel_attachment_declared_limit_exceeded" }, 403);
   let total = 0;
   const attachments = [];
   for (const row of rows.results ?? []) {
@@ -7949,7 +7968,7 @@ app.post("/internal/attachments/read-text", async (c) => {
     const projectId = extensionScope.projectId ?? null;
     const connectionId = extensionScope.providerConnectionId ?? null;
     if (!await activeChannelAttachmentGrant(c.env, { tenantId, spaceId: body.spaceId, projectId,
-      installationId: extensionScope.installationId!, channel: extensionScope.channel! })) {
+      installationId: extensionScope.installationId!, channel: extensionScope.channel!, mode: "read_text" })) {
       return c.json({ error_code: "channel_attachment_access_not_granted" }, 403);
     }
     const activeBinding = connectionId
@@ -10775,3 +10794,55 @@ async function expireEmailIngressData(env: AgentsEnv): Promise<void> {
     console.error("email ingress retention sweep failed", error instanceof Error ? error.message : String(error));
   }
 }
+
+// An installed channel handler may receive raw image bytes only after owner approval and only for the
+// exact active installation, provider binding, inbound message, and declared read_image grant.
+app.post("/internal/attachments/read-image", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; id?: string;
+    extensionScope?: { channel?: string; projectId?: string | null; installationId?: string; providerConnectionId?: string | null } }>().catch(() => null);
+  if (!body?.spaceId || !body.taskId || !body.id || body.tenantId !== tenantId || !body.extensionScope) return c.json({ error_code: "bad_request" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
+  const extensionScope = body.extensionScope;
+  if (!extensionScope.channel || !/^[a-z][a-z0-9_-]{1,31}$/.test(extensionScope.channel)
+    || !extensionScope.installationId || !/^[A-Za-z0-9_-]{1,128}$/.test(extensionScope.installationId)
+    || (extensionScope.projectId !== null && extensionScope.projectId !== undefined && (typeof extensionScope.projectId !== "string" || extensionScope.projectId.length > 128))
+    || (extensionScope.providerConnectionId !== null && extensionScope.providerConnectionId !== undefined && (typeof extensionScope.providerConnectionId !== "string" || extensionScope.providerConnectionId.length > 128))) {
+    return c.json({ error_code: "bad_request" }, 400);
+  }
+  const projectId = extensionScope.projectId ?? null;
+  const connectionId = extensionScope.providerConnectionId ?? null;
+  const grant = await activeChannelAttachmentGrant(c.env, { tenantId, spaceId: body.spaceId, projectId,
+    installationId: extensionScope.installationId, channel: extensionScope.channel, mode: "read_image" });
+  if (!grant) return c.json({ error_code: "channel_attachment_access_not_granted" }, 403);
+  const activeBinding = connectionId
+    ? await c.env.PLATFORM_DB.prepare(`SELECT connection_id FROM extension_provider_connections
+        WHERE tenant_id=? AND space_id=? AND project_id IS ? AND installation_id=? AND connection_id=? AND provider=? AND status='active' LIMIT 1`)
+      .bind(tenantId, body.spaceId, projectId, extensionScope.installationId, connectionId, extensionScope.channel).first()
+    : await c.env.PLATFORM_DB.prepare(`SELECT extension_instance_id FROM channel_links
+        WHERE tenant_id=? AND space_id=? AND project_id IS ? AND channel=? AND enabled=1 AND extension_instance_id=? LIMIT 1`)
+      .bind(tenantId, body.spaceId, projectId, extensionScope.channel, extensionScope.installationId).first();
+  if (!activeBinding) return c.json({ error_code: "channel_extension_binding_inactive" }, 403);
+  const attachment = await c.env.PLATFORM_DB.prepare(`SELECT object_key,id,mime_type,size_bytes FROM channel_attachments
+    WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? AND channel=? AND project_id IS ?
+      AND installation_id=? AND provider_connection_id IS ? LIMIT 1`)
+    .bind(body.id, tenantId, body.spaceId, body.taskId, new Date().toISOString(), extensionScope.channel, projectId,
+      extensionScope.installationId, connectionId).first<{ object_key: string; id: string; mime_type: string; size_bytes: number }>();
+  if (!attachment) return c.json({ error_code: "attachment_not_found" }, 404);
+  const mime = attachment.mime_type.toLowerCase().split(";")[0]!.trim();
+  if (!["image/png", "image/jpeg", "image/webp"].includes(mime)) return c.json({ error_code: "channel_attachment_image_unsupported" }, 415);
+  if (!Number.isSafeInteger(attachment.size_bytes) || attachment.size_bytes < 1 || attachment.size_bytes > Math.min(480 * 1024, grant.maxTotalBytes))
+    return c.json({ error_code: "channel_attachment_image_too_large", max_bytes: Math.min(480 * 1024, grant.maxTotalBytes) }, 413);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "attachment_storage_unavailable" }, 503);
+  const object = await c.env.SCRIPTS_R2.get(attachment.object_key);
+  if (!object) return c.json({ error_code: "attachment_not_found" }, 404);
+  if (object.size !== attachment.size_bytes || object.size > Math.min(480 * 1024, grant.maxTotalBytes)) return c.json({ error_code: "attachment_size_mismatch" }, 409);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  if (bytes.byteLength !== attachment.size_bytes) return c.json({ error_code: "attachment_size_mismatch" }, 409);
+  if (!imageBytesMatchMime(mime, bytes)) return c.json({ error_code: "channel_attachment_image_signature_mismatch" }, 415);
+  return new Response(JSON.stringify({ attachment_id: attachment.id, mime_type: mime, size_bytes: bytes.byteLength,
+    image_base64: bytesToBase64(bytes) }), { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
+});
