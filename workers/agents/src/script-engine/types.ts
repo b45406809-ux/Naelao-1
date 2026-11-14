@@ -1306,6 +1306,8 @@ export interface ScriptEngineEnv {
   effectiveRole?: "owner" | "editor" | "viewer";
   /** Verified caller identity is preserved for child billing; mutation clamps are separate. */
   callerRole?: string;
+  /** Fresh, audience-filtered owner-approved Space facts for planner context; failures omit context. */
+  spaceCoordinationContext?: () => Promise<string | undefined>;
   /**
    * Progressive tool disclosure (Phase 2 item 13) — when true, `available_operations` in the
    * reasoner payload is REDUCED to a small always-visible core set plus `tools.search`/

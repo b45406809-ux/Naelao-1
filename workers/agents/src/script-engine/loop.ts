@@ -334,6 +334,8 @@ export interface Reasoner {
     conversation?: ConversationContext;
     /** Bounded, thresholded memory recalled once at run ingress. Treated as untrusted reference data. */
     memoryContext?: string;
+    /** Fresh, audience-filtered approved Space facts; data only, never an instruction or grant. */
+    spaceCoordinationContext?: string;
     /**
      * This is the last step available — there is no next turn to answer in, so the model must
      * finish now (`answer`, or `give_up` if it genuinely cannot). Set only on the final iteration.
@@ -419,6 +421,14 @@ export interface Reasoner {
    *  permanently rather than replaced. See GatewayReasoner.lastMessage for why this is captured
    *  separately from lastNarration. Optional — set only on the turns that warrant one. */
   lastMessage?: string | undefined;
+}
+
+async function freshSpaceCoordinationContext(env: ScriptEngineEnv): Promise<string | undefined> {
+  if (!env.spaceCoordinationContext) return undefined;
+  try {
+    const context = await env.spaceCoordinationContext();
+    return typeof context === "string" && context.length <= 16_000 ? context : undefined;
+  } catch { return undefined; }
 }
 
 /** Escalation thresholds (spec §11.1 agents.md "Escalation Rules"). Overridable per agent. */
@@ -917,6 +927,7 @@ export async function runScriptLoop(
       // Cheap patch of a drifted script, then run the patched version.
       await reportProgress(opts, { phase: "reason", detail: "Thinking…" });
       const reasonStart = Date.now();
+      const spaceCoordinationContext = await freshSpaceCoordinationContext(env);
       const decision = await reasoner.decide({
         goal: opts.goal,
         level,
@@ -927,6 +938,7 @@ export async function runScriptLoop(
         activeCatalog: await tools.activeCatalog(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
         ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
+        ...(spaceCoordinationContext ? { spaceCoordinationContext } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
       });
@@ -1121,6 +1133,7 @@ export async function runScriptLoop(
         // see the field's own doc on Reasoner.decide for why this is passed on every step rather
         // than only the final one.
         const successfulActions = priorSteps.filter((p) => p.ok).length;
+        const spaceCoordinationContext = await freshSpaceCoordinationContext(env);
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -1131,6 +1144,7 @@ export async function runScriptLoop(
           activeCatalog: await tools.activeCatalog(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
+          ...(spaceCoordinationContext ? { spaceCoordinationContext } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
             : {}),
@@ -1578,6 +1592,7 @@ export async function runScriptLoop(
         notes.push(`${level} ran ${priorSteps.length} step(s) but never composed an answer`);
         try {
           const closing = compactSteps(priorSteps, stepLimits);
+          const spaceCoordinationContext = await freshSpaceCoordinationContext(env);
           const summary = await reasoner.decide({
             goal: opts.goal,
             level,
@@ -1588,6 +1603,7 @@ export async function runScriptLoop(
         activeCatalog: await tools.activeCatalog(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
             ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
+            ...(spaceCoordinationContext ? { spaceCoordinationContext } : {}),
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),
             finalStep: true,

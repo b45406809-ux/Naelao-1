@@ -91,6 +91,7 @@ import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient,
 import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
+import { readVisibleSpaceCoordinationFacts, renderSpaceCoordinationContext } from "../script-engine/prebuilt/space-coordination.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
@@ -2300,6 +2301,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(projectId ? { projectId } : {}),
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    if (userId && callerRole && !airGappedOnly) {
+      env.spaceCoordinationContext = async () => {
+        try {
+          return renderSpaceCoordinationContext(await readVisibleSpaceCoordinationFacts(env));
+        } catch {
+          // Advisory context is best-effort; the explicit read operation and host authorization
+          // remain available, and a failed lookup never blocks the run or broadens access.
+          return undefined;
+        }
+      };
+    }
     const unifiedWorkspaceBindings = this.env as unknown as {
       UNIFIED_WORKSPACE_ENABLED?: string;
       WORKSPACE_DUAL_READ_ENABLED?: string;

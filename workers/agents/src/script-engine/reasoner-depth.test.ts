@@ -58,6 +58,37 @@ describe("tenant suspension in durable agent loops", () => {
   });
 });
 
+describe("fresh Space coordination context", () => {
+  it("refreshes member-filtered facts before each reasoner decision", async () => {
+    let revision = 0;
+    const readFacts = vi.fn(async () => JSON.stringify({ revision: ++revision, advisory_only: true, untrusted: true }));
+    const tools = {
+      find: vi.fn(async () => []),
+      availableOperations: () => [],
+      disclosureGroups: () => [],
+      activeCatalog: async () => [],
+      resolveOperationAlias: (name: string, params: Record<string, unknown>) => ({ name, params }),
+      run: vi.fn(async () => ({ ok: true, output: "found one approved service", tier: 1, duration_ms: 1, tokens_used: 0 })),
+    };
+    const decisions = [
+      { action: "run", name: "coordination.search", params: { capability_key: "official.website" } },
+      { action: "answer", text: "The Space has an approved official website." },
+    ];
+    const reasoner = { decide: vi.fn(async (input: { spaceCoordinationContext?: string }) => {
+      expect(input.spaceCoordinationContext).toContain(`"revision":${reasoner.decide.mock.calls.length}`);
+      return decisions[reasoner.decide.mock.calls.length - 1]!;
+    }) };
+    const result = await runScriptLoop({ spaceCoordinationContext: readFacts } as never, tools as never, reasoner as never, [], {
+      goal: "Check whether an official service already exists",
+      maxSteps: 3,
+    });
+    expect(result.result?.ok).toBe(true);
+    expect(readFacts).toHaveBeenCalledTimes(2);
+    expect(reasoner.decide).toHaveBeenCalledTimes(2);
+    expect(tools.run).toHaveBeenCalledOnce();
+  });
+});
+
 describe("pre-inference spend admission", () => {
   const input = { goal: "answer", level: "L2", snapshot: {}, candidates: [], availableOperations: [] } as never;
   const deps = (reserveInferenceCost: () => Promise<boolean>) => ({
@@ -83,10 +114,14 @@ describe("host-injected model transport", () => {
   it("uses the host-approved deterministic endpoint without touching global network fetch", async () => {
     const globalFetch = vi.fn(async () => { throw new Error("unexpected_global_network_fetch"); });
     vi.stubGlobal("fetch", globalFetch);
-    const fetcher = vi.fn(async () => Response.json({
+    let sentPayload: Record<string, unknown> | undefined;
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sentPayload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
       choices: [{ message: { role: "assistant", content: JSON.stringify({ action: "answer", text: "synthetic accepted" }) }, finish_reason: "stop" }],
       usage: { prompt_tokens: 9, completion_tokens: 4 },
-    }));
+      });
+    });
     try {
       const reasoner = new GatewayReasoner({
         apiKey: "",
@@ -97,9 +132,15 @@ describe("host-injected model transport", () => {
       });
       await expect(reasoner.decide({
         goal: "complete deterministic test task", level: "L2", snapshot: {}, candidates: [], availableOperations: [],
+        spaceCoordinationContext: JSON.stringify({ entries: [{ capability_key: "official.website", label: "Company site" }], advisory_only: true, untrusted: true }),
       } as never)).resolves.toEqual({ action: "answer", text: "synthetic accepted" });
       expect(fetcher).toHaveBeenCalledOnce();
       expect(String(fetcher.mock.calls[0]?.[0])).toContain("/ai/v1/chat/completions");
+      const messages = Array.isArray(sentPayload?.messages) ? sentPayload.messages as Array<Record<string, unknown>> : [];
+      const message = messages.find((candidate) => candidate.role === "user");
+      const decisionPayload = typeof message?.content === "string" ? JSON.parse(message.content) as Record<string, unknown> : {};
+      expect(decisionPayload.space_coordination_context).toContain("official.website");
+      expect(decisionPayload.space_coordination_context_rule).toContain("host must independently authorize");
       expect(globalFetch).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();

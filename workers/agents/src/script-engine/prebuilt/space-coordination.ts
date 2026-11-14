@@ -1,4 +1,5 @@
 import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+import type { ScriptEngineEnv } from "../types.js";
 import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
 
 type CoordinationEntry = {
@@ -13,27 +14,37 @@ type CoordinationEntry = {
   advisory_only: true;
 };
 
+export type SpaceCoordinationFactPage = {
+  entries: CoordinationEntry[];
+  next_after: string | null;
+  advisory_only: true;
+  untrusted: true;
+};
+
 function boundedCursor(value: unknown): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string" || value.length > 256) throw new Error("space_coordination_cursor_invalid");
   return value;
 }
 
-async function listFacts(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
-  if (!ctx.env.spacesWorker || !ctx.env.platformSecret || !ctx.env.userId || !ctx.env.callerRole)
+export async function readVisibleSpaceCoordinationFacts(
+  env: Pick<ScriptEngineEnv, "spacesWorker" | "platformSecret" | "tenantId" | "spaceId" | "userId" | "callerRole">,
+  after?: string,
+): Promise<SpaceCoordinationFactPage> {
+  if (!env.spacesWorker || !env.platformSecret || !env.userId || !env.callerRole)
     throw new Error("space_coordination_member_context_required");
-  const after = boundedCursor(args.after);
+  const cursor = boundedCursor(after);
   const query = new URLSearchParams();
-  if (after) query.set("after", after);
-  const url = `/spaces/${encodeURIComponent(ctx.env.spaceId)}/coordination-registry/v2${after ? `?${query.toString()}` : ""}`;
-  const response = await ctx.env.spacesWorker.fetch(new Request(`http://spaces-worker${url}`, {
+  if (cursor) query.set("after", cursor);
+  const url = `/spaces/${encodeURIComponent(env.spaceId)}/coordination-registry/v2${cursor ? `?${query.toString()}` : ""}`;
+  const response = await env.spacesWorker.fetch(new Request(`http://spaces-worker${url}`, {
     headers: {
-      "x-naelao-tenant-id": ctx.env.tenantId,
-      "x-naelao-user-id": ctx.env.userId,
+      "x-naelao-tenant-id": env.tenantId,
+      "x-naelao-user-id": env.userId,
       // Spaces resolves this identity against its current membership records before returning
       // facts. The host, not the caller/model, chooses which audience is visible.
-      "x-naelao-role": ctx.env.callerRole,
-      "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret, ctx.env.tenantId),
+      "x-naelao-role": env.callerRole,
+      "x-naelao-internal-token": await mintInternalToken(env.platformSecret, env.tenantId),
     },
   }));
   if (!response.ok) {
@@ -60,6 +71,18 @@ async function listFacts(args: Record<string, unknown>, ctx: PrebuiltOpContext) 
   });
   return { entries, next_after: typeof page.next_after === "string" ? page.next_after : null,
     advisory_only: true, untrusted: true };
+}
+
+export function renderSpaceCoordinationContext(page: SpaceCoordinationFactPage): string | undefined {
+  if (!page.entries.length) return undefined;
+  return JSON.stringify({ entries: page.entries.slice(0, 20).map(({ entry_id, capability_key, label, description, audience, status, version, expires_at }) => ({
+    entry_id, capability_key, label, ...(description ? { description: description.slice(0, 400) } : {}),
+    audience, status, version, ...(expires_at ? { expires_at } : {}),
+  })), more_available: page.next_after !== null, advisory_only: true, untrusted: true });
+}
+
+async function listFacts(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
+  return readVisibleSpaceCoordinationFacts(ctx.env, boundedCursor(args.after));
 }
 
 export const spaceCoordination: PrebuiltScript = {
