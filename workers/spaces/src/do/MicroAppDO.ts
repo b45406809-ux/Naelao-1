@@ -16,6 +16,25 @@ interface CanvasReleaseProof {
   bindingSignature: string;
 }
 
+interface ExtensionSchemaUpdateClaims {
+  version: 1;
+  purpose: "space_shared_gadget_schema_update";
+  tenantId: string;
+  spaceId: string;
+  installationId: string;
+  extensionId: string;
+  appId: string;
+  fromVersion: string;
+  toVersion: string;
+  sourceManifestSha256: string;
+  candidateManifestSha256: string;
+  sourceArtifactSha256: string;
+  artifactSha256: string;
+  publisherKeyId: string;
+  migrationsSha256: string;
+  operationKey: string;
+}
+
 export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
 /** Hard logical allocation ceilings for each gadget tier. These are platform safety limits,
  * not provider billing estimates. They bound user-written SQLite pages without promising an
@@ -104,6 +123,18 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_action_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, operation TEXT NOT NULL, table_name TEXT NOT NULL, target_hash TEXT, created_at INTEGER NOT NULL
     );`);
+    const migrationColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(gadget_schema_migrations)").toArray();
+    if (!migrationColumns.some(column => column.name === "migration_sha256"))
+      this.ctx.storage.sql.exec("ALTER TABLE gadget_schema_migrations ADD COLUMN migration_sha256 TEXT NOT NULL DEFAULT ''");
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_extension_schema_update_receipts (
+      operation_key TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+      extension_id TEXT NOT NULL, app_id TEXT NOT NULL, from_version TEXT NOT NULL, to_version TEXT NOT NULL,
+      source_manifest_sha256 TEXT NOT NULL CHECK(length(source_manifest_sha256)=64),
+      candidate_manifest_sha256 TEXT NOT NULL CHECK(length(candidate_manifest_sha256)=64),
+      source_artifact_sha256 TEXT NOT NULL CHECK(length(source_artifact_sha256)=64),
+      artifact_sha256 TEXT NOT NULL CHECK(length(artifact_sha256)=64), publisher_key_id TEXT NOT NULL CHECK(length(publisher_key_id)=64),
+      migrations_sha256 TEXT NOT NULL CHECK(length(migrations_sha256)=64), applied_at TEXT NOT NULL
+    )`);
     this.initialized = true;
   }
 
@@ -119,6 +150,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
+      if (request.method === "POST" && url.pathname === "/extension-schema-update") return await this.applyExtensionSchemaUpdate(request);
       if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
@@ -332,7 +364,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private async initialize(request: Request): Promise<Response> {
-    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof }>();
+    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string;
+      migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof;
+      extensionInstallationId?: string }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -345,6 +379,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (existingTier !== undefined && existingTier !== body.gadgetTier) return Response.json({ error: "gadget_tier_immutable" }, { status: 409 });
     const existingScope = this.metadata("scope");
     if (existingScope !== undefined && existingScope !== body.scope) return Response.json({ error: "gadget_scope_immutable" }, { status: 409 });
+    const existingExtensionInstallationId = this.metadata("extension_installation_id");
+    if (body.extensionInstallationId !== undefined && (!/^[A-Za-z0-9._:-]{1,768}$/.test(body.extensionInstallationId)
+      || !body.releaseProof || existingExtensionInstallationId && existingExtensionInstallationId !== body.extensionInstallationId))
+      return Response.json({ error: "gadget_extension_installation_mismatch" }, { status: 409 });
     const migrations = body.migrations ?? [];
     if (!Array.isArray(migrations) || migrations.length > 128) throw new Error("invalid_gadget_migrations");
     let priorVersion = 0;
@@ -371,12 +409,141 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description) VALUES(?,?)", migration.version, migration.description);
       }
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
+      if (body.extensionInstallationId) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", body.extensionInstallationId);
     };
     if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
     else if (body.defaultSchemaSql || migrations.length) throw new Error("atomic_gadget_migration_unavailable");
     else apply();
     if (body.releaseProof) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('release_proof',?)", JSON.stringify(body.releaseProof));
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
+  }
+
+  private async applyExtensionSchemaUpdate(request: Request): Promise<Response> {
+    const body = await request.json<{ claims?: ExtensionSchemaUpdateClaims; signature?: string;
+      migrations?: Array<{ version: number; description: string; up: string }> }>()
+      .catch((): { claims?: ExtensionSchemaUpdateClaims; signature?: string; migrations?: Array<{ version: number; description: string; up: string }> } => ({}));
+    const claims = body.claims;
+    if (!claims || claims.version !== 1 || claims.purpose !== "space_shared_gadget_schema_update"
+      || typeof claims.tenantId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.tenantId)
+      || typeof claims.spaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(claims.spaceId)
+      || typeof claims.installationId !== "string" || !/^[A-Za-z0-9._:-]{1,768}$/.test(claims.installationId)
+      || typeof claims.extensionId !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(claims.extensionId)
+      || typeof claims.appId !== "string" || !isGadgetId(claims.appId)
+      || typeof claims.fromVersion !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.fromVersion)
+      || typeof claims.toVersion !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.toVersion)
+      || claims.fromVersion === claims.toVersion
+      || !/^[a-f0-9]{64}$/.test(claims.sourceManifestSha256) || !/^[a-f0-9]{64}$/.test(claims.candidateManifestSha256)
+      || !/^[a-f0-9]{64}$/.test(claims.sourceArtifactSha256)
+      || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
+      || !/^[a-f0-9]{64}$/.test(claims.migrationsSha256) || !/^[a-f0-9]{64}$/.test(claims.operationKey)
+      || typeof body.signature !== "string" || !/^[a-f0-9]{64}$/.test(body.signature)
+      || !Array.isArray(body.migrations) || body.migrations.length < 1 || body.migrations.length > 128)
+      return Response.json({ error_code: "gadget_schema_update_request_invalid" }, { status: 400 });
+
+    const migrations = body.migrations!;
+    let priorVersion = 0;
+    try {
+      for (const migration of migrations) {
+        if (!migration || !Number.isSafeInteger(migration.version) || migration.version <= priorVersion
+          || typeof migration.description !== "string" || !migration.description.trim() || migration.description.length > 256
+          || typeof migration.up !== "string") throw new Error("invalid_gadget_migration");
+        validDdl(migration.up, true);
+        priorVersion = migration.version;
+      }
+    } catch { return Response.json({ error_code: "gadget_schema_update_unsafe_migration" }, { status: 400 }); }
+
+    const payload = JSON.stringify(claims);
+    const migrationPayload = JSON.stringify(migrations);
+    const sha256 = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const { operationKey, ...identity } = claims;
+    if (!await verifyHmac(payload, body.signature, this.env.PLATFORM_SECRET)
+      || await sha256(migrationPayload) !== claims.migrationsSha256
+      || await sha256(JSON.stringify(identity)) !== operationKey)
+      return Response.json({ error_code: "gadget_schema_update_authorization_invalid" }, { status: 403 });
+    if (this.metadata("app_id") !== claims.appId || this.metadata("scope") !== "SPACE_SHARED" || this.gadgetTier() !== 3)
+      return Response.json({ error_code: "gadget_schema_update_actor_mismatch" }, { status: 409 });
+
+    const proofJson = this.metadata("release_proof"), html = this.metadata("html");
+    if (!proofJson || !html) return Response.json({ error_code: "gadget_schema_update_signed_source_unavailable" }, { status: 409 });
+    let sourceProof: CanvasReleaseProof;
+    try { sourceProof = JSON.parse(proofJson) as CanvasReleaseProof; }
+    catch { return Response.json({ error_code: "gadget_schema_update_signed_source_invalid" }, { status: 409 }); }
+    if (sourceProof.extensionId !== claims.extensionId || sourceProof.artifactSha256 !== claims.sourceArtifactSha256
+      || !await this.verifyCanvasReleaseProof(sourceProof, html))
+      return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
+    const existingInstallationId = this.metadata("extension_installation_id");
+    if (existingInstallationId && existingInstallationId !== claims.installationId)
+      return Response.json({ error_code: "gadget_schema_update_installation_mismatch" }, { status: 409 });
+
+    const prior = [...this.ctx.storage.sql.exec<{ operationKey: string; tenantId: string; spaceId: string; installationId: string;
+      extensionId: string; appId: string; fromVersion: string; toVersion: string; sourceManifestSha256: string;
+      candidateManifestSha256: string; sourceArtifactSha256: string; artifactSha256: string; publisherKeyId: string; migrationsSha256: string }>(
+      `SELECT operation_key AS operationKey,tenant_id AS tenantId,space_id AS spaceId,installation_id AS installationId,
+       extension_id AS extensionId,app_id AS appId,from_version AS fromVersion,to_version AS toVersion,
+       source_manifest_sha256 AS sourceManifestSha256,candidate_manifest_sha256 AS candidateManifestSha256,
+       source_artifact_sha256 AS sourceArtifactSha256,artifact_sha256 AS artifactSha256,
+       publisher_key_id AS publisherKeyId,migrations_sha256 AS migrationsSha256
+       FROM gadget_extension_schema_update_receipts WHERE operation_key=?`, operationKey)][0];
+    if (prior) {
+      if (prior.tenantId !== claims.tenantId || prior.spaceId !== claims.spaceId || prior.installationId !== claims.installationId
+        || prior.extensionId !== claims.extensionId || prior.appId !== claims.appId || prior.fromVersion !== claims.fromVersion
+        || prior.toVersion !== claims.toVersion || prior.sourceManifestSha256 !== claims.sourceManifestSha256
+        || prior.candidateManifestSha256 !== claims.candidateManifestSha256 || prior.sourceArtifactSha256 !== claims.sourceArtifactSha256
+        || prior.artifactSha256 !== claims.artifactSha256
+        || prior.publisherKeyId !== claims.publisherKeyId || prior.migrationsSha256 !== claims.migrationsSha256)
+        return Response.json({ error_code: "gadget_schema_update_operation_conflict" }, { status: 409 });
+      return Response.json({ applied: true, replayed: true, operation_key: operationKey }, { headers: { "cache-control": "private, no-store" } });
+    }
+
+    const storedSourceVersion = this.metadata("schema_release_version") ?? sourceProof.version;
+    const storedSourceManifest = this.metadata("schema_manifest_sha256")
+      ?? await sha256(sourceProof.manifestJson).catch(() => "");
+    if (storedSourceVersion !== claims.fromVersion || storedSourceManifest !== claims.sourceManifestSha256)
+      return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
+
+    const migrationHashes = new Map(await Promise.all(migrations.map(async (migration: { version: number; description: string; up: string }) => [migration.version,
+      await sha256(JSON.stringify(migration))] as const)));
+
+    let replayed = false;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const raced = [...this.ctx.storage.sql.exec<{ operation_key: string }>(
+          "SELECT operation_key FROM gadget_extension_schema_update_receipts WHERE operation_key=?", operationKey)][0];
+        if (raced) { replayed = true; return; }
+        const installationOwner = this.metadata("extension_installation_id");
+        if (installationOwner && installationOwner !== claims.installationId) throw new Error("gadget_schema_update_installation_mismatch");
+        for (const migration of migrations) {
+          const migrationSha256 = migrationHashes.get(migration.version)!;
+          const existing = [...this.ctx.storage.sql.exec<{ migration_sha256: string }>(
+            "SELECT migration_sha256 FROM gadget_schema_migrations WHERE version=?", migration.version)][0];
+          if (existing) {
+            if (!existing.migration_sha256 || existing.migration_sha256 !== migrationSha256)
+              throw new Error("gadget_schema_migration_version_conflict");
+            continue;
+          }
+          for (const statement of validDdl(migration.up, true)) this.ctx.storage.sql.exec(statement);
+          this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description,migration_sha256) VALUES(?,?,?)",
+            migration.version, migration.description, migrationSha256);
+        }
+        this.ctx.storage.sql.exec(`INSERT INTO gadget_extension_schema_update_receipts
+          (operation_key,tenant_id,space_id,installation_id,extension_id,app_id,from_version,to_version,source_manifest_sha256,
+           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,migrations_sha256,applied_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationKey, claims.tenantId, claims.spaceId, claims.installationId,
+          claims.extensionId, claims.appId, claims.fromVersion, claims.toVersion, claims.sourceManifestSha256,
+          claims.candidateManifestSha256, claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId,
+          claims.migrationsSha256, new Date().toISOString());
+        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('schema_release_version',?),('schema_manifest_sha256',?)",
+          claims.toVersion, claims.candidateManifestSha256);
+        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", claims.installationId);
+      });
+    } catch (error) {
+      const conflictCode = error instanceof Error && ["gadget_schema_migration_version_conflict", "gadget_schema_update_installation_mismatch"]
+        .includes(error.message) ? error.message : null;
+      return Response.json({ error_code: conflictCode ?? "gadget_schema_update_apply_failed", retryable: conflictCode === null },
+        { status: conflictCode ? 409 : 503 });
+    }
+    return Response.json({ applied: true, replayed, operation_key: operationKey }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async renderApp(): Promise<Response> {

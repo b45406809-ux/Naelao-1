@@ -745,8 +745,10 @@ describe("runtime extension installation", () => {
     expect(paused.status).toBe(202);
     expect(await paused.json()).toMatchObject({ status: "disabled", drained: false, active_work_count: 1 });
 
-    const claims = { version: 1, purpose: "space_shared_extension_update", tenantId: "tenant", spaceId: "space", actorId: "owner",
-      installationId, extensionId: candidateManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0", artifactSha256: "c".repeat(64),
+    const claims = { version: 2, purpose: "space_shared_extension_update", tenantId: "tenant", spaceId: "space", actorId: "owner",
+      installationId, extensionId: candidateManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0",
+      sourceManifestSha256: await digestExtensionManifest(currentManifest), candidateManifestSha256: await digestExtensionManifest(candidateManifest),
+      sourceArtifactSha256: "a".repeat(64), artifactSha256: "c".repeat(64),
       publisherId: "pub_example", publisherKeyId, expiresAt: Date.now() + 60_000, requestId: "0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed" };
     const claimsPayload = JSON.stringify(claims);
     const reviewToken = `${btoa(claimsPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${await signHmac(claimsPayload, secret)}`;
@@ -782,7 +784,9 @@ describe("runtime extension installation", () => {
     const unauthenticatedHistory = await space.fetch(new Request("http://space/space-shared-extension-updates?tenant_id=tenant&space_id=space"));
     expect(unauthenticatedHistory.status).toBe(403);
 
-    const rollbackClaims = { ...claims, fromVersion: "1.2.0", toVersion: "1.0.0", artifactSha256: "a".repeat(64),
+    const rollbackClaims = { ...claims, fromVersion: "1.2.0", toVersion: "1.0.0",
+      sourceManifestSha256: await digestExtensionManifest(candidateManifest), candidateManifestSha256: await digestExtensionManifest(currentManifest),
+      sourceArtifactSha256: "c".repeat(64), artifactSha256: "a".repeat(64),
       expiresAt: Date.now() + 60_000, requestId: "43f83d14-14df-4c9a-a0a5-07ccf87a5d82" };
     const rollbackPayload = JSON.stringify(rollbackClaims);
     const rollbackToken = btoa(rollbackPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")

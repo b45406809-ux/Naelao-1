@@ -45,7 +45,7 @@ import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
-import { supportsVersionOnlySpaceSharedCodeUpdate } from "../extension-update-contract.js";
+import { supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
 
 type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
 
@@ -2885,6 +2885,17 @@ const MIGRATIONS: Migration[] = [
       reserved_at TEXT NOT NULL,
       PRIMARY KEY(tenant_id,space_id,capability_key)
     );`,
+  },
+  {
+    version: 135,
+    description: "bind signed extension update receipts to exact source and candidate manifests",
+    up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN source_manifest_sha256 TEXT NOT NULL DEFAULT '';
+      ALTER TABLE space_shared_extension_update_receipts ADD COLUMN candidate_manifest_sha256 TEXT NOT NULL DEFAULT '';`,
+  },
+  {
+    version: 136,
+    description: "bind signed extension update receipts to the exact source artifact",
+    up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN source_artifact_sha256 TEXT NOT NULL DEFAULT '';`,
   },
 ];
 
@@ -14421,7 +14432,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private async applySpaceSharedExtensionUpdate(request: Request): Promise<Response> {
     type Claims = { version?: unknown; purpose?: unknown; tenantId?: unknown; spaceId?: unknown; actorId?: unknown;
       installationId?: unknown; extensionId?: unknown; fromVersion?: unknown; toVersion?: unknown; artifactSha256?: unknown;
-      publisherId?: unknown; publisherKeyId?: unknown; expiresAt?: unknown; requestId?: unknown };
+      sourceManifestSha256?: unknown; candidateManifestSha256?: unknown; sourceArtifactSha256?: unknown;
+      publisherId?: unknown; publisherKeyId?: unknown;
+      expiresAt?: unknown; requestId?: unknown };
     const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown }>()
       .catch((): { tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown } => ({}));
     const claims = body.claims;
@@ -14430,7 +14443,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
-    if (!claims || claims.version !== 1 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
+    if (!claims || claims.version !== 2 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
       || claims.spaceId !== body.spaceId || claims.actorId !== body.actorId || typeof claims.installationId !== "string"
       || typeof claims.extensionId !== "string" || typeof claims.fromVersion !== "string" || typeof claims.toVersion !== "string"
       || typeof claims.artifactSha256 !== "string" || typeof claims.publisherId !== "string"
@@ -14439,6 +14452,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !/^ext_[a-z0-9_-]{2,62}$/.test(claims.extensionId)
       || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.fromVersion)
       || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.toVersion) || claims.fromVersion === claims.toVersion
+      || typeof claims.sourceManifestSha256 !== "string" || typeof claims.candidateManifestSha256 !== "string"
+      || typeof claims.sourceArtifactSha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(claims.sourceManifestSha256) || !/^[a-f0-9]{64}$/.test(claims.candidateManifestSha256)
+      || !/^[a-f0-9]{64}$/.test(claims.sourceArtifactSha256)
       || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.publisherId)
       || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
       || !Number.isSafeInteger(claims.expiresAt) || claims.expiresAt <= Date.now()
@@ -14457,20 +14474,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     const requestId = claims.requestId;
     const readReceipt = () => queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
-      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
       this.ctx.storage.sql as never, "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=?", requestId);
     const expectedReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => row.tenant_id === tenantId && row.space_id === body.spaceId
       && row.installation_id === claims.installationId && row.extension_id === claims.extensionId && row.from_version === claims.fromVersion
-      && row.to_version === claims.toVersion && row.artifact_sha256 === claims.artifactSha256 && row.publisher_key_id === claims.publisherKeyId
+      && row.to_version === claims.toVersion && row.source_manifest_sha256 === claims.sourceManifestSha256
+      && row.candidate_manifest_sha256 === claims.candidateManifestSha256 && row.source_artifact_sha256 === claims.sourceArtifactSha256
+      && row.artifact_sha256 === claims.artifactSha256
+      && row.publisher_key_id === claims.publisherKeyId
       && row.actor_id === body.actorId;
     const prior = readReceipt();
     if (prior) return expectedReceipt(prior)
       ? Response.json({ updated: true, replayed: true, receipt: prior }, { headers: { "cache-control": "private, no-store" } })
       : Response.json({ error_code: "extension_update_request_id_conflict" }, { status: 409 });
 
-    const current = queryOne<{ status: string; release_version: string | null; manifest_json: string; publisher_id: string | null;
+    const current = queryOne<{ status: string; release_version: string | null; manifest_json: string; source_artifact_sha256: string;
+      publisher_id: string | null;
       publisher_key_id: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-      `SELECT i.status,i.release_version,r.manifest_json,r.publisher_id,r.publisher_key_id,r.publisher_revoked_at
+      `SELECT i.status,i.release_version,r.manifest_json,r.artifact_sha256 AS source_artifact_sha256,
+          r.publisher_id,r.publisher_key_id,r.publisher_revoked_at
        FROM extension_instances i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.instance_id=? AND i.extension_id=? AND i.tenant_id=? AND i.space_id=? AND i.project_id IS NULL AND i.scope='SPACE_SHARED'`,
       claims.installationId, claims.extensionId, tenantId, body.spaceId);
@@ -14480,6 +14503,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        FROM extension_releases WHERE extension_id=? AND version=?`, claims.extensionId, claims.toVersion);
     if (!current || current.status !== "disabled" || current.release_version !== claims.fromVersion)
       return Response.json({ error_code: "extension_update_installation_must_be_paused_at_reviewed_version" }, { status: 409 });
+    if (current.source_artifact_sha256 !== claims.sourceArtifactSha256)
+      return Response.json({ error_code: "extension_update_source_artifact_changed" }, { status: 409 });
     if (!candidate || candidate.artifact_sha256 !== claims.artifactSha256 || candidate.publisher_key_id !== claims.publisherKeyId
       || candidate.publisher_id !== current.publisher_id || candidate.publisher_id !== claims.publisherId
       || candidate.publisher_key_id !== current.publisher_key_id
@@ -14494,12 +14519,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     } catch { return Response.json({ error_code: "extension_update_manifest_invalid" }, { status: 409 }); }
     if (current.publisher_key_id !== claims.publisherKeyId || candidateManifest.id !== claims.extensionId
       || currentManifest.bundle?.version !== claims.fromVersion || candidateManifest.bundle?.version !== claims.toVersion
-      || !supportsVersionOnlySpaceSharedCodeUpdate(currentManifest, candidateManifest))
+      || await digestExtensionManifest(currentManifest) !== claims.sourceManifestSha256
+      || await digestExtensionManifest(candidateManifest) !== claims.candidateManifestSha256
+      || !supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest))
       return Response.json({ error_code: "extension_update_contract_not_supported" }, { status: 409 });
 
     const createdAt = new Date().toISOString();
     let receipt: { request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
-      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } | null = null;
+      from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } | null = null;
     let replayed = false;
     try {
       this.ctx.storage.transactionSync(() => {
@@ -14519,12 +14547,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         claims.extensionId, claims.toVersion, claims.artifactSha256, claims.publisherKeyId);
         if (changed.rowsWritten !== 1) throw new Error("extension_update_installation_must_be_paused_at_reviewed_version");
         execute(this.ctx.storage.sql as never, `INSERT INTO space_shared_extension_update_receipts
-          (request_id,tenant_id,space_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
-        claims.fromVersion, claims.toVersion, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt);
+          (request_id,tenant_id,space_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,
+           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
+        claims.fromVersion, claims.toVersion, claims.sourceManifestSha256, claims.candidateManifestSha256,
+        claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt);
         receipt = { request_id: requestId, tenant_id: tenantId, space_id: body.spaceId as string, installation_id: claims.installationId as string,
           extension_id: claims.extensionId as string, from_version: claims.fromVersion as string, to_version: claims.toVersion as string,
-          artifact_sha256: claims.artifactSha256 as string, publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt };
+          source_manifest_sha256: claims.sourceManifestSha256 as string, candidate_manifest_sha256: claims.candidateManifestSha256 as string,
+          source_artifact_sha256: claims.sourceArtifactSha256 as string, artifact_sha256: claims.artifactSha256 as string,
+          publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt };
       });
     } catch (error) {
       const errorCode = error instanceof Error && error.message === "extension_update_request_id_conflict"
@@ -14544,13 +14576,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const receipts = instanceId
       ? queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
-        artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
-        `SELECT request_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at
+        source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
+        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=? AND installation_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 20`, tenantId, spaceId, instanceId)
       : queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
-        artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
-        `SELECT request_id,installation_id,extension_id,from_version,to_version,artifact_sha256,publisher_key_id,actor_id,created_at
+        source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
+        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 50`, tenantId, spaceId);
     return Response.json({ receipts }, { headers: { "cache-control": "private, no-store" } });
@@ -14562,7 +14598,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const receipt = queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
-      from_version: string; to_version: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=? AND tenant_id=? AND space_id=?", requestId, tenantId, spaceId);
     return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })

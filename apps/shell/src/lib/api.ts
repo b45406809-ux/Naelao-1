@@ -1705,8 +1705,9 @@ export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; ve
   dependencies?: Array<{ extensionId: string; version: string; manifestSha256: string }> }
 export interface SpaceSharedExtensionUpdateReview {
   installation_id: string; extension_id: string; space_id: string; scope: "SPACE_SHARED";
-  current: { version: string; publisher_id: string | null; publisher_key_id: string | null };
-  candidate: { version: string; publisher_id: string; publisher_key_id: string; artifact_sha256: string; signature_verified: true };
+  current: { version: string; publisher_id: string | null; publisher_key_id: string | null; manifest_sha256: string; artifact_sha256: string };
+  candidate: { version: string; publisher_id: string; publisher_key_id: string; manifest_sha256: string;
+    artifact_sha256: string; signature_verified: true };
   permissions: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
   capabilities: { current: string[]; candidate: string[]; added: string[]; removed: string[] };
   dependencies: { package: { current: string[]; candidate: string[];
@@ -1715,6 +1716,7 @@ export interface SpaceSharedExtensionUpdateReview {
     provider_connections: { current: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
       candidate: Array<{ id: string; provider: string; purpose: string; required: boolean }>; added: string[]; removed: string[]; changed: string[] } };
   schema_changes: { added: string[]; removed: string[]; changed: string[] };
+  gadget_migrations: Array<{ gadget_id: string; migrations: Array<{ version: number; description: string; up: string }> }>;
   shared_filesystem: { current: SharedFilesystemGrant[]; candidate: SharedFilesystemGrant[]; added: string[]; removed: string[]; changed: string[] };
   price_terms: { current: null; candidate: null; status: string };
   dependency_resolution: { current: { resolved: true } | { resolved: false; error: string };
@@ -1725,7 +1727,8 @@ export interface SpaceSharedExtensionUpdateReview {
 }
 export interface SpaceSharedExtensionUpdateReceipt {
   request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
-  artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
+  source_manifest_sha256: string; candidate_manifest_sha256: string; source_artifact_sha256: string; artifact_sha256: string;
+  publisher_key_id: string; actor_id: string; created_at: string;
 }
 export interface SpaceSharedExtensionInstallReviewPackage {
   extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;

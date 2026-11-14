@@ -266,7 +266,7 @@ export default function ExtensionsPage() {
         const review = updateReviews[app.installation_id];
         return <section style={{ margin: "12px 0", padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
           <strong>Signed release history</strong>
-          <p style={{ color: "var(--text3)", fontSize: 12 }}>Choose an exact signed release to review. The host rechecks the publisher and package; only static Canvas and channel-code changes with unchanged authority/configuration can be applied here. The installation must be paused and drained, and stays paused after apply.</p>
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>Choose an exact signed release to review. The host rechecks the publisher, source and candidate manifest digests, and package. Updates require unchanged authority and configuration; an eligible Gadget update may append only additive SQL migrations. The installation must be paused and drained, and stays paused after apply.</p>
           {!releases ? <Button variant="secondary" disabled={loadingReleaseHistory !== null} onClick={() => void loadReleaseHistory(app)}>
             {loadingReleaseHistory === app.installation_id ? "Loading releases…" : "Load signed releases"}
           </Button> : <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -285,27 +285,35 @@ export default function ExtensionsPage() {
           </div>}
           {releases && eligibleReleases.length === 0 && <p role="status">No other currently trusted signed release is available for this installation.</p>}
           {review && <div role="status" style={{ marginTop: 12, fontSize: 12 }}>
-            <p>Verified publisher: {review.candidate.publisher_id} · {review.current.version} → {review.candidate.version}</p>
+            <p>Verified publisher: {review.candidate.publisher_id} · {review.current.version} → {review.candidate.version} · source manifest {review.current.manifest_sha256.slice(0, 12)} · source artifact {review.current.artifact_sha256.slice(0, 12)} · candidate manifest {review.candidate.manifest_sha256.slice(0, 12)} · candidate artifact {review.candidate.artifact_sha256.slice(0, 12)}</p>
             <p>Permissions added: {review.permissions.added.join(", ") || "none"}; removed: {review.permissions.removed.join(", ") || "none"}</p>
             <p>Capabilities added: {review.capabilities.added.join(", ") || "none"}; removed: {review.capabilities.removed.join(", ") || "none"}</p>
             <p>Schema changes — added: {review.schema_changes.added.join(", ") || "none"}; removed: {review.schema_changes.removed.join(", ") || "none"}; changed: {review.schema_changes.changed.join(", ") || "none"}</p>
+            {review.gadget_migrations.map(gadget => <section key={gadget.gadget_id} aria-label={`Additive migrations for ${gadget.gadget_id}`}>
+              <strong>Gadget {gadget.gadget_id}: additive data migrations</strong>
+              {gadget.migrations.map(migration => <div key={`${gadget.gadget_id}:${migration.version}`}>
+                <p>Version {migration.version} · {migration.description}</p>
+                <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 240, overflow: "auto" }}>{migration.up}</pre>
+              </div>)}
+            </section>)}
             <p>Package dependencies: {review.dependencies.package.status}. Candidate pins: {review.dependencies.package.candidate_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") || "none"}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
             {!review.dependency_resolution.candidate.resolved && <p role="alert">Dependency closure is unresolved: {review.dependency_resolution.candidate.error}. The host will not activate this package.</p>}
             <p>Shared folders — added: {review.shared_filesystem.added.join(", ") || "none"}; removed: {review.shared_filesystem.removed.join(", ") || "none"}; changed: {review.shared_filesystem.changed.join(", ") || "none"}</p>
             <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
             {review.review.explicit_owner_approval_required && <p>Owner approval is required for this update review.</p>}
             {review.review.apply_supported
-              ? <><p>This candidate changes only release versions and artifact code for static Canvas and channel handlers. The signed manifest keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration. Gadget schemas, data migrations and authority changes are not supported by this update path. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
+              ? <><p>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration. Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
                   onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed release…" : rollingBack
-                    ? "Roll back to selected release and keep paused" : "Apply selected release and keep paused"}</Button></>
+                    ? "Roll back to selected release and keep paused" : review.gadget_migrations.length
+                      ? "Apply reviewed migrations and keep paused" : "Apply selected release and keep paused"}</Button></>
               : <p>Update is unavailable: {review.review.apply_block_reason ?? "refresh the review"}. {review.review.active_work_count > 0
                 ? `${review.review.active_work_count} admitted runtime operation(s) still need to finish before review can issue an apply token.` : ""}</p>}
           </div>}
         </section>;
       })()}
       {updateReceipts.filter(receipt => receipt.installation_id === app.installation_id).slice(0, 5).map(receipt => <p key={receipt.request_id}
-        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · {new Date(receipt.created_at).toLocaleString()} · signed artifact {receipt.artifact_sha256.slice(0, 12)} · installation remains paused unless enabled.</p>)}
+        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null || app.status === "disabled" && app.publisher_trusted === false} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : app.publisher_trusted === false ? "Resume blocked" : "Resume extension"}</Button>

@@ -103,7 +103,8 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
 }
 
 async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled";
-  currentVersion?: string; candidateVersion?: string; candidateReleaseAvailable?: boolean; endUserSpaceRole?: string; activeWorkCount?: number } = {}) {
+  currentVersion?: string; candidateVersion?: string; candidateReleaseAvailable?: boolean; endUserSpaceRole?: string; activeWorkCount?: number;
+  gadgetMigration?: boolean; instanceKey?: string; migrationFailOnceForAppId?: string } = {}) {
   const currentVersion = options.currentVersion ?? "1.0.0", candidateVersion = options.candidateVersion ?? "1.2.0";
   const passiveManifest = (version: string) => validateExtensionManifest({ id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
     gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version,
@@ -113,7 +114,20 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
         { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version, permissions: [], capabilityRequirements: [], lifecycle: {},
           provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"] },
       ] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
-  const old = options.passive ? passiveManifest(currentVersion) : structuredClone(manifest);
+  const withGadgetMigrations = (source: ReturnType<typeof validateExtensionManifest>, version: string, migrationVersions: number[]) => {
+    const primitives = [...(source.bundle?.primitives ?? [])];
+    for (const [index, gadgetId] of ["usage_stats", "call_metrics"].entries()) {
+      if (index >= (options.gadgetMigration === true ? 2 : 1)) continue;
+      const migrations = [{ version: 1, description: "create isolated table", up: `CREATE TABLE IF NOT EXISTS ${gadgetId}(id TEXT PRIMARY KEY);` },
+        ...(migrationVersions.includes(2) ? [{ version: 2, description: "add status", up: `ALTER TABLE ${gadgetId} ADD COLUMN status TEXT DEFAULT 'open';` }] : [])];
+      primitives.push({ schemaVersion: "1.0", kind: "gadget", id: gadgetId, version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        scope: "SPACE_SHARED", schemaSql: `CREATE TABLE IF NOT EXISTS ${gadgetId}(id TEXT PRIMARY KEY);`, migrations } as never);
+    }
+    return validateExtensionManifest({ ...source, bundle: { ...source.bundle!, primitives } });
+  };
+  const old = options.gadgetMigration
+    ? withGadgetMigrations(passiveManifest(currentVersion), currentVersion, [1])
+    : options.passive ? passiveManifest(currentVersion) : structuredClone(manifest);
   if (!options.passive) {
     old.bundle!.version = currentVersion;
     for (const primitive of old.bundle!.primitives) primitive.version = currentVersion;
@@ -121,7 +135,9 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     old.capabilityRequirements = old.capabilityRequirements.filter(capability => capability !== "assistant.phone.simulate");
   }
   const oldManifest = validateExtensionManifest(old);
-  const candidateManifest = options.passive ? passiveManifest(candidateVersion) : validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, version: candidateVersion,
+  const candidateManifest = options.gadgetMigration
+    ? withGadgetMigrations(passiveManifest(candidateVersion), candidateVersion, [1, 2])
+    : options.passive ? passiveManifest(candidateVersion) : validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, version: candidateVersion,
     primitives: [...manifest.bundle!.primitives.map(primitive => ({ ...primitive, version: candidateVersion })),
       { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: candidateVersion, permissions: [], capabilityRequirements: [], lifecycle: {},
         scope: "SPACE_SHARED", schemaSql: "CREATE TABLE usage_stats (id TEXT PRIMARY KEY);", migrations: [] }] } });
@@ -136,7 +152,12 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   const candidateRelease = { extension_id: candidateManifest.id, version: candidateVersion, manifest: candidateManifest, manifest_json: JSON.stringify(candidateManifest), artifact_sha256: artifactSha256,
     publisher: { id: "pub_voice", key_id: signature.keyId, signature: options.signatureValid === false ? "invalid" : signature.signature,
       payload_sha256: publisherPayloadSha256 } };
-  const spaceRequests: Request[] = [], microAppRequests: Request[] = [];
+  const sourceRelease = { extension_id: oldManifest.id, version: currentVersion, manifest: oldManifest, manifest_json: JSON.stringify(oldManifest),
+    artifact_sha256: "b".repeat(64), publisher: { id: "pub_voice", key_id: options.passive ? signature.keyId : "c".repeat(64),
+      signature: "signed-source", payload_sha256: "e".repeat(64) } };
+  const spaceRequests: Request[] = [], microAppRequests: Request[] = [], microAppActorNames: string[] = [];
+  const appliedMigrationOperations = new Set<string>();
+  let failedMigrationAppId: string | null = null;
   const spaceStub = { fetch: vi.fn(async (request: Request) => {
     spaceRequests.push(request);
     const url = new URL(request.url), path = url.pathname;
@@ -144,8 +165,9 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     if (path === "/extension-installations") {
       if (url.searchParams.get("space_id") !== "space-a") return Response.json({ installations: [] });
       return Response.json({ installations: [{ instance_id: "install-voice", extension_id: manifest.id, project_id: null, scope: "SPACE_SHARED",
-        instance_key: "default", status: options.installationStatus ?? "active", release_version: currentVersion, publisher_id: "pub_voice",
+        instance_key: options.instanceKey ?? "default", status: options.installationStatus ?? "active", release_version: currentVersion, publisher_id: "pub_voice",
         publisher_key_id: options.passive ? signature.keyId : "c".repeat(64), publisher_attestation_valid: true,
+        manifest_sha256: await digestExtensionManifest(oldManifest),
         manifest: oldManifest }] });
     }
     if (path === "/extension-releases") return Response.json({ releases: [
@@ -157,15 +179,21 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
         publisher: { id: "pub_voice", keyId: signature.keyId, revoked: false } },
     ] });
     if (path === "/extension-package-catalog") return Response.json({ releases: [{ extension_id: candidateManifest.id, version: candidateVersion }] });
-    if (path === "/extension-package-release") return options.candidateReleaseAvailable === false
-      ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json({ release: candidateRelease });
+    if (path === "/extension-package-release") {
+      if (url.searchParams.get("version") === currentVersion) return Response.json({ release: sourceRelease });
+      return options.candidateReleaseAvailable === false
+        ? Response.json({ error_code: "not_found" }, { status: 404 }) : Response.json({ release: candidateRelease });
+    }
     if (path === "/space-shared-extension-updates") return Response.json({ receipts: [] });
     if (path === "/space-shared-extension-update") {
       const body = await request.clone().json() as { actorId: string; claims: { requestId: string; installationId: string; extensionId: string;
-        fromVersion: string; toVersion: string; artifactSha256: string; publisherKeyId: string } };
+        fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
+        artifactSha256: string; publisherKeyId: string } };
       return Response.json({ updated: true, replayed: false, receipt: { request_id: body.claims.requestId, tenant_id: "tenant-a", space_id: "space-a",
         installation_id: body.claims.installationId, extension_id: body.claims.extensionId, from_version: body.claims.fromVersion,
-        to_version: body.claims.toVersion, artifact_sha256: body.claims.artifactSha256, publisher_key_id: body.claims.publisherKeyId,
+        to_version: body.claims.toVersion, source_manifest_sha256: body.claims.sourceManifestSha256,
+        candidate_manifest_sha256: body.claims.candidateManifestSha256, artifact_sha256: body.claims.artifactSha256,
+        publisher_key_id: body.claims.publisherKeyId,
         actor_id: body.actorId, created_at: new Date().toISOString() } });
     }
     return Response.json({ error_code: "unexpected_space_do_route" }, { status: 404 });
@@ -181,7 +209,18 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
         ? [{ key_id: signature.keyId }] : [] }),
     }) }) },
     SPACE_DO: { idFromName: () => "space-do-id", get: () => spaceStub },
-    MICRO_APP_DO: { idFromName: () => "micro-app-id", get: (_actor: unknown) => ({ fetch: async (request: Request) => { microAppRequests.push(request); return Response.json({ ok: true }); } }) },
+    MICRO_APP_DO: { idFromName: (name: string) => { microAppActorNames.push(name); return name; }, get: (_actor: unknown) => ({ fetch: async (request: Request) => {
+      microAppRequests.push(request);
+      if (new URL(request.url).pathname !== "/extension-schema-update") return Response.json({ ok: true });
+      const body = await request.clone().json() as { claims: { appId: string; operationKey: string } };
+      if (options.migrationFailOnceForAppId === body.claims.appId && failedMigrationAppId !== body.claims.appId) {
+        failedMigrationAppId = body.claims.appId;
+        return Response.json({ error_code: "gadget_schema_update_test_interruption" }, { status: 503 });
+      }
+      const replayed = appliedMigrationOperations.has(body.claims.operationKey);
+      appliedMigrationOperations.add(body.claims.operationKey);
+      return Response.json({ applied: true, replayed, operation_key: body.claims.operationKey });
+    } }) },
     SCRIPTS_R2: { get: async (key: string) => {
       const path = key.endsWith("/dashboard.html") ? "./dashboard.html" : key.endsWith("/handler.ts") ? "./handler.ts" : "";
       if (!path) return null;
@@ -190,7 +229,7 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
       return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
     } },
   } as never;
-  return { env, spaceRequests, microAppRequests, candidateRelease };
+  return { env, spaceRequests, microAppRequests, microAppActorNames, candidateRelease };
 }
 
 async function installReviewHarness(options: { failNextRootInitialization?: boolean } = {}) {
@@ -610,6 +649,41 @@ describe("signed Space-shared package update review", () => {
       artifact_sha256: review.candidate.artifact_sha256, actor_id: "owner-a",
     } });
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(true);
+  });
+
+  it("reviews exact Gadget SQL, retries a partial multi-Gadget migration, and records both manifest digests", async () => {
+    const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", gadgetMigration: true,
+      instanceKey: "demo", migrationFailOnceForAppId: "demo_usage_stats" });
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.0.0", candidate_version: "1.2.0" }), h.env);
+    expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
+    const review = await reviewResponse.json() as { review: { apply_supported: boolean };
+      gadget_migrations: Array<{ gadget_id: string; migrations: Array<{ version: number; up: string }> }>;
+      update_review_token?: string; candidate: { artifact_sha256: string } };
+    expect(review.review.apply_supported).toBe(true);
+    expect(review.gadget_migrations).toEqual([
+      { gadget_id: "call_metrics", migrations: [{ version: 2, description: "add status", up: "ALTER TABLE call_metrics ADD COLUMN status TEXT DEFAULT 'open';" }] },
+      { gadget_id: "usage_stats", migrations: [{ version: 2, description: "add status", up: "ALTER TABLE usage_stats ADD COLUMN status TEXT DEFAULT 'open';" }] },
+    ]);
+
+    const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
+    const interrupted = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token }), h.env);
+    expect(interrupted.status).toBe(503);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
+    const retry = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token }), h.env);
+    expect(retry.status, JSON.stringify(await retry.clone().json())).toBe(200);
+    const result = await retry.json() as { receipt: { source_manifest_sha256: string; candidate_manifest_sha256: string;
+      artifact_sha256: string } };
+    expect(result.receipt.source_manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.receipt.candidate_manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.receipt.artifact_sha256).toBe(review.candidate.artifact_sha256);
+    const migrationRequests = h.microAppRequests.filter(request => new URL(request.url).pathname === "/extension-schema-update");
+    expect(migrationRequests).toHaveLength(4);
+    const repeatedFirst = await migrationRequests[2]!.clone().json() as { claims: { appId: string; operationKey: string } };
+    const firstPassFirst = await migrationRequests[0]!.clone().json() as { claims: { appId: string; operationKey: string } };
+    expect(repeatedFirst.claims).toEqual(firstPassFirst.claims);
+    expect(h.microAppActorNames).toContain("gadget:demo_usage_stats:space:space-a");
+    expect(h.microAppActorNames).toContain("gadget:demo_call_metrics:space:space-a");
   });
 
   it("reviews and applies an older exact signed code release as a paused rollback", async () => {
