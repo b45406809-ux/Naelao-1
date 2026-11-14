@@ -1,27 +1,32 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P10/P24 Gadget code rollback with schema retained)
+## Active checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
 
-Code `0866ca38b5db82e09ffd99acb56d6f57691efe16` is pushed to `origin/Mcbt5s-Backup-2` from
-`autonomous-managed-services-20261111` after fetch and fast-forward verification. Space-shared Gadget
-code rollback is owner-confirmed and allowed only for an older signed release whose unchanged Gadget
-migration histories are exact prefixes of the current additive histories. Both manifests and artifacts
-are pinned in the review token and receipt; all retained migrations/data stay forward, no rollback DDL
-runs, and the installation remains paused. Stale/revoked candidates are rejected.
+Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`; fetch and ancestry were verified before push. Owner-confirmed
+same-Space dependency updates now bind direct changes and the resolved closure through review, apply
+and a durable replay receipt. Only exact candidate dependencies already active, signed, trusted and
+manifest-pinned in the same Space qualify. SpaceDO repeats all pin checks transactionally; child
+installations are not mutated. Shell states the requirement and keeps installation paused.
 
-Verification: Spaces focused migration/update/receipt suites **70/70**, Spaces and Shell typechecks,
-and `git diff --check` pass using local Worker/SQLite mocks. No browser, deployed, provider or live
-acceptance ran. P10/P24 remain PARTIAL for dependency, connection and price updates, broader data
-migration, package scanning/retention and live acceptance. Space-wide provider scope/payer/revocation,
-first-party publisher/key custody and the U06 runtime adapter are product/platform gates, not credential
-blockers. All rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Local verification: Spaces focused contract/package-review/migration/runtime-install suites **77/77**,
+Spaces and Shell typechecks, and `git diff --check`. These are local mocks/SQLite, not browser,
+deployed, provider or live acceptance. P10/P24 remain PARTIAL for provider/price changes, broader data
+migration, scanning/retention and live acceptance. P05 shared provider scope/payer/revocation and P06
+publisher identity/key custody/catalog are product decisions, not credential blockers. Runtime trust
+was source-checked: package artifacts are signature/digest-verified when reviewed/installed/updated;
+new work verifies current publisher trust and dependency closure; durable revocation disables installs
+and reports drain state. Proactive durable owner/member inbox alerting on revocation is still uncoded.
+Other S3–S9/U01–U12/P01–P24 states and gates remain as recorded. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
 
-Exact next action: map signed dependency closure and update callers; implement owner-confirmed
-same-Space dependency pin changes only when every exact candidate dependency is already active and
-trusted. Do not install, remove or mutate child packages in this slice. Bind review/apply/receipt to
-exact pins and reject missing, revoked, conflicting or cross-Space packages. Then continue the next
-independent S3–S9/U01–U12/P01–P24 code gap.
-
+Exact next action: in the existing publisher-revocation SpaceDO transaction, create one durable
+business-member notification per newly inserted revocation receipt. Make its ID deterministic from the
+Space/key so retry/reconciliation cannot duplicate it. State affected install count and whether
+pre-admitted work is draining, and expose no secret. Add local DO tests for first and repeated revoke
+plus notification inbox readback. Then continue the next independent uncoded requirement. Fetch and
+safely integrate remote advances before every push; commit/push coherent checkpoints to
+`Mcbt5s-Backup-2` without force-pushing, as explicitly authorized.
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
 P05 guided Project Knowledge handoff commits `e9be8aee` and `38f50b41` are pushed to

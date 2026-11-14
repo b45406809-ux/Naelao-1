@@ -1,25 +1,29 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P10/P24 Gadget code rollback with schema retained)
+## Active checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
 
-Code `0866ca38b5db82e09ffd99acb56d6f57691efe16` is pushed to `origin/Mcbt5s-Backup-2` after fetch
-and ancestry verification. The signed Space-shared Gadget rollback path now requires owner confirmation
-and an exact prefix of unchanged additive migrations. Review, short-lived token and durable SpaceDO
-receipt bind source/candidate manifests and artifacts; the UI states migrations/data remain applied and
-no rollback SQL runs. The installation remains paused. Stale and revoked releases fail closed.
+Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` after fetch
+and ancestry verification. P10/P24 same-Space dependency update now supports an owner-confirmed exact
+pin change only when the complete candidate closure is already active, signed, trusted and exact
+manifest-pinned in the Space. Review/apply/receipt bind the direct expansion and resolved closure;
+SpaceDO transactionally rechecks pins and leaves child installations untouched. Stale, revoked, missing,
+conflicting or cross-Space dependencies fail closed; Shell explains that the installation stays paused.
 
-Local verification: focused Spaces migration/update/receipt suites **70/70**, Spaces/Shell typechecks,
-and `git diff --check`. These are mocks/SQLite, not browser, deployed, provider or live acceptance.
-P10/P24 remain PARTIAL for dependency, provider-connection and price changes, broader data migration,
-package scanning/retention and live acceptance. No rollout was enabled; preserve the untracked Python
-cache.
+Local verification: Spaces focused suites **77/77**, Spaces/Shell typechecks and `git diff --check`.
+These are mock/SQLite checks only; no browser, deployed Worker, provider or live acceptance ran. P10/P24
+remain PARTIAL for provider/price changes, broader data migration, scanning/retention and live gates.
+P24 source review confirms install/update signature checks, per-use publisher/dependency checks, and
+revocation drain receipts plus installed-package warning. A proactive durable Space inbox alert when
+a publisher key is revoked remains uncoded. P05 shared provider scope/payer/revocation and P06 first-party
+publisher identity/key custody/catalog are product decisions, not credential blockers. Keep all rollouts
+disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: reconcile the active signed dependency closure with update and activation callers;
-implement only owner-confirmed same-Space pin changes when each exact candidate dependency is already
-active and trusted. Bind the change to review/apply/receipt, leave child installations untouched, and
-reject unresolved, revoked, conflicting or cross-Space pins. Continue P01–P24 and S3–S9/U01–U12 after
-that checkpoint.
-
+Exact next action: create one durable, idempotent Space member notification in the existing
+publisher-revocation transaction when a new revocation receipt is recorded; include bounded key identity,
+affected installation count and draining state, with no secret. Test first and repeated revoke and
+readback through the existing notification route, then continue the next uncoded P01–P24 or S3–S9/
+U01–U12 requirement. Fetch and safely integrate before each push; push coherent checkpoints to
+`Mcbt5s-Backup-2` without force-pushing, as authorized.
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
 Handoff commits `e9be8aee` and `38f50b41` are pushed to `origin/Mcbt5s-Backup-2`. For a signed

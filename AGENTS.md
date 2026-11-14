@@ -16,32 +16,35 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P10/P24 Gadget code rollback with schema retained)
+## Latest checkpoint — 2026-11-14 (P10/P24 dependency pin expansion)
 
-Code `0866ca38b5db82e09ffd99acb56d6f57691efe16` is pushed to `origin/Mcbt5s-Backup-2` from
-`autonomous-managed-services-20261111` after fetch and fast-forward verification. A Space-shared
-Gadget package can now roll back to a lower signed release only when every Gadget remains unchanged
-and candidate migrations are an exact prefix of the current additive history. The owner must confirm
-the exact rollback; review/apply bind both manifest and artifact hashes, SpaceDO persists the retained
-migration summary, and the install remains paused. No rollback DDL executes; Shell identifies the
-schema/data that stays forward. Stale/revoked candidates fail closed.
+Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`; fetch/ancestry check passed before the push. The owner-confirmed
+same-Space dependency update slice binds the direct expansion and resolved closure to review, short-lived
+apply claim and durable receipt. It accepts only exact candidate dependencies already active, signed,
+trusted and manifest-pinned in that Space; apply rechecks every pin in the SpaceDO transaction. It does
+not install, remove, or mutate child packages. Missing, revoked, stale, cross-Space or conflicting pins
+fail closed. Shell explains the prerequisite and paused installation.
 
-Verification: Spaces focused migration/update/receipt suites **70/70**, Spaces and Shell typechecks,
-and `git diff --check` pass. Tests use local Worker/SQLite mocks. No browser, deployed Worker, live
-provider, Cloudflare resource or user acceptance ran. This closes the migration-aware rollback slice
-of P10/P24 only. P10 remains PARTIAL for dependency, provider-connection and price changes, broader
-data migration, scanning/retention and live acceptance. P24 retains publisher-compromise alerting,
-scanning/retention and live gates. P05 Space-wide provider connection scope/payer/revocation is an
-unresolved product contract; P06 first-party listing still needs Naelao publisher identity, signing/key
-custody and catalog policy. P01/P02 evidence, P03/P12 policy, and S4/U05/U06 runtime/provider gates
-remain as recorded. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Verification: Spaces targeted suites **77/77**, Spaces `tsc --noEmit`, Shell `tsc --noEmit`, and
+`git diff --check` pass. Tests are local Worker/SQLite mocks; no browser, deploy, live Worker, provider,
+or live acceptance ran. This closes the dependency-pin update slice of P10/P24. Broader P10/P24 work
+remains for provider/price changes, data migrations, scanning/retention and live acceptance. P05 shared
+provider scope/payer/revoke-drain and P06 publisher identity/key custody/catalog decisions remain
+product gates, not credential blockers. P24 runtime paths were inspected: signed artifact bytes are
+revalidated during package review/install/update, installed runtime metadata is host-signed and checks
+publisher trust/dependency closure before new work, and revocation persists drain state and an owner
+warning. The remaining actionable P24 gap is a proactive durable Space inbox alert at key revocation.
+P01/P02 evidence, S4/U05/U06 runtime/provider gates and all other requirement states remain in the
+requirement records. Rollouts remain disabled; preserve the untracked `infra/scripts/__pycache__/`.
 
-Exact next action: map the current signed dependency closure and activation/update callers, then add a
-narrow owner-confirmed dependency-pin update only when every exact candidate dependency is already
-active, signed and pinned in the same Space. Persist the diff/receipt, keep child installs untouched,
-and reject missing, revoked, conflicting or cross-Space dependencies. Add contract, route, SpaceDO
-and Shell review coverage. Fetch and safely integrate before every push.
-
+Exact next action: add an idempotent, durable business-member notification for each newly recorded
+publisher-key revocation in the same SpaceDO transaction as its revocation receipt. Include bounded
+key identity, disabled-installation count, and whether admitted work is still draining; do not expose
+secrets. Repeated revocation/reconciliation must not duplicate the alert. Test first/replayed revocation
+and the existing notification inbox path, then continue the next uncoded S3–S9/U01–U12/P01–P24 item.
+Fetch and safely integrate before every push; commit/push each coherent checkpoint to `Mcbt5s-Backup-2`
+without force-pushing, as authorized for this mission.
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
 Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are
