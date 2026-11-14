@@ -1,31 +1,35 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P06 and §10 source reconciliation; P03/P12 and S4)
+## Active checkpoint — 2026-11-14 (P10 owner-confirmed Space-shared authority expansion)
 
-S4/MS12 code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` and runbook/ledger checkpoint `1044097a0c67382b4d969c08873b0020af2d417b` are pushed to `origin/Mcbt5s-Backup-2`. Migration 0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed audit. Owner/admin CAS routes, authenticated Router reachability and a Shell editor are present. Values are bounded and reject shell/secret-shaped inputs; execution/health verification remain explicitly unsupported. P01 now pins 250 migrations; fresh SQLite rehearsal, release manifest/runner suites and validators pass locally as recorded below.
+Code `12e0163d` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
+Space-shared signed updates now permit only additive top-level declared permissions/capabilities
+while publisher, package settings, dependencies, provider connections, shared-drive grants and
+primitive-level authority stay unchanged. A Space owner must explicitly confirm at review and apply;
+apply rechecks the signed source/candidate/artifact, publisher revocation, pause/drain state and exact
+authority delta. Migration 138 persists that delta in the durable receipt and replay verifies it.
+The installation remains paused.
 
-P03/P12 code `ca9aead9f8dca0ef77e66b154ee39d40368489d4` is pushed. Product-user dunning dispatch now verifies that the current product tenant matches `billing_dunning_outbox.tenant_id` before queueing; mismatched or missing ownership remains deferred and cannot cross tenant scope. This complements the existing stable outbox/workflow IDs, current-subscription recheck and notification receipts without changing billing policy.
+Verification: focused Spaces contract/package/DO/migration suites **67/67**, Spaces and Shell
+typechecks, and `git diff --check` pass. These are local SQLite/mocked checks; no deployment, browser,
+provider or live acceptance ran. P10 remains PARTIAL for data/schema migration recovery, connection,
+dependency and price changes, package scanning/retention, and deployment/live acceptance. P01/P02
+release/environment evidence gates and P03/P12 policy/live-delivery gaps remain as recorded below.
+Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-The recorded keypad-microapp action is already implemented in current pushed source: the bounded
-phone-menu package has installation settings, an owner dashboard, exact active-line synthetic test
-selection, signed-release status and masked call history. Existing focused SDK/Spaces/Agents evidence
-is recorded below. First-party catalog listing is a product/trust gate requiring approved Naelao
-publisher identity, key custody/signing, canonical artifact distribution and catalog policy; do not
-publish an unsigned or fabricated listing. Shared-Space proposal approval is advisory: current tests
-assert no project membership or service access is granted, and the UI states that collaboration
-requests do not authorize project/service access.
+The bounded-phone-menu package and owner dashboard are already implemented locally; first-party
+listing still needs an approved Naelao publisher identity, signing/key custody, canonical artifact
+distribution and catalog policy. Shared-Space proposal approval stays advisory and does not grant
+project/service access. Earlier S4/P01, P03/P12, archive restore and knowledge-grant work remains in
+prior checkpoints and the P01–P24 matrix.
 
-Local evidence: dunning outbox/dispatch/status tests **13/13**, Billing typecheck, Workflows queue/recovery tests **13/13**, and `git diff --check`. For S4: profile/route tests **9/9**, Agents typecheck, Shell typecheck and inert editor test **1/1**, Router route test **4/4** and typecheck. P01: full fresh SQLite migration rehearsal **1/1** through 0250, release manifest/runner suites **38/38**, release/deployment validators pass. All are local/mocked checks; no provider, remote D1, deployment, browser or live acceptance ran.
-
-P02 still requires actual per-environment resource ownership/IDs, fresh read-only receipts and operator-attested D1 baselines. P03/P12 still lack approved grace/restriction/escalation and retry-cadence policy plus live delivery acceptance. S4/MS12 still lacks the accepted runtime adapter, U05 observation producer, U06 writer admission/drain/reconnect/handoff contract, encrypted private-state byte fallback, recipe execution and physical snapshot purge. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
-
-Exact next action: extend the signed Space-shared package update flow to support a narrowly scoped,
-owner-confirmed permission/capability expansion. Keep publisher, package configuration, provider
-connections, shared-drive grants and dependencies unchanged in this slice; bind the exact authority
-diff and candidate artifact/manifest to the review token and durable receipt, keep the install paused,
-and add regression coverage for stale/revoked releases and concurrent review. Then continue S3–S9/
-U01–U12 and the remaining guided-template, voice and Shared-Space requirements. Keep rollouts
-disabled and fetch/safely integrate remote advances before every push.
+Exact next action: make sequential additive Gadget schema updates work across signed package releases.
+In `MicroAppDO`, keep the original signed artifact proof verifiable, but bind each migration request's
+current source to the persisted `schema_release_version` and `schema_manifest_sha256` plus the
+Space worker's signed current-release claims. Add an integration regression for 1.0→1.2→1.3 on the
+same Gadget actor, including retry and stale-source rejection. Keep migrations append-only and
+forward-compatible; do not run destructive rollback SQL. Then continue the remaining P01–P24 and
+S3–S9/U01–U12 gaps in dependency order. Fetch and safely integrate before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
@@ -1538,7 +1542,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `035a3274` adds exact-digest owner review and atomic retryable additive Gadget-schema migrations per Space-shared MicroApp actor. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Authority/dependency expansion, connection/price changes, broader data-migration rollback, scanning/retention and live acceptance remain. |
+| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `035a3274` adds exact-digest owner review and atomic retryable additive Gadget-schema migrations per Space-shared MicroApp actor. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. `12e0163d` adds owner-only additive top-level authority expansion bound to candidate/source artifact and manifest hashes, with explicit confirmation and durable receipt (Spaces tests **67/67**, Spaces/Shell typechecks). Sequential Gadget schema migrations across releases, dependency/connection/price changes, broader data-migration rollback, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning queue/workflow and notification outcomes exist; Product-user dispatch now verifies current product tenancy against the durable outbox (`ca9aead9`). Retry scheduling still follows bounded dispatch retry plus Cloudflare Workflow behavior; policy, exhausted-operation visibility and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. `da6245fe` detects when the Cloudflare GraphQL query hits its 100-row limit and persists a `queue_analytics_row_limit_reached` alert; status remains incomplete. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |

@@ -16,36 +16,36 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 and §10 source reconciliation; P03/P12 and S4)
+## Latest checkpoint — 2026-11-14 (P10 owner-confirmed Space-shared authority expansion)
 
-S4/MS12 code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` and runbook/ledger checkpoint `1044097a0c67382b4d969c08873b0020af2d417b` are pushed to `origin/Mcbt5s-Backup-2`. Migration 0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed audit. Owner/admin CAS routes, authenticated Router reachability and a Shell editor are present. Values are bounded and reject shell/secret-shaped inputs; execution/health verification remain explicitly unsupported. P01 now pins 250 migrations; fresh SQLite rehearsal, release manifest/runner suites and validators pass locally as recorded below.
+Code `12e0163d` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
+Space-shared signed updates now permit only additive top-level declared permissions/capabilities
+while publisher, package settings, dependencies, provider connections, shared-drive grants and
+primitive-level authority stay unchanged. A Space owner must explicitly confirm at review and apply;
+apply rechecks the signed source/candidate/artifact, publisher revocation, pause/drain state and exact
+authority delta. Migration 138 persists that delta in the durable receipt and replay verifies it.
+The installation remains paused.
 
-P03/P12 code `ca9aead9f8dca0ef77e66b154ee39d40368489d4` is pushed. Product-user dunning dispatch now verifies that the current product tenant matches `billing_dunning_outbox.tenant_id` before queueing; mismatched or missing ownership remains deferred and cannot cross tenant scope. This complements the existing stable outbox/workflow IDs, current-subscription recheck and notification receipts without changing billing policy.
+Verification: focused Spaces contract/package/DO/migration suites **67/67**, Spaces and Shell
+typechecks, and `git diff --check` pass. These are local SQLite/mocked checks; no deployment, browser,
+provider or live acceptance ran. P10 remains PARTIAL for data/schema migration recovery, connection,
+dependency and price changes, package scanning/retention, and deployment/live acceptance. P02's
+resource isolation/evidence, P03/P12 policy and live-delivery gates, and S4's runtime, private-state,
+physical purge and U05/U06 contracts remain as recorded in the ledgers. Rollouts remain disabled.
 
-The recorded signed keypad-extension microapp task is already implemented in the pushed source: the
-bounded-phone-menu package has per-install settings, an owner dashboard, exact active-line selection,
-signed-release status, masked call history and synthetic call/DTMF tests (Twilio-only speech; Telnyx
-remains DTMF-only). Its focused SDK/Spaces/Agents checks are recorded in the platform progress
-ledger. Do not duplicate it or publish it to a first-party catalog: that requires an approved Naelao
-publisher identity, signing/key custody, canonical artifact distribution and catalog policy.
+The bounded-phone-menu package and owner dashboard are already implemented locally; first-party
+listing still needs an approved Naelao publisher identity, signing/key custody, canonical artifact
+distribution and catalog policy. Shared-Space proposal approval stays advisory and does not grant
+project/service access. Earlier S4/P01, P03/P12, archive restore and knowledge-grant work remains in
+the records below.
 
-The shared-Space advisory boundary is also present: coordination proposal approval returns
-`access_granted: false`, leaves project membership unchanged and publishes only an explicitly approved
-fact; request-to-use resolution does not grant service access. Existing evidence is in
-`space-coordination-proposals.test.ts`, `space-coordination-registry.test.ts` and
-`SpaceCoordinationPanel.tsx`.
-
-Local evidence: dunning outbox/dispatch/status tests **13/13**, Billing typecheck, Workflows queue/recovery tests **13/13**, and `git diff --check`. For S4: profile/route tests **9/9**, Agents typecheck, Shell typecheck and inert editor test **1/1**, Router route test **4/4** and typecheck. P01: full fresh SQLite migration rehearsal **1/1** through 0250, release manifest/runner suites **38/38**, release/deployment validators pass. All are local/mocked checks; no provider, remote D1, deployment, browser or live acceptance ran.
-
-P02 still requires actual per-environment resource ownership/IDs, fresh read-only receipts and operator-attested D1 baselines. P03/P12 still lack approved grace/restriction/escalation and retry-cadence policy plus live delivery acceptance. S4/MS12 still lacks the accepted runtime adapter, U05 observation producer, U06 writer admission/drain/reconnect/handoff contract, encrypted private-state byte fallback, recipe execution and physical snapshot purge. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
-
-Exact next action: extend the signed Space-shared package update flow to support a narrowly scoped,
-owner-confirmed permission/capability expansion. Keep publisher, package configuration, provider
-connections, shared-drive grants and dependencies unchanged in this slice; bind the exact authority
-diff and candidate artifact/manifest to the review token and durable receipt, keep the install paused,
-and add regression coverage for stale/revoked releases and concurrent review. Then continue S3–S9/
-U01–U12 and the remaining guided-template, voice and Shared-Space requirements. Keep all rollouts
-disabled. Fetch and safely integrate remote advances before every push.
+Exact next action: make sequential additive Gadget schema updates work across signed package releases.
+In `MicroAppDO`, keep the original signed artifact proof verifiable, but bind each migration request's
+current source to the persisted `schema_release_version` and `schema_manifest_sha256` plus the
+Space worker's signed current-release claims. Add an integration regression for 1.0→1.2→1.3 on the
+same Gadget actor, including retry and stale-source rejection. Keep migrations append-only and
+forward-compatible; do not run destructive rollback SQL. Then continue the next uncoded S3–S9/
+U01–U12/P01–P24 requirement. Fetch and safely integrate before every push; preserve the Python cache.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
