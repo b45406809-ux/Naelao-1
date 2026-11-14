@@ -469,8 +469,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     let sourceProof: CanvasReleaseProof;
     try { sourceProof = JSON.parse(proofJson) as CanvasReleaseProof; }
     catch { return Response.json({ error_code: "gadget_schema_update_signed_source_invalid" }, { status: 409 }); }
-    if (sourceProof.extensionId !== claims.extensionId || sourceProof.artifactSha256 !== claims.sourceArtifactSha256
-      || !await this.verifyCanvasReleaseProof(sourceProof, html))
+    if (sourceProof.extensionId !== claims.extensionId || !await this.verifyCanvasReleaseProof(sourceProof, html))
       return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
     const existingInstallationId = this.metadata("extension_installation_id");
     if (existingInstallationId && existingInstallationId !== claims.installationId)
@@ -499,7 +498,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const storedSourceVersion = this.metadata("schema_release_version") ?? sourceProof.version;
     const storedSourceManifest = this.metadata("schema_manifest_sha256")
       ?? await sha256(sourceProof.manifestJson).catch(() => "");
-    if (storedSourceVersion !== claims.fromVersion || storedSourceManifest !== claims.sourceManifestSha256)
+    const storedSourceArtifact = this.metadata("schema_artifact_sha256") ?? sourceProof.artifactSha256;
+    if (storedSourceVersion !== claims.fromVersion || storedSourceManifest !== claims.sourceManifestSha256
+      || storedSourceArtifact !== claims.sourceArtifactSha256)
       return Response.json({ error_code: "gadget_schema_update_source_pin_conflict" }, { status: 409 });
 
     const migrationHashes = new Map(await Promise.all(migrations.map(async (migration: { version: number; description: string; up: string }) => [migration.version,
@@ -535,6 +536,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
           claims.migrationsSha256, new Date().toISOString());
         this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('schema_release_version',?),('schema_manifest_sha256',?)",
           claims.toVersion, claims.candidateManifestSha256);
+        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('schema_artifact_sha256',?)", claims.artifactSha256);
         this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('extension_installation_id',?)", claims.installationId);
       });
     } catch (error) {

@@ -46,7 +46,7 @@ async function harness() {
   const migrationPayload = JSON.stringify(migrations);
   const unsignedClaims = { version: 1 as const, purpose: "space_shared_gadget_schema_update" as const,
     tenantId: "tenant-a", spaceId: "space-a", installationId: "install-a", extensionId, appId,
-    fromVersion: "1.0.0", toVersion: "1.1.0", sourceManifestSha256,
+    fromVersion: "1.0.0", toVersion: "1.2.0", sourceManifestSha256,
     candidateManifestSha256: "b".repeat(64), sourceArtifactSha256: artifactSha256,
     artifactSha256: "c".repeat(64), publisherKeyId: "d".repeat(64),
     migrationsSha256: await sha256(migrationPayload) };
@@ -104,6 +104,47 @@ describe("signed Space-shared Gadget schema update", () => {
     expect(responses.map(response => response.status)).toEqual([200, 200]);
     expect(h.sql.exec("SELECT version FROM gadget_schema_migrations WHERE version=2").toArray()).toHaveLength(1);
     expect(h.sql.exec("SELECT operation_key FROM gadget_extension_schema_update_receipts").toArray()).toHaveLength(1);
+  });
+
+  it("accepts sequential signed additive updates against the persisted current schema pin", async () => {
+    const h = await harness();
+    const first = await h.apply();
+    expect(first.status, await first.clone().text()).toBe(200);
+    expect(await first.json()).toMatchObject({ applied: true, replayed: false });
+
+    const nextMigrations = [{ version: 3, description: "add created timestamp", up: "ALTER TABLE records ADD COLUMN created_at TEXT;" }];
+    const nextMigrationsSha256 = await sha256(JSON.stringify(nextMigrations));
+    const { operationKey: _firstOperationKey, ...priorIdentity } = h.claims;
+    const nextIdentity = { ...priorIdentity, fromVersion: "1.2.0", toVersion: "1.3.0",
+      sourceManifestSha256: "b".repeat(64), candidateManifestSha256: "e".repeat(64),
+      sourceArtifactSha256: "c".repeat(64), artifactSha256: "f".repeat(64), migrationsSha256: nextMigrationsSha256 };
+    const nextOperationKey = await sha256(JSON.stringify(nextIdentity));
+    const nextClaims = { ...nextIdentity, operationKey: nextOperationKey };
+    const nextSignature = await signHmac(JSON.stringify(nextClaims), secret);
+    const second = await h.apply({ claims: nextClaims, migrations: nextMigrations, signature: nextSignature });
+    expect(second.status, await second.clone().text()).toBe(200);
+    expect(await second.json()).toMatchObject({ applied: true, replayed: false, operation_key: nextOperationKey });
+    expect(h.sql.exec<{ name: string }>("PRAGMA table_info(records)").toArray().map(row => row.name)).toEqual(["id", "status", "created_at"]);
+    expect(h.sql.exec("SELECT version FROM gadget_schema_migrations ORDER BY version").toArray())
+      .toEqual([{ version: 2 }, { version: 3 }]);
+    expect(h.sql.exec("SELECT value FROM gadget_metadata WHERE key IN ('schema_release_version','schema_manifest_sha256','schema_artifact_sha256') ORDER BY key")
+      .toArray()).toEqual([{ value: "f".repeat(64) }, { value: "e".repeat(64) }, { value: "1.3.0" }]);
+
+    const replay = await h.apply({ claims: nextClaims, migrations: nextMigrations, signature: nextSignature });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ applied: true, replayed: true, operation_key: nextOperationKey });
+
+    const staleIdentity = { ...nextIdentity, fromVersion: "1.0.0", sourceManifestSha256: h.claims.sourceManifestSha256,
+      sourceArtifactSha256: h.claims.sourceArtifactSha256 };
+    const staleOperationKey = await sha256(JSON.stringify(staleIdentity));
+    const staleClaims = { ...staleIdentity, operationKey: staleOperationKey };
+    const staleSignature = await signHmac(JSON.stringify(staleClaims), secret);
+    const stale = await h.apply({ claims: staleClaims, migrations: nextMigrations, signature: staleSignature });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error_code: "gadget_schema_update_source_pin_conflict" });
+    expect(h.sql.exec("SELECT version FROM gadget_schema_migrations ORDER BY version").toArray())
+      .toEqual([{ version: 2 }, { version: 3 }]);
+    expect(h.sql.exec("SELECT operation_key FROM gadget_extension_schema_update_receipts").toArray()).toHaveLength(2);
   });
 
   it("binds the Gadget actor to the exact extension installation", async () => {
