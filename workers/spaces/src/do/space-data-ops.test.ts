@@ -507,6 +507,11 @@ describe("SpaceDO owner data operations", () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const workspaceScope = { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a", jurisdiction: "global" as const };
     let coordinator = workspaceCoordinator(new WorkspaceStorage(), r2, secret);
+    const projectSettingsSnapshot = { version: 1 as const, scope: { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a" },
+      mainRuntimeProfile: { profile: "standard-2" as const, sourceVersion: 4, sourceUpdatedBy: "source-owner", sourceUpdatedAt: "2026-11-14T10:00:00.000Z" },
+      restartRecipes: { recipes: [{ id: "web", label: "Web", workingDirectory: "apps/web", argv: ["npm", "run", "start"], manualVerification: "Check /health manually." }],
+        sourceVersion: 2, sourceUpdatedBy: "source-owner", sourceUpdatedAt: "2026-11-14T10:00:00.000Z" } };
+    let projectProfileRestored = false, projectRecipesRestored = false;
     const coordinatorCall = async (target: WorkspaceCoordinatorDO, path: string, body: unknown) => target.fetch(new Request(`https://workspace${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a",
         "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") }, body: JSON.stringify(body),
@@ -514,6 +519,17 @@ describe("SpaceDO owner data operations", () => {
     const agentsWorker = { async fetch(request: Request) {
       const body = await request.json() as Record<string, unknown>;
       const path = new URL(request.url).pathname;
+      if (path.endsWith("/archive/project-settings/export")) return Response.json({ present: true, snapshot: projectSettingsSnapshot });
+      if (path.endsWith("/archive/project-settings/restore")) {
+        if (body.mode === "preview") return Response.json({ preview: {
+          mainRuntimeProfile: projectProfileRestored ? "preserved_current" : "will_restore",
+          restartRecipes: projectRecipesRestored ? "preserved_current" : "will_restore",
+        } });
+        const restored = { mainRuntimeProfile: projectProfileRestored ? "preserved_current" : "restored",
+          restartRecipes: projectRecipesRestored ? "preserved_current" : "restored" };
+        projectProfileRestored = true; projectRecipesRestored = true;
+        return Response.json({ restored });
+      }
       if (path.endsWith("/archive/export")) {
         const response = await coordinatorCall(coordinator, "/v1/archive/export", { scope: body.scope });
         if (!response.ok) return response;
@@ -560,6 +576,9 @@ describe("SpaceDO owner data operations", () => {
     const { archive_id: archiveId } = await exported.json() as { archive_id: string };
     const archiveKey = `space-archives/tenant-a/space-a/${archiveId}.enc`;
     const archived = await decodeSpaceArchive(r2.objects.get(archiveKey)!.bytes, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId });
+    expect(archived.projectRuntimeSettingsVersion).toBe(1);
+    expect(archived.projectRuntimeSettings).toEqual([projectSettingsSnapshot]);
+    expect(archived.projectRuntimeSettings?.[0]).not.toHaveProperty("runtimeAllocation");
     expect(archived.workspaceSnapshots).toHaveLength(1);
     expect(archived.workspaceSnapshots?.[0]).toMatchObject({ projectId: "project-a", jurisdiction: "global", branches: [
       { head: { branch: "main", revision: 1 } }, { head: { branch: "runs/agent-a", revision: 1 }, base: { parentBranch: "main", revision: 1 } },
@@ -584,8 +603,10 @@ describe("SpaceDO owner data operations", () => {
     coordinator = different;
     const previewResponse = await post({ action: "preview_restore", archive_id: archiveId });
     expect(previewResponse.status).toBe(200);
-    const preview = await previewResponse.json() as { preview_id: string; workspace_restore_count: number; object_restore_required_count: number };
-    expect(preview).toMatchObject({ workspace_restore_count: 1, object_restore_required_count: workspaceReferences.length });
+    const preview = await previewResponse.json() as { preview_id: string; workspace_restore_count: number; object_restore_required_count: number;
+      project_runtime_settings: { projects: number; will_restore: { main_runtime_profile: number; restart_recipes: number } } };
+    expect(preview).toMatchObject({ workspace_restore_count: 1, object_restore_required_count: workspaceReferences.length,
+      project_runtime_settings: { projects: 1, will_restore: { main_runtime_profile: 1, restart_recipes: 1 } } });
     const rejected = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(rejected.status).toBe(409);
     expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]?.status).toBe("partial");
@@ -597,7 +618,11 @@ describe("SpaceDO owner data operations", () => {
     coordinator = workspaceCoordinator(new WorkspaceStorage(), r2, secret);
     const restored = await post({ action: "apply_restore", archive_id: archiveId, preview_id: preview.preview_id });
     expect(restored.status, JSON.stringify(await restored.clone().json())).toBe(200);
-    expect(await restored.json()).toMatchObject({ restored_workspace_count: 1 });
+    expect(await restored.json()).toMatchObject({ restored_workspace_count: 1, safety_actions: { project_runtime_settings: {
+      projects: 1, restored: { main_runtime_profile: 1, restart_recipes: 1 }, preserved_current: { main_runtime_profile: 0, restart_recipes: 0 },
+    } } });
+    expect(JSON.parse(storage.sql.exec<{ safety_actions_json: string }>("SELECT safety_actions_json FROM space_archive_restores WHERE id=?", preview.preview_id).toArray()[0]!.safety_actions_json))
+      .toMatchObject({ project_runtime_settings: { restored: { main_runtime_profile: 1, restart_recipes: 1 } } });
     const restoredHead = await coordinator.fetch(new Request("https://workspace/v1/head?branch=runs%2Fagent-a", { headers: {
       "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
     } }));

@@ -11,10 +11,24 @@ export interface SpaceArchivePayload {
   objectReferences: Array<{ key: string; etag: string; size: number }>;
   /** Committed project workspace heads and merge bases from WorkspaceCoordinatorDO. */
   workspaceSnapshots?: SpaceArchiveWorkspaceSnapshot[];
+  /** Versioned safe Agent-owned project settings; never contains allocations or provider snapshots. */
+  projectRuntimeSettingsVersion?: 1;
+  projectRuntimeSettings?: SpaceArchiveProjectRuntimeSettingsSnapshot[];
   /** Absent only in legacy archives written before object-byte capture was added. */
   objectSnapshots?: Array<SpaceArchiveObjectSnapshot | SpaceArchiveChunkedObjectSnapshot>;
   selectionFingerprint?: string;
 }
+
+export interface SpaceArchiveProjectRuntimeSettingsSnapshot {
+  version: 1;
+  scope: { tenantId: string; spaceId: string; projectId: string };
+  mainRuntimeProfile: { profile: "lite" | "standard-1" | "standard-2" | "standard-3" | "standard-4";
+    sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
+  restartRecipes: { recipes: Array<{ id: string; label: string; workingDirectory: string; argv: string[]; manualVerification: string }>;
+    sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
+}
+
+export const MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES = 2 * 1024 * 1024;
 
 export interface SpaceArchiveWorkspaceSnapshot {
   version: 1;
@@ -33,6 +47,63 @@ export interface SpaceArchiveWorkspaceSnapshot {
     };
     base: { parentBranch: string; revision: number; manifestHash: string } | null;
   }>;
+}
+
+export function isSpaceArchiveProjectRuntimeSettingsSnapshot(
+  value: unknown,
+  expected: { tenantId: string; spaceId: string; projectId: string },
+): value is SpaceArchiveProjectRuntimeSettingsSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some(key => !["version", "scope", "mainRuntimeProfile", "restartRecipes"].includes(key)) || row.version !== 1
+    || !row.scope || typeof row.scope !== "object" || Array.isArray(row.scope)) return false;
+  const scope = row.scope as Record<string, unknown>;
+  if (Object.keys(scope).some(key => !["tenantId", "spaceId", "projectId"].includes(key))
+    || scope.tenantId !== expected.tenantId || scope.spaceId !== expected.spaceId || scope.projectId !== expected.projectId) return false;
+  const validMetadata = (item: unknown): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)
+    && Number.isSafeInteger((item as Record<string, unknown>).sourceVersion) && Number((item as Record<string, unknown>).sourceVersion) > 0
+    && typeof (item as Record<string, unknown>).sourceUpdatedBy === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test((item as Record<string, unknown>).sourceUpdatedBy as string)
+    && typeof (item as Record<string, unknown>).sourceUpdatedAt === "string" && Number.isFinite(Date.parse((item as Record<string, unknown>).sourceUpdatedAt as string)));
+  if (row.mainRuntimeProfile !== null) {
+    if (!validMetadata(row.mainRuntimeProfile)) return false;
+    const profile = row.mainRuntimeProfile as Record<string, unknown>;
+    if (Object.keys(profile).some(key => !["profile", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
+      || !["lite", "standard-1", "standard-2", "standard-3", "standard-4"].includes(String(profile.profile))) return false;
+  }
+  if (row.restartRecipes !== null) {
+    if (!validMetadata(row.restartRecipes)) return false;
+    const restart = row.restartRecipes as Record<string, unknown>;
+    if (Object.keys(restart).some(key => !["recipes", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
+      || !Array.isArray(restart.recipes) || restart.recipes.length > 10) return false;
+    const ids = new Set<string>();
+    const secretLike = /(?:--?(?:password|passwd|secret|token|api[-_]?key|authorization|bearer)\b|(?:password|passwd|secret|token|api[-_]?key|authorization|bearer)\s*=|\bBearer\s+[A-Za-z0-9._~+/-]{12,})/i;
+    const shellMeta = /[\u0000-\u001f\u007f`$;|&<>]/;
+    let bytes = 0;
+    for (const recipe of restart.recipes) {
+      if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) return false;
+      const item = recipe as Record<string, unknown>;
+      if (Object.keys(item).some(key => !["id", "label", "workingDirectory", "argv", "manualVerification"].includes(key))
+        || typeof item.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(item.id) || ids.has(item.id)
+        || typeof item.label !== "string" || !item.label.trim() || item.label.trim().length > 80
+        || /[\u0000-\u001f\u007f]/.test(item.label) || secretLike.test(item.label)
+        || typeof item.workingDirectory !== "string" || item.workingDirectory.length > 160 || item.workingDirectory.startsWith("/")
+        || item.workingDirectory.includes("\\") || !/^[A-Za-z0-9._/-]+$/.test(item.workingDirectory)
+        || (item.workingDirectory !== "." && item.workingDirectory.split("/").some(part => !part || part === "." || part === ".."))
+        || !Array.isArray(item.argv) || item.argv.length < 1 || item.argv.length > 16
+        || item.argv.some(arg => typeof arg !== "string" || !arg.trim() || arg.length > 256 || shellMeta.test(arg) || secretLike.test(arg))
+        || typeof item.manualVerification !== "string" || !item.manualVerification.trim() || item.manualVerification.trim().length > 240
+        || /[\u0000-\u001f\u007f]/.test(item.manualVerification) || secretLike.test(item.manualVerification)) return false;
+      ids.add(item.id);
+      const argv = item.argv as string[];
+      const executable = argv[0]!.trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(executable)
+        || ["sh", "bash", "zsh", "fish", "dash", "cmd", "powershell", "pwsh"].includes(executable.toLowerCase())) return false;
+      bytes += JSON.stringify(item).length;
+    }
+    if (bytes > 12_000) return false;
+  }
+  return (row.mainRuntimeProfile !== null || row.restartRecipes !== null)
+    && new TextEncoder().encode(JSON.stringify(row)).byteLength <= 32_000;
 }
 
 export interface SpaceArchiveObjectSnapshot {

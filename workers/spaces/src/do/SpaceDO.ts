@@ -40,7 +40,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { captureSpaceArchiveObject, captureSpaceArchiveObjectChunked, checksumSpaceArchiveObject, decodeSpaceArchiveChunkedObjectSnapshot, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, deleteSpaceArchiveChunkObjects, encodeSpaceArchive, MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES, MAX_ARCHIVE_CHUNKED_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, verifySpaceArchiveObjectSnapshots, type ResumableArchiveUploadState, type SpaceArchivePayload, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
+import { captureSpaceArchiveObject, captureSpaceArchiveObjectChunked, checksumSpaceArchiveObject, decodeSpaceArchiveChunkedObjectSnapshot, decodeSpaceArchiveObjectSnapshot, decodeSpaceArchive, deleteSpaceArchiveChunkObjects, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, MAX_ARCHIVE_CHUNKED_CAPTURE_BYTES, MAX_ARCHIVE_CHUNKED_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_BYTES, MAX_ARCHIVE_OBJECT_CAPTURE_BYTES, MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, verifySpaceArchiveObjectSnapshots, type ResumableArchiveUploadState, type SpaceArchivePayload, type SpaceArchiveProjectRuntimeSettingsSnapshot, type SpaceArchiveWorkspaceSnapshot } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
@@ -4362,6 +4362,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       const objectReferences: Array<{ key: string; etag: string; size: number }> = [];
       const workspaceSnapshots: SpaceArchiveWorkspaceSnapshot[] = [];
+      const projectRuntimeSettings: SpaceArchiveProjectRuntimeSettingsSnapshot[] = [];
+      let projectRuntimeSettingsBytes = 0;
       if (kind === "full") {
         for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`, `spaces/${spaceId}/extensions/`, `spaces/${spaceId}/agents/`, `spaces/${spaceId}/workspace/`, `spaces/${spaceId}/scripts/`]) {
           let cursor: string | undefined;
@@ -4393,22 +4395,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
           if (!response.ok) return Response.json({ error_code: "archive_workspace_export_failed", project_id: project.id, status: response.status }, { status: response.status >= 400 && response.status < 600 ? response.status as 400 | 403 | 409 | 410 | 413 | 423 | 503 : 503 });
           const workspace = await readBoundedResponseJson<{ present?: unknown; snapshot?: unknown; objectReferences?: Array<{ key?: unknown; etag?: unknown; size?: unknown }> }>(response, 8 * 1024 * 1024).catch(() => null);
-          if (!workspace || workspace.present === false) continue;
-          if (workspace.present !== true || !isSpaceArchiveWorkspaceSnapshot(workspace.snapshot, { projectId: project.id, jurisdiction }) || !Array.isArray(workspace.objectReferences)) {
+          if (!workspace) return Response.json({ error_code: "archive_workspace_snapshot_invalid", project_id: project.id }, { status: 503 });
+          if (workspace.present === true) {
+            if (!isSpaceArchiveWorkspaceSnapshot(workspace.snapshot, { projectId: project.id, jurisdiction }) || !Array.isArray(workspace.objectReferences)) {
+              return Response.json({ error_code: "archive_workspace_snapshot_invalid", project_id: project.id }, { status: 503 });
+            }
+            const objectPrefix = `workspace-v1/${tenantId}/${spaceId}/${project.id}/${jurisdiction}/`;
+            if (workspace.objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+            for (const ref of workspace.objectReferences) {
+              if (typeof ref.key !== "string" || !ref.key.startsWith(objectPrefix) || typeof ref.etag !== "string" || !ref.etag ||
+                  !Number.isSafeInteger(ref.size) || Number(ref.size) < 0 || knownObjectKeys.has(ref.key)) {
+                return Response.json({ error_code: "archive_workspace_object_reference_invalid", project_id: project.id }, { status: 503 });
+              }
+              knownObjectKeys.add(ref.key);
+              objectReferences.push({ key: ref.key, etag: ref.etag, size: Number(ref.size) });
+              if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+            }
+            workspaceSnapshots.push(workspace.snapshot);
+          } else if (workspace.present !== false || workspace.snapshot !== undefined) {
             return Response.json({ error_code: "archive_workspace_snapshot_invalid", project_id: project.id }, { status: 503 });
           }
-          const objectPrefix = `workspace-v1/${tenantId}/${spaceId}/${project.id}/${jurisdiction}/`;
-          if (workspace.objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
-          for (const ref of workspace.objectReferences) {
-            if (typeof ref.key !== "string" || !ref.key.startsWith(objectPrefix) || typeof ref.etag !== "string" || !ref.etag ||
-                !Number.isSafeInteger(ref.size) || Number(ref.size) < 0 || knownObjectKeys.has(ref.key)) {
-              return Response.json({ error_code: "archive_workspace_object_reference_invalid", project_id: project.id }, { status: 503 });
-            }
-            knownObjectKeys.add(ref.key);
-            objectReferences.push({ key: ref.key, etag: ref.etag, size: Number(ref.size) });
-            if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+
+          let settingsResponse: Response;
+          try {
+            settingsResponse = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/archive/project-settings/export", {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+              body: JSON.stringify({ scope: { tenantId, spaceId, projectId: project.id } }),
+            }));
+          } catch {
+            return Response.json({ error_code: "archive_project_runtime_settings_unavailable", project_id: project.id }, { status: 503 });
           }
-          workspaceSnapshots.push(workspace.snapshot);
+          if (!settingsResponse.ok) return Response.json({ error_code: "archive_project_runtime_settings_export_failed", project_id: project.id, status: settingsResponse.status }, { status: 503 });
+          const settings = await readBoundedResponseJson<{ present?: unknown; snapshot?: unknown }>(settingsResponse, 48 * 1024).catch(() => null);
+          if (!settings || typeof settings.present !== "boolean") return Response.json({ error_code: "archive_project_runtime_settings_invalid", project_id: project.id }, { status: 503 });
+          if (settings.present) {
+            if (!isSpaceArchiveProjectRuntimeSettingsSnapshot(settings.snapshot, { tenantId, spaceId, projectId: project.id }))
+              return Response.json({ error_code: "archive_project_runtime_settings_invalid", project_id: project.id }, { status: 503 });
+            projectRuntimeSettings.push(settings.snapshot);
+            projectRuntimeSettingsBytes += new TextEncoder().encode(JSON.stringify(settings.snapshot)).byteLength;
+            if (projectRuntimeSettings.length > 1000 || projectRuntimeSettingsBytes > MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES)
+              return Response.json({ error_code: "archive_project_runtime_settings_limit_exceeded" }, { status: 413 });
+          } else if (settings.snapshot !== undefined) return Response.json({ error_code: "archive_project_runtime_settings_invalid", project_id: project.id }, { status: 503 });
         }
       }
       let totalObjectBytes = 0;
@@ -4447,7 +4475,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: useChunkedObjects ? 2 : 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, objectSnapshots,
-        ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(selectionFingerprint ? { selectionFingerprint } : {}) };
+        ...(workspaceSnapshots.length ? { workspaceSnapshots } : {}), ...(projectRuntimeSettings.length ? { projectRuntimeSettingsVersion: 1 as const, projectRuntimeSettings } : {}),
+        ...(selectionFingerprint ? { selectionFingerprint } : {}) };
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
       try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
       catch (error) {
@@ -4649,6 +4678,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           project.id === workspaceSnapshot.projectId && project.space_id === spaceId)) return Response.json({ error_code: "archive_workspace_project_scope_mismatch" }, { status: 422 });
         workspaceProjectIds.add(workspaceSnapshot.projectId);
       }
+      const hasProjectRuntimeSettingsVersion = Object.prototype.hasOwnProperty.call(payload, "projectRuntimeSettingsVersion");
+      const hasProjectRuntimeSettings = Object.prototype.hasOwnProperty.call(payload, "projectRuntimeSettings");
+      const rawProjectRuntimeSettings: unknown = payload.projectRuntimeSettings;
+      const projectRuntimeSettings = Array.isArray(rawProjectRuntimeSettings)
+        ? rawProjectRuntimeSettings as SpaceArchiveProjectRuntimeSettingsSnapshot[] : [];
+      if ((hasProjectRuntimeSettingsVersion || hasProjectRuntimeSettings)
+        && (payload.projectRuntimeSettingsVersion !== 1 || !Array.isArray(rawProjectRuntimeSettings) || projectRuntimeSettings.length > 1000)) {
+        return Response.json({ error_code: "archive_project_runtime_settings_set_invalid" }, { status: 422 });
+      }
+      const projectSettingsIds = new Set<string>();
+      let projectRuntimeSettingsBytes = 0;
+      for (const settingsSnapshot of projectRuntimeSettings) {
+        const projectId = settingsSnapshot?.scope?.projectId ?? "";
+        if (!isSpaceArchiveProjectRuntimeSettingsSnapshot(settingsSnapshot, { tenantId, spaceId, projectId })
+          || projectSettingsIds.has(projectId)
+          || !(payload.tableRows.projects ?? []).some(project => project.id === projectId && project.space_id === spaceId)) {
+          return Response.json({ error_code: "archive_project_runtime_settings_scope_mismatch" }, { status: 422 });
+        }
+        projectSettingsIds.add(projectId);
+        projectRuntimeSettingsBytes += new TextEncoder().encode(JSON.stringify(settingsSnapshot)).byteLength;
+        if (projectRuntimeSettingsBytes > MAX_ARCHIVE_PROJECT_RUNTIME_SETTINGS_BYTES)
+          return Response.json({ error_code: "archive_project_runtime_settings_limit_exceeded" }, { status: 422 });
+      }
       let objectRestoreRequiredCount = 0;
       const seenObjectKeys = new Set<string>();
       for (const ref of payload.objectReferences) {
@@ -4676,6 +4728,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const expectedKeys = [branch.head.manifestHash, ...(branch.base ? [branch.base.manifestHash] : [])]
             .map(hash => `workspace-v1/${tenantId}/${spaceId}/${workspaceSnapshot.projectId}/${workspaceSnapshot.jurisdiction}/manifests/${hash}.json`);
           if (expectedKeys.some(key => !seenObjectKeys.has(key))) return Response.json({ error_code: "archive_workspace_manifest_reference_missing", project_id: workspaceSnapshot.projectId }, { status: 422 });
+        }
+      }
+      const projectRuntimeSettingsPreview = { projects: projectRuntimeSettings.length,
+        will_restore: { main_runtime_profile: 0, restart_recipes: 0 }, preserved_current: { main_runtime_profile: 0, restart_recipes: 0 } };
+      if (projectRuntimeSettings.length) {
+        if (!this.env.AGENTS_WORKER) return Response.json({ error_code: "archive_project_runtime_settings_unavailable" }, { status: 503 });
+        for (const snapshot of projectRuntimeSettings) {
+          let response: Response;
+          try {
+            response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/archive/project-settings/restore", {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+              body: JSON.stringify({ mode: "preview", scope: snapshot.scope, snapshot, actorId }),
+            }));
+          } catch { return Response.json({ error_code: "archive_project_runtime_settings_preview_unavailable", project_id: snapshot.scope.projectId }, { status: 503 }); }
+          if (!response.ok) return Response.json({ error_code: "archive_project_runtime_settings_preview_failed", project_id: snapshot.scope.projectId, status: response.status }, { status: 503 });
+          const result = await readBoundedResponseJson<{ preview?: { mainRuntimeProfile?: unknown; restartRecipes?: unknown } }>(response, 8 * 1024).catch(() => null);
+          if (!result?.preview || !["will_restore", "preserved_current", "not_in_archive"].includes(String(result.preview.mainRuntimeProfile))
+            || !["will_restore", "preserved_current", "not_in_archive"].includes(String(result.preview.restartRecipes))) {
+            return Response.json({ error_code: "archive_project_runtime_settings_preview_invalid", project_id: snapshot.scope.projectId }, { status: 503 });
+          }
+          if (result.preview.mainRuntimeProfile === "will_restore") projectRuntimeSettingsPreview.will_restore.main_runtime_profile++;
+          if (result.preview.mainRuntimeProfile === "preserved_current") projectRuntimeSettingsPreview.preserved_current.main_runtime_profile++;
+          if (result.preview.restartRecipes === "will_restore") projectRuntimeSettingsPreview.will_restore.restart_recipes++;
+          if (result.preview.restartRecipes === "preserved_current") projectRuntimeSettingsPreview.preserved_current.restart_recipes++;
         }
       }
       const dependencies: Record<string, string[]> = {};
@@ -4755,6 +4832,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts,
           row_merge: { would_insert: mergePreview.inserted, would_skip_by_constraints: mergePreview.skipped }, object_references_verified: payload.objectReferences.length,
           object_restore_required_count: objectRestoreRequiredCount, workspace_restore_count: workspaceSnapshots.length, restore_mode: "idempotent_merge_missing_rows", merge_snapshot_at: now,
+          ...(projectRuntimeSettings.length ? { project_runtime_settings: projectRuntimeSettingsPreview } : {}),
           safety_actions: { archived_active_event_trigger_count: archivedActiveEventTriggerCount, missing_event_triggers_will_be_inserted_disabled: true,
             existing_event_trigger_state_will_be_preserved: true,
             archived_active_task_count: archivedActiveTaskCount,
@@ -4849,6 +4927,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         restoredWorkspaceCount++;
       }
+      const restoredProjectRuntimeSettings = { projects: projectRuntimeSettings.length,
+        restored: { main_runtime_profile: 0, restart_recipes: 0 }, preserved_current: { main_runtime_profile: 0, restart_recipes: 0 } };
+      for (const snapshot of projectRuntimeSettings) {
+        if (!this.env.AGENTS_WORKER) {
+          const message = "archive_project_runtime_settings_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount, restored_workspace_count: restoredWorkspaceCount }, { status: 503 });
+        }
+        let response: Response;
+        try {
+          response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workspaces/archive/project-settings/restore", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ mode: "restore", scope: snapshot.scope, snapshot, actorId }),
+          }));
+        } catch {
+          const message = "archive_project_runtime_settings_restore_unavailable";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, restored_object_count: verifiedObjectCount, restored_workspace_count: restoredWorkspaceCount }, { status: 503 });
+        }
+        if (!response.ok) {
+          const detail = await readBoundedResponseJson<{ error_code?: unknown }>(response, 8 * 1024).catch(() => null);
+          const code = typeof detail?.error_code === "string" && /^[a-z0-9_]{1,96}$/.test(detail.error_code) ? detail.error_code : "archive_project_runtime_settings_restore_rejected";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, code, previewId, tenantId, spaceId);
+          return Response.json({ error_code: code, project_id: snapshot.scope.projectId, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount }, { status: 503 });
+        }
+        const result = await readBoundedResponseJson<{ restored?: { mainRuntimeProfile?: unknown; restartRecipes?: unknown } }>(response, 8 * 1024).catch(() => null);
+        if (!result?.restored || !["restored", "preserved_current", "not_in_archive"].includes(String(result.restored.mainRuntimeProfile))
+          || !["restored", "preserved_current", "not_in_archive"].includes(String(result.restored.restartRecipes))) {
+          const message = "archive_project_runtime_settings_restore_response_invalid";
+          execute(sql, "UPDATE space_archive_restores SET status='partial',restored_object_count=?,last_error=? WHERE id=? AND tenant_id=? AND space_id=?", verifiedObjectCount, message, previewId, tenantId, spaceId);
+          return Response.json({ error_code: message, project_id: snapshot.scope.projectId, restored_object_count: verifiedObjectCount,
+            restored_workspace_count: restoredWorkspaceCount }, { status: 503 });
+        }
+        if (result.restored.mainRuntimeProfile === "restored") restoredProjectRuntimeSettings.restored.main_runtime_profile++;
+        if (result.restored.mainRuntimeProfile === "preserved_current") restoredProjectRuntimeSettings.preserved_current.main_runtime_profile++;
+        if (result.restored.restartRecipes === "restored") restoredProjectRuntimeSettings.restored.restart_recipes++;
+        if (result.restored.restartRecipes === "preserved_current") restoredProjectRuntimeSettings.preserved_current.restart_recipes++;
+        execute(sql, "UPDATE space_archive_restores SET status='restoring',safety_actions_json=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?",
+          JSON.stringify({ project_runtime_settings: restoredProjectRuntimeSettings }), previewId, tenantId, spaceId);
+      }
       const restoredCounts: Record<string, number> = {};
       const skippedCounts: Record<string, number> = {};
       let restoredEventTriggersDisabled = 0;
@@ -4863,6 +4983,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
           const safetyActions = { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
             restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
+            ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
             ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) };
           execute(sql, "UPDATE space_archive_restores SET restored_by=?,restored_at=?,row_counts_json=?,skipped_counts_json=?,safety_actions_json=?,status='completed',restored_object_count=?,last_error=NULL WHERE id=? AND tenant_id=? AND space_id=?", actorId, now, JSON.stringify(restoredCounts), JSON.stringify(skippedCounts), JSON.stringify(safetyActions), verifiedObjectCount, previewId, tenantId, spaceId);
           insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, safety_actions: safetyActions, mode: "idempotent_merge_missing_rows" });
@@ -4875,6 +4996,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, skipped_counts: skippedCounts, restored_object_count: verifiedObjectCount,
         restored_workspace_count: restoredWorkspaceCount, safety_actions: { restored_event_triggers_inserted_disabled: restoredEventTriggersDisabled,
           restored_tasks_blocked_for_human_intervention: restoredTasksBlockedForHumanIntervention,
+          ...(projectRuntimeSettings.length ? { project_runtime_settings: restoredProjectRuntimeSettings } : {}),
           ...(Object.keys(ownerManagedGrantRowsNotRestored).length ? { owner_managed_grant_rows_not_restored: ownerManagedGrantRowsNotRestored } : {}) }, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
     }
     return Response.json({ error_code: "unknown_action" }, { status: 400 });

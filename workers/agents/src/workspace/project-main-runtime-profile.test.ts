@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFakeD1 } from "../../../../tests/stubs/d1-sqlite.js";
-import { readProjectMainRestartRecipes, readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRestartRecipes,
+import { exportProjectMainRuntimeSettingsArchive, previewProjectMainRuntimeSettingsArchiveRestore, readProjectMainRestartRecipes, readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, restoreProjectMainRuntimeSettingsArchive, saveProjectMainRestartRecipes,
   saveProjectMainRuntimeProfile, validateProjectMainRestartRecipes } from "./project-main-runtime-profile.js";
 
 const db = () => createFakeD1([
@@ -131,5 +131,48 @@ describe("project main runtime profile preference", () => {
       Array.from({ length: 11 }, (_, index) => ({ ...recipes[0]!, id: `service-${index}` })),
     ];
     for (const value of invalid) expect(() => validateProjectMainRestartRecipes(value)).toThrow("project_main_restart_recipes_invalid");
+  });
+
+  it("archives only safe project settings and restores additively with the restore actor audited", async () => {
+    const source = db();
+    await saveProjectMainRuntimeProfile(source, scope, "pro", { profile: "standard-2", expectedVersion: 0, actorId: "source-owner" });
+    await saveProjectMainRestartRecipes(source, scope, { recipes, expectedVersion: 0, actorId: "source-owner" });
+    const snapshot = await exportProjectMainRuntimeSettingsArchive(source, scope);
+    expect(snapshot).toMatchObject({ version: 1, scope, mainRuntimeProfile: { profile: "standard-2", sourceVersion: 1 },
+      restartRecipes: { recipes, sourceVersion: 1 } });
+    expect(snapshot).not.toHaveProperty("runtimeAllocation");
+    expect(snapshot).not.toHaveProperty("providerSnapshots");
+
+    const destination = db();
+    await saveProjectMainRuntimeProfile(destination, scope, "free", { profile: "lite", expectedVersion: 0, actorId: "destination-owner" });
+    await expect(previewProjectMainRuntimeSettingsArchiveRestore(destination, scope, snapshot)).resolves.toEqual({
+      mainRuntimeProfile: "preserved_current", restartRecipes: "will_restore",
+    });
+    await expect(restoreProjectMainRuntimeSettingsArchive(destination, scope, snapshot, "restore-admin", new Date("2026-11-14T13:00:00.000Z")))
+      .resolves.toEqual({ mainRuntimeProfile: "preserved_current", restartRecipes: "restored" });
+    await expect(readProjectMainRuntimeProfile(destination, scope, "free")).resolves.toMatchObject({ profile: "lite", version: 1 });
+    await expect(readProjectMainRestartRecipes(destination, scope)).resolves.toMatchObject({ recipes, version: 1, updatedBy: "restore-admin", executionSupported: false });
+    expect(await destination.prepare("SELECT actor_id FROM project_main_runtime_profile_audit ORDER BY version").all()).toMatchObject({ results: [
+      { actor_id: "destination-owner" },
+    ] });
+    expect(await destination.prepare("SELECT actor_id,previous_version,new_version FROM project_main_restart_recipe_audit").all()).toMatchObject({ results: [
+      { actor_id: "restore-admin", previous_version: 0, new_version: 1 },
+    ] });
+
+    await expect(restoreProjectMainRuntimeSettingsArchive(destination, scope, snapshot, "restore-admin"))
+      .resolves.toEqual({ mainRuntimeProfile: "preserved_current", restartRecipes: "preserved_current" });
+    expect(await destination.prepare("SELECT COUNT(*) AS count FROM project_main_runtime_profile_audit").first()).toEqual({ count: 1 });
+    expect(await destination.prepare("SELECT COUNT(*) AS count FROM project_main_restart_recipe_audit").first()).toEqual({ count: 1 });
+    expect(await destination.prepare("SELECT COUNT(*) AS count FROM project_main_runtime_registry").first()).toEqual({ count: 0 });
+    await expect(previewProjectMainRuntimeSettingsArchiveRestore(destination, { ...scope, projectId: "other" }, snapshot))
+      .rejects.toThrow("project_main_settings_archive_scope_mismatch");
+    const tampered = structuredClone(snapshot)!;
+    tampered.restartRecipes!.recipes[0]!.workingDirectory = "../other-project";
+    await expect(restoreProjectMainRuntimeSettingsArchive(destination, scope, tampered, "restore-admin"))
+      .rejects.toThrow("project_main_settings_archive_invalid");
+  });
+
+  it("returns no archive for Projects without saved runtime settings", async () => {
+    await expect(exportProjectMainRuntimeSettingsArchive(db(), scope)).resolves.toBeNull();
   });
 });

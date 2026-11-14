@@ -18,7 +18,9 @@ import { handleWorkspaceCheckedPublish } from "./workspace/workspace-checked-pub
 import { handleWorkspaceInitialize } from "./workspace/workspace-initialize-route.js";
 import { handleWorkspaceProjectCleanup } from "./workspace/workspace-project-cleanup.js";
 import { recordLiveRuntimeObservation, searchAndVerifyLiveRuntime } from "./workspace/live-capability-verifier.js";
-import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, readProjectMainRestartRecipes, saveProjectMainRuntimeProfile, saveProjectMainRestartRecipes } from "./workspace/project-main-runtime-profile.js";
+import { exportProjectMainRuntimeSettingsArchive, previewProjectMainRuntimeSettingsArchiveRestore, readProjectMainRuntimeProfile,
+  readProjectMainRuntimeStatus, readProjectMainRestartRecipes, restoreProjectMainRuntimeSettingsArchive,
+  saveProjectMainRuntimeProfile, saveProjectMainRestartRecipes } from "./workspace/project-main-runtime-profile.js";
 import { replayWorkspaceErasureLedgerReceipt, type WorkspaceErasureLedgerReceipt } from "./workspace/phase6-erasure.js";
 import { exportPendingWorkspaceErasureReceipts, replayWorkspaceErasureBackupPage } from "./workspace/erasure-backup.js";
 import { readLatestRuntimeSnapshotRetention, sweepRuntimeSnapshotRetention } from "./workspace/runtime-snapshot-retention.js";
@@ -947,6 +949,62 @@ app.post("/internal/workspaces/archive/restore", async c => {
     body: { snapshot, restoreId: body.restoreId },
   });
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+});
+app.post("/internal/workspaces/archive/project-settings/export", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 8 * 1024)) as Record<string, unknown>; }
+  catch { return c.json({ error_code: "invalid_project_settings_archive_request" }, 400); }
+  const rawScope = body?.scope;
+  const scopeKeys = rawScope && typeof rawScope === "object" && !Array.isArray(rawScope) ? Object.keys(rawScope) : [];
+  const scopeRow = rawScope && typeof rawScope === "object" && !Array.isArray(rawScope) ? rawScope as Record<string, unknown> : {};
+  if (!body || Object.keys(body).some(key => key !== "scope") || scopeKeys.length !== 3
+    || scopeKeys.some(key => !["tenantId", "spaceId", "projectId"].includes(key))
+    || typeof scopeRow.tenantId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.tenantId)
+    || typeof scopeRow.spaceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.spaceId)
+    || typeof scopeRow.projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.projectId)
+    || scopeRow.tenantId !== tenantId)
+    return c.json({ error_code: "invalid_workspace_scope" }, 400);
+  const scope = { tenantId, spaceId: scopeRow.spaceId as string, projectId: scopeRow.projectId as string };
+  try {
+    const snapshot = await exportProjectMainRuntimeSettingsArchive(c.env.PLATFORM_DB, scope);
+    return c.json(snapshot ? { present: true, snapshot } : { present: false }, 200, { "cache-control": "no-store" });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "project_main_settings_archive_failed";
+    return c.json({ error_code: code }, code === "project_main_settings_archive_too_large" ? 413 : 503, { "cache-control": "no-store" });
+  }
+});
+app.post("/internal/workspaces/archive/project-settings/restore", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token") ?? undefined, tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 40 * 1024)) as Record<string, unknown>; }
+  catch { return c.json({ error_code: "invalid_project_settings_archive_request" }, 400); }
+  const rawScope = body?.scope;
+  const scopeKeys = rawScope && typeof rawScope === "object" && !Array.isArray(rawScope) ? Object.keys(rawScope) : [];
+  const scopeRow = rawScope && typeof rawScope === "object" && !Array.isArray(rawScope) ? rawScope as Record<string, unknown> : {};
+  if (!body || Object.keys(body).some(key => !["scope", "snapshot", "actorId", "mode"].includes(key))
+    || scopeKeys.length !== 3 || scopeKeys.some(key => !["tenantId", "spaceId", "projectId"].includes(key))
+    || typeof scopeRow.tenantId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.tenantId)
+    || typeof scopeRow.spaceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.spaceId)
+    || typeof scopeRow.projectId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scopeRow.projectId)
+    || scopeRow.tenantId !== tenantId || typeof body.actorId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.actorId) || (body.mode !== "preview" && body.mode !== "restore"))
+    return c.json({ error_code: "invalid_project_settings_archive_request" }, 400);
+  const scope = { tenantId, spaceId: scopeRow.spaceId as string, projectId: scopeRow.projectId as string };
+  try {
+    const result = body.mode === "preview"
+      ? await previewProjectMainRuntimeSettingsArchiveRestore(c.env.PLATFORM_DB, scope, body.snapshot)
+      : await restoreProjectMainRuntimeSettingsArchive(c.env.PLATFORM_DB, scope, body.snapshot, body.actorId);
+    return c.json(body.mode === "preview" ? { preview: result } : { restored: result }, 200, { "cache-control": "no-store" });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "project_main_settings_archive_failed";
+    const status = code === "project_main_settings_archive_scope_mismatch" ? 409
+      : code === "project_main_settings_archive_invalid" || code === "project_main_settings_archive_scope_invalid" ? 400
+        : code === "project_main_settings_archive_too_large" ? 413 : 503;
+    return c.json({ error_code: code }, status, { "cache-control": "no-store" });
+  }
 });
 app.post("/internal/workspaces/migration-restore", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";

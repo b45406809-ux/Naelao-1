@@ -5,6 +5,14 @@ type Scope = { tenantId: string; spaceId: string; projectId: string };
 type ProfileRow = { profile: string; version: number; updated_by: string; updated_at: string };
 type MainRuntimeRegistryRow = { state: string; allocation_generation: number; last_seen_at: string };
 type RestartRecipeSetRow = { recipes_json: string; version: number; updated_by: string; updated_at: string };
+type MainRuntimeProfileArchiveRow = { profile: string; version: number; updated_by: string; updated_at: string };
+
+export interface ProjectMainRuntimeSettingsArchiveSnapshot {
+  version: 1;
+  scope: Scope;
+  mainRuntimeProfile: { profile: DynamicProfile; sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
+  restartRecipes: { recipes: ProjectMainRestartRecipe[]; sourceVersion: number; sourceUpdatedBy: string; sourceUpdatedAt: string } | null;
+}
 
 export type ProjectMainRestartRecipe = {
   id: string;
@@ -260,4 +268,125 @@ export async function saveProjectMainRestartRecipes(
   if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1)
     throw new Error("project_main_restart_recipes_version_conflict");
   return { recipes, version, updatedBy: input.actorId, updatedAt: at, changed: true as const, executionSupported: false as const };
+}
+
+/** Export only owner-configured, inert project settings. Runtime allocations, snapshots and
+ * provider observations are intentionally outside this archive contract. */
+export async function exportProjectMainRuntimeSettingsArchive(db: D1Database, scope: Scope): Promise<ProjectMainRuntimeSettingsArchiveSnapshot | null> {
+  if (!ID.test(scope.tenantId) || !ID.test(scope.spaceId) || !ID.test(scope.projectId)) throw new Error("project_main_settings_archive_scope_invalid");
+  const [profileRow, recipeRow] = await Promise.all([
+    db.prepare(`SELECT profile,version,updated_by,updated_at FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId).first<MainRuntimeProfileArchiveRow>(),
+    db.prepare(`SELECT recipes_json,version,updated_by,updated_at FROM project_main_restart_recipe_sets WHERE tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId).first<RestartRecipeSetRow>(),
+  ]);
+  let mainRuntimeProfile: ProjectMainRuntimeSettingsArchiveSnapshot["mainRuntimeProfile"] = null;
+  if (profileRow) {
+    if (!isDynamicProfile(profileRow.profile) || !Number.isSafeInteger(profileRow.version) || profileRow.version < 1
+      || !ID.test(profileRow.updated_by) || !Number.isFinite(Date.parse(profileRow.updated_at))) throw new Error("project_main_settings_archive_corrupt");
+    mainRuntimeProfile = { profile: profileRow.profile, sourceVersion: profileRow.version,
+      sourceUpdatedBy: profileRow.updated_by, sourceUpdatedAt: profileRow.updated_at };
+  }
+  let restartRecipes: ProjectMainRuntimeSettingsArchiveSnapshot["restartRecipes"] = null;
+  if (recipeRow) {
+    let recipes: ProjectMainRestartRecipe[];
+    try { recipes = validateProjectMainRestartRecipes(JSON.parse(recipeRow.recipes_json)); }
+    catch { throw new Error("project_main_settings_archive_corrupt"); }
+    if (!Number.isSafeInteger(recipeRow.version) || recipeRow.version < 1 || !ID.test(recipeRow.updated_by)
+      || !Number.isFinite(Date.parse(recipeRow.updated_at))) throw new Error("project_main_settings_archive_corrupt");
+    restartRecipes = { recipes, sourceVersion: recipeRow.version, sourceUpdatedBy: recipeRow.updated_by, sourceUpdatedAt: recipeRow.updated_at };
+  }
+  if (!mainRuntimeProfile && !restartRecipes) return null;
+  const snapshot: ProjectMainRuntimeSettingsArchiveSnapshot = { version: 1, scope: { ...scope }, mainRuntimeProfile, restartRecipes };
+  if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > 32_000) throw new Error("project_main_settings_archive_too_large");
+  return snapshot;
+}
+
+function validateProjectMainRuntimeSettingsArchiveSnapshot(value: unknown, scope: Scope): ProjectMainRuntimeSettingsArchiveSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("project_main_settings_archive_invalid");
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some(key => !["version", "scope", "mainRuntimeProfile", "restartRecipes"].includes(key))
+    || row.version !== 1 || !row.scope || typeof row.scope !== "object" || Array.isArray(row.scope)) throw new Error("project_main_settings_archive_invalid");
+  const rawScope = row.scope as Record<string, unknown>;
+  if (Object.keys(rawScope).some(key => !["tenantId", "spaceId", "projectId"].includes(key))
+    || rawScope.tenantId !== scope.tenantId || rawScope.spaceId !== scope.spaceId || rawScope.projectId !== scope.projectId) {
+    throw new Error("project_main_settings_archive_scope_mismatch");
+  }
+  let mainRuntimeProfile: ProjectMainRuntimeSettingsArchiveSnapshot["mainRuntimeProfile"] = null;
+  if (row.mainRuntimeProfile !== null) {
+    if (!row.mainRuntimeProfile || typeof row.mainRuntimeProfile !== "object" || Array.isArray(row.mainRuntimeProfile)) throw new Error("project_main_settings_archive_invalid");
+    const profile = row.mainRuntimeProfile as Record<string, unknown>;
+    if (Object.keys(profile).some(key => !["profile", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
+      || typeof profile.profile !== "string" || !isDynamicProfile(profile.profile) || !Number.isSafeInteger(profile.sourceVersion) || Number(profile.sourceVersion) < 1
+      || typeof profile.sourceUpdatedBy !== "string" || !ID.test(profile.sourceUpdatedBy) || typeof profile.sourceUpdatedAt !== "string"
+      || !Number.isFinite(Date.parse(profile.sourceUpdatedAt))) throw new Error("project_main_settings_archive_invalid");
+    mainRuntimeProfile = { profile: profile.profile, sourceVersion: Number(profile.sourceVersion), sourceUpdatedBy: profile.sourceUpdatedBy,
+      sourceUpdatedAt: profile.sourceUpdatedAt };
+  }
+  let restartRecipes: ProjectMainRuntimeSettingsArchiveSnapshot["restartRecipes"] = null;
+  if (row.restartRecipes !== null) {
+    if (!row.restartRecipes || typeof row.restartRecipes !== "object" || Array.isArray(row.restartRecipes)) throw new Error("project_main_settings_archive_invalid");
+    const recipes = row.restartRecipes as Record<string, unknown>;
+    if (Object.keys(recipes).some(key => !["recipes", "sourceVersion", "sourceUpdatedBy", "sourceUpdatedAt"].includes(key))
+      || !Number.isSafeInteger(recipes.sourceVersion) || Number(recipes.sourceVersion) < 1 || typeof recipes.sourceUpdatedBy !== "string"
+      || !ID.test(recipes.sourceUpdatedBy) || typeof recipes.sourceUpdatedAt !== "string" || !Number.isFinite(Date.parse(recipes.sourceUpdatedAt))) {
+      throw new Error("project_main_settings_archive_invalid");
+    }
+    let validated: ProjectMainRestartRecipe[];
+    try { validated = validateProjectMainRestartRecipes(recipes.recipes); }
+    catch { throw new Error("project_main_settings_archive_invalid"); }
+    restartRecipes = { recipes: validated, sourceVersion: Number(recipes.sourceVersion), sourceUpdatedBy: recipes.sourceUpdatedBy,
+      sourceUpdatedAt: recipes.sourceUpdatedAt };
+  }
+  if (!mainRuntimeProfile && !restartRecipes) throw new Error("project_main_settings_archive_invalid");
+  const snapshot: ProjectMainRuntimeSettingsArchiveSnapshot = { version: 1, scope: { ...scope }, mainRuntimeProfile, restartRecipes };
+  if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > 32_000) throw new Error("project_main_settings_archive_too_large");
+  return snapshot;
+}
+
+export async function previewProjectMainRuntimeSettingsArchiveRestore(db: D1Database, scope: Scope, value: unknown) {
+  const snapshot = validateProjectMainRuntimeSettingsArchiveSnapshot(value, scope);
+  const [profile, recipes] = await Promise.all([
+    db.prepare(`SELECT 1 AS present FROM project_main_runtime_profiles WHERE tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId).first<{ present: number }>(),
+    db.prepare(`SELECT 1 AS present FROM project_main_restart_recipe_sets WHERE tenant_id=? AND space_id=? AND project_id=?`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId).first<{ present: number }>(),
+  ]);
+  return { mainRuntimeProfile: snapshot.mainRuntimeProfile ? (profile ? "preserved_current" as const : "will_restore" as const) : "not_in_archive" as const,
+    restartRecipes: snapshot.restartRecipes ? (recipes ? "preserved_current" as const : "will_restore" as const) : "not_in_archive" as const };
+}
+
+/** Additively restore safe configuration only. Existing destination settings win; restored recipes
+ * remain inert and the new audit actor is the owner/admin who applied the archive. */
+export async function restoreProjectMainRuntimeSettingsArchive(db: D1Database, scope: Scope, value: unknown, actorId: string, now = new Date()) {
+  if (!ID.test(actorId)) throw new Error("project_main_settings_archive_invalid");
+  const snapshot = validateProjectMainRuntimeSettingsArchiveSnapshot(value, scope);
+  const at = now.toISOString();
+  const statements: D1PreparedStatement[] = [];
+  if (snapshot.mainRuntimeProfile) {
+    const profile = snapshot.mainRuntimeProfile.profile;
+    const auditId = `pmrpa_${crypto.randomUUID().replaceAll("-", "")}`;
+    statements.push(db.prepare(`INSERT INTO project_main_runtime_profiles(tenant_id,space_id,project_id,profile,version,updated_by,updated_at)
+      VALUES(?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO NOTHING`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId, profile, actorId, at));
+    statements.push(db.prepare(`INSERT INTO project_main_runtime_profile_audit(id,tenant_id,space_id,project_id,previous_profile,new_profile,version,actor_id,created_at)
+      SELECT ?,?,?,?,NULL,?,1,?,? WHERE changes()=1`)
+      .bind(auditId, scope.tenantId, scope.spaceId, scope.projectId, profile, actorId, at));
+  }
+  if (snapshot.restartRecipes) {
+    const recipesJson = JSON.stringify(snapshot.restartRecipes.recipes);
+    const recipeCount = snapshot.restartRecipes.recipes.length;
+    const recipesSha256 = restartRecipeHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(recipesJson)));
+    const auditId = `pmrr_${crypto.randomUUID().replaceAll("-", "")}`;
+    statements.push(db.prepare(`INSERT INTO project_main_restart_recipe_sets(tenant_id,space_id,project_id,recipes_json,version,updated_by,updated_at)
+      VALUES(?,?,?,?,1,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO NOTHING`)
+      .bind(scope.tenantId, scope.spaceId, scope.projectId, recipesJson, actorId, at));
+    statements.push(db.prepare(`INSERT INTO project_main_restart_recipe_audit(id,tenant_id,space_id,project_id,previous_version,new_version,recipe_count,recipes_sha256,actor_id,created_at)
+      SELECT ?,?,?,?,0,1,?,?,?,? WHERE changes()=1`)
+      .bind(auditId, scope.tenantId, scope.spaceId, scope.projectId, recipeCount, recipesSha256, actorId, at));
+  }
+  const results = await db.batch(statements);
+  const offset = snapshot.mainRuntimeProfile ? 2 : 0;
+  return { mainRuntimeProfile: snapshot.mainRuntimeProfile ? (results[0]?.meta.changes === 1 ? "restored" as const : "preserved_current" as const) : "not_in_archive" as const,
+    restartRecipes: snapshot.restartRecipes ? (results[offset]?.meta.changes === 1 ? "restored" as const : "preserved_current" as const) : "not_in_archive" as const };
 }

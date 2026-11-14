@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, decodeSpaceArchiveChunkedObjectSnapshot, encodeSpaceArchive, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, verifySpaceArchiveObjectSnapshots, type SpaceArchivePayload } from "./space-backup.js";
+import { captureSpaceArchiveObjectChunked, decodeSpaceArchive, decodeSpaceArchiveChunkedObjectSnapshot, encodeSpaceArchive, isSpaceArchiveProjectRuntimeSettingsSnapshot, readSpaceArchiveObject, rewrapSpaceArchiveObjectChunks, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, verifySpaceArchiveObjectSnapshots, type SpaceArchivePayload } from "./space-backup.js";
 
 const payload: SpaceArchivePayload = {
   format: "naelao-space-archive", formatVersion: 1,
@@ -11,6 +11,18 @@ const payload: SpaceArchivePayload = {
 const secret = "stable-test-platform-secret-with-at-least-32-characters";
 
 describe("encrypted Space archive envelope", () => {
+  it("validates exact project scope and inert restart recipe configuration", () => {
+    const scope = { tenantId: "tenant-a", spaceId: "space-a", projectId: "project-a" };
+    const snapshot = { version: 1, scope, mainRuntimeProfile: null,
+      restartRecipes: { recipes: [{ id: "web", label: "Web", workingDirectory: "apps/web", argv: ["npm", "run", "start"],
+        manualVerification: "Check /health manually." }], sourceVersion: 2, sourceUpdatedBy: "owner-a", sourceUpdatedAt: "2026-11-14T10:00:00.000Z" } };
+    expect(isSpaceArchiveProjectRuntimeSettingsSnapshot(snapshot, scope)).toBe(true);
+    expect(isSpaceArchiveProjectRuntimeSettingsSnapshot(snapshot, { ...scope, projectId: "other-project" })).toBe(false);
+    expect(isSpaceArchiveProjectRuntimeSettingsSnapshot({ ...snapshot, restartRecipes: { ...snapshot.restartRecipes,
+      recipes: [{ ...snapshot.restartRecipes.recipes[0]!, argv: ["sh", "-c", "echo unsafe"] }] } }, scope)).toBe(false);
+    expect(isSpaceArchiveProjectRuntimeSettingsSnapshot({ ...snapshot, runtimeAllocation: { id: "must-not-be-restored" } }, scope)).toBe(false);
+  });
+
   it("checks R2 size metadata before materializing an archive and validates fetched bytes", async () => {
     const arrayBuffer = vi.fn(async () => new ArrayBuffer(1));
     await expect(readSpaceArchiveObject({ size: 16 * 1024 * 1024 + 1, arrayBuffer } as never)).rejects.toThrow("archive_size_limit_exceeded");
