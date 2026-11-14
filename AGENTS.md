@@ -16,13 +16,34 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P10/P24 dependency pins and publisher revocation alert)
+## Latest checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
-Implementation `414ec6224fbf7d03f495d736a739f6d4373ce47a` and P24 alert `00e9f0b28c931e5948d5dd8638b1df8fec07c56d` are pushed to `origin/Mcbt5s-Backup-2` from `autonomous-managed-services-20261111`; fetch and ancestry checks passed. The dependency update only adds owner-approved exact pins to dependencies already active, signed, trusted and manifest-pinned in the same Space; apply rechecks closure transactionally and never mutates child packages. Publisher key revocation now creates one deterministic-ID, durable critical Space inbox alert in the same SpaceDO transaction as its drain receipt. The alert reports a bounded key fingerprint, disabled-installation count and admitted-work drain snapshot. Revoke retries repair a missing alert and do not duplicate it. Existing signed runtime and inbox paths remain in use.
+Code `7e218ae2932fbd3c2f67df9c70e11d5b7d4a36d9` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Before pushing, fetch showed the remote at `de27aea7` with no
+concurrent advance. The signed bounded phone-menu release is now 1.0.5 and adds a persisted
+per-installation `speech_style` setting: provider default, Twilio `man`, or Twilio `woman`. The SDK
+and host accept only the documented enum, Twilio renders it as a `<Say voice>` attribute, and the
+synthetic preview uses the same selection. Telnyx stays on its provider default and its DTMF host
+parser rejects Twilio style fields. UI/README disclosure makes no availability, language, quality or
+rate guarantee.
 
-Verification: dependency update suites **77/77**, publisher revocation/runtime-install suite **30/30**, Spaces/Shell typechecks and `git diff --check`. These are local Worker/SQLite mocks; no browser, deployment, provider or live acceptance ran. P10/P24 remain PARTIAL for provider/price changes, broader data migration, cross-tenant artifact rights, scanning/retention and live acceptance. P05 Space-wide provider scope/payer/revoke-drain and P06 Naelao publisher identity/key custody/catalog decisions are not credential blockers. S4/U05/U06 runtime contracts and P01/P02 evidence gates remain as recorded. Rollouts remain disabled; preserve the untracked `infra/scripts/__pycache__/`.
+Local verification: SDK voice/package suites **15/15**, SDK manifest/signature suites **36/36**,
+Agents renderer/phone/Telnyx suites **47/47**, Agent SDK and Agents typechecks, and `git diff --check`.
+These are local tests; no browser, deployment, provider, carrier or live acceptance ran. P06 remains
+PARTIAL for the conversational voice-agent lifecycle, first-party package identity/catalog,
+provisioning, streaming, full cost and live acceptance. P04's archive-grant recovery gap was already
+closed in pushed code `75feeabb`; it is not the next task. S2–S9/U01–U12 and P01–P24 remain at their
+row-specific statuses. Rollouts stay disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: extend the signed bounded phone-menu P06 dashboard with one owner-selectable Twilio `<Say>` voice style (`man`/`woman`) using the existing installation settings and synthetic preview. Permit only that enum at the SDK/host boundary; keep Telnyx behavior unchanged and disclose that style selection does not verify language availability, voice quality or rates. Cover SDK validation, TwiML rendering and package preview/handler, then continue the next independent code gap. Fetch and safely integrate before each push; commit and push each coherent checkpoint to `Mcbt5s-Backup-2` without force-pushing. No deployment, purchase or rollout enablement.
+Exact next action: close the P20 template-subscription refund receipt gap. Lemon Squeezy's current
+event catalogue includes `subscription_payment_refunded`, while the local SDK maps no such event and
+the template-subscription webhook branch records neither refund evidence nor a review state. Add a
+versioned normalized event and durable idempotent review-only receipt tied to the exact subscription
+and provider invoice/body; add permission-checked buyer/author status callers where the existing
+identity model supports them. Do not change subscription access, paid-cycle totals, developer
+earnings, refunds or payout policy; preserve unknown amount semantics. Then continue other independent
+requirements. Fetch and safely integrate remote advances before each push; push coherent checkpoints
+to `Mcbt5s-Backup-2` without force-pushing. No deployment, purchase or rollout enablement.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 

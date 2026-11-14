@@ -1,12 +1,29 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P10/P24 dependency pins and publisher revocation alert)
+## Active checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
-Code `414ec6224fbf7d03f495d736a739f6d4373ce47a` (dependency pins) and `00e9f0b28c931e5948d5dd8638b1df8fec07c56d` (P24 alert) are pushed to `origin/Mcbt5s-Backup-2`; each push followed fetch and ancestry verification. Same-Space dependency updates bind exact additions and resolved closure to review/apply/receipt and recheck trusted active pins transactionally, without child package mutation. Publisher revocation now inserts one deterministic-ID critical inbox notification atomically with the DO revocation receipt; it reports a bounded fingerprint, disabled-install count and whether admitted work was draining. Replay cannot duplicate the alert and can repair a missing notification.
+Code `7e218ae2932fbd3c2f67df9c70e11d5b7d4a36d9` is pushed to `origin/Mcbt5s-Backup-2`; a fetch
+immediately before push confirmed the remote at `de27aea7` and no concurrent advance. Signed package
+release 1.0.5 adds persisted per-installation provider-default/`man`/`woman` speech style. The SDK and
+host validate the exact enum; the Twilio handler passes it to host-rendered `<Say voice>`, and synthetic
+preview reflects saved/current settings. Telnyx remains unchanged and rejects style fields at its DTMF
+host boundary. Disclosures make no voice availability, language, quality or rate guarantee.
 
-Local verification: dependency update suites **77/77**, publisher revocation/runtime-install **30/30**, Spaces/Shell typechecks and `git diff --check`. No browser, deployed Worker, provider or live acceptance ran. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain IN_PROGRESS where described below. P10/P24 are still PARTIAL for provider/price updates, broader data migration, cross-tenant artifact rights, scanning/retention and deployed/live acceptance. P05 shared provider authority/payer/revocation and P06 first-party identity/key custody/catalog are product contracts, not credential blockers. U05/U06/U07/U08 and P01/P02 external/runtime evidence limits remain. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+Local evidence: SDK voice/package **15/15**, SDK manifest/signature **36/36**, Agents renderer/phone/
+Telnyx **47/47**, SDK and Agents typechecks, and `git diff --check`. No browser, deployment, provider,
+carrier or live acceptance ran. P06 remains PARTIAL for first-party identity/catalog, provisioning,
+conversational agent/streaming, full costs and live acceptance. P04's stale grant-resurrection task is
+already implemented and caller-tested in pushed code `75feeabb`. S2 remains IMPLEMENTED_LOCAL only for
+supported lanes; S3–S9/U01–U12 retain their row-level runtime, product and live gates. Keep rollouts
+disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: add a bounded owner-selected Twilio spoken voice style to the signed keypad package's existing persisted settings, handler response, host TwiML renderer and synthetic preview. Restrict it to the documented `man`/`woman` values; Telnyx remains unchanged. Disclose that this setting proves no locale availability, voice quality or price. Add contract, renderer and package test coverage, then resume the next independent S3–S9/U01–U12/P01–P24 code gap. Fetch and safely integrate before every push; push each coherent checkpoint to `Mcbt5s-Backup-2` without force.
+Exact next action: implement P20 handling for Lemon Squeezy's documented `subscription_payment_refunded`
+event, which current normalization omits and the template-subscription webhook acknowledges without a
+durable refund receipt. Tie review-only evidence idempotently to the exact template subscription and
+signed invoice webhook body, then expose bounded buyer/author status through current authorized
+callers where identity supports it. Do not mutate subscription access, royalty/cycle accounting or
+payouts while policy remains unresolved. Fetch before each push and safely integrate remote changes;
+push each coherent checkpoint to `Mcbt5s-Backup-2` without force.
 
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
