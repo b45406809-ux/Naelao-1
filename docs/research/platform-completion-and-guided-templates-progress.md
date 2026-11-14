@@ -1,6 +1,37 @@
 # Platform completion and guided templates progress
 
-## Active continuation — 2026-11-14 (P05 model-credit planning budget)
+## Active checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+
+Code `db56ee37` (P16) and `da6245fe` (P13) are pushed to `origin/Mcbt5s-Backup-2`. P16 validates a
+current Discord-signed ephemeral URL, exact event channel and attachment path IDs, size declaration,
+response length, streamed byte cap, timeout and no redirects. Official Discord guidance says
+ordinary CDN media is blocked from Cloudflare Workers; ordinary attachments need a separately
+operated supported retrieval host/relay. This is a provider/platform contract gate, not missing
+credentials. No provider or deployed acceptance ran. P16 remains PARTIAL for ordinary media and live
+acceptance.
+
+P13 detects the Cloudflare GraphQL query's 100-row ceiling and persists a possible-truncation alert;
+the report stays incomplete. Current backlog/age/DLQ still have no supported source. The Admin DLQ
+consumer's queue mismatch, lack of a reachable route/`platform_admin` identity, and replay retention,
+redaction and duplicate-effect contracts remain open. P13 remains PARTIAL.
+
+Local evidence: Agents Discord media and attachment routes **12/12**, Agents typecheck; Workflows
+queue-health model **8/8**, Workflows typecheck, and `git diff --check`. Release manifest now pins
+**249** migrations through `0249_project_main_runtime_budget_reservations`; full-manifest SQLite
+rehearsal **20/20**, release/deployment manifest validators **18/18**. These are local checks only.
+P01/P02 remote baselines, distinct resource IDs/ownership, missing read-only receipts, rollback and
+deployed isolation remain external evidence gates. No rollout or deployment occurred.
+
+Current P05 gap: owner-controlled Project Knowledge selection for Space-shared channel extensions is
+uncoded. Exact next action: add durable selection keyed by Space, Project, installation and exact
+owner-published collection; expose owner/admin list and grant/revoke callers constrained to current
+published IDs; and have the Agents host intersect that selection with the active signed manifest
+before external search. Preserve existing project-scoped behavior and do not create grants by default.
+The separate Space-wide provider connection still lacks authorizer, beneficiary, payer/account sharing,
+and revocation/drain semantics; keep it gated as a product contract. Fetch and integrate before each
+push; rollouts remain disabled.
+
+## Previous continuation — 2026-11-14 (P05 model-credit planning budget)
 
 Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` follows model-cost scenario
 `d3044a665d16038ad54d4396d6a23b304849090e`. The owner-only activation preview accepts a bounded
@@ -1420,7 +1451,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 
 | Requirement | Current status | Reconciled state |
 | --- | --- | --- |
-| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` adds a fresh-install in-memory SQLite rehearsal across all 247 migrations and repairs the safe 0164 skip prerequisite for 0229; tests pass 20/20 and run in both preflights. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
+| P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` added a fresh-install in-memory SQLite rehearsal and repaired the safe 0164 skip prerequisite for 0229. The current manifest pins 249 migrations through `0249_project_main_runtime_budget_reservations`; fresh SQLite rehearsal passes **20/20** and release/deployment manifest validators pass **18/18**. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
@@ -1432,10 +1463,10 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `035a3274` adds exact-digest owner review and atomic retryable additive Gadget-schema migrations per Space-shared MicroApp actor. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Authority/dependency expansion, connection/price changes, broader data-migration rollback, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning contract, queue and workflow paths exist; business recovery policy and provider delivery acceptance remain. |
-| P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
+| P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. `da6245fe` detects when the Cloudflare GraphQL query hits its 100-row limit and persists a `queue_analytics_row_limit_reached` alert; status remains incomplete. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
 | P14 | PARTIAL | `product-end-user/logout` generation revocation and builder `/auth/revoke` are now awaited by reachable Portal/Shell/Dashboard callers; failures retain state and show retry. Product reset generation and DO cleanup are durable. localStorage bearer storage, cookie/CSRF/XSS transport decision and deployed copied-token acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
-| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text and owner-approved one-image extension modes exist locally. Image access is limited to one PNG/JPEG/WebP up to 480 KiB and rechecks exact active install/provider/message and byte signature. Audio/arbitrary binary access, ordinary non-ephemeral Discord retrieval and provider/live acceptance remain unsupported or unverified. |
+| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text and owner-approved one-image extension modes exist locally. Image access is limited to one PNG/JPEG/WebP up to 480 KiB and rechecks exact active install/provider/message and byte signature. `db56ee37` validates Discord's signed ephemeral URL fields, event channel/attachment path IDs, expiry, response length and streamed cap before isolated use. Official Discord guidance says ordinary CDN media is blocked from Cloudflare Workers; it requires a separately operated supported retrieval host/relay. Audio/arbitrary binary access and live acceptance remain open. |
 | P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |

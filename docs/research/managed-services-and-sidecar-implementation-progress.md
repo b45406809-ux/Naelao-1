@@ -1,6 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Active continuation — 2026-11-14 (P05 model-credit planning budget)
+## Active checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+
+Cross-plan code `db56ee37` (P16) and `da6245fe` (P13) is pushed to
+`origin/Mcbt5s-Backup-2`. P16's supported ephemeral Discord path now requires the current signed URL,
+exact event channel/attachment path match, expiry, declared and streamed byte caps, bounded response
+length, timeout and no redirects. Local media/attachment routes pass **12/12** and Agents typecheck.
+Official Discord guidance rules out ordinary CDN retrieval from Cloudflare Workers; a separately
+operated supported host/relay is needed. This remains a provider/platform gate, not a credential
+blocker; no live retrieval ran.
+
+P13's Cloudflare GraphQL query now warns durably when it reaches the 100-row ceiling and keeps the
+report incomplete. Queue-health tests pass **8/8** and Workflows typecheck. Current backlog/age/DLQ
+source and authenticated operator route remain absent as described in the platform ledger.
+
+Managed-services S2 supported lanes remain local; no rollout or provider acceptance changed. U05's
+trusted mount/sync/flush observation producer and U06's writer/drain/flush/reconnect/handoff adapter
+remain unsupported by current runtime contracts. S4 private-state byte export and provider snapshot
+purge are likewise absent. U01–U12 retain their detailed boundaries below. Current P01 manifest pins
+249 migrations through 0249; the full SQLite rehearsal passes **20/20**, manifest validators **18/18**.
+No remote D1, deployment, provider call or live acceptance ran. Preserve `infra/scripts/__pycache__/`.
+
+Exact next action: continue the platform P05 Project Knowledge setup gap by implementing owner/admin
+selection of exact owner-published collections per Space-shared channel installation and Project,
+persist it, and intersect it with the current signed package declaration in the Agents host before
+search. Keep new grants absent by default and preserve project-scoped behavior. Do not implement
+Space-wide provider connections until authorizer, beneficiary, payer/account sharing and revoke/drain
+semantics are defined. Fetch and safely integrate before every push; keep all rollouts disabled.
+
+## Previous continuation — 2026-11-14 (P05 model-credit planning budget)
 
 Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` follows the pushed model-cost scenario
 `d3044a665d16038ad54d4396d6a23b304849090e`. An optional bounded customer monthly Naelao-credit budget

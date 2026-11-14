@@ -16,7 +16,43 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 model-credit planning budget)
+## Latest checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+
+P16 code `db56ee37` and P13 code `da6245fe` are pushed to `origin/Mcbt5s-Backup-2`. P16 now requires
+a current Discord-signed ephemeral URL (`ex`, `is`, `hm`), exact event channel/attachment path
+binding, declared and streamed byte caps, response-length checks, timeout, and no redirects. Agents
+maps expired bearer URLs to a non-retryable unsupported-media response. Official Discord docs state
+ordinary CDN media is blocked from Cloudflare Workers; ordinary attachments still need a separately
+operated supported retrieval host/relay and remain unsupported here. Do not bypass the provider or
+pass URLs/credentials to extensions. P16 remains partial for that host gate and live acceptance.
+
+P13 now detects when Cloudflare GraphQL returns the full 100-row limit and persists a
+`queue_analytics_row_limit_reached` alert; reports remain incomplete. Current backlog/age/DLQ still lack
+a supported API source. Admin's consumer targets a different queue, retains raw payloads, and has no
+reachable Router/service-binding path or supported `platform_admin` identity issuance; generic replay
+still needs scope, retention/redaction, and duplicate-side-effect contracts.
+
+Local evidence: Discord media/attachment routes **12/12**, Agents typecheck; queue-health model **8/8**,
+Workflows typecheck, and `git diff --check`. P01 current manifest pins **249** migrations through
+`0249_project_main_runtime_budget_reservations`; fresh SQLite rehearsal **20/20** applies the full
+manifest and manifest validators pass **18/18**. These are local tests only; no remote D1 baseline,
+deployment, provider call, or live acceptance ran. P01/P02 remain fail-closed on verified baselines,
+separate resources, ownership, and read-only receipts. Keep every rollout disabled; preserve the
+untracked `infra/scripts/__pycache__/`.
+
+P05 shared provider-connection scope still lacks an authorizer, beneficiary runtime set, payer/account
+sharing, and revocation/drain contract; template-to-Project Knowledge binding is uncoded. These are
+not credential blockers. S2 supported lanes and U01–U12 records remain as reconciled in the ledgers;
+U05 trusted mount/sync/flush observations and U06 writer/drain/handoff contract remain unsupported.
+
+Exact next action: implement owner-controlled, per-Project Knowledge selection for Space-shared
+channel extensions using existing owner-published collections. Persist selection by Space, Project,
+installation and exact publication; allow owner/admin callers to list and grant/revoke only current
+published IDs; have the Agents host intersect the current active signed manifest with that selection
+before external search. Default to no new grants and preserve existing project-scoped behavior. Keep
+provider-connection sharing separately gated. Fetch and safely integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (P05 model-credit planning budget)
 
 Code `d4b1652ef12cea0b2a45970342c5093dd38965a2` is pushed after cost-scenario code
 `d3044a665d16038ad54d4396d6a23b304849090e`; both are on `origin/Mcbt5s-Backup-2`. The guided
