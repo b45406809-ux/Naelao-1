@@ -1,5 +1,25 @@
 # Managed services and sidecar implementation progress
 
+## Active continuation — 2026-11-14 (P05 guided-template model-cost scenario)
+
+Cross-plan code commit `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
+`origin/Mcbt5s-Backup-2`. The owner-only Spaces activation preview now reads current-plan
+`managed_service_model_entitlements`, admits only active operator-verified rates against the latest
+verified capability version, validates the selected model and call count, and projects pinned Naelao
+credits/version/expiry plus per-operation and monthly operation caps. Shell wires the customer
+assumptions to that API; Billing's monthly operation admission cap is distinguished from unknown,
+uncontrolled provider charges, and the full USD total remains null. Local verification: Spaces
+SQLite-backed estimate/activation tests **32/32**, Shell parser **4/4**, Spaces/Shell typechecks, and
+`git diff --check`. No deployment, purchase, browser, or live provider acceptance ran. S2's supported
+lanes remain IMPLEMENTED_LOCAL; this is a P05 cost-calculator subset, not a total-cost estimate.
+
+P05's Space-shared provider-connection authority/payer/revocation contract and MS08d's compatible
+Modal host plus Beta/private-API decision remain external/product gates. Exact next task: add a bounded
+customer-entered monthly Naelao-credit planning budget to the P05 preview; compare it to the verified
+scenario but explicitly mark it unpersisted and unenforced. Preserve the separately enforced Billing
+monthly operation cap and unknown provider cost boundary, then continue independent S3–S9/U01–U12 and
+P01–P24 implementation. Preserve `infra/scripts/__pycache__/`; keep every rollout disabled.
+
 ## Active continuation — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
 The current official [Modal JavaScript/Go guide](https://modal.com/docs/guide/sdk-javascript-go) marks

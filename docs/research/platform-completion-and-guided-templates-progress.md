@@ -1,6 +1,26 @@
 # Platform completion and guided templates progress
 
-## Active continuation — 2026-11-14 (S5/MS08d Modal contract reconciliation)
+## Active continuation — 2026-11-14 (P05 guided-template model-cost scenario)
+
+Code `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
+`origin/Mcbt5s-Backup-2`. The owner-only activation preview lists only active operator-verified
+Workers AI model rates bound to the tenant's current plan and latest verified capability manifest.
+The route validates the model and customer-entered operation assumptions, then projects the exact
+Naelao-credit price/version, per-operation ceiling, monthly operation cap and expiry. The Shell preview
+caller is wired end to end; stale/unavailable rates fail closed, Billing's monthly operation cap is
+identified as enforced at admission, and direct provider charges/full USD total remain explicitly
+unknown. Local evidence: SQLite-backed Spaces estimate/activation **32/32**, Shell parser **4/4**,
+Spaces and Shell typechecks, and `git diff --check`. No browser, deploy, purchase, or live provider
+acceptance ran. This closes one local P05 cost-calculator slice; a customer-selected enforceable budget,
+provider costs/quotes and total operating cost remain uncoded or unavailable.
+
+The next concrete action is to add an optional bounded customer-entered monthly Naelao-credit planning
+budget to this same preview. Compare it with the model scenario while clearly stating it is an
+unpersisted assumption and does not enforce spending; keep the separately enforced Billing operation
+cap and uncontrolled provider costs distinct. Then continue P05/P06 and independent S3–S9/U01–U12/
+P01–P24 code gaps. Preserve rollouts disabled and fetch/integrate before each push.
+
+## Previous continuation — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
 Current official sources: the [JavaScript/Go SDK guide](https://modal.com/docs/guide/sdk-javascript-go)
 marks the SDK Beta; the official [JS package README](https://github.com/modal-labs/modal-client/blob/main/js/README.md)

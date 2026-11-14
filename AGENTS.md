@@ -16,7 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (S5/MS08d Modal contract reconciliation)
+## Latest checkpoint — 2026-11-14 (P05 guided-template model-cost scenario)
+
+Code commit `d3044a665d16038ad54d4396d6a23b304849090e` is pushed to
+`origin/Mcbt5s-Backup-2`. The owner-only guided-template activation preview now lists only active,
+operator-verified Workers AI model rates for the tenant plan and latest verified capability version.
+It validates the customer-selected model and operation multiplier, projects the pinned Naelao credits,
+price version, per-operation ceiling, monthly operation cap and expiry, and reports unavailable/stale
+rates without inventing a price. The Shell caller connects those controls to the preview and states
+that Billing enforces the monthly operation cap while direct provider charges remain excluded and
+uncontrolled by it. The full USD operating total remains null. Local verification: SQLite-backed
+Spaces estimate/activation suites **32/32**, Shell estimate parser **4/4**, Spaces and Shell typechecks,
+and `git diff --check`. These are local tests only; no browser, deployment, purchase or live provider
+acceptance ran. P05's cost calculator remains partial; no customer-selected enforceable template budget
+or provider/total-cost quote is implemented. S2–S9/U01–U12 states otherwise remain as recorded.
+
+Preserve untracked `infra/scripts/__pycache__/`; keep rollouts disabled. The P05 Space-shared provider
+connection contract and MS08d Modal compatible-host/Beta-API decision remain genuine product/platform
+gates, not credential blockers.
+
+Exact next action: extend this activation-preview scenario with an optional customer-entered monthly
+Naelao-credit planning budget. Compare it with the verified model projection, bound and validate it on
+the server, and label it as an unpersisted planning assumption that does not enforce a spending cap.
+Keep the separately verified Billing operation cap distinct, and disclose provider costs remain
+uncontrolled/unknown. Add route, SQLite, parser and caller coverage; then continue P05/P06 and the next
+independent S3–S9/U01–U12/P01–P24 implementation gap. Fetch and safely integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (S5/MS08d Modal contract reconciliation)
 
 P05's Space-shared provider connection gap is source-reconciled and recorded below: the current
 project-installation authority model cannot safely serve a Space-shared runtime without an explicit
