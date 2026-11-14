@@ -10,6 +10,7 @@ import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkS
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
 import { createLatestRequestFence, parseTemplateExpectedUsageInput } from "@/lib/template-usage-estimate";
+import { safeTemplateProjectIds } from "@/lib/template-installation-review";
 import { modelLabel } from "@/components/ModelSelector";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
@@ -1156,11 +1157,32 @@ export default function SpacesPage() {
                   </div>;
                 })()}
                 <dt>Required extensions</dt><dd style={{ margin: 0 }}>{record.required_extension_ids.length ? record.required_extension_ids.join(", ") : "None recorded"}</dd>
-                <dt>Generated projects</dt><dd style={{ margin: 0 }}>{record.project_ids.length ? record.project_ids.join(", ") : "None recorded"}</dd>
+                <dt>Generated projects</dt><dd style={{ margin: 0 }}>
+                  {safeTemplateProjectIds(record.project_ids).length ? <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {safeTemplateProjectIds(record.project_ids).map((projectId, index) => (
+                      <li key={projectId}>
+                        <Link href={`/p/${encodeURIComponent(product.slug)}/projects/${encodeURIComponent(projectId)}`} onClick={() => {
+                          const space = templateStatusSpace;
+                          if (space) setActiveSpace(space.id, space.name);
+                        }}>Open generated Project {index + 1}</Link>
+                        <span style={{ marginLeft: 6, color: "var(--text3)", fontFamily: "monospace" }}>{projectId}</span>
+                      </li>
+                    ))}
+                  </ul> : "None recorded"}
+                </dd>
                 <dt>Created</dt><dd style={{ margin: 0 }}>{new Date(record.created_at).toLocaleString()}</dd>
                 <dt>Updated</dt><dd style={{ margin: 0 }}>{new Date(record.updated_at).toLocaleString()}</dd>
                 {record.error_code && <><dt>Failure code</dt><dd style={{ margin: 0 }}>{record.error_code}</dd></>}
               </dl>
+              {record.status === "installed" && templateStatusSpace && <aside style={{ marginTop: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 8 }} aria-label="Template removal and retained resources">
+                <strong>Template removal and retained resources</strong>
+                <p style={{ margin: "4px 0 8px", color: "var(--text3)" }}>
+                  This view does not uninstall the template or remove its generated Projects and required extensions. It cannot determine whether separate provider connections, licenses, or recurring charges remain active. No resource or billing change is made here; review each item separately.
+                </p>
+                <Link href={`/p/${encodeURIComponent(product.slug)}/extensions`} onClick={() => setActiveSpace(templateStatusSpace.id, templateStatusSpace.name)}>
+                  Review extensions in this Space
+                </Link>
+              </aside>}
             </section>)}
             <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>Each view checks the newest published, signed listing for this publisher and blueprint. A newer listing needs a separate review of its license, price, permissions and setup migration. This read-only check does not update or uninstall the installation.</p>
           </div>}
