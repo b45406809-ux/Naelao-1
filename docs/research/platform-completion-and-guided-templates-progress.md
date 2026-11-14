@@ -1,13 +1,29 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (joint mission; Foundry lifecycle recovery)
+## Active continuation — 2026-11-14 (joint mission; coordination policy pushed)
 
-P05 lifecycle recovery is pushed to `origin/Mcbt5s-Backup-2` through `cf2d28f704ae207c0eed20f62f7e06237821d563`: host export request/job idempotency and signed graduation recovery in `34c7da23`, reload repair in `64669caf`, and terminal uncertified status correction in `cf2d28f7`. The Foundry draft persists the exact host lifecycle, restores it after reload, reconciles ambiguous requests by request/job ID, stores listing identity only after host success, and repairs a lost local save on retry. Local evidence this turn: Agent SDK dogfood **3/3**, Agent SDK typecheck, `git diff --check`; earlier host recovery/graduation/migration tests **15/15**, Shell status caller **1/1**, SDK/Spaces/Shell typechecks. No browser, deployed Space/Worker, provider or live acceptance ran.
+Space coordination disclosure policy commit `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed
+to `origin/Mcbt5s-Backup-2`. The v2 owner/admin policy defaults off for new member-visible facts,
+uses expected-revision writes, atomically gates publication/amendment, requires individual unpublish
+before disabling while visible facts remain, and exposes metadata-only revision history in Settings.
+Existing approvals are preserved. Verification: Agent SDK coordination **4/4**, SpaceDO/route/migration
+**26/26**, SDK/Spaces/Shell typechecks, SDK build and `git diff --check`. These are local/mocked; no
+browser, deployed Space/Worker, provider or live acceptance ran.
 
-P05 remains PARTIAL for the absent knowledge/action SpaceBlueprint/runtime contract, complete provider setup and lifecycle, verified rates/total cost, unsupported media access and end-to-end acceptance. P06's bounded phone-menu dashboard already has signed per-install settings, local preview, synthetic start/keypad handler tests, owner-scoped line/readiness and call-cost observations; this is an IVR, not a conversational voice agent. Customer voice streaming/lifecycle, managed billing/invoices, voice package composition and live provider/region acceptance remain unavailable or unverified. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain the specific gaps and evidence limits in the managed-services ledger. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+P05 remains PARTIAL for the knowledge/action SpaceBlueprint/runtime contract, complete provider setup
+and lifecycle, verified rates/total cost, unsupported media access and end-to-end acceptance. P06's
+bounded phone-menu dashboard already has signed per-install settings, local preview, synthetic
+start/keypad handler tests, owner-scoped line/readiness and cost observations; conversational voice,
+customer lifecycle, managed billing/invoices and live region/provider acceptance remain uncoded or
+unverified. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain the specific gaps in the
+managed-services ledger. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement an explicit owner/admin policy gate for new Space-member-visible coordination facts, disabled until configured. Persist expected revision and actor, enforce the setting transactionally for publish/amend, require explicit unpublish before disabling while member facts remain, add the Space Settings caller, and test authorization/concurrency. Preserve existing entries and per-entry disclosure confirmation; then continue remaining §10 lifecycle and both plans' uncoded requirements.
+Exact next action: trace current `SpaceBlueprint` declarations through Foundry export, signed artifact
+validation, activation review and runtime consumers for P05's recorded knowledge/action authoring
+gap. Implement only declarations backed by an existing or newly enforced host runtime contract; do
+not use a template declaration to grant authority. Then continue §10 lifecycle and the remaining
+independent requirements in both active plans.
 
 
 ## Previous checkpoint — 2026-11-14 (P05 Foundry authoring draft recovery; completed)

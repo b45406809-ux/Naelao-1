@@ -12,7 +12,25 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (Foundry lifecycle recovery)
+## Latest checkpoint — 2026-11-14 (Space coordination disclosure policy)
+
+Code commit `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed to
+`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Space coordination now has a
+revisioned owner/admin policy for new member-visible facts, default-off behavior, transactional
+publish/amend enforcement, explicit unpublish-before-disable, metadata-only paginated policy history,
+and a Settings control. Existing approved facts remain visible; member reads still omit actor details.
+Verification: Agent SDK coordination **4/4**, SpaceDO/route/migration **26/26**, SDK/Spaces/Shell
+typechecks, SDK build and `git diff --check`. These are local SDK/SQLite/Worker mocks; no deployed
+multi-user acceptance ran. The intentionally untracked `infra/scripts/__pycache__/` remains.
+
+Exact next action: trace the current `SpaceBlueprint` schema, Foundry signed export/validation,
+activation review and runtime consumers for the recorded P05 knowledge/action authoring gap. Reuse
+existing signed package and host authority; implement only declarations that have a complete
+runtime-enforced contract, and record any genuine missing product/authority decision without
+pretending it is credential-blocked. Continue §10 lifecycle and S3–S9/U01–U12 afterward. Keep
+rollouts disabled.
+
+## Prior checkpoint — 2026-11-14 (Foundry lifecycle recovery)
 
 P05 recovery is committed and pushed to `origin/Mcbt5s-Backup-2` through `cf2d28f704ae207c0eed20f62f7e06237821d563` (`34c7da23` host recovery; `64669caf` reload repair; `cf2d28f7` terminal-state correction). Foundry persists the exact export request/fingerprint before dispatch, recovers the host conformance job through owner-authorized status, saves the listing only after signed graduation succeeds, and reconciles retries without duplicate export/listing effects. Reload restores lifecycle and product state; completed but uncertified jobs no longer remain labeled `building`. Focused Agent SDK dogfood tests pass **3/3**, Agent SDK typecheck passes, and `git diff --check` passes. Earlier `34c7da23` evidence covers Spaces recovery/graduation/migration **15/15**, Shell status caller **1/1**, and related typechecks. All are local mocks/SQLite; no browser, deployed Worker/D1, provider, or live acceptance ran.
 

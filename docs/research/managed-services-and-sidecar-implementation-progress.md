@@ -1,13 +1,26 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint mission; P05 lifecycle recovery)
+## Active continuation — 2026-11-14 (joint mission; coordination policy pushed)
 
-P05 Foundry conformance/publication recovery is pushed through `cf2d28f704ae207c0eed20f62f7e06237821d563` (`origin/Mcbt5s-Backup-2`). The owner draft persists request ID and exact payload fingerprint before export; host idempotency/status recovers the same job after a lost response; graduation is idempotent by certified job; the UI stores and restores the listing ID only after host success. Reload uses the exact owner-authorized status operation and repairs a lost local Gadget update. Product status preserves `suspended`/`retired` and maps terminal uncertified jobs out of `building`. Local evidence this turn: SDK dogfood **3/3**, SDK typecheck, and `git diff --check`; host recovery/graduation/migration **15/15** and Shell status caller **1/1** were recorded with `34c7da23`. No browser, deployment, provider or live acceptance ran.
+Space member-disclosure policy code `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed to
+`origin/Mcbt5s-Backup-2`. New member-visible publications/amendments are disabled unless an owner or
+admin enables the revisioned policy; writes and disable checks serialize with publication in the
+SpaceDO. Owners can inspect paginated metadata-only policy history. Existing member facts remain
+visible and retain their per-entry approval; disabling requires them to be individually unpublished.
+Local evidence: Agent SDK coordination **4/4**, SpaceDO/route/migration **26/26**, SDK/Spaces/Shell
+typechecks, SDK build and `git diff --check`. No deployed multi-user acceptance ran.
 
-P06's phone simulator `call.received`/`call.digits` action is already reachable through Shell and the host validator/renderer; the signed bounded keypad example has per-install settings, local preview, synthetic installed-handler test and a scoped read-only operations view. This corrects the stale simulator next-action recorded below; do not repeat it. S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL only at their row-specific uncoded paths, runtime/provider contracts, product/legal choices, missing data feeds and deployed/live gates. U05/U06 have unsupported producers/writer contracts, not missing credentials. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their row-specific
+uncoded code, authority/runtime contracts, feeds, product/legal choices and deployed/live gates; U05
+candidate observation and U06 runtime writer/adapter contracts are missing implementation, not
+credential blockers. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: implement an explicit owner/admin policy gate for new Space-member-visible coordination facts, disabled until configured. Persist an expected-revision setting, enforce it transactionally during publish/amend, require explicit unpublish before disabling while member facts remain, add the Settings control, and test authorization/concurrency. Preserve existing published entries and per-entry disclosure confirmation. Then continue §10 and the remaining uncoded requirements across both plans.
+Exact next action: trace current `SpaceBlueprint` declarations through Foundry export, signed artifact
+validation, activation review and runtime consumers for P05's recorded knowledge/action authoring
+gap. Implement only declarations backed by an existing or newly enforced host runtime contract; do
+not use a template declaration to grant authority. Then continue §10 lifecycle and the remaining
+independent S3–S9/U01–U12 code gaps.
 
 
 ## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)
