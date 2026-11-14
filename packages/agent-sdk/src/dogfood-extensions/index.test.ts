@@ -46,6 +46,7 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("activeProductStatus=['draft','building','in_review','published','suspended','retired'].includes(item.status)?item.status:'draft'");
     expect(foundry).toContain("draft?.lifecycle?.marketplace_listing_id||item.marketplace_listing_id||''");
     expect(foundry).toContain("publication_status:savedListingId?'published':draft?.lifecycle?.publication_status||'draft'");
+    expect(foundry).toContain("activeLifecycle.export_request_id&&!workflowStatusTerminal(activeLifecycle.conformance_job_status))return'building'");
     expect(foundry).toContain("if(activeLifecycle.marketplace_listing_id){await persistProductState();document.querySelector('#certification').textContent=JSON.stringify({stage:'marketplace_published',listing_id:activeLifecycle.marketplace_listing_id,alreadyPublished:true},null,2);return}");
     expect(foundry).toContain("function saveAuthoringDraft");
     expect(foundry).toContain("draft_json:raw");
