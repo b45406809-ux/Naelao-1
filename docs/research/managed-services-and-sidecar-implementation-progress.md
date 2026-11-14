@@ -3,9 +3,8 @@
 
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)
 
-U12 fix `6ee3a16577fba9c14304aae4d4b24cb43050c254` is pushed to
-`origin/Mcbt5s-Backup-2`. A P10/P24 rollback slice is implemented locally and verified but not yet
-committed: owner/admin-only bounded trusted release history, exact historical version selection,
+U12 fix `6ee3a16577fba9c14304aae4d4b24cb43050c254` and P10/P24 rollback code `0d121ab2` are pushed to
+`origin/Mcbt5s-Backup-2`. The rollback adds owner/admin-only bounded trusted release history, exact historical version selection,
 same-publisher signed review, paused/drained apply and a durable receipt. Local evidence is Spaces
 focused suites **46/46**, workspace build **55/55 tasks**, workspace typecheck **82/82 tasks**, and
 `git diff --check`. A local 1.2.0→1.0.0 rollback test confirms the install remains paused; stale pins,
@@ -23,7 +22,7 @@ P21 builder reset email is implemented and pushed as `814c429af84f0b5089286cf4fb
 
 U12 current-toolchain verification found and fixed a `fetchMock` call-argument typing error in `packages/billing-core/src/providers/lemon-squeezy.test.ts`. Frozen install with Corepack pnpm 9.12.0 passed; the focused Billing suite passes **52/52**, full workspace build **55/55 tasks**, full workspace typecheck **82/82 tasks**. Turbo child processes require a temporary PATH wrapper to invoke the pinned pnpm 9 because the global fallback is pnpm 11; the repository pin remains unchanged. Build exercised local image builds and Wrangler dry runs only. No CI event, deployment, provider account, or live acceptance ran. U12 is IMPLEMENTED_LOCAL for build wiring and remains PARTIAL for future CI execution and deployed-image parity. S2 remains IMPLEMENTED_LOCAL for supported lanes; S4–S9/U01–U12 remain open at the specific code gaps, contracts, product decisions and acceptance gates in the matrix. U05/U06 are unsupported runtime contracts, not credential blockers. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next task after saving and pushing the rollback checkpoint: add signed release version and publisher identity to the validated per-install runtime response, expose only that metadata through the owner-only voice operations endpoint, render it in the bounded phone-menu dashboard, and test exact-install isolation and revoked-release denial. Then continue remaining S3–S9/U01–U12 and platform-plan code gaps. Keep runtime/provider rollouts disabled and preserve `infra/scripts/__pycache__/`.
+Exact next task: add signed release version and publisher identity to the validated per-install runtime response, expose only that metadata through the owner-only voice operations endpoint, render it in the bounded phone-menu dashboard, and test exact-install isolation and revoked-release denial. Then continue remaining S3–S9/U01–U12 and platform-plan code gaps. Keep runtime/provider rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
 ## Prior checkpoint details
 

@@ -36,8 +36,8 @@ pnpm 11 invocation still fails in this non-TTY workspace; the repository remains
 Build included local image builds and Wrangler dry runs only. No deploy, CI event, provider call or
 live acceptance ran; U12 remains PARTIAL for future CI execution and deployed image parity.
 
-P10/P24 rollback to an earlier signed Space-shared static Canvas/channel-code release is implemented
-in the current local diff. The authenticated Space-admin release-history route limits results to 50
+P10/P24 rollback to an earlier signed Space-shared static Canvas/channel-code release is pushed as
+`0d121ab2` to `origin/Mcbt5s-Backup-2`. The authenticated Space-admin release-history route limits results to 50
 and rechecks publisher trust; the Shell selects an exact historical release and reuses signed review,
 pause/drain and durable apply receipts. Tests cover a 1.2.0→1.0.0 rollback that remains paused, stale
 pins, unavailable exact releases, revoked keys and release-list bounds. Focused Spaces suites pass
