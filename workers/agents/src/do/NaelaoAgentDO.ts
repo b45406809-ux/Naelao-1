@@ -16,6 +16,7 @@ import { publishCompletedTask, type TaskPublication } from "../script-engine/tas
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { resolveExtensionProjectKnowledge } from "../channels/extension-knowledge-selection.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, validateVoiceChannelResponse, type DocumentProcessingGateway } from "@naelao/agent-sdk";
@@ -10175,8 +10176,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
     const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
     if (actual !== input.scriptSha256) return null;
+    let knowledgeCollections = (declaration.knowledgeCollections ?? []).slice(0, 16);
+    if (instance.scope === "SPACE_SHARED" && knowledgeCollections.length) {
+      if (!input.projectId) return null;
+      const knowledgeResponse = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${encodeURIComponent(input.spaceId)}/projects/${encodeURIComponent(input.projectId)}`
+          + `/space-shared-channel-knowledge/${encodeURIComponent(input.instanceId)}`,
+        { headers: await this.internalHeaders(input.tenantId) },
+      ));
+      if (!knowledgeResponse.ok) return null;
+      const selection = await readBoundedResponseJson<{
+        instance_id?: unknown; extension_id?: unknown; configured?: unknown; granted_publication_ids?: unknown;
+      }>(knowledgeResponse, 64 * 1024).catch(() => null);
+      if (!selection || selection.instance_id !== input.instanceId || selection.extension_id !== installation.manifest.id) return null;
+      const selected = resolveExtensionProjectKnowledge({ declaredPublicationIds: knowledgeCollections,
+        configured: selection.configured, grantedPublicationIds: selection.granted_publication_ids });
+      if (!selected) return null;
+      knowledgeCollections = selected;
+    }
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
-      knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
+      knowledgeCollections,
       ...(attachmentAccess ? { attachmentAccess: { mode: attachmentAccess.mode as "read_text" | "read_image",
         maxFiles: attachmentAccess.maxFiles ?? (attachmentAccess.mode === "read_image" ? 1 : 3),
         maxTotalBytes: attachmentAccess.maxTotalBytes ?? (attachmentAccess.mode === "read_image" ? 480 * 1024 : 2 * 1024 * 1024) } } : {}),

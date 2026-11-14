@@ -374,6 +374,51 @@ describe("runtime extension installation", () => {
       connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive student questions", required: true }] }] });
   });
 
+  it("persists owner-selected Project Knowledge access for a Space-shared channel and revokes it on uninstall", async () => {
+    const storage = createDOStorage(), secret = "space-shared-project-knowledge-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const bundle = { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_shared_mentor", version: "1.0.0",
+      primitives: [{ schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+        provider: "whatsapp", connectionId: "student_channel", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"],
+        outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"] }],
+      connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive student questions", required: true }],
+      knowledge: [{ id: "course_material", purpose: "Answer from approved course materials", access: "owner_published_external" }] };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: { id: "ext_shared_mentor", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"],
+        gadgets: [], daemons: [], commands: [], bundle }, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
+        gatekeeperCapabilities: ["channel.invoke"] }) }));
+    expect(installed.status).toBe(201);
+    const { installationId } = await installed.json() as { installationId: string };
+    const token = await mintInternalToken(secret, "tenant");
+    const list = () => space.fetch(new Request("http://space/extension-project-knowledge-grants?" + new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", project_id: "project-a",
+    }), { headers: { "x-naelao-internal-token": token } }));
+    const update = (expectedRevision: number, publicationIds: string[]) => space.fetch(new Request("http://space/extension-project-knowledge-grants", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId: "project-a", instanceId: installationId,
+        actorId: "owner", expectedRevision, publicationIds }),
+    }));
+    expect(await (await list()).json()).toMatchObject({ installations: [{ instance_id: installationId, configured: false,
+      declared_publication_ids: ["course_material"], granted_publication_ids: [], revision: 0 }] });
+    expect((await update(0, ["secret_docs"])).status).toBe(400);
+    expect((await update(0, ["course_material"])).status).toBe(200);
+    expect(await (await list()).json()).toMatchObject({ installations: [{ configured: true, granted_publication_ids: ["course_material"], revision: 1 }] });
+    expect((await update(0, [])).status).toBe(409);
+    expect((await update(1, [])).status).toBe(200);
+    expect(await (await list()).json()).toMatchObject({ installations: [{ configured: true, granted_publication_ids: [], revision: 2 }] });
+    const removal = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({
+      instance_id: installationId, tenant_id: "tenant", space_id: "space",
+    }), { method: "DELETE" }));
+    expect(removal.status).toBe(200);
+    expect(storage.sql.exec("SELECT revision,updated_by FROM extension_project_knowledge_policies WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ revision: 3, updated_by: "system:installation_removed" }]);
+    expect(storage.sql.exec("SELECT publication_id FROM extension_project_knowledge_grants WHERE instance_id=?", installationId).toArray()).toEqual([]);
+    expect(storage.sql.exec("SELECT publication_ids_json,actor_id FROM extension_project_knowledge_events WHERE instance_id=? ORDER BY revision DESC LIMIT 1", installationId).toArray())
+      .toEqual([{ publication_ids_json: "[]", actor_id: "system:installation_removed" }]);
+  });
+
   it("removes only the active project installation addressed by tenant, space, and project", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);

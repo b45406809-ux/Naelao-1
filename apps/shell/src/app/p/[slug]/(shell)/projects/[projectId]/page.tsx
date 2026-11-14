@@ -32,17 +32,20 @@ import {
   getProjectUsageSummary,
   listAgentDefinitions,
   listExternalKnowledgePublications,
+  listSpaceSharedChannelKnowledge,
   listDepartments,
   listKbDocuments,
   listProjectDepartments,
   listProjects,
   listThreads,
   publishExternalKnowledge,
+  setSpaceSharedChannelKnowledge,
   unpublishExternalKnowledge,
   updateProject,
   type AgentDefinitionSummary,
   type DepartmentOption,
   type ExternalKnowledgePublication,
+  type SpaceSharedChannelKnowledgeInstallation,
   type KbDocument,
   type Project,
   type ProjectDepartment,
@@ -106,6 +109,10 @@ export default function ProjectDetailPage() {
   const [publishedDocumentIds, setPublishedDocumentIds] = React.useState<string[]>([]);
   const [savingPublication, setSavingPublication] = React.useState(false);
   const [publicationLoadError, setPublicationLoadError] = React.useState(false);
+  const [sharedChannelKnowledge, setSharedChannelKnowledge] = React.useState<SpaceSharedChannelKnowledgeInstallation[]>([]);
+  const [sharedChannelKnowledgeDrafts, setSharedChannelKnowledgeDrafts] = React.useState<Record<string, string[]>>({});
+  const [sharedChannelKnowledgeLoadError, setSharedChannelKnowledgeLoadError] = React.useState(false);
+  const [savingSharedKnowledge, setSavingSharedKnowledge] = React.useState<string | null>(null);
 
   // Editable project policy (execution ceiling,
   // spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
@@ -235,11 +242,25 @@ export default function ProjectDetailPage() {
   const refreshExternalKnowledge = React.useCallback(async () => {
     if (!creds) return;
     setPublicationLoadError(false);
-    try {
-      const records = await listExternalKnowledgePublications(activeSpaceId, params.projectId, creds);
-      setExternalPublications(records);
-    } catch {
+    setSharedChannelKnowledgeLoadError(false);
+    const [publicationsResult, sharedKnowledgeResult] = await Promise.allSettled([
+      listExternalKnowledgePublications(activeSpaceId, params.projectId, creds),
+      listSpaceSharedChannelKnowledge(activeSpaceId, params.projectId, creds),
+    ]);
+    const publications = publicationsResult.status === "fulfilled" ? publicationsResult.value : [];
+    if (publicationsResult.status === "fulfilled") setExternalPublications(publications);
+    else {
+      setExternalPublications([]);
       setPublicationLoadError(true);
+    }
+    if (sharedKnowledgeResult.status === "fulfilled") {
+      setSharedChannelKnowledge(sharedKnowledgeResult.value);
+      const currentPublications = new Set(publications.map(publication => publication.id));
+      setSharedChannelKnowledgeDrafts(Object.fromEntries(sharedKnowledgeResult.value.map(installation => [installation.instance_id,
+        installation.granted_publication_ids.filter(id => installation.declared_publication_ids.includes(id) && currentPublications.has(id)),
+      ])));
+    } else {
+      setSharedChannelKnowledgeLoadError(true);
     }
   }, [activeSpaceId, params.projectId, session]);
 
@@ -384,8 +405,24 @@ export default function ProjectDetailPage() {
       setExternalPublications(items => items.filter(item => item.id !== id));
       if (publicationId === id) setPublishedDocumentIds([]);
       show("Knowledge collection unpublished");
+      await refreshExternalKnowledge();
     } catch (error) {
       show(error instanceof Error ? error.message : "Couldn't unpublish this Knowledge collection");
+    }
+  }
+
+  async function handleSaveSharedChannelKnowledge(installation: SpaceSharedChannelKnowledgeInstallation) {
+    if (!creds || savingSharedKnowledge) return;
+    setSavingSharedKnowledge(installation.instance_id);
+    try {
+      await setSpaceSharedChannelKnowledge(activeSpaceId, params.projectId, installation.instance_id, creds,
+        installation.revision, sharedChannelKnowledgeDrafts[installation.instance_id] ?? []);
+      show("Project Knowledge access updated");
+      await refreshExternalKnowledge();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't update Project Knowledge access");
+    } finally {
+      setSavingSharedKnowledge(null);
     }
   }
 
@@ -870,6 +907,71 @@ export default function ProjectDetailPage() {
         </div>
       ) : (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>No documents are published for external extensions.</p>
+      )}
+      <div className="page-header" style={{ marginTop: 24 }}>
+        <div className="section-label" style={{ marginBottom: 0 }}>Space-shared channel access for this project</div>
+        <div className="page-subtitle">
+          Space-shared channel extensions receive no Project Knowledge by default. Owners and admins can grant only collections declared by the signed package and currently published in this Project. Saving an empty selection revokes access.
+        </div>
+      </div>
+      {sharedChannelKnowledgeLoadError ? (
+        <div role="status" className="settings-block" style={{ padding: 12, color: "var(--text2)" }}>
+          Couldn't load Space-shared channel access. Only Space owners and admins can view or change these selections.
+        </div>
+      ) : sharedChannelKnowledge.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13 }}>No active Space-shared channel extensions declare Project Knowledge collections.</p>
+      ) : (
+        <div className="settings-block" aria-label="Space-shared channel Project Knowledge access">
+          {sharedChannelKnowledge.map(installation => {
+            const draft = sharedChannelKnowledgeDrafts[installation.instance_id] ?? [];
+            const available = externalPublications.filter(publication => installation.declared_publication_ids.includes(publication.id));
+            const unavailableGrants = installation.granted_publication_ids.filter(id => !available.some(publication => publication.id === id));
+            return (
+              <div className="settings-row" key={installation.instance_id} style={{ alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <div className="settings-row-label">{installation.name}</div>
+                  <div className="settings-row-sub">
+                    {installation.configured
+                      ? `Owner selection active · revision ${installation.revision}`
+                      : "No owner selection saved · this extension has no Project Knowledge access"}
+                  </div>
+                  {available.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                      {available.map(publication => (
+                        <label key={publication.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13 }}>
+                          <input
+                            type="checkbox"
+                            checked={draft.includes(publication.id)}
+                            onChange={event => setSharedChannelKnowledgeDrafts(current => ({
+                              ...current,
+                              [installation.instance_id]: event.target.checked
+                                ? [...new Set([...(current[installation.instance_id] ?? []), publication.id])]
+                                : (current[installation.instance_id] ?? []).filter(id => id !== publication.id),
+                            }))}
+                          />
+                          <span>{publication.name} <span style={{ color: "var(--text3)" }}>({publication.id})</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="settings-row-sub" style={{ marginTop: 8 }}>No currently published collection is declared by this package.</div>
+                  )}
+                  {unavailableGrants.length > 0 && (
+                    <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>
+                      These saved selections are not currently selectable and will be revoked when you save: {unavailableGrants.join(", ")}.
+                    </div>
+                  )}
+                  <div style={{ marginTop: 10 }}>
+                    <Button size="sm" variant="ghost" disabled={savingSharedKnowledge !== null || publicationLoadError}
+                      onClick={() => void handleSaveSharedChannelKnowledge(installation)}>
+                      {savingSharedKnowledge === installation.instance_id ? "Saving…" : "Save Project access"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
       <form onSubmit={handleSaveExternalPublication} className="settings-block" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
         <div className="settings-row-label">Publish a collection</div>

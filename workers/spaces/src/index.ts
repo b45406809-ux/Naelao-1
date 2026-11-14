@@ -2454,6 +2454,88 @@ async function loadOwnedSpace(
   return { ok: true, tenantId, name: space.name, spacetypeId: space.spacetype_id, configJson: space.config_json };
 }
 
+const spaceSharedProjectKnowledgePath = "/spaces/:spaceId/projects/:projectId/space-shared-channel-knowledge";
+app.use(spaceSharedProjectKnowledgePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(spaceSharedProjectKnowledgePath, requireSpaceMembership({ GET: "admin", PUT: "admin" }));
+app.get(spaceSharedProjectKnowledgePath, async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!identity.userId) return c.json({ error_code: "space_admin_required" }, 403);
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId)
+    : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)) return c.json({ error_code: "project_id_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const query = new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId, project_id: projectId });
+  const response = await stub.fetch(new Request(`http://space-do/extension-project-knowledge-grants?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
+app.put(`${spaceSharedProjectKnowledgePath}/:instanceId/knowledge-grants`, async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), instanceId = c.req.param("instanceId");
+  const identity = getCallerIdentity(c);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!identity.userId || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId))
+    return c.json({ error_code: "extension_project_knowledge_scope_invalid" }, 400);
+  const role = identity.role === "product_end_user"
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId)
+    : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  let body: { publication_ids?: unknown; expected_revision?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)) as typeof body; }
+  catch { return c.json({ error_code: "extension_project_knowledge_selection_invalid" }, 400); }
+  if (!Array.isArray(body.publication_ids) || body.publication_ids.length > 16
+    || body.publication_ids.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(id))
+    || new Set(body.publication_ids).size !== body.publication_ids.length)
+    return c.json({ error_code: "extension_project_knowledge_selection_invalid" }, 400);
+  if (!Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0 || Number(body.expected_revision) >= Number.MAX_SAFE_INTEGER)
+    return c.json({ error_code: "extension_project_knowledge_revision_invalid" }, 400);
+  if (!c.env.KNOWLEDGE_WORKER) return c.json({ error_code: "knowledge_publication_list_unavailable" }, 503);
+  const knowledgeResponse = await c.env.KNOWLEDGE_WORKER.fetch(new Request(
+    `http://knowledge-worker/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(projectId)}/external-publications`,
+    { headers: { "x-naelao-tenant-id": owned.tenantId, "x-naelao-user-id": identity.userId, "x-naelao-role": role,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) } },
+  ));
+  if (!knowledgeResponse.ok) return c.json({ error_code: knowledgeResponse.status === 403 ? "space_admin_required" : "knowledge_publication_list_unavailable" }, knowledgeResponse.status === 403 ? 403 : 503);
+  const publications = await readBoundedResponseJson<{ publications?: Array<{ id?: unknown }> }>(knowledgeResponse, 256 * 1024).catch(() => null);
+  if (!publications || !Array.isArray(publications.publications)) return c.json({ error_code: "knowledge_publication_list_invalid" }, 503);
+  const currentPublicationIds = new Set(publications.publications.flatMap(item => typeof item.id === "string" ? [item.id] : []));
+  if ((body.publication_ids as string[]).some(id => !currentPublicationIds.has(id)))
+    return c.json({ error_code: "knowledge_publication_not_currently_published" }, 409);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extension-project-knowledge-grants", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, projectId, instanceId, actorId: identity.userId,
+      expectedRevision: body.expected_revision, publicationIds: body.publication_ids }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "private, no-store" } });
+});
+
+const internalSpaceSharedProjectKnowledgePath = "/internal/spaces/:spaceId/projects/:projectId/space-shared-channel-knowledge/:instanceId";
+app.use(internalSpaceSharedProjectKnowledgePath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.get(internalSpaceSharedProjectKnowledgePath, async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), instanceId = c.req.param("instanceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
+    || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId))
+    return c.json({ error_code: "extension_project_knowledge_scope_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, instance_id: instanceId });
+  const response = await stub.fetch(new Request(`http://space-do/extension-project-knowledge-grants?${query}`, {
+    headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  const result = await readBoundedResponseJson<{ installations?: Array<Record<string, unknown>> }>(response, 64 * 1024).catch(() => null);
+  const installation = result?.installations?.find(item => item.instance_id === instanceId);
+  return installation ? c.json(installation, 200, { "cache-control": "private, no-store" })
+    : c.json({ error_code: "space_shared_installation_not_found" }, 404);
+});
+
 // Generic directory of mounted Space-shared extension canvases. The shell discovers apps from
 // installed manifests instead of maintaining product-specific routes or navigation entries.
 app.use("/spaces/:spaceId/shared-extension-apps", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

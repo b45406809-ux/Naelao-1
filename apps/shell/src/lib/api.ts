@@ -3172,6 +3172,38 @@ export interface ExternalKnowledgePublication {
   document_ids: string[];
 }
 
+export interface SpaceSharedChannelKnowledgeInstallation {
+  instance_id: string;
+  extension_id: string;
+  name: string;
+  declared_publication_ids: string[];
+  configured: boolean;
+  granted_publication_ids: string[];
+  revision: number;
+  updated_by?: string;
+  updated_at?: string;
+}
+
+export async function listSpaceSharedChannelKnowledge(
+  spaceId: string, projectId: string, session: SessionCredentials
+): Promise<SpaceSharedChannelKnowledgeInstallation[]> {
+  const response = await apiFetch<{ installations: SpaceSharedChannelKnowledgeInstallation[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/space-shared-channel-knowledge`,
+    { session, cache: "no-store" },
+  );
+  return response.installations;
+}
+
+export async function setSpaceSharedChannelKnowledge(
+  spaceId: string, projectId: string, installationId: string, session: SessionCredentials,
+  expectedRevision: number, publicationIds: string[],
+): Promise<{ instance_id: string; project_id: string; configured: true; granted_publication_ids: string[]; revision: number; updated_by: string; updated_at: string }> {
+  return apiFetch(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/space-shared-channel-knowledge/${encodeURIComponent(installationId)}/knowledge-grants`,
+    { method: "PUT", session, body: JSON.stringify({ expected_revision: expectedRevision, publication_ids: publicationIds }) },
+  );
+}
+
 export async function listExternalKnowledgePublications(
   spaceId: string, projectId: string, session: SessionCredentials
 ): Promise<ExternalKnowledgePublication[]> {

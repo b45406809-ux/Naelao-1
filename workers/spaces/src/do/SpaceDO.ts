@@ -2897,6 +2897,43 @@ const MIGRATIONS: Migration[] = [
     description: "bind signed extension update receipts to the exact source artifact",
     up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN source_artifact_sha256 TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    version: 137,
+    description: "persist owner-approved Project Knowledge selections for Space-shared extensions",
+    up: `CREATE TABLE extension_project_knowledge_policies (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,project_id,instance_id)
+    );
+    CREATE TABLE extension_project_knowledge_grants (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      publication_id TEXT NOT NULL,
+      granted_by TEXT NOT NULL,
+      granted_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,project_id,instance_id,publication_id)
+    );
+    CREATE TABLE extension_project_knowledge_events (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      publication_ids_json TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,project_id,instance_id,revision)
+    );
+    CREATE INDEX idx_extension_project_knowledge_grants_instance
+      ON extension_project_knowledge_grants(tenant_id,space_id,project_id,instance_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -4828,6 +4865,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/space-shared-extension-runtime" && method === "GET") return this.spaceSharedExtensionRuntime(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
+      if (url.pathname === "/extension-project-knowledge-grants" && method === "GET") return this.listExtensionProjectKnowledgeGrants(request, url.searchParams);
+      if (url.pathname === "/extension-project-knowledge-grants" && method === "POST") return this.updateExtensionProjectKnowledgeGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
       if (url.pathname === "/extension-runtime-work" && method === "POST") return this.extensionRuntimeWork(request);
       if (url.pathname === "/space-shared-extension-update" && method === "POST") return this.applySpaceSharedExtensionUpdate(request);
@@ -5024,6 +5063,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (result.rowsWritten !== 1) return false;
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_installation_settings WHERE instance_id=?", instanceId);
+          if (!projectId) {
+            const policies = queryAll<{ tenant_id: string; space_id: string; project_id: string; revision: number }>(this.ctx.storage.sql as never,
+              `SELECT tenant_id,space_id,project_id,revision FROM extension_project_knowledge_policies
+               WHERE tenant_id=? AND space_id=? AND instance_id=?`, tenantId, spaceId, instanceId);
+            const revokedAt = new Date().toISOString();
+            for (const policy of policies) {
+              const revision = policy.revision + 1;
+              execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_grants
+                WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+              policy.tenant_id, policy.space_id, policy.project_id, instanceId);
+              execute(this.ctx.storage.sql as never, `UPDATE extension_project_knowledge_policies
+                SET revision=?,updated_by='system:installation_removed',updated_at=?
+                WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+              revision, revokedAt, policy.tenant_id, policy.space_id, policy.project_id, instanceId);
+              execute(this.ctx.storage.sql as never, `INSERT INTO extension_project_knowledge_events
+                (tenant_id,space_id,project_id,instance_id,revision,publication_ids_json,actor_id,created_at)
+                VALUES(?,?,?,?,?,'[]','system:installation_removed',?)`,
+              policy.tenant_id, policy.space_id, policy.project_id, instanceId, revision, revokedAt);
+              execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_events WHERE rowid IN (
+                SELECT rowid FROM extension_project_knowledge_events WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?
+                ORDER BY revision DESC LIMIT -1 OFFSET 100)`, policy.tenant_id, policy.space_id, policy.project_id, instanceId);
+            }
+          }
           return true;
         });
         if (!removed && activeWorkCount > 0) return Response.json({ error_code: "extension_runtime_work_not_drained", active_work_count: activeWorkCount }, { status: 409 });
@@ -14789,6 +14851,124 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.instanceId, grant.path, grant.access, body.approvedBy, new Date().toISOString());
     });
     return Response.json({ instance_id: body.instanceId, approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(body.instanceId) });
+  }
+
+  private async listExtensionProjectKnowledgeGrants(request: Request, params: URLSearchParams): Promise<Response> {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "", instanceId = params.get("instance_id");
+    if (!tenantId || !spaceId || !projectId || instanceId !== null && !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (!queryOne(this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, spaceId))
+      return Response.json({ error_code: "project_not_found" }, { status: 404 });
+
+    const installations = instanceId
+      ? queryAll<{ instance_id: string; extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT instance_id,extension_id,manifest_json FROM extension_installation_manifests
+         WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS NULL AND scope='SPACE_SHARED' AND status='active'`,
+        instanceId, tenantId, spaceId)
+      : queryAll<{ instance_id: string; extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+        `SELECT instance_id,extension_id,manifest_json FROM extension_installation_manifests
+         WHERE tenant_id=? AND space_id=? AND project_id IS NULL AND scope='SPACE_SHARED' AND status='active' ORDER BY instance_id`,
+        tenantId, spaceId);
+    const result = [];
+    for (const installation of installations) {
+      let manifest: ExtensionManifest;
+      try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+      catch { continue; }
+      const declared = [...new Set((manifest.channels ?? []).filter(channel => channel.kind === "channel")
+        .flatMap(channel => channel.knowledgeCollections ?? []))].sort();
+      if (!declared.length) continue;
+      const policy = queryOne<{ revision: number; updated_by: string; updated_at: string }>(this.ctx.storage.sql as never,
+        `SELECT revision,updated_by,updated_at FROM extension_project_knowledge_policies
+         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`, tenantId, spaceId, projectId, installation.instance_id);
+      const granted = queryAll<{ publication_id: string }>(this.ctx.storage.sql as never,
+        `SELECT publication_id FROM extension_project_knowledge_grants
+         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=? ORDER BY publication_id`,
+        tenantId, spaceId, projectId, installation.instance_id).map(row => row.publication_id);
+      result.push({ instance_id: installation.instance_id, extension_id: installation.extension_id,
+        name: manifest.bundle?.id ?? manifest.id, declared_publication_ids: declared,
+        configured: Boolean(policy), granted_publication_ids: granted,
+        revision: policy?.revision ?? 0, ...(policy ? { updated_by: policy.updated_by, updated_at: policy.updated_at } : {}) });
+    }
+    return Response.json({ installations: result }, { headers: { "cache-control": "private, no-store" } });
+  }
+
+  private async updateExtensionProjectKnowledgeGrants(request: Request): Promise<Response> {
+    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown }>()
+      .catch(() => ({} as { tenantId?: unknown; spaceId?: unknown; projectId?: unknown; instanceId?: unknown; actorId?: unknown; expectedRevision?: unknown; publicationIds?: unknown }));
+    if (typeof body.tenantId !== "string" || !body.tenantId || typeof body.spaceId !== "string" || !body.spaceId
+      || typeof body.projectId !== "string" || !body.projectId || typeof body.instanceId !== "string" || !body.instanceId
+      || typeof body.actorId !== "string" || !body.actorId
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (!Array.isArray(body.publicationIds) || body.publicationIds.length > 16
+      || body.publicationIds.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]{2,63}$/.test(id))
+      || new Set(body.publicationIds).size !== body.publicationIds.length)
+      return Response.json({ error_code: "extension_project_knowledge_selection_invalid" }, { status: 400 });
+    if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0 || Number(body.expectedRevision) >= Number.MAX_SAFE_INTEGER)
+      return Response.json({ error_code: "extension_project_knowledge_revision_invalid" }, { status: 400 });
+    if (!queryOne(this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", body.projectId, body.spaceId))
+      return Response.json({ error_code: "project_not_found" }, { status: 404 });
+    const installation = queryOne<{ extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+      `SELECT extension_id,manifest_json FROM extension_installation_manifests
+       WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id IS NULL AND scope='SPACE_SHARED' AND status='active'`,
+      body.instanceId, body.tenantId, body.spaceId);
+    if (!installation) return Response.json({ error_code: "space_shared_installation_not_found" }, { status: 404 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(installation.manifest_json)); }
+    catch { return Response.json({ error_code: "extension_manifest_unavailable" }, { status: 409 }); }
+    const declared = new Set((manifest.channels ?? []).filter(channel => channel.kind === "channel")
+      .flatMap(channel => channel.knowledgeCollections ?? []));
+    if ((body.publicationIds as string[]).some(id => !declared.has(id)))
+      return Response.json({ error_code: "extension_project_knowledge_not_declared" }, { status: 400 });
+
+    const now = new Date().toISOString();
+    const currentRevision = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
+      `SELECT revision FROM extension_project_knowledge_policies
+       WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+      body.tenantId, body.spaceId, body.projectId, body.instanceId)?.revision ?? 0;
+    if (currentRevision !== body.expectedRevision)
+      return Response.json({ error_code: "extension_project_knowledge_revision_conflict", current_revision: currentRevision }, { status: 409 });
+    const revision = currentRevision + 1;
+    const updated = this.ctx.storage.transactionSync(() => {
+      const latestRevision = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
+        `SELECT revision FROM extension_project_knowledge_policies
+         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+        body.tenantId, body.spaceId, body.projectId, body.instanceId)?.revision ?? 0;
+      if (latestRevision !== body.expectedRevision) return false;
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_project_knowledge_policies
+        (tenant_id,space_id,project_id,instance_id,revision,updated_by,updated_at) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(tenant_id,space_id,project_id,instance_id) DO UPDATE SET revision=excluded.revision,
+          updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+      body.tenantId, body.spaceId, body.projectId, body.instanceId, revision, body.actorId, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_grants
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+      body.tenantId, body.spaceId, body.projectId, body.instanceId);
+      for (const publicationId of body.publicationIds as string[]) execute(this.ctx.storage.sql as never,
+        `INSERT INTO extension_project_knowledge_grants
+          (tenant_id,space_id,project_id,instance_id,publication_id,granted_by,granted_at) VALUES(?,?,?,?,?,?,?)`,
+        body.tenantId, body.spaceId, body.projectId, body.instanceId, publicationId, body.actorId, now);
+      execute(this.ctx.storage.sql as never, `INSERT INTO extension_project_knowledge_events
+        (tenant_id,space_id,project_id,instance_id,revision,publication_ids_json,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+      body.tenantId, body.spaceId, body.projectId, body.instanceId, revision, JSON.stringify(body.publicationIds), body.actorId, now);
+      execute(this.ctx.storage.sql as never, `DELETE FROM extension_project_knowledge_events WHERE rowid IN (
+        SELECT rowid FROM extension_project_knowledge_events WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?
+        ORDER BY revision DESC LIMIT -1 OFFSET 100)`, body.tenantId, body.spaceId, body.projectId, body.instanceId);
+      return true;
+    });
+    if (!updated) {
+      const latestRevision = queryOne<{ revision: number }>(this.ctx.storage.sql as never,
+        `SELECT revision FROM extension_project_knowledge_policies
+         WHERE tenant_id=? AND space_id=? AND project_id=? AND instance_id=?`,
+        body.tenantId, body.spaceId, body.projectId, body.instanceId)?.revision ?? 0;
+      return Response.json({ error_code: "extension_project_knowledge_revision_conflict", current_revision: latestRevision }, { status: 409 });
+    }
+    return Response.json({ instance_id: body.instanceId, project_id: body.projectId, configured: true,
+      granted_publication_ids: body.publicationIds, revision, updated_by: body.actorId, updated_at: now },
+    { headers: { "cache-control": "private, no-store" } });
   }
 
   /** Small, deterministic portfolio facts for the platform Steward. No task text, files,
