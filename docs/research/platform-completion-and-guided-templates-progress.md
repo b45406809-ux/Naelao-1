@@ -1,6 +1,16 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-14 (P06 published settings and next U05 action; pushed)
+## Latest checkpoint — 2026-11-14 (U05 exact project hold check; P04 next; pushed)
+
+Code `b5b0514068c96f711de60d54a4bd2e1fd93ca5cf` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch confirmed `36dfb191` with no advance. Project-main runtime generation admission now requires its Billing hold to match the exact tenant, Space and Project, remain held, and remain unexpired before the container can start. The regression proves a different Project's hold does not claim an allocation generation or start the runtime.
+
+Local evidence: `corepack pnpm --filter @naelao/agents-worker exec vitest run src/do/DynamicSandboxDO.test.ts` **34/34**, Agents typecheck, and `git diff --check`. The global pnpm 11 wrapper attempted dependency reconciliation and aborted without a TTY; repository-pinned Corepack pnpm **9.12.0** ran the suite without changing the lockfile or worktree dependencies. No deployment, Cloudflare live runtime, provider, or live acceptance ran.
+
+U05 remains PARTIAL: the exact project budget binding is closed locally; the live candidate/observation path is still absent. Current `project_main_runtime_registry` is a checked Container execution identity, not a live FUSE mount. The observation write route is operator-gated, and there is no trusted runtime producer for mount readiness, filesystem drain/flush, authenticated reconnect or region evidence. This is an unsupported runtime/platform contract, not missing credentials. Do not fabricate a positive observation or enable rollout. P01 local runner/failure checks remain closed; P02 resource ownership/separation and read-only receipts remain external. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue P04 by archiving the small Agent-owned Project main runtime profile and inert restart-recipe configuration alongside each full Space archive. Add a versioned, tenant/Space/Project-bound authenticated Agents export/restore bridge; validate profile/recipe schemas, merge only when the destination has no current value, write restore-actor audit records, and never restore runtime allocations, live observations or provider snapshots. Include the snapshot in archive preview/status and add retry, conflict, authorization and migration-backed tests. Then continue remaining P04 stores and P05 lifecycle gaps.
+
+## Previous checkpoint — 2026-11-14 (P06 published settings and next U05 action; pushed)
 
 Code `6bf8de58716ac473913e5b305fe8ac97b8f19bba` is pushed to `origin/Mcbt5s-Backup-2`; the pre-push fetch showed `c73a1810` with no advance. The signed bounded phone menu now keeps schema-validated per-installation drafts separate from active settings, requires owner/admin confirmation to publish with revision fences, retains the latest 20 published versions, and can create a rollback draft only when its schema still matches. Active calls read published values; only an owner-triggered synthetic scenario may select the draft. Audit records retain actor/revision/field IDs, not setting values. Package version is 1.0.8.
 
