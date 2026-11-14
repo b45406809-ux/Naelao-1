@@ -12,6 +12,7 @@ export default function SpaceCompatibilityPage() {
   const params = useParams<{ slug: string; spaceId: string }>();
   const searchParams = useSearchParams();
   const openExtensions = searchParams.get("next") === "extensions";
+  const openSettings = searchParams.get("next") === "settings";
   const router = useRouter();
   const product = useProduct();
   const { session } = useProductAuth();
@@ -27,10 +28,11 @@ export default function SpaceCompatibilityPage() {
       if (cancelled) return;
       const space = spaces.find((candidate) => candidate.id === params.spaceId);
       if (space) setActiveSpace(space.id, space.name);
-      router.replace(`/p/${params.slug}${openExtensions ? "/extensions" : ""}`);
+      const continuation = openExtensions ? "/extensions" : openSettings ? "/settings" : "";
+      router.replace(`/p/${params.slug}${continuation}`);
     }).catch(() => router.replace(`/p/${params.slug}/spaces`));
     return () => { cancelled = true; };
-  }, [openExtensions, params.spaceId, params.slug, product.space_id, router, session, setActiveSpace]);
+  }, [openExtensions, openSettings, params.spaceId, params.slug, product.space_id, router, session, setActiveSpace]);
 
   return <main className="page-shell"><p className="muted">Opening Space…</p></main>;
 }

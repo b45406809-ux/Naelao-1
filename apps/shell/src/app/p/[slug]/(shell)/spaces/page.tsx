@@ -360,7 +360,7 @@ export default function SpacesPage() {
       }));
       await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues);
       setCreateOpen(false);
-      window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}`);
+      window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}?next=settings`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
     finally { setActivatingTemplate(false); }
   }
