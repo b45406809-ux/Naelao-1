@@ -1,29 +1,39 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P06 inbound Twilio extension cost observations)
+## Active continuation — 2026-11-14 (P04 chunked Space archive objects)
 
-Source `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed to `origin/Mcbt5s-Backup-2`. The signed
-package phone dashboard now lets an owner/admin explicitly read a recent admitted inbound Twilio call
-from the Calls API. The route limits the action to the current signed installation and exact binding;
-Agents checks the stored SID/account/caller/line/inbound direction and stored handler pin. Final valid
-price, currency, time and duration are stored only in the minimized provider-observation ledger. The
-dashboard separates that observation from invoices and customer charges and leaves missing/pending
-values unknown. Twilio documents that call price can be delayed and covers connectivity, not every
-call-related feature ([Call Resource](https://www.twilio.com/docs/voice/api/call-resource)).
+Source `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2`. Existing v1
+archives remain readable and are still written within 2 MiB/object and 4 MiB aggregate. Larger captures
+use v2 authenticated 512 KiB AES-GCM chunks under tenant/Space/archive/key-version scoped R2 keys, with
+16 MiB/object and 64 MiB aggregate bounds. The encrypted manifest stays capped at 8 MiB, rows at
+10,000/table and object references at 5,000. Same-request retries recheck source ETags and rewrite stable
+chunk keys; restore authenticates chunks and verifies checksums before preview. Rotation writes new-key
+chunks alongside old ones, verifies the replacement manifest, switches the record pointer, then removes
+old-version chunks. The owner panel and backup runbook expose the current limits and scope exclusions.
 
-Local evidence: Agents **49/49**, Spaces dashboard **18/18**, Agent SDK bounded phone menu **5/5**,
-Agents/Spaces typechecks, dashboard script syntax and `git diff --check`. These are mocked/local checks;
-no browser, live Twilio API, deployment or acceptance ran. P06 remains PARTIAL for streaming, managed
-calling, customer lifecycle, cost/quality completeness and provider/region acceptance. P04 remains
-PARTIAL for bounded archive size/row limits, other stores, policy and isolated recovery. P01/P02
-deployed-resource and operator-receipt gates remain external. Keep rollouts disabled and preserve
-`infra/scripts/__pycache__/`.
+Local evidence: Space archive codec/data-ops suites **20/20**, Shell archive panel **2/2**,
+Spaces/Shell typechecks and `git diff --check`. Local fixtures cover v1 compatibility, chunk corruption,
+interrupted export/retry, restore and rotation cleanup. No deployed R2 or isolated recovery drill ran.
+P04 remains PARTIAL for other stores, private inbound data, approved retention/key/jurisdiction policy,
+RPO/RTO and isolated/deployed acceptance. P01/P02 resource separation and operator receipts remain
+external evidence gates. Keep rollout flags disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: implement the versioned chunked P04 archive path for captured R2 bytes, preserving
-v1 reads/resumable writes with explicit per-object, aggregate and row limits. Add old-format,
-interrupted-upload and corruption coverage; retain current fail-closed caps until the new path verifies.
-Then continue the next independent requirements in both plans.
+Exact next action: continue P02 at the rendered-resource receipt/preflight boundary. Inspect that exact
+contract and close a concrete local validator or reachable-caller gap if present; preserve fail-closed
+behavior for actual Cloudflare IDs, service ownership, fresh read-only receipts and operator-attested
+D1 baselines. Then proceed through commercial integrity/recovery and remaining P01–P24 plus S3–S9/
+U01–U12 requirements without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (P06 inbound Twilio extension cost observations)
+
+Code `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed. The owner dashboard can explicitly read an
+admitted inbound Twilio extension Call SID, validating tenant/account/line/caller/direction and the
+stored installation/handler pin. Only final valid price/time/currency/duration enter the hashed
+provider-cost ledger; missing/pending remains unknown. Twilio says delayed `price` covers connectivity,
+not every call feature or a customer invoice. Local evidence was Agents **49/49**, Spaces **18/18**, SDK
+**5/5**, typechecks and syntax; no live API read, browser, deployment or acceptance ran. P06 remains
+partial for streaming, managed calling, lifecycle, full cost/quality and provider acceptance.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
@@ -883,22 +893,24 @@ recovery or email delivery succeeded.
 
 ### P04 — encrypted archive object recovery: PARTIAL
 
-New full archive exports capture the listed `spaces/{space}/projects/` and
-`spaces/{space}/space-workspace/` object bytes into the encrypted archive, with each object bound to
-its key, listed ETag, size and SHA-256 checksum. Capture is limited to 2 MiB per object and 4 MiB in
-total and preserves R2 HTTP/custom metadata; the existing archive plaintext cap remains 8 MiB, so larger snapshots fail closed. Restore
-validates complete snapshot coverage and checksums, accepts an existing object only when its content
-matches, conditionally writes missing objects without overwriting collisions, and verifies the bytes
-after the write. Migration 111 records `restoring`/`partial`/`completed`, verified object count and
-last error. SQLite rows still restore as an idempotent merge, and R2 writes cannot participate in the
-SQLite transaction. A failed SQL apply may leave captured bytes restored, but durable partial state
-allows retry with the same preview.
+Current SpaceDO archives preserve format-v1 reads and use format v1 for captures within 2 MiB per
+object/4 MiB total. Larger bounded captures use v2: the encrypted manifest stores chunk descriptors,
+while 512 KiB AES-GCM chunks are written under tenant/Space/archive/key-version scoped R2 keys. V2 is
+limited to 16 MiB per object and 64 MiB aggregate; the encrypted manifest remains capped at 8 MiB,
+rows at 10,000 per table, and object references at 5,000. Source ETags are rechecked and same-request
+retries rewrite stable chunk keys before the final manifest is uploaded through the existing resumable
+multipart path. Restore authenticates every chunk and checks per-chunk/full-object checksums before
+preview, then recreates missing objects without overwriting conflicting bytes. Key rotation writes
+new-version chunks alongside old chunks, verifies the replacement manifest, switches the durable
+pointer, and then removes old-key chunks. Partial relational restore remains an additive merge; R2
+writes and SQLite cannot be atomic together.
 
-Local evidence: `workers/spaces/src/do/space-data-ops.test.ts` **9/9**, Spaces TypeScript check, and
-`git diff --check`, including conflicting-object non-overwrite and interrupted two-object recovery.
-P04 remains PARTIAL: archive capture limits and point-in-time semantics are unchanged; there is no
-isolated restore drill, measured RPO/RTO, live R2 durability/retention evidence, provider reconnection
-reconciliation, or approved key/legal/jurisdiction retention policy.
+Local evidence: Space archive codec plus SpaceDO data-ops **20/20**, ArchiveKeyRotationPanel **2/2**,
+Spaces/Shell TypeScript checks, and `git diff --check`. Coverage includes v1 decoding, v2 corruption,
+interrupted chunk upload/retry, missing-object restore, and key rotation with old chunks removed only
+after pointer replacement. These are local Worker/SQLite/R2 mocks; no deployed recovery drill or live
+R2 durability/retention acceptance ran. P04 remains PARTIAL for other service stores, private inbound
+data, approved retention/key/jurisdiction policy, RPO/RTO, and isolated/deployed recovery.
 
 ### P11/P12 — checkout and dunning contracts: local behavior reconciled
 
@@ -1141,7 +1153,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P01 | PARTIAL | Release runner, manifest, ordered fail-closed migration phase, pre-deploy schema probes and promotion health gates are local. `db5a915e` adds a fresh-install in-memory SQLite rehearsal across all 247 migrations and repairs the safe 0164 skip prerequisite for 0229; tests pass 20/20 and run in both preflights. Operator-attested D1 baselines, isolated staging/production rehearsal, rollback/data recovery and deployed/live acceptance remain. |
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
-| P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). Restore is checksum/scope checked, retryable and refuses conflicting heads; existing caps can still reject larger projects. Other service D1/DO/provider/runtime state, private inbound communications/attachments, key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
+| P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds per-installation persisted Twilio call history pinned to the admitted handler. `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin, minimized provider-cost persistence and per-call display. Twilio documents that its delayed `price` is connectivity-only; this remains an API observation, not an invoice. Telnyx remains DTMF-only. Streaming, managed voice, full lifecycle, complete cost/quality evidence and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |

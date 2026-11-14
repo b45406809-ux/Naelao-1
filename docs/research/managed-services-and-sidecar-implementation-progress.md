@@ -1,29 +1,41 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P06 inbound Twilio extension cost observations)
+## Active continuation — 2026-11-14 (P04 chunked Space archive objects)
 
-Source `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed to `origin/Mcbt5s-Backup-2`. Owner/admins
-can explicitly read an admitted inbound extension Call SID from Twilio's Calls API through the signed
-phone-menu dashboard. The path verifies tenant, account, exact binding/line, caller, `direction=inbound`,
-and the installation/handler digest stored at call admission. It records only final prices with valid
-currency/time/duration in the existing hashed provider-cost ledger; the dashboard calls them API
-observations, not invoices or Naelao charges. Missing/pending price remains unknown. The official
-[Twilio Call Resource](https://www.twilio.com/docs/voice/api/call-resource) says `price` can be delayed,
-covers call connectivity, and may exclude related feature charges.
+Code `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2`. V1 archives
+remain readable and remain the writer format below 2 MiB/object and 4 MiB aggregate. Larger captures
+use v2 authenticated 512 KiB AES-GCM R2 chunks under tenant/Space/archive/key-version keys, with
+16 MiB/object and 64 MiB aggregate bounds. The encrypted manifest stays capped at 8 MiB, rows at
+10,000/table, object references at 5,000. Same-request retry rechecks source ETags and rewrites stable
+chunk keys; restore verifies chunk integrity before preview and rehydrates missing objects. Key rotation
+copies chunks to the active key-version prefix, verifies the new manifest, switches the record pointer,
+then removes old chunks. Archive UI and [backup documentation](../space-data-retention-and-backup.md)
+describe these limits and exclusions.
 
-Local evidence: Agents cost/phone suites **49/49**, Spaces dashboard **18/18**, Agent SDK phone-menu
-suite **5/5**, Agents/Spaces typechecks, dashboard JavaScript syntax and `git diff --check`. These use
-local SQLite/Worker fixtures and a mocked provider; no Twilio account, browser, deployment or live
-acceptance ran. P06 remains PARTIAL for voice streaming/managed service, broader customer lifecycle,
-quality and live provider/region acceptance. U02's connected sources are locally implemented; invoice,
-billed-idle/CPU-size, spend-policy and provider-account gates remain separate. P04 retains other stores,
-policy and isolated recovery gaps. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence: Spaces archive codec/data-ops suites **20/20**, Shell archive panel **2/2**,
+Spaces/Shell typechecks and `git diff --check`. Local tests cover v1 reads, v2 corruption, interrupted
+chunk retry, restore and old-key chunk cleanup after rotation. No deployed R2 or isolated recovery drill
+ran. P04 remains PARTIAL for other stores, inbound private data, approved key/retention/jurisdiction
+policy, RPO/RTO and deployed/live recovery. P01/P02 resource IDs, ownership, read-only receipts and
+operator-attested D1 baselines remain external evidence gates. Preserve `infra/scripts/__pycache__/`;
+all rollout flags remain disabled.
 
-Exact next action: implement a versioned chunked P04 archive path for captured R2 bytes, retaining v1
-archive reads and resumable uploads, and bounded by explicit per-object/aggregate/row limits. Add
-interrupted-upload, corruption and old-format compatibility tests before relaxing any current cap; then
-continue the next independent P01–P24 and S2–S9/U01–U12 requirement.
+Exact next action: continue P02 at the rendered-resource receipt/preflight boundary. Inspect that
+specific current contract and close a concrete local validator or reachable-caller gap if present;
+preserve fail-closed behavior for actual Cloudflare resource IDs, service ownership, read-only receipts
+and operator-attested D1 baselines. Then proceed through commercial integrity/recovery and the remaining
+S3–S9/U01–U12/P01–P24 gaps without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (P06 inbound Twilio extension cost observations)
+
+Code `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed. The signed owner dashboard can explicitly
+read an admitted inbound Twilio extension Call SID, validating tenant/account/line/caller/direction and
+the stored installation/handler pin. Only final valid price/time/currency/duration enter the hashed
+provider-cost ledger; missing/pending remains unknown. Twilio says its delayed price is connectivity-only,
+not an invoice. Local evidence: Agents **49/49**, Spaces **18/18**, SDK **5/5**, typechecks and syntax;
+no live API read, browser, deployment or acceptance ran. P06 and U02 remain partial for their distinct
+unimplemented, product and live-evidence gates.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 
@@ -1210,7 +1222,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §2 / P11 checkout | PARTIAL | `workers/billing/src/index.ts` now returns the development URL only when `ALLOW_DEV_CHECKOUTS=true` and `ENVIRONMENT` is development/local/test; staging and production return `checkout_provider_unavailable` even if the flag is mis-set. Wrangler names the switch true only in top-level development vars and false in staging/production. Checkout route tests pass 6/6, Billing typecheck passes, Wrangler variable-parity passes 82/82. Purchased plan/price snapshots and live signed webhook-to-entitlement acceptance remain. |
 | §2 / P20 license refunds/disputes | PARTIAL | Code `894ec60f` adds migration 0226 and a signed Lemon Squeezy refund caller that writes a body-hash-idempotent review case with explicit/unknown refund amount, tenant/listing/order references, reason, and matched/unmatched/conflict state. Refunds arriving before payment are linked during license settlement. An exact full refund can close only an already-recorded duplicate-charge task. A tenant-scoped HMAC read route exposes cases. Code `086675c8` adds a dedicated-secret-protected, bounded read-only operator list API with filters, lookahead pagination and a minimal audit record; it does not mutate license or payout state. Local evidence for the new slice: Billing route **4/4**, Billing typecheck, diff check. No provider webhook, deployed database or payout was exercised. The caller-supplied operator ID is audit attribution rather than independent identity and no first-party UI is wired. The normalized Lemon Squeezy contract contains no dispute event; dispute ingestion, approved full/partial refund behavior, author-earnings/payout reversal, stronger operator identity and resolution UX remain open. Do not treat unknown refunds as zero or claim provider dispute support. |
 | §2 / P23 payment and notification operations | PARTIAL | Code `e967eaa3` adds migration 0234 and a tenant-scoped non-PII queue outcome ledger for accepted/rejected/ambiguous, not-sent, persisted and terminal DLQ states; existing dunning attempts remain in their ledger. Billing/Router and Dashboard expose owner/admin no-store status. Stable signed webhook IDs and Product email acceptance receipts remain on their prior outbox paths. Local evidence at `e967eaa3`: Notifications **40/40**, Billing **4/4**, Router **2/2**, release/environment suites **25/25**, affected typechecks, manifest validation and Wrangler dry runs. General synchronous-send receipts, approved retention, audited operator replay and provider/deployed acceptance remain open. Provider acceptance is not inbox delivery. |
-| §3 / P04 backup and restore | PARTIAL | Space archive/restore and snapshot inventories are reused. Code `7bf3cd0f` adds claimed-request-gated whole-organization SpaceDO erasure: global D1 Space fencing, migration-109 transactional application-row purge with a retained archive-excluded tombstone, a permanent DO 410 barrier, and retryable deletion of the encrypted `space-archives/{tenant}/{space}/` R2 prefix after tombstoning. Local evidence: Spaces **16/16**, Workflows erasure **19/19**, Spaces/Workflows typechecks, `git diff --check`; these use SQLite/Worker/R2 mocks. Archives remain limited to 8 MiB plaintext, 10,000 rows/table and 5,000 object references; workspace bytes are referenced rather than copied and restore merges missing rows instead of providing point-in-time replacement. Key/legal/jurisdiction policy, independent byte-complete backup, isolated restore, RPO/RTO targets and deployed/live recovery drills remain open. |
+| §3 / P04 backup and restore | PARTIAL | Space archives now include authenticated WorkspaceCoordinatorDO state and referenced R2 bytes. Format-v1 archives remain readable; new large captures use format v2 512 KiB AES-GCM chunks with 16 MiB/object and 64 MiB aggregate caps, while the manifest remains 8 MiB plaintext, rows 10,000/table and references 5,000. Same-request chunk retries, checksum restore and versioned chunk-key rotation are locally verified. Code `7bf3cd0f` also provides claimed-request-gated whole-SpaceDO erasure, a durable tombstone/410 barrier and retryable deletion of the `space-archives/{tenant}/{space}/` prefix. Current local evidence: Space archive/data-ops **20/20**, Shell archive panel **2/2**, Spaces/Shell typechecks and `git diff --check`; these use local SQLite/Worker/R2 mocks. Additive restore, other service D1/DO/provider/runtime state, private inbound communications, approved key/legal/retention/jurisdiction policy, RPO/RTO targets and isolated/deployed recovery remain open. |
 | §3 / P18 and P21 account recovery/email | PARTIAL | Migration 0227 and reachable Product account paths use authoritative D1 `security_generation`; reset atomically consumes the token, changes the password, advances generation and journals DO cleanup; session verification checks generation; suspension/logout advance it. Product reset/verification mail use encrypted outboxes, bounded retry, cancellation and HMAC metadata status; migration 0231 persists Resend acceptance receipts. Builder reset now uses Auth migration 0245 (`814c429a`) with atomic encrypted outbox/token enqueue, stable Notification IDs, bounded leases/backoff, superseded-token cancellation, provider acceptance receipt and tenant-HMAC diagnostics. The neutral public reset response remains. Local builder Auth tests **39/39**, Auth typecheck, release/deployment validators, migration tests **15/15** and staging/production dry runs pass. No deployment or inbox delivery. Product signup still opens a session before verification; unverified-user policy, provider delivery and browser localStorage bearer storage remain partial. |
 | §3 / P22 knowledge deletion | PARTIAL | Code `3aa1bf43`/migration 0228 provides tenant/Space/project-scoped document deletion and mutation leases. Code `7b6942e8`/migration 0232 now persists exact semantic-cache Vectorize ID pages before deleting those IDs and matching `sc:<id>` KV payloads, rotates generations first, retains pending cleanup through Space D1 erasure, and exposes owner-visible aggregate status. Migration backfills already-processing erasures and safely reopens rows an older Worker completes during rollout. The existing scheduled reconciler resumes bounded pages; reads and writes remain blocked while a Space deletion is pending. Local evidence: Knowledge **79/79**, Workflows **38/38**, Spaces erasure routes **3/3**, Python release/migration suite **47/47**, affected typechecks, release/deployment validators and diff check. These are local mocks/SQLite/static checks. AutoRAG provider-index deletion remains explicitly unverified and retrieval remains disabled; no deployed D1/R2/Vectorize, provider deletion, isolated recovery or live acceptance was exercised. The per-entry cleanup and whole-Space status code gaps are closed; remaining partial status is for provider/deployed evidence and the separate P04 recovery limits above. |
 | §4 / P13 queue health | PARTIAL | Code `2625ea34` removes fabricated current depth/age/DLQ from interval analytics and persists honest status. Codes `4de53055`/`d640dbae` route unknown/malformed messages to configured DLQs across Workflows, Billing, Notifications, Analytics, Provisioner and Agents; known stale messages still ACK. Focused suites: Workflows **11/11**, Notifications **10/10**, platform-plan queue/webhook **23/23**, Analytics **2/2**, Provisioner **4/4**, Agents **3/3**, plus six Worker typechecks. DLQ bindings are worker-specific; the Admin consumer targets a separate queue and stores/logs raw payloads. P23 Notification terminal status is durable, but generic safe replay is uncoded. True backlog/age/DLQ and live Cloudflare evidence remain unknown. |

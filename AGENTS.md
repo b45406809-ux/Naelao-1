@@ -16,34 +16,43 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 inbound Twilio extension cost observations)
+## Latest checkpoint — 2026-11-14 (P04 chunked Space archive objects)
 
-Code `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed to `origin/Mcbt5s-Backup-2` on
-`autonomous-managed-services-20261111`. Owner/admins can explicitly read an admitted inbound extension
-Call SID from Twilio's Calls API through the signed phone-menu dashboard. The lookup binds tenant,
-account, exact binding/line, caller, inbound direction, and the installation/handler digest stored at
-admission. Only final API prices with valid currency, time and duration enter the existing hashed cost
-observation ledger. The dashboard labels them provider API observations, not invoices or Naelao charges;
-missing or pending values stay unknown. Twilio's [Call Resource](https://www.twilio.com/docs/voice/api/call-resource)
-says its `price` may be delayed and covers connectivity, with other call features potentially excluded.
+Source `c3b2936a6a33e6b31e49ec360e017e7d1ed0b6ee` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Existing archive v1 reads remain supported; exports within
+2 MiB/object and 4 MiB aggregate keep the old v1 payload. Larger captures use v2 with independent
+512 KiB AES-GCM chunks in tenant/Space/archive/key-version-scoped R2 keys. Limits are 16 MiB/object,
+64 MiB aggregate, 8 MiB encrypted-manifest plaintext, 10,000 rows/table, and 5,000 object references.
+Same-request retries recheck source ETags and rewrite stable chunk keys before publishing the
+authenticated manifest. Restore verifies all chunks and checksums before preview; key rotation writes
+new-version chunks, verifies and switches the manifest pointer, then removes old-version chunks. The
+owner panel and [backup runbook](docs/space-data-retention-and-backup.md) state the current limits and
+the separate-service/data exclusions.
 
-Local evidence: Agents Twilio/phone/cost-observation suites **49/49**, Spaces package-dashboard suite
-**18/18**, Agent SDK bounded-phone-menu suite **5/5**, Agents and Spaces typechecks, dashboard script
-syntax and `git diff --check`. These use D1/Worker fixtures and mocked provider responses; no live
-Twilio account read, browser, deployment or acceptance ran. P06 remains PARTIAL for streaming, managed
-voice and its wider lifecycle, quality/cost coverage and live provider/region checks. U02 remains local
-for connected cost sources; invoices, billed-idle/CPU-size feeds, approved spend policy and live
-account evidence remain separate gates. P04 remains PARTIAL for bounded archives and other stores,
-retention/key/jurisdiction policy and isolated/deployed recovery. P01/P02 actual resource separation and
-operator receipts remain external evidence gates. Preserve untracked `infra/scripts/__pycache__/` and
-keep every rollout disabled.
+Local evidence: Space archive codec and SpaceDO data-ops suites **20/20**, Shell archive panel **2/2**,
+Spaces/Shell typechecks, and `git diff --check`. Coverage includes v1 decoding, v2 corruption,
+interrupted chunk upload/retry, missing-object restore, and key rotation/old-chunk cleanup. These are
+local Worker/SQLite/R2 mocks; no deployed or live R2 recovery drill ran. P04 remains PARTIAL for other
+service stores, private inbound data, approved retention/key/jurisdiction policy, RPO/RTO, and isolated
+recovery acceptance. P01/P02 actual resource separation and operator receipts remain external evidence
+gates. Preserve untracked `infra/scripts/__pycache__/`; keep every rollout disabled.
 
-Exact next action: continue P04 by designing and implementing a versioned chunked archive payload for
-captured R2 object bytes, preserving v1 archive reads and resumable writes. Replace the current
-monolithic 8 MiB archive payload / 4 MiB captured-object ceiling only with explicit aggregate, per-object
-and row bounds; add corruption, interrupted-upload and backward-compatibility coverage. Keep current
-limits fail-closed until that path verifies. Then continue the remaining independent requirements in
-both plans.
+Exact next action: continue P02 at the rendered-resource receipt/preflight boundary. Inspect that
+specific current contract and close a concrete local validator or reachable-caller gap if present;
+preserve fail-closed behavior for actual Cloudflare IDs, service ownership, fresh read-only receipts,
+and operator-attested D1 baselines. Then proceed through commercial integrity/recovery and the remaining
+S3–S9/U01–U12 and P01–P24 requirements without repeating completed source audits.
+
+## Previous checkpoint — 2026-11-14 (P06 inbound Twilio extension cost observations)
+
+Code `6cb043fb56492ecaaffb6fc7e8eb785d09ebfb60` is pushed. Owner/admins can explicitly read an admitted
+inbound extension Call SID through the signed phone-menu dashboard. The lookup binds tenant, account,
+exact binding/line, caller, inbound direction, and stored installation/handler digest. Only final API
+prices with valid currency/time/duration enter the hashed provider-cost ledger; pending or missing
+prices remain unknown. Twilio documents that `price` may be delayed and covers connectivity rather than
+all call features; the display is not an invoice or Naelao charge. Local evidence was Agents **49/49**,
+Spaces **18/18**, SDK **5/5**, typechecks, dashboard syntax and diff check. No live Twilio read,
+deployment or acceptance ran; P06 and U02 retain their distinct remaining gates.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 
