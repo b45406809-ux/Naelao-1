@@ -1205,4 +1205,47 @@ describe("assistant telephone safety and lifecycle", () => {
    .toMatchObject({ speech: "Check my order", confidence: 0.91 });
  });
 
+ it("persists signed Twilio extension call outcomes against the admitted release", async () => {
+  const f = await phoneFixture();
+  const dispatch = vi.fn(async () => Response.json({ valid: true, response: { actions: [{ type: "say", text: "Welcome" }] } }));
+  f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
+  await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
+  const app = new Hono<{ Bindings: AgentsEnv }>();
+  registerPhoneWebhooks(app);
+  const sid = "CA" + "f".repeat(32);
+  const invoke = async (event: string, fields: Record<string, string> = {}) => {
+   const path = `/assistant-phone/twilio/${f.binding.id}/${event}`;
+   const params = { AccountSid: account, CallSid: sid, From: other, To: number, ...fields };
+   return app.request(path, { method: "POST", headers: {
+    "content-type": "application/x-www-form-urlencoded",
+    "x-twilio-signature": getExpectedTwilioSignature(token, `https://phone.example.com${path}`, params),
+   }, body: new URLSearchParams(params).toString() }, f.env);
+  };
+
+  const answer = await invoke("answer");
+  expect(answer.status).toBe(200);
+  expect(await answer.text()).toContain("Welcome");
+  expect(await f.db.prepare("SELECT status,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=?")
+   .bind(sid).first()).toMatchObject({ status: "received", extension_installation_id: "extension", handler_sha256: "a".repeat(64) });
+  expect(await dispatch.mock.calls[1]?.[0].clone().json()).toMatchObject({ expectedInstallationId: "extension", expectedHandlerSha256: "a".repeat(64) });
+
+  await f.db.prepare("UPDATE assistant_phone_extension_handlers SET handler_sha256=? WHERE binding_id=?")
+   .bind("b".repeat(64), f.binding.id).run();
+  expect((await invoke("menu", { Digits: "1" })).status).toBe(403);
+  expect(dispatch).toHaveBeenCalledTimes(2); // Assignment validation and the admitted greeting only.
+
+  const final = await invoke("status", { CallStatus: "completed", CallDuration: "37" });
+  expect(final.status).toBe(200);
+  expect(await f.db.prepare("SELECT status,duration_seconds,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=?")
+   .bind(sid).first()).toEqual({ status: "completed", duration_seconds: 37, extension_installation_id: "extension", handler_sha256: "a".repeat(64) });
+
+  const conflict = await invoke("status", { CallStatus: "failed", CallDuration: "99" });
+  expect(conflict.status).toBe(200);
+  expect(await f.db.prepare("SELECT status,duration_seconds FROM assistant_phone_events WHERE id=?").bind(sid).first())
+   .toEqual({ status: "completed", duration_seconds: 37 });
+  const status = await f.act("phone-status") as { recent_twilio_extension_calls: Array<Record<string, unknown>> };
+  expect(status.recent_twilio_extension_calls).toContainEqual(expect.objectContaining({ installation_id: "extension",
+   handler_sha256: "a".repeat(64), state: "completed", duration_seconds: 37, caller_hint: "•••• 0101" }));
+ });
+
 });

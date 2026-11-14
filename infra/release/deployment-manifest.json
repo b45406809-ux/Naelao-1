@@ -7,7 +7,7 @@
   },
   "schema": {
     "manifest": "infra/release/schema-manifest.json",
-    "requiredSchemaVersion": "0247_managed_service_cost_alert_email_opt_in",
+    "requiredSchemaVersion": "0248_twilio_extension_call_history",
     "migrationExecution": "infra/scripts/release_migrations.py",
     "compatibilityPolicy": "expand_contract_required",
     "rollbackPolicy": "never reverse an applied schema migration; deploy compatible code or use a reviewed forward repair"

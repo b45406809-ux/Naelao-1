@@ -95,6 +95,7 @@ export function fixture() {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0247_managed_service_cost_alert_email_opt_in.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0237_telnyx_voice_call_cost_control_hash.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0239_telnyx_extension_call_installation_pin.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0248_twilio_extension_call_history.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0220_managed_service_operation_quotes.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0221_managed_service_exact_prices_and_quote_binding.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0222_managed_telnyx_rate_agreements.sql", import.meta.url), "utf8"));

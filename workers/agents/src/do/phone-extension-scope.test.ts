@@ -55,7 +55,7 @@ function setup(project: string | null, provider = "twilio") {
   internals.buildScriptEngineEnv = async () => ({ codeRunner: { runChannel } });
   return { agent, runChannel, internals, storage, runtimeWork };
 }
-async function invoke(agent: NaelaoAgentDO, valid = true) {
+async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId?: string, expectedHandlerSha256?: string) {
   return agent.fetch(
     new Request("http://agent/phone-extension", {
       method: "POST",
@@ -69,6 +69,8 @@ async function invoke(agent: NaelaoAgentDO, valid = true) {
       body: JSON.stringify({
         spaceId: "space",
         bindingId: "binding",
+        ...(expectedInstallationId !== undefined ? { expectedInstallationId } : {}),
+        ...(expectedHandlerSha256 !== undefined ? { expectedHandlerSha256 } : {}),
         event: {
           id: "CA" + "a".repeat(32),
           type: "call.received",
@@ -147,6 +149,18 @@ describe("phone extension scope dispatch", () => {
     f.internals.loadActiveChannelHandler = vi.fn(async () => null);
     expect((await invoke(f.agent)).status).toBe(409);
     expect(f.runChannel).not.toHaveBeenCalled();
+  });
+
+  it("fences a public call to the exact installation and signed handler digest admitted at answer", async () => {
+    const f = setup(null);
+    expect((await invoke(f.agent, true, "replaced-install", "a".repeat(64))).status).toBe(409);
+    expect((await invoke(f.agent, true, "install", "b".repeat(64))).status).toBe(409);
+    expect(f.runtimeWork).not.toHaveBeenCalled();
+    expect(f.runChannel).not.toHaveBeenCalled();
+
+    const accepted = await invoke(f.agent, true, "install", "a".repeat(64));
+    expect(accepted.status).toBe(200);
+    expect(f.runChannel).toHaveBeenCalledOnce();
   });
 
   it("does not execute a phone handler when its installation is paused", async () => {

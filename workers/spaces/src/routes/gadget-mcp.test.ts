@@ -166,7 +166,7 @@ describe("gadget MCP host adapter", () => {
     expect(spaceFetch).toHaveBeenCalledTimes(6);
   });
 
-  it("returns only owner-authorized phone state and Telnyx calls for the signed app installation", async () => {
+  it("returns only owner-authorized Twilio and Telnyx call history for the signed app installation", async () => {
     const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", extensionId: "ext_phone_menu",
       releaseVersion: "1.2.0", publisherId: "pub_phone", publisherKeyId: "a".repeat(64), phoneChannel: true, phoneDashboardAllowed: true };
     const spaceFetch = vi.fn(async () => Response.json(runtime));
@@ -178,11 +178,15 @@ describe("gadget MCP host adapter", () => {
       return Response.json({ extension_lines: [
         { id: "binding-a", provider: "telnyx", phone_number: "+14155550123", installation_id: "install-a", status: "active", handler_status: "active" },
         { id: "binding-b", provider: "twilio", phone_number: "+14155550999", installation_id: "install-b", status: "active", handler_status: "active" },
+        { id: "binding-c", provider: "twilio", phone_number: "+14155550124", installation_id: "install-a", status: "active", handler_status: "active" },
       ], recent_telnyx_extension_calls: [
-        { binding_id: "binding-a", state: "ended", turn_count: 2, started_at: 1_800_000_000, duration_seconds: 23, caller_hint: "•••• 0199",
+        { binding_id: "binding-a", installation_id: "install-a", handler_sha256: "a".repeat(64), state: "ended", turn_count: 2, started_at: 1_800_000_000, duration_seconds: 23, caller_hint: "•••• 0199",
           cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } },
-        { binding_id: "binding-b", state: "ended", turn_count: 7, started_at: 1_800_000_001, duration_seconds: 42, caller_hint: "•••• 0999",
+        { binding_id: "binding-b", installation_id: "install-b", handler_sha256: "b".repeat(64), state: "ended", turn_count: 7, started_at: 1_800_000_001, duration_seconds: 42, caller_hint: "•••• 0999",
           cost_report: { status: "reported", provider_cost_micros: 999999, currency: "USD", leg_count: 2 } },
+      ], recent_twilio_extension_calls: [
+        { binding_id: "binding-c", installation_id: "install-a", handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002, duration_seconds: 37, caller_hint: "•••• 0124" },
+        { binding_id: "binding-b", installation_id: "install-b", handler_sha256: "d".repeat(64), state: "completed", started_at: 1_800_000_003, duration_seconds: 42, caller_hint: "•••• 0999" },
       ] });
     });
     const app = testApp(); registerGadgetMcpRoutes(app as never);
@@ -203,9 +207,12 @@ describe("gadget MCP host adapter", () => {
     expect(result).toEqual({ installation_status: "assigned", signed_release: { extension_id: "ext_phone_menu", version: "1.2.0",
       publisher_id: "pub_phone", publisher_key_id: "a".repeat(64), publisher_key_status: "active" }, lines: [
       { provider: "telnyx", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0123" },
+      { provider: "twilio", status: "active", handler_status: "active", speech_input_allowed: false, number_hint: "•••• 0124" },
     ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
+      handler_sha256: "a".repeat(64),
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
-      cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." });
+      recent_twilio_calls: [{ handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002, duration_seconds: 37, caller_hint: "•••• 0124" }],
+      cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges. Twilio inbound-call cost is not reported in this history." });
     expect(JSON.stringify(result)).not.toContain("+14155550123");
     expect(JSON.stringify(result)).not.toContain("binding-b");
     expect(JSON.stringify(result)).not.toContain("install-b");

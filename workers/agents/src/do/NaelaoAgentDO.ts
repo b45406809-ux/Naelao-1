@@ -9864,9 +9864,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await readBoundedResponseJson<{
       bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string; digits?: string;
+      expectedInstallationId?: string; expectedHandlerSha256?: string;
       eventType?: "call.received" | "call.digits" | "call.speech";
       event?: { id: string; type: string; payload: Record<string, unknown> };
     }>(new Response(request.body), 16_384);
+    const hasExpectedHandler = body.expectedInstallationId !== undefined || body.expectedHandlerSha256 !== undefined;
+    if (hasExpectedHandler && (typeof body.expectedInstallationId !== "string" || !body.expectedInstallationId
+      || body.expectedInstallationId.length > 160 || typeof body.expectedHandlerSha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(body.expectedHandlerSha256)))
+      return Response.json({ error_code: "phone_handler_pin_invalid" }, { status: 400 });
     if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
     const row = await this.env.PLATFORM_DB.prepare(
       "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,b.provider,b.policy_json FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
@@ -9875,6 +9881,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }>();
     if (!row || await this.tenantSpaceSuspended(tenant, body.spaceId))
       return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
+    if (hasExpectedHandler && (row.installation_id !== body.expectedInstallationId || row.handler_sha256 !== body.expectedHandlerSha256))
+      return Response.json({ error_code: "phone_handler_changed_during_call" }, { status: 409 });
     const simulation = body.simulation === true;
     const input = typeof body.input === "string" ? body.input.trim() : "";
     const eventType = body.eventType ?? "call.speech";

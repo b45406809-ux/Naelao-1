@@ -643,6 +643,18 @@ export async function handlePhoneAction(
             caller:string;state:string;turn_count:number;started_at:number;duration_seconds:number|null }>())
           .results
       : [];
+    const recentTwilioExtensionCalls = manager
+      ? (await env.PLATFORM_DB.prepare(`SELECT e.binding_id,e.extension_installation_id,e.handler_sha256,e.sender,e.status,
+          CAST(strftime('%s',e.created_at) AS INTEGER) AS started_at,e.duration_seconds
+          FROM assistant_phone_events e JOIN assistant_phone_bindings b ON b.id=e.binding_id
+          WHERE b.identity_id=? AND b.purpose='extension' AND COALESCE(b.provider,'twilio')='twilio'
+            AND e.kind='call' AND e.created_at>=datetime('now','-7 days')
+          ORDER BY e.created_at DESC,e.id DESC LIMIT 50`)
+          .bind(identity.id)
+          .all<{ binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;sender:string;status:string;
+            started_at:number|null;duration_seconds:number|null }>())
+          .results
+      : [];
     const extensionCallCosts = await extensionCallCostSummaries(env, recentExtensionCallRows);
     const recentExtensionCalls = recentExtensionCallRows.map(row => ({
       binding_id: row.binding_id,
@@ -696,6 +708,15 @@ export async function handlePhoneAction(
         : [],
       phone_handler_candidates: phoneHandlerCandidates,
       recent_telnyx_extension_calls: recentExtensionCalls,
+      recent_twilio_extension_calls: recentTwilioExtensionCalls.map(row => ({
+        binding_id: row.binding_id,
+        installation_id: row.extension_installation_id,
+        handler_sha256: row.handler_sha256,
+        state: row.status,
+        started_at: Number.isSafeInteger(row.started_at) ? row.started_at : null,
+        duration_seconds: Number.isSafeInteger(row.duration_seconds) ? row.duration_seconds : null,
+        caller_hint: maskedPhoneCaller(row.sender),
+      })),
       legacy_numbers: manager
         ? (
             await env.PLATFORM_DB.prepare(

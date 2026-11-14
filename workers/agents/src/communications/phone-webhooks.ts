@@ -206,6 +206,21 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
         )
           .bind(binding.id, sid)
           .run();
+      if (callId.test(sid) && binding.purpose === "extension") {
+        const durationRaw = form.get("CallDuration") ?? "";
+        const duration = /^\d{1,5}$/.test(durationRaw) && Number(durationRaw) <= 86_400
+          ? Number(durationRaw)
+          : null;
+        // Twilio's signed terminal callback may update only a call already admitted on this exact
+        // line. Final states are monotonic; a duplicate is harmless and a conflicting late state
+        // cannot rewrite the owner history.
+        await c.env.PLATFORM_DB.prepare(`UPDATE assistant_phone_events
+          SET status=?,duration_seconds=COALESCE(?,duration_seconds),updated_at=datetime('now')
+          WHERE id=? AND binding_id=? AND kind='call'
+            AND (status IN ('received','in-progress','answered') OR status=?)`)
+          .bind(status, duration, sid, binding.id, status)
+          .run();
+      }
       const row = await c.env.PLATFORM_DB.prepare(
         "SELECT id FROM assistant_phone_actions WHERE binding_id=? AND provider_sid=?"
       )
@@ -359,19 +374,23 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     )
       return reject();
     const configuredHandler = await c.env.PLATFORM_DB.prepare(
-      "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=?"
+      "SELECT binding_id,installation_id,handler_sha256,status FROM assistant_phone_extension_handlers WHERE binding_id=?"
     )
       .bind(binding.id)
-      .first();
-    if ((event === "answer" || event === "menu") && !configuredHandler)
+      .first<{ binding_id: string; installation_id: string; handler_sha256: string; status: string }>();
+    if ((event === "answer" || event === "menu") && (!configuredHandler
+      || configuredHandler.status !== "active"
+      || !/^[a-f0-9]{64}$/.test(configuredHandler.handler_sha256)))
       return reject();
     if (event === "answer" || event === "menu") {
       const admitted = await c.env.PLATFORM_DB.prepare(
-        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
+        "SELECT id,sender,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
       )
         .bind(sid, binding.id, from)
-        .first();
+        .first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null }>();
       if (event === "menu" && !admitted) return reject();
+      if (admitted && (admitted.extension_installation_id !== configuredHandler!.installation_id
+        || admitted.handler_sha256 !== configuredHandler!.handler_sha256)) return reject();
       if (event === "answer" && !admitted) {
         const quota = await c.env.PLATFORM_DB.prepare(
           "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
@@ -379,11 +398,20 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           .bind(binding.id, policy.maxDailyInboundCalls)
           .run();
         if (!quota.meta.changes) return reject();
-        await c.env.PLATFORM_DB.prepare(
-          "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
-        )
-          .bind(sid, binding.id, from)
+        const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_phone_events(
+          id,binding_id,kind,sender,status,extension_installation_id,handler_sha256)
+          SELECT ?,?,'call',?,'received',h.installation_id,h.handler_sha256
+          FROM assistant_phone_extension_handlers h
+          WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?`)
+          .bind(sid, binding.id, from, binding.id, configuredHandler!.installation_id, configuredHandler!.handler_sha256)
           .run();
+        if (!inserted.meta.changes) {
+          const raced = await c.env.PLATFORM_DB.prepare(
+            "SELECT id,sender,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call'"
+          ).bind(sid, binding.id).first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null }>();
+          if (!raced || raced.sender !== from || raced.extension_installation_id !== configuredHandler!.installation_id
+            || raced.handler_sha256 !== configuredHandler!.handler_sha256) return reject();
+        }
       }
       const digits = form.get("Digits") ?? "";
       const speech = form.get("SpeechResult") ?? "";
@@ -410,6 +438,8 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           body: JSON.stringify({
             spaceId: identity.space_id,
             bindingId: binding.id,
+            expectedInstallationId: admitted?.extension_installation_id ?? configuredHandler!.installation_id,
+            expectedHandlerSha256: admitted?.handler_sha256 ?? configuredHandler!.handler_sha256,
             event: {
               id: event === "answer" ? sid : `${sid}:${speech ? "speech" : "digits"}:${eventHash}`,
               type: voiceEvent,

@@ -37,9 +37,12 @@
     <button id="simulate-phone" type="button" disabled>Run installed handler test (synthetic)</button>
     <pre id="simulation-result" role="status" aria-label="Synthetic installed handler result">No installed handler test has run.</pre>
     <p>The installed handler test uses saved installation settings and synthetic input. Speech tests require an assigned Twilio line and owner-enabled speech input. It does not create a carrier call or call session.</p>
-    <details><summary>Recent Telnyx calls</summary>
-      <p>At most 50 calls from the last 7 days are shown. Caller IDs are masked. Reported amounts are provider API observations, not invoices or customer charges. Missing reports mean the amount is unknown.</p>
+    <details><summary>Recent extension calls</summary>
+      <p>At most 50 calls per provider from the last 7 days are shown for this installation. Caller IDs are masked. Telnyx amounts are provider API observations, not invoices or customer charges. Twilio inbound-call costs are not included.</p>
+      <h3>Telnyx calls</h3>
       <ol id="phone-calls"></ol>
+      <h3>Twilio calls</h3>
+      <ol id="twilio-phone-calls"></ol>
       <p id="phone-cost-disclosure"></p>
     </details>
   </section>
@@ -81,10 +84,10 @@
       const previewEvent=document.getElementById('preview-event'),previewDigits=document.getElementById('preview-digits'),previewDigitsLabel=document.getElementById('preview-digits-label'),previewSpeech=document.getElementById('preview-speech'),previewSpeechLabel=document.getElementById('preview-speech-label'),previewProvider=document.getElementById('preview-provider'),previewResult=document.getElementById('preview-result');
       function updatePreview(){const speechEnabled=previewProvider.value==='twilio-speech';previewDigitsLabel.hidden=previewEvent.value!=='call.digits';previewSpeechLabel.hidden=previewEvent.value!=='call.speech';previewResult.textContent=JSON.stringify(previewMenuResponse(previewEvent.value,previewDigits.value,readForm(),previewSpeech.value,speechEnabled),null,2);updateSimulationAvailability()}
       document.getElementById('preview').addEventListener('click',updatePreview);previewEvent.addEventListener('change',updatePreview);previewDigits.addEventListener('change',updatePreview);previewSpeech.addEventListener('input',updatePreview);previewProvider.addEventListener('change',updatePreview);
-      const phoneStatus=document.getElementById('phone-status'),phoneRelease=document.getElementById('phone-release'),phoneLines=document.getElementById('phone-lines'),phoneCalls=document.getElementById('phone-calls'),phoneCostDisclosure=document.getElementById('phone-cost-disclosure'),simulateButton=document.getElementById('simulate-phone'),simulationResult=document.getElementById('simulation-result');let activePhoneLines=[],phoneSpeechSimulationAvailable=false;
+      const phoneStatus=document.getElementById('phone-status'),phoneRelease=document.getElementById('phone-release'),phoneLines=document.getElementById('phone-lines'),phoneCalls=document.getElementById('phone-calls'),twilioPhoneCalls=document.getElementById('twilio-phone-calls'),phoneCostDisclosure=document.getElementById('phone-cost-disclosure'),simulateButton=document.getElementById('simulate-phone'),simulationResult=document.getElementById('simulation-result');let activePhoneLines=[],phoneSpeechSimulationAvailable=false;
       function updateSimulationAvailability(){simulateButton.disabled=activePhoneLines.length!==1||(previewEvent.value==='call.speech'&&!phoneSpeechSimulationAvailable)}
       async function refreshPhoneStatus(){
-        phoneStatus.textContent='Loading phone status…';phoneRelease.textContent='Checking the installed signed release…';phoneLines.replaceChildren();phoneCalls.replaceChildren();activePhoneLines=[];phoneSpeechSimulationAvailable=false;simulateButton.disabled=true;
+        phoneStatus.textContent='Loading phone status…';phoneRelease.textContent='Checking the installed signed release…';phoneLines.replaceChildren();phoneCalls.replaceChildren();twilioPhoneCalls.replaceChildren();activePhoneLines=[];phoneSpeechSimulationAvailable=false;simulateButton.disabled=true;
         try{
           const result=await call('GET',undefined,'/api/phone-dashboard');
           phoneStatus.textContent=result.installation_status==='assigned'?'A signed handler is assigned to this installation.':'No active phone line is assigned to this installation.';
@@ -95,6 +98,8 @@
           if(!(result.lines||[]).length){const item=document.createElement('li');item.textContent='No phone lines are assigned to this installation.';phoneLines.appendChild(item)}
           for(const callRecord of result.recent_telnyx_calls||[]){const item=document.createElement('li');const started=Number.isSafeInteger(callRecord.started_at)?new Date(callRecord.started_at*1000).toLocaleString():'time unavailable';const report=callRecord.cost_report;if(report?.status==='reported'){const amount=(report.provider_cost_micros/1000000).toFixed(6);item.textContent=`${started} · ${callRecord.state} · ${callRecord.turn_count} turns · ${callRecord.duration_seconds??'unknown'} seconds · ${callRecord.caller_hint??'caller hidden'} · Telnyx reported ${report.currency} ${amount}${report.leg_count?` across ${report.leg_count} legs`:''} (not an invoice)`}else{item.textContent=`${started} · ${callRecord.state} · ${callRecord.turn_count} turns · ${callRecord.duration_seconds??'unknown'} seconds · ${callRecord.caller_hint??'caller hidden'} · cost unknown`}phoneCalls.appendChild(item)}
           if(!(result.recent_telnyx_calls||[]).length){const item=document.createElement('li');item.textContent='No recent Telnyx calls for this installation.';phoneCalls.appendChild(item)}
+          for(const callRecord of result.recent_twilio_calls||[]){const item=document.createElement('li');const started=Number.isSafeInteger(callRecord.started_at)?new Date(callRecord.started_at*1000).toLocaleString():'time unavailable';const digest=typeof callRecord.handler_sha256==='string'?` · release ${callRecord.handler_sha256.slice(0,12)}`:'';const state=callRecord.state==='received'?'provider status unavailable':callRecord.state;item.textContent=`${started} · ${state} · ${callRecord.duration_seconds===null?'duration unavailable':`${callRecord.duration_seconds}s`} · ${callRecord.caller_hint??'caller hidden'}${digest} · cost unknown`;twilioPhoneCalls.appendChild(item)}
+          if(!(result.recent_twilio_calls||[]).length){const item=document.createElement('li');item.textContent='No recent Twilio calls for this installation.';twilioPhoneCalls.appendChild(item)}
           phoneCostDisclosure.textContent=result.cost_disclosure||'';
         }catch(error){phoneStatus.textContent=error.message;phoneRelease.textContent='Signed release verification is unavailable.'}
       }

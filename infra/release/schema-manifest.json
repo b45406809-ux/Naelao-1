@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0247_managed_service_cost_alert_email_opt_in",
+  "requiredSchemaVersion": "0248_twilio_extension_call_history",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -991,6 +991,10 @@
     {
       "filename": "0247_managed_service_cost_alert_email_opt_in.sql",
       "sha256": "910f76ccc7be3630f53ade6f5f42f40def019e6fe6fda222972bda87e5562c3e"
+    },
+    {
+      "filename": "0248_twilio_extension_call_history.sql",
+      "sha256": "69319aec8f3d173bcd6af586d288c74ef97d725d6bb99ee23475e3d0c0e0c796"
     }
   ]
 }

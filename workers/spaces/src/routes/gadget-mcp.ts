@@ -222,16 +222,21 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       if (!phoneStatus.ok) return c.json({ error_code: phoneStatus.status === 403 ? "phone_dashboard_forbidden" : "phone_dashboard_data_unavailable" }, phoneStatus.status === 403 ? 403 : 503);
       const status = await readBoundedResponseJson<{
         extension_lines?: Array<{ id?: unknown; provider?: unknown; phone_number?: unknown; installation_id?: unknown; status?: unknown; handler_status?: unknown; speech_input_allowed?: unknown }>;
-        recent_telnyx_extension_calls?: Array<{ binding_id?: unknown; state?: unknown; turn_count?: unknown; started_at?: unknown;
-          duration_seconds?: unknown; caller_hint?: unknown; cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; leg_count?: unknown } }>;
+        recent_telnyx_extension_calls?: Array<{ binding_id?: unknown; installation_id?: unknown; handler_sha256?: unknown;
+          state?: unknown; turn_count?: unknown; started_at?: unknown; duration_seconds?: unknown; caller_hint?: unknown;
+          cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; leg_count?: unknown } }>;
+        recent_twilio_extension_calls?: Array<{ binding_id?: unknown; installation_id?: unknown; handler_sha256?: unknown;
+          state?: unknown; started_at?: unknown; duration_seconds?: unknown; caller_hint?: unknown }>;
       }>(phoneStatus, 512 * 1024);
       const lines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
         .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
           && (line.provider === "telnyx" || line.provider === "twilio") && typeof line.status === "string")
         .slice(0, 25);
       const bindingIds = new Set(lines.map(line => line.id as string));
+      const twilioBindingIds = new Set(lines.filter(line => line.provider === "twilio").map(line => line.id as string));
       const recentCalls = (Array.isArray(status.recent_telnyx_extension_calls) ? status.recent_telnyx_extension_calls : [])
-        .filter(call => typeof call.binding_id === "string" && bindingIds.has(call.binding_id))
+        .filter(call => typeof call.binding_id === "string" && bindingIds.has(call.binding_id)
+          && call.installation_id === runtime.installationId && typeof call.handler_sha256 === "string" && /^[a-f0-9]{64}$/.test(call.handler_sha256))
         .slice(0, 50).map(call => {
           const report = call.cost_report;
           const cost = report?.status === "reported" && Number.isSafeInteger(report.provider_cost_micros)
@@ -240,13 +245,23 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
                 leg_count: Number.isSafeInteger(report.leg_count) ? report.leg_count : null }
             : { status: report?.status === "unavailable" ? "unavailable" as const : "not_linked" as const,
                 provider_cost_micros: null, currency: null, leg_count: null };
-          return { state: typeof call.state === "string" ? call.state.slice(0, 32) : "unknown",
+          return { handler_sha256: call.handler_sha256,
+            state: typeof call.state === "string" ? call.state.slice(0, 32) : "unknown",
             turn_count: Number.isSafeInteger(call.turn_count) ? call.turn_count : 0,
             started_at: Number.isSafeInteger(call.started_at) ? call.started_at : null,
             duration_seconds: Number.isSafeInteger(call.duration_seconds) ? call.duration_seconds : null,
             caller_hint: typeof call.caller_hint === "string" && /^•••• \d{4}$/.test(call.caller_hint) ? call.caller_hint : null,
             cost_report: cost };
         });
+      const recentTwilioCalls = (Array.isArray(status.recent_twilio_extension_calls) ? status.recent_twilio_extension_calls : [])
+        .filter(call => typeof call.binding_id === "string" && twilioBindingIds.has(call.binding_id)
+          && call.installation_id === runtime.installationId && typeof call.handler_sha256 === "string" && /^[a-f0-9]{64}$/.test(call.handler_sha256))
+        .slice(0, 50).map(call => ({ handler_sha256: call.handler_sha256,
+          state: typeof call.state === "string" && ["received", "in-progress", "answered", "completed", "busy", "failed", "no-answer", "canceled"].includes(call.state)
+            ? call.state : "unknown",
+          started_at: Number.isSafeInteger(call.started_at) ? call.started_at : null,
+          duration_seconds: Number.isSafeInteger(call.duration_seconds) ? call.duration_seconds : null,
+          caller_hint: typeof call.caller_hint === "string" && /^•••• \d{4}$/.test(call.caller_hint) ? call.caller_hint : null }));
       const safeLines = lines.map(line => ({ provider: line.provider, status: line.status,
         handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
         speech_input_allowed: line.provider === "twilio" && line.speech_input_allowed === true,
@@ -254,8 +269,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       return new Response(JSON.stringify({ installation_status: safeLines.some(line => line.handler_status === "active") ? "assigned" : "not_assigned",
         signed_release: { extension_id: runtime.extensionId, version: runtime.releaseVersion, publisher_id: runtime.publisherId,
           publisher_key_id: runtime.publisherKeyId, publisher_key_status: "active" },
-        lines: safeLines, recent_telnyx_calls: recentCalls,
-        cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges." }),
+        lines: safeLines, recent_telnyx_calls: recentCalls, recent_twilio_calls: recentTwilioCalls,
+        cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges. Twilio inbound-call cost is not reported in this history." }),
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
     } catch { return c.json({ error_code: "phone_dashboard_data_unavailable" }, 503); }
   };
