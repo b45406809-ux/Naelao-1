@@ -16,30 +16,32 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 committed workspace archive/restore)
+## Latest checkpoint — 2026-11-14 (P06 Twilio extension call history)
 
-Source commit `cf375473a11b8a344193ee661aad7b11baa6ceac` is pushed to
-`origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. The owner Space archive path now
-captures and restores bounded, jurisdiction-scoped WorkspaceCoordinatorDO committed branch heads,
-merge bases, manifests and referenced R2 content through authenticated Agents routes. It excludes
-sessions, staging and orphaned CAS; checks hashes and policy/head stability; preserves tombstone,
-conflict and retry behavior; and respects existing archive caps without enabling rollout.
+Code `36400108f3ef0a76a6d0f06651dfac5c1b1481e5` is pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`; P04 archive code `cf375473` and its records checkpoint
+`e079bd3f` are also pushed. Migration 0248 stores the admitted Twilio extension installation and
+handler digest. Signed terminal callbacks update only a known call and cannot rewrite a conflicting
+final status. Every subsequent call turn sends the expected pin to the Agent DO, which rejects a
+changed handler. The package dashboard now shows recent masked Twilio status/duration alongside
+installation-filtered Telnyx history. It reports Twilio inbound cost as unknown/not collected.
 
-Local evidence after the source change: Agents WorkspaceCoordinator/archive-route tests **62/62**,
-Spaces archive integration tests **12/12**, Agents and Spaces typechecks, and `git diff --check`.
-These are local SQLite/DO/R2 mocks and static checks. P04 remains PARTIAL: archive caps can reject
-larger projects; other service D1/DO, provider/runtime and private communication data are outside this
-slice; isolated restore, deployed stores, regional recovery, legal/key/retention policy and RPO/RTO
-acceptance remain open. P01/P02 source safety is implemented locally; actual environment separation,
-operator-attested baselines and exact-resource receipts remain external evidence gates. Preserve
-intentionally untracked `infra/scripts/__pycache__/`; keep all rollouts disabled.
+Local evidence: Agents phone and DO suites **46/46**, Spaces package-dashboard suite **18/18**, Agents
+and Spaces typechecks, release/deployment manifest validation at schema `0248`, fresh-install migration
+rehearsal **20/20**, `git diff --check`, and the dashboard script syntax check. These are local mocks,
+SQLite and static checks. No carrier callback, provider cost read, deployment or live acceptance ran.
+P06 remains PARTIAL for inbound cost observation, streaming and managed voice, broader lifecycle and
+live provider/region tests. P04 remains PARTIAL for archive caps, other service stores, policy and
+isolated/deployed recovery. P01/P02 resource separation and operator receipts remain external evidence
+gates. Preserve untracked `infra/scripts/__pycache__/`; keep every rollout disabled.
 
-Exact next action: close the reachable P06 Twilio extension call-history gap. Persist signed callback
-completion/failure and duration against the already-admitted inbound extension call, pin the exact
-installation/release observed at admission, and expose that scoped history in the owner phone dashboard.
-Add migration, route/UI coverage and meaningful local verification. Do not claim call-cost receipts or
-live carrier acceptance unless independently implemented and verified. Then continue remaining P01–P24
-and S2–S9/U01–U12 code gaps without repeating completed audits.
+Exact next action: extend the owner-confirmed Twilio Calls API cost read to admitted inbound extension
+calls. Bind the lookup to the exact stored Call SID, tenant/account, line and masked call event; require
+the API receipt to match the inbound direction and exact caller/dialed number; persist only through the
+existing provider-cost observation ledger; and surface it as a provider observation in the package
+dashboard. Missing or pending amounts remain unknown; never turn them into invoices, customer charges
+or zero. Add tests for mismatched IDs/accounts/direction and pending price, then continue the remaining
+independent requirements in both plans.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 

@@ -1,28 +1,28 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P04 committed workspace archive/restore)
+## Active continuation — 2026-11-14 (P06 Twilio extension call history)
 
-Source `cf375473a11b8a344193ee661aad7b11baa6ceac` is pushed to `origin/Mcbt5s-Backup-2`. Authenticated
-Agents routes connect Space archive export/restore to WorkspaceCoordinatorDO committed branch heads,
-merge bases, manifests and referenced R2 objects. Scope, jurisdiction, policy generation, erasure and
-GC barriers are checked; active sessions, staging and orphaned CAS are excluded. Restore verifies
-object hashes, rejects conflicting heads/bases, records a stable replay receipt and leaves rollouts
-disabled.
+Latest source `36400108f3ef0a76a6d0f06651dfac5c1b1481e5` is pushed; P04 archive code `cf375473` and
+records checkpoint `e079bd3f` are also on `origin/Mcbt5s-Backup-2`. Migration 0248 persists the exact
+Twilio extension installation/digest at call admission. Signed terminal callbacks update only that
+known call; subsequent speech/DTMF turns carry the expected pin and are rejected if the handler changed.
+The owner package dashboard shows at most 50 masked Twilio calls per installation, status, duration and
+release digest. Other installations' call history is filtered at the Space route. Twilio inbound cost is
+explicitly not collected in this slice.
 
-Local evidence: WorkspaceCoordinator/archive-route suites **62/62**, Space archive integration
-**12/12**, Agents and Spaces typechecks, `git diff --check`. No deployed or isolated restore, regional
-RPO/RTO drill, or live acceptance ran. P04 remains partial for existing archive size caps, other
-service D1/DO and provider/runtime state, separate 30-day communication/attachment retention, and
-legal/key/retention/jurisdiction policy. These are coverage and policy/acceptance gaps, not credential
-blockers. P01/P02 retain actual resource/receipt gates. Rollouts stay disabled; preserve the
-intentionally untracked `infra/scripts/__pycache__/`.
+Local evidence: Agents phone/DO suites **46/46**, Spaces package-dashboard **18/18**, Agents and Spaces
+typechecks, schema/deployment manifest validation at `0248`, fresh-install rehearsal **20/20**, dashboard
+script syntax and `git diff --check`. No carrier/provider-live, deployment or browser acceptance ran.
+P06 remains partial for inbound cost reads, streaming, managed voice, wider lifecycle and live provider/
+region evidence. P04 remains partial for its bounded archive caps, other service stores, separate
+communication retention and legal/key/region/RPO/RTO policy. Rollouts remain disabled; preserve
+`infra/scripts/__pycache__/`.
 
-Exact next action: implement the source-confirmed P06 gap: persist signed Twilio public-extension call
-final status and duration against the admitted call, preserve its exact installation/release pin, and
-show the bounded owner-scoped call history in the phone dashboard. Add migration and local route/UI
-checks. Then continue remaining independent code gaps in P01–P24 and S2–S9/U01–U12; keep provider,
-deployed and live acceptance distinct.
+Exact next action: extend the owner-confirmed Twilio Calls API cost read to admitted inbound extension
+calls, validate exact SID/account/direction/numbers, persist a minimized provider observation in the
+existing ledger, and show the amount separately from Naelao charges in the package dashboard. Unknown
+and pending provider values stay unknown. Then continue remaining P01–P24 and S2–S9/U01–U12.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 
