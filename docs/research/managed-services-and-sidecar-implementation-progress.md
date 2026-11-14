@@ -1,6 +1,27 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (cross-plan P05 Project Knowledge grants)
+## Active checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
+
+P05 guided Project Knowledge handoff commits `e9be8aee` and `38f50b41` are pushed to
+`origin/Mcbt5s-Backup-2`. Signed activation that requires owner-published external Knowledge now links
+to each validated created Project. Owners publish/index a declared collection and explicitly grant
+that current publication in Project controls; missing/invalid activation Project IDs show a recovery
+path. No grant is created by activation or handoff.
+
+Local evidence: Shell `tsc --noEmit` passed; Spaces blueprint activation tests **24/24** passed;
+`git diff --check` passed. The global pnpm wrapper's dependency reconciliation aborted without a TTY,
+so existing local binaries were used. No browser, deployment, provider, live multi-user or live
+acceptance ran. P05 remains PARTIAL for broader guided lifecycle/cost, shared provider-connection
+authority/payer/revocation semantics, and live acceptance. S2–S9/U01–U12 status remains as reconciled
+in the requirement ledger; all rollouts remain disabled. Preserve `infra/scripts/__pycache__/`.
+
+Exact next action: prevent P04 additive Space archive restore from resurrecting a revoked P05
+`extension_project_knowledge_grants` row. Omit the table from new full archives, reject it from restore
+payloads, state that Knowledge access needs reapproval after restore, and cover both paths with focused
+tests. Then continue the next independent uncoded requirement across the two active plans. Fetch and
+safely integrate remote advances before each push.
+
+## Previous checkpoint — 2026-11-14 (cross-plan P05 Project Knowledge grants)
 
 Cross-plan code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to
 `origin/Mcbt5s-Backup-2`. Space-shared channel Knowledge now has a fail-closed per-Project grant

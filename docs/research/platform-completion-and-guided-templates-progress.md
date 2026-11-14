@@ -1,6 +1,27 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P05 Project Knowledge grants)
+## Active checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
+
+Handoff commits `e9be8aee` and `38f50b41` are pushed to `origin/Mcbt5s-Backup-2`. For a signed
+SpaceBlueprint requiring owner-published external Knowledge, successful activation now opens links
+to each validated created Project. The Project page guides the owner to publish a collection declared
+by the active package and explicitly grant that current publication. Missing/invalid Project IDs get
+a recovery message without constructing unsafe links. Activation does not create access grants.
+
+Local evidence: Shell `tsc --noEmit` passed; Spaces `blueprint-activation.test.ts` **24/24** passed;
+`git diff --check` passed. The global pnpm wrapper attempted dependency reconciliation and aborted
+without a TTY; existing local binaries were used. These checks do not establish browser, deployment,
+provider or live multi-user acceptance. P05 remains PARTIAL for the other setup/cost/lifecycle gaps,
+Space-wide provider connection authority/payer/revocation contract, and live acceptance. All rollouts
+remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: close a P04 recovery safety issue found by comparing migration 137 to the current
+archive code: full archives currently contain `extension_project_knowledge_grants`, so additive restore
+could reinsert a revoked grant. Exclude that table from new exports, reject it in restore payloads,
+disclose that Knowledge grants require reapproval after restore, and add focused export/restore
+regression coverage. Then resume the next independent implementation gap in dependency order.
+
+## Previous checkpoint — 2026-11-14 (P05 Project Knowledge grants)
 
 Code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to `origin/Mcbt5s-Backup-2`.
 Space-shared channel extensions receive no Project Knowledge by default. Space owners/admins can

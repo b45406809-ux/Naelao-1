@@ -16,7 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P05 owner-controlled Project Knowledge grants)
+## Latest checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
+
+Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are
+pushed to `origin/Mcbt5s-Backup-2`. When the signed activation preview requires owner-published
+external Knowledge, activation now opens a handoff to every validated created Project. Each Project
+page points owners to publish/index a collection declared by the active package and then explicitly
+grant the current publication in the Project controls. The handoff switches to the target Space
+before navigation. Missing or malformed Project IDs show a safe recovery path; they never create a
+grant. No Knowledge access is automatic.
+
+Local evidence: Shell `tsc --noEmit` passes; Spaces blueprint activation tests pass **24/24**; the
+focused diff passes `git diff --check`. The direct local binaries were used because the global pnpm
+wrapper tried a dependency reconciliation and aborted when no TTY was available. No browser,
+deployment, live multi-user or provider acceptance ran. P05 remains PARTIAL for broad guided setup and
+cost/lifecycle coverage, the Space-wide provider connection authority/payer/revocation contract, and
+live acceptance. Keep all rollouts disabled and preserve the untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: close the P04/P05 recovery interaction found while reconciling migration 137 with
+Space archives. Full archive export currently includes `extension_project_knowledge_grants`, and
+additive restore can reinsert a grant that was revoked after export. Exclude this permission table
+from full archive export, reject it in archive restore (including older crafted/stored archives),
+disclose that Knowledge grants require reapproval after restore, and add focused export/restore
+regression coverage. Fetch and safely integrate remote advances before every push; then continue the
+next independent uncoded requirement in both plans.
+
+## Previous checkpoint — 2026-11-14 (P05 owner-controlled Project Knowledge grants)
 
 Code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to `origin/Mcbt5s-Backup-2`.
 Space-shared channel extensions now receive no Project Knowledge by default. Space owners/admins can
