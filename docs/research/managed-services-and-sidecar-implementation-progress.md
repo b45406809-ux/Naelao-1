@@ -22,7 +22,18 @@ P21 builder reset email is implemented and pushed as `814c429af84f0b5089286cf4fb
 
 U12 current-toolchain verification found and fixed a `fetchMock` call-argument typing error in `packages/billing-core/src/providers/lemon-squeezy.test.ts`. Frozen install with Corepack pnpm 9.12.0 passed; the focused Billing suite passes **52/52**, full workspace build **55/55 tasks**, full workspace typecheck **82/82 tasks**. Turbo child processes require a temporary PATH wrapper to invoke the pinned pnpm 9 because the global fallback is pnpm 11; the repository pin remains unchanged. Build exercised local image builds and Wrangler dry runs only. No CI event, deployment, provider account, or live acceptance ran. U12 is IMPLEMENTED_LOCAL for build wiring and remains PARTIAL for future CI execution and deployed-image parity. S2 remains IMPLEMENTED_LOCAL for supported lanes; S4–S9/U01–U12 remain open at the specific code gaps, contracts, product decisions and acceptance gates in the matrix. U05/U06 are unsupported runtime contracts, not credential blockers. Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next task: add signed release version and publisher identity to the validated per-install runtime response, expose only that metadata through the owner-only voice operations endpoint, render it in the bounded phone-menu dashboard, and test exact-install isolation and revoked-release denial. Then continue remaining S3–S9/U01–U12 and platform-plan code gaps. Keep runtime/provider rollouts disabled and preserve `infra/scripts/__pycache__/`.
+P06 owner voice operations metadata is pushed as `4c42012b`. SpaceDO returns the exact installed
+extension/version and publisher/key identifiers only for a valid release; the Space route confirms the
+active registry row binds that key to that publisher before the owner dashboard displays it. Local
+evidence: Spaces route/runtime **45/45**, Spaces and Agent SDK typechecks, dashboard inline-JS syntax,
+and `git diff --check`. No carrier, provider, deployed Worker or live acceptance ran. P06 remains
+PARTIAL for complete customer voice lifecycle, streaming, managed billing/invoice reconciliation and
+provider/region acceptance.
+
+Exact next task: add a safe interactive customer-form preview to Foundry Template Studio, rendering the
+existing bounded setup declarations with localized labels, supported input types and earlier-field
+conditions. Keep the preview data-only and server validation authoritative. Then continue remaining
+guided-template lifecycle and S3–S9/U01–U12 code gaps; preserve rollout gates.
 
 ## Prior checkpoint details
 

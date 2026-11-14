@@ -46,13 +46,20 @@ pins, unavailable exact releases, revoked keys and release-list bounds. Focused 
 exercised. P10/P24 remain PARTIAL for data/schema migration recovery, authority/config changes, key
 compromise response, scanning, retention and live acceptance.
 
-Exact next action after saving and pushing this checkpoint: add signed release version and publisher
-identity to the trusted per-install runtime response, expose only that validated metadata through the
-owner-only voice operations API, render it in the bounded phone-menu dashboard, and test exact-install
-isolation plus revoked-release denial. Continue uncoded S3–S9/U01–U12 and platform requirements after
-that slice; keep all rollouts disabled and preserve the existing untracked
-`infra/scripts/__pycache__/`. After compaction, interruption or a new session, read both plans and
-both progress records, inspect the actual worktree, and resume from the exact next unfinished action.
+P06 voice operations metadata is pushed as `4c42012b`. The trusted Space runtime returns the exact
+signed package/version and publisher/key identity; the owner-only phone dashboard verifies the active
+key is registered to that publisher, then shows the version, publisher and key fingerprint. Local
+evidence: Spaces route/runtime suites **45/45**, Spaces and Agent SDK typechecks, inline dashboard
+JavaScript syntax check and `git diff --check`. No provider, carrier, deployed Worker or live call was
+exercised. P06 remains PARTIAL for customer voice lifecycle, streaming, managed billing, invoices and
+live/region acceptance.
+
+Exact next action: add an interactive, safe customer-form preview to Foundry Template Studio using the
+same bounded setup declarations, including localization and earlier-field visibility rules. Use DOM
+text/value APIs only and keep server validation authoritative. Verify editor script syntax and the host
+validator, then continue guided-template lifecycle and remaining S3–S9/U01–U12. Keep all rollouts
+disabled and preserve `infra/scripts/__pycache__/`. After compaction, interruption or a new session,
+read both plans and both progress records, inspect the actual worktree, and resume from this exact task.
 
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 

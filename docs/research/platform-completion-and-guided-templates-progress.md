@@ -20,7 +20,18 @@ P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b508
 
 U03 Agent37 lifecycle recovery and U11 supported metering, cost, threshold/alert and owner controls are already source-to-caller audited; no independent U11 caller gap was found. U12 verification fixed an actual Lemon Squeezy test mock typing error. Frozen Corepack pnpm 9.12.0 install, Billing **52/52**, full build **55/55 tasks** and full typecheck **82/82 tasks** pass. Turbo child processes needed a temporary PATH wrapper because the global fallback is pnpm 11; the repository remains pinned to pnpm 9. Build included local image builds and Wrangler dry runs only. No CI event, deployment, provider account, or live acceptance ran. U12 is locally implemented for build wiring and remains partial for future CI execution and deployed-image parity. The managed-services matrix remains authoritative for S4–S9/U01–U12; U05/U06 runtime contracts remain unsupported rather than credential-blocked. Rollouts stay disabled.
 
-Exact next action: expose signed release version and publisher identity in the trusted per-install runtime response, return only validated metadata through the owner-only voice operations API, render it in the signed keypad package dashboard, and test installation isolation plus revoked-release denial. Then continue uncoded guided-template, voice, shared-Space and managed-services requirements in dependency order; do not repeat completed audits without new evidence.
+P06 voice operations metadata is pushed as `4c42012b`. The trusted Space runtime returns the installed
+signed package/version and publisher/key identity; the owner-only phone dashboard verifies the active
+key is registered to that publisher, then shows the version, publisher and key fingerprint. Local
+evidence: Spaces route/runtime **45/45**, Spaces and Agent SDK typechecks, inline dashboard JavaScript
+syntax and `git diff --check`. No provider, carrier, deployed Worker or live call was exercised. P06
+remains PARTIAL for the full customer voice-agent lifecycle, streaming, managed billing, invoices and
+live/region acceptance.
+
+Exact next action: add a safe interactive customer-form preview to Foundry Template Studio using the
+existing bounded setup declarations, including localized labels and earlier-field visibility. Use DOM
+text/value APIs only and keep server validation authoritative. Verify generated script syntax and the
+host validator, then continue guided-template lifecycle and remaining S3–S9/U01–U12 gaps.
 
 ## Previous checkpoint details
 
@@ -869,7 +880,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
 | P05 | PARTIAL | Code `5e0c6501` adds owner-approved scoped text handles. Codes `536853b9`/`b646ec16` connect guided activation to exact-pin signed dependency import; `edf08814` resumes after reload. `a75c0862` adds durable provider cleanup on direct disconnect and channel-package uninstall; `c1c5e0d4` adds setup compensation for Telegram/WhatsApp. Binary/image/audio extension reads, other provider setup journeys, broader customer/update journeys, verified rates and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. Code `b2140aaf` adds a draft-only simulated call/DTMF preview; code `b2d4ac0f` pins calls to the admitted installation/handler and groups the owner history by that pin. The customer voice package lifecycle, public streaming, managed voice billing, invoice reconciliation and live provider acceptance remain unavailable. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery, cost observations and a dated host-catalog list-rate estimate are local. `b2140aaf` adds a draft-only simulated call/DTMF preview; `b2d4ac0f` pins calls to the admitted installation/handler and groups owner history by that pin; `4c42012b` exposes the exact signed release and active publisher-key identity in the owner phone dashboard. Customer voice lifecycle, public streaming, managed billing, invoice reconciliation and live provider acceptance remain unavailable. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
