@@ -46,6 +46,26 @@ describe("internal phone extension settings handoff", () => {
     expect(await verifyInternalToken(h.forwarded[1]!.headers.get("x-naelao-internal-token") ?? undefined, "tenant-a", secret)).toBe(true);
   });
 
+  it("forwards an exact published settings revision for a pinned public call", async () => {
+    const h = harness();
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1&phone_settings_revision=3", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    }), h.env);
+    expect(response.status).toBe(200);
+    expect(new URL(h.forwarded[1]!.url).searchParams.get("settings_revision")).toBe("3");
+    expect(h.forwarded).toHaveLength(2);
+  });
+
+  it("rejects an invalid or draft phone settings revision request", async () => {
+    const h = harness(true, true, "owner_publish");
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1&phone_settings_source=draft&phone_settings_revision=2", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+    }), h.env);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error_code: "phone_extension_settings_revision_invalid" });
+    expect(h.forwarded).toHaveLength(0);
+  });
+
   it("forwards a requested draft only for a signed package that declares owner publication", async () => {
     const h = harness(true, true, "owner_publish");
     const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/space-a/workflow-installations/install-a?include_phone_settings=1&phone_settings_source=draft", {

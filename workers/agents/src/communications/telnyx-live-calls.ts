@@ -147,7 +147,8 @@ export async function dispatchTelnyxVoiceEvent(env: AgentsEnv, binding: Assistan
 }
 
 type ExtensionVoiceEvent = { eventId: string; eventType: string; payload: Record<string, unknown> };
-type ExtensionCall = { call_control_id: string; binding_id: string; caller: string; state: string; turn_count: number; expires_at: number };
+type ExtensionCall = { call_control_id: string; binding_id: string; caller: string; state: string; turn_count: number; expires_at: number;
+  extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number };
 
 async function extensionEventId(bindingId: string, callControlId: string, providerEventId: string) {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${bindingId}:${callControlId}:${providerEventId}`)));
@@ -155,13 +156,16 @@ async function extensionEventId(bindingId: string, callControlId: string, provid
 }
 
 async function callExtension(env: AgentsEnv, binding: AssistantPhoneBinding, identity: CommunicationIdentity,
-  caller: string, callControlId: string, type: "call.received" | "call.digits", providerEventId: string, payload: Record<string, unknown>) {
+  caller: string, callControlId: string, type: "call.received" | "call.digits", providerEventId: string, payload: Record<string, unknown>,
+  pin: { installationId: string; handlerSha256: string; settingsRevision: number | null }) {
   if (!env.AGENTS_WORKER) throw new Error("phone_extension_dispatch_unavailable");
   const response = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-dispatch", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenant_id,
       "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, identity.tenant_id) },
-    body: JSON.stringify({ spaceId: identity.space_id, bindingId: binding.id, event: {
+    body: JSON.stringify({ spaceId: identity.space_id, bindingId: binding.id,
+      expectedInstallationId: pin.installationId, expectedHandlerSha256: pin.handlerSha256,
+      settingsRevision: pin.settingsRevision, event: {
       id: await extensionEventId(binding.id, callControlId, providerEventId), type,
       payload: { caller, voice_event: type, ...payload },
     } }),
@@ -169,6 +173,23 @@ async function callExtension(env: AgentsEnv, binding: AssistantPhoneBinding, ide
   const result = await readBoundedResponseJson<{ response?: unknown }>(response, 8192);
   if (!response.ok) throw new Error("phone_extension_dispatch_rejected");
   return result.response;
+}
+
+async function pinExtensionCall(env: AgentsEnv, binding: AssistantPhoneBinding, identity: CommunicationIdentity,
+  installationId: string, handlerSha256: string): Promise<number | null> {
+  if (!env.AGENTS_WORKER) throw new Error("phone_extension_dispatch_unavailable");
+  const response = await env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-dispatch", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenant_id,
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, identity.tenant_id) },
+    body: JSON.stringify({ spaceId: identity.space_id, bindingId: binding.id, pinCall: true,
+      expectedInstallationId: installationId, expectedHandlerSha256: handlerSha256 }),
+  }));
+  const result = await readBoundedResponseJson<{ settings_revision?: unknown }>(response, 8_192).catch(() => null);
+  if (!response.ok || !result || !(result.settings_revision === null
+    || Number.isSafeInteger(result.settings_revision) && Number(result.settings_revision) >= 0))
+    throw new Error("phone_extension_settings_pin_unavailable");
+  return result.settings_revision as number | null;
 }
 
 /** Execute a deliberately small carrier language. Public extension code returns data only; the
@@ -225,30 +246,38 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_unavailable"));
       return { accepted: true, rejected: "extension_unavailable" };
     }
-    await env.PLATFORM_DB.prepare("DELETE FROM assistant_telnyx_extension_calls WHERE updated_at<? AND state IN ('ended','indeterminate')")
-      .bind(now - 7 * 86_400).run();
     const existingAdmission = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
       .bind(callControlId).first<{ binding_id: string; caller: string; state: string }>();
     if (existingAdmission) {
       if (existingAdmission.binding_id !== binding.id || existingAdmission.caller !== caller) throw new Error("telnyx_extension_call_binding_conflict");
       return { accepted: true, duplicate: true };
     }
+    let settingsRevision: number | null;
+    try {
+      settingsRevision = await pinExtensionCall(env, binding, identity, handler.installation_id, handler.handler_sha256);
+    } catch {
+      await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_settings_pin_unavailable"));
+      return { accepted: true, rejected: "extension_settings_pin_unavailable" };
+    }
+    await env.PLATFORM_DB.prepare("DELETE FROM assistant_telnyx_extension_calls WHERE updated_at<? AND state IN ('ended','indeterminate')")
+      .bind(now - 7 * 86_400).run();
     const inserted = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_extension_calls(
-        call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256)
-      SELECT ?,?,?,'answering',0,?,?,?,?,?,?
+        call_control_id,binding_id,caller,state,turn_count,started_at,expires_at,created_at,updated_at,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
+      SELECT ?,?,?,'answering',0,?,?,?,?,?,?,?,1
       FROM assistant_phone_extension_handlers h
       WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?`)
       .bind(callControlId, binding.id, caller, now, now + policy.maxCallSeconds, now, now, handler.installation_id,
-        handler.handler_sha256, binding.id, handler.installation_id, handler.handler_sha256).run();
-    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
-      .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null }>();
+        handler.handler_sha256, settingsRevision, binding.id, handler.installation_id, handler.handler_sha256).run();
+    const row = await env.PLATFORM_DB.prepare("SELECT binding_id,caller,state,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_telnyx_extension_calls WHERE call_control_id=?")
+      .bind(callControlId).first<{ binding_id: string; caller: string; state: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number }>();
     if (!inserted.meta.changes) {
       if (row?.binding_id === binding.id && row.caller === caller) return { accepted: true, duplicate: true };
       await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_handler_changed"));
       return { accepted: true, rejected: "extension_handler_changed_during_admission" };
     }
     if (!row || row.binding_id !== binding.id || row.caller !== caller || row.extension_installation_id !== handler.installation_id
-      || row.handler_sha256 !== handler.handler_sha256) throw new Error("telnyx_extension_call_binding_conflict");
+      || row.handler_sha256 !== handler.handler_sha256 || row.settings_pinned !== 1 || row.settings_revision !== settingsRevision)
+      throw new Error("telnyx_extension_call_binding_conflict");
     const quota = await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?")
       .bind(binding.id, policy.maxDailyInboundCalls).run();
     if (!quota.meta.changes) {
@@ -281,12 +310,28 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
       .bind(duration, now, callControlId, binding.id).run();
     return { accepted: true, ended: true };
   }
+  if (existing.settings_pinned !== 1 || !existing.extension_installation_id || !existing.handler_sha256) {
+    await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state!='ended'")
+      .bind(now, callControlId, binding.id).run();
+    await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_call_pin_unavailable"));
+    return { accepted: true, ended: true, reason: "extension_call_pin_unavailable" };
+  }
   if (event.eventType === "call.answered") {
     if (existing.state !== "answering") return { accepted: true, duplicate: true };
     const claimed = await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='processing',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='answering' AND expires_at>? ")
       .bind(now, callControlId, binding.id, now).run();
     if (!claimed.meta.changes) return { accepted: true, rejected: "extension_call_expired" };
-    const result = await callExtension(env, binding, identity, existing.caller, callControlId, "call.received", event.eventId, {});
+    let result: unknown;
+    try {
+      result = await callExtension(env, binding, identity, existing.caller, callControlId, "call.received", event.eventId, {}, {
+        installationId: existing.extension_installation_id, handlerSha256: existing.handler_sha256, settingsRevision: existing.settings_revision,
+      });
+    } catch {
+      await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='processing'")
+        .bind(now, callControlId, binding.id).run();
+      await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_dispatch_unavailable"));
+      return { accepted: true, ended: true, reason: "extension_dispatch_unavailable" };
+    }
     return applyExtensionVoicePlan(env, binding, telnyx, callControlId, event.eventId, result, now);
   }
   if (event.eventType === "call.gather.ended") {
@@ -313,7 +358,17 @@ async function dispatchTelnyxExtensionVoiceEvent(env: AgentsEnv, binding: Assist
     const claimed = await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='processing',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='gathering' AND expires_at>? AND turn_count<20")
       .bind(now, callControlId, binding.id, now).run();
     if (!claimed.meta.changes) return { accepted: true, rejected: "extension_call_not_active" };
-    const result = await callExtension(env, binding, identity, existing.caller, callControlId, "call.digits", event.eventId, { digits });
+    let result: unknown;
+    try {
+      result = await callExtension(env, binding, identity, existing.caller, callControlId, "call.digits", event.eventId, { digits }, {
+        installationId: existing.extension_installation_id, handlerSha256: existing.handler_sha256, settingsRevision: existing.settings_revision,
+      });
+    } catch {
+      await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_extension_calls SET state='indeterminate',updated_at=? WHERE call_control_id=? AND binding_id=? AND state='processing'")
+        .bind(now, callControlId, binding.id).run();
+      await telnyx.callAction(callControlId, "hangup", commandId(event.eventId, "extension_dispatch_unavailable"));
+      return { accepted: true, ended: true, reason: "extension_dispatch_unavailable" };
+    }
     return applyExtensionVoicePlan(env, binding, telnyx, callControlId, event.eventId, result, now);
   }
   if (event.eventType.startsWith("streaming.")) {

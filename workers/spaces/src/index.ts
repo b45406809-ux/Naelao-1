@@ -4162,8 +4162,13 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const settingsSource = c.req.query("phone_settings_source") ?? "active";
+  const settingsRevision = c.req.query("phone_settings_revision");
   if (settingsSource !== "active" && settingsSource !== "draft" || settingsSource === "draft" && c.req.query("include_phone_settings") !== "1")
     return c.json({ error_code: "phone_extension_settings_source_invalid" }, 400, { "cache-control": "private, no-store" });
+  if (settingsRevision !== undefined && (c.req.query("include_phone_settings") !== "1"
+    || settingsSource !== "active" && settingsRevision !== "none"
+    || settingsRevision !== "none" && (!/^(0|[1-9]\d{0,15})$/.test(settingsRevision) || !Number.isSafeInteger(Number(settingsRevision)))))
+    return c.json({ error_code: "phone_extension_settings_revision_invalid" }, 400, { "cache-control": "private, no-store" });
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
   const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId"), ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
@@ -4192,10 +4197,15 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
       return c.json({ error_code: "phone_extension_installation_untrusted" }, 409, { "cache-control": "private, no-store" });
     if (typeof release.version !== "string" || typeof release.artifactSha256 !== "string")
       return c.json({ error_code: "phone_extension_release_unavailable" }, 409, { "cache-control": "private, no-store" });
-    if (!readCapability) return c.json(result, 200, { "cache-control": "private, no-store" });
+    if (!readCapability) {
+      if (settingsRevision !== undefined && settingsRevision !== "none")
+        return c.json({ error_code: "phone_extension_settings_revision_mismatch" }, 409, { "cache-control": "private, no-store" });
+      return c.json(result, 200, { "cache-control": "private, no-store" });
+    }
     const settingsQuery = new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), instance_id: c.req.param("instanceId"),
       expected_version: release.version, expected_artifact_sha256: release.artifactSha256,
       settings_source: settingsSource,
+      ...(settingsRevision !== undefined ? { settings_revision: settingsRevision } : {}),
       ...(instance.project_id ? { project_id: instance.project_id } : {}) });
     const settingsResponse = await stub.fetch(new Request(`http://space-do/phone-extension-settings?${settingsQuery}`, {
       headers: { "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },

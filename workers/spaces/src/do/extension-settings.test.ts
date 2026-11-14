@@ -181,10 +181,11 @@ describe("Space-shared extension settings", () => {
     expect(installed.status, await installed.clone().text()).toBe(201);
     const { installationId, release } = await installed.json() as { installationId: string; release: { version: string; artifactSha256: string } };
     const token = await mintInternalToken(secret, "tenant");
-    const readRuntimeSettings = (overrides: { tenant?: string; space?: string; instance?: string; token?: string; expectedVersion?: string; settingsSource?: "active" | "draft" } = {}) => {
+    const readRuntimeSettings = (overrides: { tenant?: string; space?: string; instance?: string; token?: string; expectedVersion?: string; settingsSource?: "active" | "draft"; settingsRevision?: number } = {}) => {
       const query = new URLSearchParams({ tenant_id: overrides.tenant ?? "tenant", space_id: overrides.space ?? "space", instance_id: overrides.instance ?? installationId,
         expected_version: overrides.expectedVersion ?? release.version, expected_artifact_sha256: release.artifactSha256,
-        ...(overrides.settingsSource ? { settings_source: overrides.settingsSource } : {}) });
+        ...(overrides.settingsSource ? { settings_source: overrides.settingsSource } : {}),
+        ...(overrides.settingsRevision !== undefined ? { settings_revision: String(overrides.settingsRevision) } : {}) });
       return space.fetch(new Request(`http://space/phone-extension-settings?${query}`, {
         headers: { "x-naelao-internal-token": overrides.token ?? token },
       }));
@@ -231,6 +232,8 @@ describe("Space-shared extension settings", () => {
     expect(runtimeSettings.headers.get("cache-control")).toContain("no-store");
     expect(await runtimeSettings.json()).toEqual({ schema_version: 1, revision: 1, active_revision: 1, settings_source: "active",
       settings: { enabled: true, greeting: "Welcome" } });
+    expect(await (await readRuntimeSettings({ settingsRevision: 1 })).json()).toEqual({ schema_version: 1, revision: 1, active_revision: 1,
+      settings_source: "active", settings: { enabled: true, greeting: "Welcome" } });
     expect(await (await ownerSettings({ action: "publish", draft_revision: 1, expected_active_revision: 0, confirm: true })).json())
       .toMatchObject({ replayed: true, revision: 1 });
     const settingsAudit = await space.fetch(new Request(`http://space/extension-settings-audit?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", instance_id: installationId })}`,
@@ -246,6 +249,10 @@ describe("Space-shared extension settings", () => {
       .toMatchObject({ draft: { revision: 2, status: "draft" }, active_revision: 1 });
     expect(await (await ownerSettings({ action: "publish", draft_revision: 2, expected_active_revision: 1, confirm: true })).json())
       .toMatchObject({ published: true, revision: 2, settings: { greeting: "Changed" } });
+    expect(await (await readRuntimeSettings({ settingsRevision: 1 })).json()).toMatchObject({ revision: 1, active_revision: 2,
+      settings: { greeting: "Welcome" } });
+    expect(await (await readRuntimeSettings({ settingsRevision: 2 })).json()).toMatchObject({ revision: 2, active_revision: 2,
+      settings: { greeting: "Changed" } });
     const ownerRead = () => space.fetch(new Request(`http://space/extension-settings?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", app_id: "customer_phone" })}`, {
       headers: { "x-naelao-internal-token": token, "x-naelao-user-id": "owner_a", "x-naelao-role": "owner" },
     }));
@@ -270,6 +277,7 @@ describe("Space-shared extension settings", () => {
 
     storage.sql.exec("UPDATE extension_installation_settings SET settings_json=? WHERE instance_id=?", JSON.stringify({ greeting: "Welcome", unrelated: "private" }), installationId);
     expect((await readRuntimeSettings()).status).toBe(409);
+    expect((await readRuntimeSettings({ settingsRevision: 99 })).status).toBe(409);
     storage.sql.exec("UPDATE extension_releases SET host_signature=? WHERE extension_id=? AND version=?", "0".repeat(64), manifest.id, manifest.bundle.version);
     expect((await readRuntimeSettings()).status).toBe(409);
     storage.sql.exec("UPDATE extension_instances SET status='disabled' WHERE instance_id=?", installationId);

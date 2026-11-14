@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0252_product_user_dunning_status_scope",
+  "requiredSchemaVersion": "0253_telnyx_extension_call_settings_revision",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1011,6 +1011,10 @@
     {
       "filename": "0252_product_user_dunning_status_scope.sql",
       "sha256": "55f558f25d2994111f7851ab7f9f777f99f29e05ceeeb5c43731a96efbe11df8"
+    },
+    {
+      "filename": "0253_telnyx_extension_call_settings_revision.sql",
+      "sha256": "168bccd4b6ad3476eb9ddc33f76d67eab1a470210a321923f214b5c075a99ab5"
     }
   ]
 }

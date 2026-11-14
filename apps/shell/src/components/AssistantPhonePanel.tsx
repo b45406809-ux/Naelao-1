@@ -43,6 +43,8 @@ type PhoneHandlerCandidate = { installation_id: string; extension_id: string; na
 type RecentExtensionCall = {
   installation_id: string | null;
   handler_sha256: string | null;
+  settings_revision: number | null;
+  settings_pinned: boolean;
   state: string;
   turn_count: number;
   started_at: number;
@@ -424,7 +426,7 @@ export function AssistantPhonePanel({
                     ? "Provider cost report unavailable"
                     : "No linked provider report · amount unknown, not zero";
                 return <li key={`${call.started_at}:${index}`}>
-                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {costLabel}
+                  {new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.turn_count} turns · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {call.settings_pinned ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}` : "settings revision unavailable"} · {costLabel}
                 </li>;
               })}</ol>
             </section>;

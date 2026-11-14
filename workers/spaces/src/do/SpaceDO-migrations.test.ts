@@ -187,7 +187,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(142);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(143);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");
@@ -220,6 +220,19 @@ describe("SpaceDO migration replay", () => {
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_coordination_entries')").toArray().map(column => column.name)).toContain("schema_version");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_coordination_entries')").toArray().map(column => column.name)).toContain("last_confirmed_at");
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('space_coordination_entries')").toArray().map(column => column.name)).toContain("expires_at");
+  });
+
+  it("backfills the active phone settings revision before pinned calls use it", async () => {
+    const space = await import("./SpaceDO");
+    const storage = createDOStorage();
+    const beforePinHistory = space.SPACE_DO_MIGRATIONS.filter(migration => migration.version <= 142);
+    applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, beforePinHistory);
+    storage.sql.exec("INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at,schema_version) VALUES(?,?,?,?,?)",
+      "legacy-install", JSON.stringify({ greeting: "Legacy published" }), 4, "2026-11-14T00:00:00.000Z", 1);
+    const pinHistory = space.SPACE_DO_MIGRATIONS.filter(migration => migration.version === 143);
+    applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, pinHistory);
+    expect(storage.sql.exec("SELECT instance_id,version,settings_json,published_by FROM extension_installation_settings_versions WHERE instance_id='legacy-install'").toArray())
+      .toEqual([{ instance_id: "legacy-install", version: 4, settings_json: JSON.stringify({ greeting: "Legacy published" }), published_by: "migration-backfill" }]);
   });
 
   it("migrates existing coordination facts as schema v1 with their member audience intact", async () => {

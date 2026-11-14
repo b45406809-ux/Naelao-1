@@ -55,7 +55,8 @@ function setup(project: string | null, provider = "twilio") {
   internals.buildScriptEngineEnv = async () => ({ codeRunner: { runChannel } });
   return { agent, runChannel, internals, storage, runtimeWork };
 }
-async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId?: string, expectedHandlerSha256?: string) {
+async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId?: string, expectedHandlerSha256?: string,
+  settingsRevision?: number | null, eventId = "CA" + "a".repeat(32)) {
   return agent.fetch(
     new Request("http://agent/phone-extension", {
       method: "POST",
@@ -71,8 +72,9 @@ async function invoke(agent: NaelaoAgentDO, valid = true, expectedInstallationId
         bindingId: "binding",
         ...(expectedInstallationId !== undefined ? { expectedInstallationId } : {}),
         ...(expectedHandlerSha256 !== undefined ? { expectedHandlerSha256 } : {}),
+        ...(settingsRevision !== undefined ? { settingsRevision } : {}),
         event: {
-          id: "CA" + "a".repeat(32),
+          id: eventId,
           type: "call.received",
           payload: { caller: "+15555550100" },
         },
@@ -162,6 +164,29 @@ describe("phone extension scope dispatch", () => {
     const accepted = await invoke(f.agent, true, "install", "a".repeat(64));
     expect(accepted.status).toBe(200);
     expect(f.runChannel).toHaveBeenCalledOnce();
+  });
+
+  it("pins a Telnyx DTMF call to its published settings revision and fails closed on drift", async () => {
+    const f = setup(null, "telnyx");
+    const pin = await f.agent.fetch(new Request("http://agent/phone-extension", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant") },
+      body: JSON.stringify({ spaceId: "space", bindingId: "binding", pinCall: true,
+        expectedInstallationId: "install", expectedHandlerSha256: "a".repeat(64) }),
+    }));
+    expect(pin.status).toBe(200);
+    expect(await pin.json()).toEqual({ settings_revision: 7 });
+    expect(f.internals.loadActiveChannelHandler).toHaveBeenLastCalledWith(expect.objectContaining({
+      instanceId: "install", scriptSha256: "a".repeat(64), channel: "phone", inboundEvent: "call.received",
+    }));
+    expect(f.runtimeWork).not.toHaveBeenCalled();
+    expect(f.runChannel).not.toHaveBeenCalled();
+
+    const accepted = await invoke(f.agent, true, "install", "a".repeat(64), 7, `telnyx-call-${"a".repeat(32)}`);
+    expect(accepted.status).toBe(200);
+    expect(f.internals.loadActiveChannelHandler).toHaveBeenLastCalledWith(expect.objectContaining({ settingsRevision: 7 }));
+    f.internals.loadActiveChannelHandler.mockResolvedValueOnce(null);
+    expect((await invoke(f.agent, true, "install", "a".repeat(64), 6, `telnyx-call-${"b".repeat(32)}`)).status).toBe(409);
   });
 
   it("does not execute a phone handler when its installation is paused", async () => {

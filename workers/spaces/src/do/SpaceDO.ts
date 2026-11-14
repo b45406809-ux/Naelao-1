@@ -3047,6 +3047,16 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_space_blueprint_lifecycle_events_installation
         ON space_blueprint_lifecycle_events(space_id,blueprint_id,created_at DESC);`,
   },
+  {
+    version: 143,
+    description: "Backfill active phone extension settings into immutable revision receipts",
+    up: `
+      INSERT OR IGNORE INTO extension_installation_settings_versions(
+        instance_id,version,settings_json,schema_version,published_by,source_draft_revision,created_at
+      ) SELECT instance_id,revision,settings_json,schema_version,'migration-backfill',revision,updated_at
+          FROM extension_installation_settings WHERE revision>=1;
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -14305,6 +14315,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings(instance_id,settings_json,revision,updated_at,schema_version) VALUES(?,?,?,?,?)
         ON CONFLICT(instance_id) DO UPDATE SET settings_json=excluded.settings_json,revision=excluded.revision,updated_at=excluded.updated_at,schema_version=excluded.schema_version`,
       row.instance_id, JSON.stringify(settings), newRevision, updatedAt, schema.schemaVersion);
+      this.ctx.storage.sql.exec(`INSERT INTO extension_installation_settings_versions(
+        instance_id,version,settings_json,schema_version,published_by,source_draft_revision,created_at
+      ) VALUES(?,?,?,?,?,?,?)`, row.instance_id, newRevision, JSON.stringify(settings), schema.schemaVersion, actorId, newRevision, updatedAt);
+      this.ctx.storage.sql.exec(`DELETE FROM extension_installation_settings_versions WHERE instance_id=? AND version NOT IN (
+        SELECT version FROM extension_installation_settings_versions WHERE instance_id=? ORDER BY version DESC LIMIT 20
+      )`, row.instance_id, row.instance_id);
       this.ctx.storage.sql.exec(`INSERT INTO extension_settings_audit_events(
         event_id,tenant_id,space_id,project_id,instance_id,extension_id,instance_scope,actor_id,actor_role,
         prior_revision,new_revision,schema_version,changed_field_ids_json,created_at
@@ -14638,9 +14654,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const instanceId = url.searchParams.get("instance_id") ?? "", projectId = url.searchParams.get("project_id") ?? "";
     const expectedVersion = url.searchParams.get("expected_version") ?? "", expectedArtifactSha256 = url.searchParams.get("expected_artifact_sha256") ?? "";
     const settingsSource = url.searchParams.get("settings_source") ?? "active";
+    const settingsRevisionRaw = url.searchParams.get("settings_revision");
+    const settingsRevision = settingsRevisionRaw === null ? undefined : settingsRevisionRaw === "none" ? null
+      : /^(0|[1-9]\d{0,15})$/.test(settingsRevisionRaw) && Number.isSafeInteger(Number(settingsRevisionRaw))
+        ? Number(settingsRevisionRaw) : Number.NaN;
     if (!tenantId || !/^[A-Za-z0-9._:-]{1,160}$/.test(spaceId) || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)
       || projectId && !/^[A-Za-z0-9._:-]{1,160}$/.test(projectId)
       || settingsSource !== "active" && settingsSource !== "draft"
+      || Number.isNaN(settingsRevision) || settingsRevisionRaw !== null && settingsSource !== "active"
       || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedVersion) || !/^[a-f0-9]{64}$/.test(expectedArtifactSha256)
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403, headers: { "cache-control": "private, no-store" } });
@@ -14679,10 +14700,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "phone_extension_draft_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
     const active = queryOne<{ settings_json: string; revision: number; schema_version: number; status?: string }>(this.ctx.storage.sql as never,
       "SELECT settings_json,revision,schema_version FROM extension_installation_settings WHERE instance_id=?", instanceId);
-    const current = settingsSource === "draft"
+    let current = settingsSource === "draft"
       ? queryOne<{ settings_json: string; revision: number; schema_version: number; status?: string }>(this.ctx.storage.sql as never,
         "SELECT settings_json,revision,schema_version,status FROM extension_installation_settings_drafts WHERE instance_id=?", instanceId)
       : active;
+    if (settingsRevisionRaw !== null && settingsRevision === null)
+      return Response.json({ error_code: "phone_extension_settings_revision_mismatch" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    if (typeof settingsRevision === "number") {
+      if (settingsRevision > (active?.revision ?? 0))
+        return Response.json({ error_code: "phone_extension_settings_revision_unavailable" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      if (settingsRevision === 0) current = null;
+      else {
+        const pinned = queryOne<{ settings_json: string; revision: number; schema_version: number }>(this.ctx.storage.sql as never,
+          "SELECT settings_json,version AS revision,schema_version FROM extension_installation_settings_versions WHERE instance_id=? AND version=?",
+          instanceId, settingsRevision);
+        if (!pinned)
+          return Response.json({ error_code: "phone_extension_settings_revision_unavailable" }, { status: 409, headers: { "cache-control": "private, no-store" } });
+        current = pinned;
+      }
+    }
     if (settingsSource === "draft" && (!current || current.status !== "draft"))
       return Response.json({ error_code: "phone_extension_draft_unavailable" }, { status: 404, headers: { "cache-control": "private, no-store" } });
     if (current && current.schema_version !== manifest.settingsSchema.schemaVersion)

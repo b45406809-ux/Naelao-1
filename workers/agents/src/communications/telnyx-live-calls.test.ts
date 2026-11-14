@@ -70,10 +70,14 @@ describe("Telnyx live call command contract", () => {
       .bind("a".repeat(64)).run();
 
     const extensionEvents: Array<{ event: { id: string; type: string; payload: Record<string, unknown> } }> = [];
+    const extensionBodies: Array<Record<string, unknown>> = [];
     const extension = vi.fn(async (request: Request) => {
-      const body = await request.json() as { event: { id: string; type: string; payload: Record<string, unknown> } };
-      extensionEvents.push(body);
-      if (body.event.type === "call.received") return Response.json({ response: { schema_version: 1, actions: [
+      const body = await request.json() as { pinCall?: boolean; settingsRevision?: number | null; expectedInstallationId?: string;
+        expectedHandlerSha256?: string; event?: { id: string; type: string; payload: Record<string, unknown> } };
+      extensionBodies.push(body);
+      if (body.pinCall) return Response.json({ settings_revision: 7 });
+      if (body.event) extensionEvents.push(body as { event: { id: string; type: string; payload: Record<string, unknown> } });
+      if (body.event?.type === "call.received") return Response.json({ response: { schema_version: 1, actions: [
         { type: "say", text: "Welcome." }, { type: "gather", input: "dtmf", digits: 1, text: "Press one for support." },
       ] } });
       return Response.json({ response: { actions: [{ type: "hangup" }] } });
@@ -88,6 +92,10 @@ describe("Telnyx live call command contract", () => {
       eventId: "public-event-1", eventType: "call.initiated", payload: { call_control_id: callControlId, direction: "incoming", from: { phone_number: "+14155550101" }, to: { phone_number: "+14155550100" } },
     });
     expect(initiated).toMatchObject({ accepted: true, extension_call: true });
+    expect(await dispatchTelnyxVoiceEvent(f.env, binding!, identity, {
+      eventId: "public-event-1-retry", eventType: "call.initiated", payload: { call_control_id: callControlId, direction: "incoming", from: { phone_number: "+14155550101" }, to: { phone_number: "+14155550100" } },
+    })).toMatchObject({ accepted: true, duplicate: true });
+    expect(extensionBodies.filter(body => body.pinCall)).toHaveLength(1);
     await dispatchTelnyxVoiceEvent(f.env, binding!, identity, {
       eventId: "public-event-2", eventType: "call.answered", payload: { call_control_id: callControlId },
     });
@@ -97,19 +105,29 @@ describe("Telnyx live call command contract", () => {
       eventId: "public-event-3", eventType: "call.gather.ended", payload: { call_control_id: callControlId, digits: "1" },
     });
     expect(JSON.parse(String(carrier.mock.calls[2]?.[1]?.body))).toMatchObject({ command_id: expect.stringContaining("extension_hangup") });
-    expect(extension).toHaveBeenCalledTimes(2);
+    expect(extension).toHaveBeenCalledTimes(3); // call-start settings pin plus two DTMF handler turns
     const firstCall = extensionEvents[0]!;
     expect(firstCall.event).toMatchObject({ type: "call.received", payload: { caller: "+14155550101", voice_event: "call.received" } });
     expect(firstCall.event.id).toMatch(/^telnyx-call-[a-f0-9]{32}$/);
     expect(firstCall.event.payload).not.toHaveProperty("call_control_id");
     const secondCall = extensionEvents[1]!;
     expect(secondCall.event).toMatchObject({ type: "call.digits", payload: { digits: "1" } });
-    expect(await f.db.prepare("SELECT state,extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
-      .toEqual({ state: "ended", extension_installation_id: "ext-1", handler_sha256: "a".repeat(64) });
+    expect(extensionBodies[0]).toMatchObject({ pinCall: true, expectedInstallationId: "ext-1", expectedHandlerSha256: "a".repeat(64) });
+    expect(extensionBodies.slice(1)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ settingsRevision: 7, expectedInstallationId: "ext-1", expectedHandlerSha256: "a".repeat(64) }),
+    ]));
+    expect(await f.db.prepare("SELECT state,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
+      .toEqual({ state: "ended", extension_installation_id: "ext-1", handler_sha256: "a".repeat(64), settings_revision: 7, settings_pinned: 1 });
     await f.db.prepare("UPDATE assistant_phone_extension_handlers SET installation_id='ext-2',handler_sha256=? WHERE binding_id='public-extension'")
       .bind("b".repeat(64)).run();
     expect(await f.db.prepare("SELECT extension_installation_id,handler_sha256 FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first())
       .toEqual({ extension_installation_id: "ext-1", handler_sha256: "a".repeat(64) });
+    await f.db.prepare("UPDATE assistant_telnyx_extension_calls SET updated_at=? WHERE call_control_id=?")
+      .bind(Math.floor(Date.now() / 1000) - 8 * 86_400, callControlId).run();
+    await dispatchTelnyxVoiceEvent(f.env, binding!, identity, {
+      eventId: "public-event-cleanup", eventType: "call.initiated", payload: { call_control_id: "v3:cleanup-control", direction: "incoming", from: { phone_number: "+14155550102" }, to: { phone_number: "+14155550100" } },
+    });
+    expect(await f.db.prepare("SELECT call_control_id FROM assistant_telnyx_extension_calls WHERE call_control_id=?").bind(callControlId).first()).toBeNull();
     expect(await f.db.prepare("SELECT call_control_id FROM assistant_telnyx_live_calls").first()).toBeNull();
     expect(await f.db.prepare("SELECT id FROM assistant_live_calls").first()).toBeNull();
   });
@@ -126,7 +144,11 @@ describe("Telnyx live call command contract", () => {
     await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
       .bind("public-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
     await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('public-extension','ext-1',?,'active')").bind("a".repeat(64)).run();
-    f.env.AGENTS_WORKER = { fetch: vi.fn(async () => Response.json({ response: { actions: [{ type: "gather", input: "speech", text: "Say what you need." }] } })) } as unknown as Fetcher;
+    f.env.AGENTS_WORKER = { fetch: vi.fn(async (request: Request) => {
+      const body = await request.json() as { pinCall?: boolean };
+      return body.pinCall ? Response.json({ settings_revision: null })
+        : Response.json({ response: { actions: [{ type: "gather", input: "speech", text: "Say what you need." }] } });
+    }) } as unknown as Fetcher;
     const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
     vi.stubGlobal("fetch", carrier);
     const binding = await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='public-extension'").first<AssistantPhoneBinding>();
@@ -148,7 +170,11 @@ describe("Telnyx live call command contract", () => {
     await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
       .bind("public-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
     await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('public-extension','ext-1',?,'active')").bind("a".repeat(64)).run();
-    f.env.AGENTS_WORKER = { fetch: vi.fn(async () => Response.json({ response: { actions: [{ type: "say", text: "Hello", style: "woman" }] } })) } as unknown as Fetcher;
+    f.env.AGENTS_WORKER = { fetch: vi.fn(async (request: Request) => {
+      const body = await request.json() as { pinCall?: boolean };
+      return body.pinCall ? Response.json({ settings_revision: null })
+        : Response.json({ response: { actions: [{ type: "say", text: "Hello", style: "woman" }] } });
+    }) } as unknown as Fetcher;
     const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
     vi.stubGlobal("fetch", carrier);
     const binding = await f.db.prepare("SELECT * FROM assistant_phone_bindings WHERE id='public-extension'").first<AssistantPhoneBinding>();
@@ -170,7 +196,11 @@ describe("Telnyx live call command contract", () => {
     await f.db.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,policy_json,status) VALUES(?,?,'extension','byo','telnyx','account','12345','+14155550100',?,'active')")
       .bind("public-extension", identity.id, JSON.stringify(defaultPhonePolicy)).run();
     await f.db.prepare("INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES('public-extension','ext-1',?,'active')").bind("a".repeat(64)).run();
-    const extension = vi.fn(async () => Response.json({ response: { actions: [{ type: "say", text: "Thank you. Goodbye." }] } }));
+    const extension = vi.fn(async (request: Request) => {
+      const body = await request.json() as { pinCall?: boolean };
+      return body.pinCall ? Response.json({ settings_revision: 0 })
+        : Response.json({ response: { actions: [{ type: "say", text: "Thank you. Goodbye." }] } });
+    });
     f.env.AGENTS_WORKER = { fetch: extension } as unknown as Fetcher;
     const carrier = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: { result: "accepted" } }));
     vi.stubGlobal("fetch", carrier);
@@ -182,7 +212,7 @@ describe("Telnyx live call command contract", () => {
     expect(await f.db.prepare("SELECT state FROM assistant_telnyx_extension_calls WHERE call_control_id='call-final'").first()).toEqual({ state: "finishing" });
     await dispatchTelnyxVoiceEvent(f.env, binding!, identity, { eventId: "e3", eventType: "call.gather.ended", payload: { call_control_id: "call-final", status: "no_input" } });
     expect(String(carrier.mock.calls.at(-1)?.[0])).toContain("/actions/hangup");
-    expect(extension).toHaveBeenCalledTimes(1);
+    expect(extension).toHaveBeenCalledTimes(2); // call-start settings pin plus one terminal handler turn
     expect(await f.db.prepare("SELECT state FROM assistant_telnyx_extension_calls WHERE call_control_id='call-final'").first()).toEqual({ state: "ended" });
   });
 });

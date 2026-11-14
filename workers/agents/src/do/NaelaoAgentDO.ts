@@ -9865,6 +9865,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const body = await readBoundedResponseJson<{
       bindingId: string; spaceId: string; validateOnly?: boolean; simulation?: boolean; input?: string; digits?: string;
+      pinCall?: boolean; settingsRevision?: number | null;
       settingsSource?: "active" | "draft";
       expectedInstallationId?: string; expectedHandlerSha256?: string;
       eventType?: "call.received" | "call.digits" | "call.speech";
@@ -9875,6 +9876,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       || body.expectedInstallationId.length > 160 || typeof body.expectedHandlerSha256 !== "string"
       || !/^[a-f0-9]{64}$/.test(body.expectedHandlerSha256)))
       return Response.json({ error_code: "phone_handler_pin_invalid" }, { status: 400 });
+    const hasSettingsRevision = Object.prototype.hasOwnProperty.call(body, "settingsRevision");
+    if (hasSettingsRevision && !(body.settingsRevision === null
+      || Number.isSafeInteger(body.settingsRevision) && Number(body.settingsRevision) >= 0))
+      return Response.json({ error_code: "phone_settings_revision_invalid" }, { status: 400 });
     if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
     const row = await this.env.PLATFORM_DB.prepare(
       "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,b.provider,b.policy_json FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
@@ -9885,6 +9890,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
     if (hasExpectedHandler && (row.installation_id !== body.expectedInstallationId || row.handler_sha256 !== body.expectedHandlerSha256))
       return Response.json({ error_code: "phone_handler_changed_during_call" }, { status: 409 });
+    if (body.pinCall === true) {
+      if (!hasExpectedHandler || row.status !== "active" || body.simulation || body.validateOnly || body.event || body.settingsRevision !== undefined || body.settingsSource !== undefined
+        || Object.keys(body).some(key => !["bindingId", "spaceId", "pinCall", "expectedInstallationId", "expectedHandlerSha256"].includes(key)))
+        return Response.json({ error_code: "phone_call_pin_request_invalid" }, { status: 400 });
+      const handler = await this.loadActiveChannelHandler({ spaceId: body.spaceId, tenantId: tenant,
+        ...(row.project_id ? { projectId: row.project_id } : {}), channel: "phone", messageId: "call-pin",
+        inboundEvent: "call.received", instanceId: row.installation_id, scriptSha256: row.handler_sha256 });
+      if (!handler || handler.knowledgeCollections.length)
+        return Response.json({ error_code: "phone_call_pin_unavailable" }, { status: 409 });
+      return Response.json({ settings_revision: handler.settings?.revision ?? null }, { headers: { "cache-control": "private, no-store" } });
+    }
     const simulation = body.simulation === true;
     if (body.settingsSource !== undefined && (!simulation || body.settingsSource !== "active" && body.settingsSource !== "draft"))
       return Response.json({ error_code: "phone_simulation_settings_source_invalid" }, { status: 400 });
@@ -9903,6 +9919,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(eventType === "call.speech" ? { speech: input } : {}), ...(eventType === "call.digits" ? { digits } : {}),
       } }
       : body.event;
+    if (!simulation && row.provider === "telnyx" && event?.type.startsWith("call.")
+      && (!hasExpectedHandler || !hasSettingsRevision))
+      return Response.json({ error_code: "phone_call_pin_required" }, { status: 409 });
     if (!body.validateOnly && (row.status !== "active" || !event ||
       (!simulation && !validPhoneExtensionEvent(row.provider, event.type, event.id))))
       return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
@@ -9941,7 +9960,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
       channel: "phone", messageId: event?.id ?? "validation", ...(event?.type ? { inboundEvent: event.type } : {}), instanceId: row.installation_id,
-      scriptSha256: row.handler_sha256, ...(simulation ? { settingsSource: body.settingsSource ?? "active" } : {}),
+      scriptSha256: row.handler_sha256,
+      ...(hasSettingsRevision ? { settingsRevision: body.settingsRevision! } : {}),
+      ...(simulation ? { settingsSource: body.settingsSource ?? "active" } : {}),
     });
     if (!handler || handler.knowledgeCollections.length)
       return Response.json({ error_code: "phone_handler_invalid" }, { status: 409 });
@@ -10094,7 +10115,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft";
+    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; inboundEvent?: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null; settingsSource?: "active" | "draft"; settingsRevision?: number | null;
   }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; attachmentAccess?: { mode: "read_text" | "read_image"; maxFiles: number; maxTotalBytes: number }; settings?: { schemaVersion: 1 | 2; revision: number; values: Record<string, string | number | boolean> }; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
@@ -10109,6 +10130,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (input.channel === "phone") {
       installationUrl.searchParams.set("include_phone_settings", "1");
       installationUrl.searchParams.set("phone_settings_source", input.settingsSource ?? "active");
+      if (Object.prototype.hasOwnProperty.call(input, "settingsRevision"))
+        installationUrl.searchParams.set("phone_settings_revision", input.settingsRevision === null ? "none" : String(input.settingsRevision));
     } else if (input.settingsSource !== undefined) return null;
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
       installationUrl,
@@ -10156,6 +10179,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!snapshot || snapshot.schema_version !== installation.manifest.settingsSchema?.schemaVersion
         || snapshot.settings_source !== (input.settingsSource ?? "active")
         || !Number.isSafeInteger(snapshot.revision) || Number(snapshot.revision) < 0
+        || Object.prototype.hasOwnProperty.call(input, "settingsRevision") && input.settingsRevision !== snapshot.revision
         || !snapshot.settings || typeof snapshot.settings !== "object" || Array.isArray(snapshot.settings)) return null;
       const values = snapshot.settings as Record<string, unknown>;
       if (Object.keys(values).length > 128 || Object.entries(values).some(([, value]) =>
@@ -10163,7 +10187,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const normalized = values as Record<string, string | number | boolean>;
       if (new TextEncoder().encode(JSON.stringify(normalized)).byteLength > 8_192) return null;
       settings = { schemaVersion: snapshot.schema_version as 1 | 2, revision: snapshot.revision!, values: normalized };
-    } else if (installation.phone_settings !== undefined) return null;
+    } else if (installation.phone_settings !== undefined
+      || Object.prototype.hasOwnProperty.call(input, "settingsRevision") && input.settingsRevision !== null) return null;
     const packageId = installation.manifest.bundle?.id;
     const packageVersion = installation.manifest.bundle?.version;
     if (!packageId || packageId !== installation.manifest.id || !packageVersion || installation.release?.version !== packageVersion
