@@ -1652,8 +1652,10 @@ async function handleQueue(
         }
 
         default:
-          console.warn(`[billing/queue] unknown message type: ${msg.type}`);
-          message.ack();
+          // The billing queue has a configured DLQ; unknown or misrouted messages must reach it
+          // after bounded retries instead of disappearing behind an acknowledgement.
+          console.warn(`[billing/queue] unknown message type: ${msg.type} — retrying to configured DLQ`);
+          message.retry();
       }
     } catch (err) {
       console.error(

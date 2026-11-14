@@ -85,14 +85,10 @@ export async function queue(
         }
 
         default:
-          // Unknown event types are acknowledged without processing
-          // Analytics events are handled by the analytics worker queue consumer
-          if (typeof body.type === "string" && body.type.startsWith("analytics.")) {
-            console.log(`[queue] analytics event (handled by analytics worker): ${body.type}`);
-          } else {
-            console.warn(`[queue] unknown event type: ${body.type} — discarding`);
-          }
-          message.ack();
+          // The events queue has a configured DLQ. Preserve an unrecognized or misrouted event
+          // there after bounded retries instead of silently acknowledging and losing it.
+          console.warn(`[queue] unknown event type: ${body.type} — retrying to configured DLQ`);
+          message.retry();
       }
     } catch (err) {
       console.error(`[queue] error processing message ${message.id} type=${body.type}:`, err);

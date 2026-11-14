@@ -978,8 +978,10 @@ export async function queue(
         default: {
           // Exhaust the union — TypeScript will warn if a case is unhandled
           const _exhaustive: never = msg.type;
-          console.warn("[notifications/queue] unknown message type, acking", _exhaustive);
-          message.ack();
+          // The configured consumer retries this poison message and then routes it to the
+          // notification DLQ, whose handler records terminal non-PII status without resending.
+          console.warn("[notifications/queue] unknown message type — retrying to configured DLQ", _exhaustive);
+          message.retry();
           break;
         }
       }

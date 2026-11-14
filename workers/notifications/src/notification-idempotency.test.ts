@@ -21,6 +21,17 @@ function setup() {
 }
 
 describe("stable notification retry identities", () => {
+  it("retries an unknown message type so the configured DLQ captures the poison message", async () => {
+    const { db } = setup();
+    const message = {
+      id: "queue-unknown-1", body: { type: "future_notification", tenantId: "org-1", notificationId: "future:1" },
+      ack: vi.fn(), retry: vi.fn(),
+    };
+    await queue({ queue: "naelao-notifications-queue", messages: [message] } as never, { PLATFORM_DB: db } as unknown as NotificationsEnv);
+    expect(message.retry).toHaveBeenCalledOnce();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
   it("uses the caller notification ID for in-app D1 dedupe", async () => {
     const { writes, db } = setup();
     const message = {

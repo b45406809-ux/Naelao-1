@@ -149,3 +149,12 @@ describe("versioned dunning queue dispatch", () => {
     expect(create).toHaveBeenCalledOnce();
   });
 });
+
+describe("unknown queue messages", () => {
+  it("retries an unrecognized or misrouted event so the configured DLQ can capture it", async () => {
+    const msg = message({ type: "future.event", tenantId: "tenant-a" });
+    await queue({ messages: [msg] } as never, {} as never);
+    expect(msg.retry).toHaveBeenCalledOnce();
+    expect(msg.ack).not.toHaveBeenCalled();
+  });
+});

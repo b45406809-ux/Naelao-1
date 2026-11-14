@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import billingWorker from "../../workers/billing/src/index.js";
 
 // Vendor cutover: Lemon Squeezy is the ONLY billing provider. The builder's own platform plan
@@ -13,6 +13,15 @@ import billingWorker from "../../workers/billing/src/index.js";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const SECRET = "test-platform-secret";
 const ORG_ID = "org-1";
+
+describe("billing queue poison messages", () => {
+  it("retries an unknown message so the configured billing DLQ captures it", async () => {
+    const message = { id: "billing-unknown-1", body: { type: "future.billing.event" }, ack: vi.fn(), retry: vi.fn() };
+    await billingWorker.queue({ messages: [message] } as never, makeEnv() as never);
+    expect(message.retry).toHaveBeenCalledOnce();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+});
 
 function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const db = {
