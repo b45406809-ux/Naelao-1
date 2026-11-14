@@ -45,7 +45,8 @@ import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES } from "../shared-extension-package-policy.js";
-import { supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
+import { spaceSharedAuthorityExpansion, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
+  supportsVersionOnlySpaceSharedPackageUpdate } from "../extension-update-contract.js";
 
 type ExtensionRequirementsReviewReceipt = { reviewed_by: string; reviewed_at: string; requirements_sha256: string };
 
@@ -2946,6 +2947,11 @@ const MIGRATIONS: Migration[] = [
     );
     CREATE INDEX idx_extension_project_knowledge_grants_instance
       ON extension_project_knowledge_grants(tenant_id,space_id,project_id,instance_id);`,
+  },
+  {
+    version: 138,
+    description: "record exact owner-approved authority changes for Space-shared package updates",
+    up: `ALTER TABLE space_shared_extension_update_receipts ADD COLUMN authority_expansion_json TEXT NOT NULL DEFAULT '{"permissions":[],"capabilities":[]}';`,
   },
 ];
 
@@ -14546,17 +14552,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     type Claims = { version?: unknown; purpose?: unknown; tenantId?: unknown; spaceId?: unknown; actorId?: unknown;
       installationId?: unknown; extensionId?: unknown; fromVersion?: unknown; toVersion?: unknown; artifactSha256?: unknown;
       sourceManifestSha256?: unknown; candidateManifestSha256?: unknown; sourceArtifactSha256?: unknown;
-      publisherId?: unknown; publisherKeyId?: unknown;
+      publisherId?: unknown; publisherKeyId?: unknown; authorityExpansion?: unknown;
       expiresAt?: unknown; requestId?: unknown };
-    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown }>()
-      .catch((): { tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown } => ({}));
+    const body = await request.json<{ tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown; confirmAuthorityExpansion?: unknown }>()
+      .catch((): { tenantId?: unknown; spaceId?: unknown; actorId?: unknown; claims?: Claims; reviewToken?: unknown; confirmAuthorityExpansion?: unknown } => ({}));
     const claims = body.claims;
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     if (!tenantId || body.tenantId !== tenantId || typeof body.spaceId !== "string" || typeof body.actorId !== "string"
       || request.headers.get("x-naelao-tenant-id") !== body.tenantId
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
-    if (!claims || claims.version !== 2 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
+    const authorityExpansion = claims?.authorityExpansion && typeof claims.authorityExpansion === "object" && !Array.isArray(claims.authorityExpansion)
+      ? claims.authorityExpansion as { permissions?: unknown; capabilities?: unknown } : null;
+    const validAuthorityList = (value: unknown) => Array.isArray(value) && value.length <= 32
+      && value.every(item => typeof item === "string" && /^[a-z][a-z0-9_.:-]{0,127}$/.test(item))
+      && new Set(value).size === value.length && value.every((item, index) => item === [...value].sort()[index]);
+    const authorityPermissions = authorityExpansion?.permissions;
+    const authorityCapabilities = authorityExpansion?.capabilities;
+    const hasAuthorityExpansion = Array.isArray(authorityPermissions) && authorityPermissions.length > 0
+      || Array.isArray(authorityCapabilities) && authorityCapabilities.length > 0;
+    if (!claims || !authorityExpansion || !validAuthorityList(authorityPermissions) || !validAuthorityList(authorityCapabilities)
+      || body.confirmAuthorityExpansion !== hasAuthorityExpansion
+      || claims.version !== 2 || claims.purpose !== "space_shared_extension_update" || claims.tenantId !== tenantId
       || claims.spaceId !== body.spaceId || claims.actorId !== body.actorId || typeof claims.installationId !== "string"
       || typeof claims.extensionId !== "string" || typeof claims.fromVersion !== "string" || typeof claims.toVersion !== "string"
       || typeof claims.artifactSha256 !== "string" || typeof claims.publisherId !== "string"
@@ -14588,18 +14605,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const requestId = claims.requestId;
     const readReceipt = () => queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
-      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
+      authority_expansion_json: string }>(
       this.ctx.storage.sql as never, "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=?", requestId);
     const expectedReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => row.tenant_id === tenantId && row.space_id === body.spaceId
       && row.installation_id === claims.installationId && row.extension_id === claims.extensionId && row.from_version === claims.fromVersion
       && row.to_version === claims.toVersion && row.source_manifest_sha256 === claims.sourceManifestSha256
       && row.candidate_manifest_sha256 === claims.candidateManifestSha256 && row.source_artifact_sha256 === claims.sourceArtifactSha256
       && row.artifact_sha256 === claims.artifactSha256
+      && row.authority_expansion_json === JSON.stringify(claims.authorityExpansion)
       && row.publisher_key_id === claims.publisherKeyId
       && row.actor_id === body.actorId;
+    const publicReceipt = (row: NonNullable<ReturnType<typeof readReceipt>>) => {
+      const { authority_expansion_json, ...fields } = row;
+      let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
+      try {
+        const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
+        if (Array.isArray(parsed.permissions) && Array.isArray(parsed.capabilities)
+          && parsed.permissions.every(item => typeof item === "string") && parsed.capabilities.every(item => typeof item === "string")) {
+          authority_expansion = { permissions: parsed.permissions, capabilities: parsed.capabilities };
+        }
+      } catch { /* corrupt historic receipt presents as no recorded delta */ }
+      return { ...fields, authority_expansion };
+    };
     const prior = readReceipt();
     if (prior) return expectedReceipt(prior)
-      ? Response.json({ updated: true, replayed: true, receipt: prior }, { headers: { "cache-control": "private, no-store" } })
+      ? Response.json({ updated: true, replayed: true, receipt: publicReceipt(prior) }, { headers: { "cache-control": "private, no-store" } })
       : Response.json({ error_code: "extension_update_request_id_conflict" }, { status: 409 });
 
     const current = queryOne<{ status: string; release_version: string | null; manifest_json: string; source_artifact_sha256: string;
@@ -14630,24 +14661,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       currentManifest = validateExtensionManifest(JSON.parse(current.manifest_json));
       candidateManifest = validateExtensionManifest(JSON.parse(candidate.manifest_json));
     } catch { return Response.json({ error_code: "extension_update_manifest_invalid" }, { status: 409 }); }
+    const recomputedAuthorityExpansion = spaceSharedAuthorityExpansion(currentManifest, candidateManifest);
+    const expectedAuthorityExpansion = recomputedAuthorityExpansion ?? { permissions: [], capabilities: [] };
     if (current.publisher_key_id !== claims.publisherKeyId || candidateManifest.id !== claims.extensionId
       || currentManifest.bundle?.version !== claims.fromVersion || candidateManifest.bundle?.version !== claims.toVersion
       || await digestExtensionManifest(currentManifest) !== claims.sourceManifestSha256
       || await digestExtensionManifest(candidateManifest) !== claims.candidateManifestSha256
-      || !supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest))
+      || JSON.stringify(claims.authorityExpansion) !== JSON.stringify(expectedAuthorityExpansion)
+      || (!supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest)
+        && !supportsOwnerApprovedSpaceSharedAuthorityExpansion(currentManifest, candidateManifest)))
       return Response.json({ error_code: "extension_update_contract_not_supported" }, { status: 409 });
 
     const createdAt = new Date().toISOString();
     let receipt: { request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
-      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } | null = null;
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
+      authority_expansion: { permissions: string[]; capabilities: string[] } } | null = null;
     let replayed = false;
     try {
       this.ctx.storage.transactionSync(() => {
         const raced = readReceipt();
         if (raced) {
           if (!expectedReceipt(raced)) throw new Error("extension_update_request_id_conflict");
-          receipt = raced; replayed = true; return;
+          receipt = publicReceipt(raced); replayed = true; return;
         }
         if (this.activeExtensionRuntimeWorkCount(claims.installationId as string) > 0)
           throw new Error("extension_runtime_work_not_drained");
@@ -14661,15 +14697,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (changed.rowsWritten !== 1) throw new Error("extension_update_installation_must_be_paused_at_reviewed_version");
         execute(this.ctx.storage.sql as never, `INSERT INTO space_shared_extension_update_receipts
           (request_id,tenant_id,space_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,
-           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
+           candidate_manifest_sha256,source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requestId, tenantId, body.spaceId, claims.installationId, claims.extensionId,
         claims.fromVersion, claims.toVersion, claims.sourceManifestSha256, claims.candidateManifestSha256,
-        claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt);
+        claims.sourceArtifactSha256, claims.artifactSha256, claims.publisherKeyId, body.actorId, createdAt, JSON.stringify(claims.authorityExpansion));
         receipt = { request_id: requestId, tenant_id: tenantId, space_id: body.spaceId as string, installation_id: claims.installationId as string,
           extension_id: claims.extensionId as string, from_version: claims.fromVersion as string, to_version: claims.toVersion as string,
           source_manifest_sha256: claims.sourceManifestSha256 as string, candidate_manifest_sha256: claims.candidateManifestSha256 as string,
           source_artifact_sha256: claims.sourceArtifactSha256 as string, artifact_sha256: claims.artifactSha256 as string,
-          publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt };
+          publisher_key_id: claims.publisherKeyId as string, actor_id: body.actorId as string, created_at: createdAt,
+          authority_expansion: claims.authorityExpansion as { permissions: string[]; capabilities: string[] } };
       });
     } catch (error) {
       const errorCode = error instanceof Error && error.message === "extension_update_request_id_conflict"
@@ -14690,19 +14727,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const receipts = instanceId
       ? queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
         source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
-        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string; authority_expansion_json: string }>(this.ctx.storage.sql as never,
         `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
-          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=? AND installation_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 20`, tenantId, spaceId, instanceId)
       : queryAll<{ request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
         source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
-        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(this.ctx.storage.sql as never,
+        source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string; authority_expansion_json: string }>(this.ctx.storage.sql as never,
         `SELECT request_id,installation_id,extension_id,from_version,to_version,source_manifest_sha256,candidate_manifest_sha256,
-          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at
+          source_artifact_sha256,artifact_sha256,publisher_key_id,actor_id,created_at,authority_expansion_json
          FROM space_shared_extension_update_receipts WHERE tenant_id=? AND space_id=?
          ORDER BY created_at DESC,request_id DESC LIMIT 50`, tenantId, spaceId);
-    return Response.json({ receipts }, { headers: { "cache-control": "private, no-store" } });
+    const publicReceipts = receipts.map(row => {
+      const { authority_expansion_json, ...fields } = row;
+      let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
+      try {
+        const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
+        if (Array.isArray(parsed.permissions) && Array.isArray(parsed.capabilities)
+          && parsed.permissions.every(item => typeof item === "string") && parsed.capabilities.every(item => typeof item === "string"))
+          authority_expansion = { permissions: parsed.permissions, capabilities: parsed.capabilities };
+      } catch { /* legacy/corrupt receipt remains visible without inferred authority */ }
+      return { ...fields, authority_expansion };
+    });
+    return Response.json({ receipts: publicReceipts }, { headers: { "cache-control": "private, no-store" } });
   }
 
   private async getSpaceSharedExtensionUpdateReceipt(request: Request, params: URLSearchParams): Promise<Response> {
@@ -14712,10 +14760,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const receipt = queryOne<{ request_id: string; tenant_id: string; space_id: string; installation_id: string; extension_id: string;
       from_version: string; to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string;
-      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string }>(
+      source_artifact_sha256: string; artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string;
+      authority_expansion_json: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM space_shared_extension_update_receipts WHERE request_id=? AND tenant_id=? AND space_id=?", requestId, tenantId, spaceId);
-    return receipt ? Response.json({ receipt }, { headers: { "cache-control": "private, no-store" } })
+    let publicReceipt: Record<string, unknown> | null = null;
+    if (receipt) {
+      const { authority_expansion_json, ...fields } = receipt;
+      let authority_expansion = { permissions: [] as string[], capabilities: [] as string[] };
+      try {
+        const parsed = JSON.parse(authority_expansion_json) as { permissions?: unknown; capabilities?: unknown };
+        if (Array.isArray(parsed.permissions) && Array.isArray(parsed.capabilities)
+          && parsed.permissions.every(item => typeof item === "string") && parsed.capabilities.every(item => typeof item === "string"))
+          authority_expansion = { permissions: parsed.permissions, capabilities: parsed.capabilities };
+      } catch { /* legacy/corrupt receipt remains visible without inferred authority */ }
+      publicReceipt = { ...fields, authority_expansion };
+    }
+    return publicReceipt ? Response.json({ receipt: publicReceipt }, { headers: { "cache-control": "private, no-store" } })
       : Response.json({ error_code: "extension_update_receipt_not_found" }, { status: 404 });
   }
 

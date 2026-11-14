@@ -63,7 +63,8 @@ import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js"
 import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
-import { spaceSharedGadgetMigrationPlan, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
+import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
+  supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintExtensionRequirements, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -1987,13 +1988,14 @@ function decodeSpacePackageReviewToken(token: string): { payload: string; signat
 function spaceSharedExtensionUpdateClaims(input: { tenantId: string; spaceId: string; actorId: string; installationId: string;
   extensionId: string; fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
   sourceArtifactSha256: string; artifactSha256: string; publisherId: string; publisherKeyId: string;
-  expiresAt: number; requestId: string }) {
+  authorityExpansion: { permissions: string[]; capabilities: string[] }; expiresAt: number; requestId: string }) {
   return { version: 2, purpose: "space_shared_extension_update", tenantId: input.tenantId, spaceId: input.spaceId,
     actorId: input.actorId, installationId: input.installationId, extensionId: input.extensionId,
     fromVersion: input.fromVersion, toVersion: input.toVersion, sourceManifestSha256: input.sourceManifestSha256,
     candidateManifestSha256: input.candidateManifestSha256, sourceArtifactSha256: input.sourceArtifactSha256,
     artifactSha256: input.artifactSha256, publisherId: input.publisherId,
-    publisherKeyId: input.publisherKeyId, expiresAt: input.expiresAt, requestId: input.requestId };
+    publisherKeyId: input.publisherKeyId, authorityExpansion: input.authorityExpansion,
+    expiresAt: input.expiresAt, requestId: input.requestId };
 }
 
 async function installSignedSpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string,
@@ -3020,8 +3022,10 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
   const dependencyNames = (manifest: SpacePackageReviewManifest) => (manifest.dependencies ?? []).map(item => `${item.extensionId}@${item.version}`).sort();
   const permissionExpansion = addedPermissions.length > 0 || addedCapabilities.length > 0
     || candidateManifest.shared_filesystem?.some(next => !currentManifest.shared_filesystem?.some(prior => prior.path === next.path && prior.access === next.access)) === true;
+  const authorityExpansion = spaceSharedAuthorityExpansion(currentManifest, candidateManifest);
   const publisherChanged = installed.publisher_id !== candidate.publisher.id || installed.publisher_key_id !== candidate.publisher.key_id;
-  const updateContractSupported = supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest)
+  const updateContractSupported = (supportsVersionOnlySpaceSharedPackageUpdate(currentManifest, candidateManifest)
+      || supportsOwnerApprovedSpaceSharedAuthorityExpansion(currentManifest, candidateManifest))
     && !publisherChanged && currentManifest.bundle?.version === body.expected_current_version
     && candidateManifest.bundle?.version === body.candidate_version && candidateDependencyClosure.resolved;
   const candidateManifestSha256 = await digestExtensionManifest(candidateManifest);
@@ -3037,7 +3041,10 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
       return c.json({ error_code: "extension_update_review_runtime_status_invalid" }, 503);
     activeWorkCount = runtimeStatus.active_work_count!;
   }
-  const canApply = installed.status === "disabled" && updateContractSupported && activeWorkCount === 0 && Boolean(identity.userId);
+  const ownerAuthorized = identity.role === "owner" || identity.role === "product_end_user" && Boolean(identity.userId)
+    && await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) === "owner";
+  const canApply = installed.status === "disabled" && updateContractSupported && activeWorkCount === 0 && Boolean(identity.userId)
+    && (authorityExpansion === null || ownerAuthorized);
   let updateReviewToken: string | undefined;
   let updateReviewExpiresAt: number | undefined;
   if (canApply && identity.userId) {
@@ -3048,6 +3055,7 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
       sourceArtifactSha256: sourceRelease.artifact_sha256,
       artifactSha256: candidate.artifact_sha256, publisherId: candidate.publisher.id,
       publisherKeyId: candidate.publisher.key_id,
+      authorityExpansion: authorityExpansion ?? { permissions: [], capabilities: [] },
       expiresAt, requestId: crypto.randomUUID() });
     const payload = JSON.stringify(claims);
     updateReviewToken = encodeSpacePackageReviewToken(payload, await signHmac(payload, c.env.PLATFORM_SECRET));
@@ -3070,15 +3078,20 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
     shared_filesystem: { current: currentManifest.shared_filesystem ?? [], candidate: candidateManifest.shared_filesystem ?? [],
       ...spacePackageReviewDiff((currentManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access })),
         (candidateManifest.shared_filesystem ?? []).map(item => ({ id: item.path, digest: item.access }))) },
+    authority_expansion: authorityExpansion ?? { permissions: [], capabilities: [] },
+    authority_expansion_supported: authorityExpansion !== null,
     price_terms: { current: null, candidate: null, status: "not_declared_by_current_extension_contract" },
     dependency_resolution: { current: currentDependencyClosure.resolved ? { resolved: true as const } : currentDependencyClosure,
       candidate: candidateDependencyClosure.resolved ? { resolved: true as const } : candidateDependencyClosure },
-    review: { authority_expanded: permissionExpansion, publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
+    review: { authority_expanded: permissionExpansion, authority_expansion_supported: authorityExpansion !== null,
+      publisher_changed: publisherChanged, explicit_owner_approval_required: approvalRequired,
       mutates_installation: false, apply_supported: canApply, apply_block_reason: canApply ? null
-        : installed.status !== "disabled" ? "pause the installation before applying an update"
+      : installed.status !== "disabled" ? "pause the installation before applying an update"
         : activeWorkCount > 0 ? "wait for admitted runtime work to drain"
           : !identity.userId ? "a verified owner identity is required to apply an update"
-            : "only same-publisher static Canvas/channel updates or append-only additive migrations on unchanged Space-shared Gadgets are supported" ,
+              : authorityExpansion !== null && !ownerAuthorized ? "a verified Space owner must approve this authority expansion"
+            : permissionExpansion ? "only additive top-level permissions or capabilities are eligible for this authority update; other package authority changes need a separate review contract"
+              : "only same-publisher static Canvas/channel updates or append-only additive migrations on unchanged Space-shared Gadgets are supported" ,
       active_work_count: activeWorkCount, runtime_work_drained: activeWorkCount === 0 },
     ...(updateReviewToken ? { update_review_token: updateReviewToken, update_review_expires_at: updateReviewExpiresAt } : {}),
   }, 200, { "cache-control": "private, no-store" });
@@ -3092,19 +3105,28 @@ app.post(sharedExtensionUpdatePath, async c => {
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   if (!identity.userId || !/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_update_request_invalid" }, 400);
-  let body: { review_token?: unknown };
+  let body: { review_token?: unknown; confirm_authority_expansion?: unknown };
   try {
     const bytes = await readBoundedRequestBytes(c.req.raw, 16 * 1024);
     body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body;
-    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => key !== "review_token")
-      || typeof body.review_token !== "string") throw new Error("invalid_update_body");
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some(key => key !== "review_token" && key !== "confirm_authority_expansion")
+      || typeof body.review_token !== "string" || typeof body.confirm_authority_expansion !== "boolean") throw new Error("invalid_update_body");
   } catch { return c.json({ error_code: "extension_update_request_invalid" }, 400); }
   const decoded = body.review_token.length <= 16_384 ? decodeSpacePackageReviewToken(body.review_token) : null;
   if (!decoded || !await verifyHmac(decoded.payload, decoded.signature, c.env.PLATFORM_SECRET))
     return c.json({ error_code: "extension_update_review_token_invalid" }, 409);
   let claims: ReturnType<typeof spaceSharedExtensionUpdateClaims> | null = null;
   try { claims = JSON.parse(decoded.payload) as ReturnType<typeof spaceSharedExtensionUpdateClaims>; } catch { /* invalid review token */ }
-  if (!claims || JSON.stringify(claims) !== decoded.payload || claims.version !== 2 || claims.purpose !== "space_shared_extension_update"
+  const authorityExpansion = claims && claims.authorityExpansion && typeof claims.authorityExpansion === "object"
+    && Array.isArray(claims.authorityExpansion.permissions) && Array.isArray(claims.authorityExpansion.capabilities)
+    ? claims.authorityExpansion : null;
+  const validAuthorityList = (items: unknown[]) => items.length <= 32 && items.every(item => typeof item === "string"
+    && /^[a-z][a-z0-9_.:-]{0,127}$/.test(item)) && [...items].sort().every((item, index) => item === items[index])
+    && new Set(items).size === items.length;
+  const authorityExpanded = Boolean(authorityExpansion && (authorityExpansion.permissions.length || authorityExpansion.capabilities.length));
+  if (!claims || !authorityExpansion || !validAuthorityList(authorityExpansion.permissions) || !validAuthorityList(authorityExpansion.capabilities)
+    || JSON.stringify(claims) !== decoded.payload || claims.version !== 2 || claims.purpose !== "space_shared_extension_update"
     || claims.tenantId !== owned.tenantId || claims.spaceId !== spaceId || claims.actorId !== identity.userId || claims.installationId !== instanceId
     || !/^ext_[a-z0-9_-]{2,62}$/.test(claims.extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.fromVersion)
     || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(claims.toVersion) || claims.fromVersion === claims.toVersion
@@ -3113,7 +3135,11 @@ app.post(sharedExtensionUpdatePath, async c => {
     || !/^[a-f0-9]{64}$/.test(claims.artifactSha256) || typeof claims.publisherId !== "string"
     || !/^[A-Za-z0-9._:-]{1,128}$/.test(claims.publisherId) || !/^[a-f0-9]{64}$/.test(claims.publisherKeyId)
     || !Number.isSafeInteger(claims.expiresAt) || claims.expiresAt <= Date.now() || claims.expiresAt > Date.now() + 5 * 60_000
+    || body.confirm_authority_expansion !== authorityExpanded
     || !/^[0-9a-f-]{36}$/i.test(claims.requestId)) return c.json({ error_code: "extension_update_review_token_stale" }, 409);
+  if (authorityExpanded && !(identity.role === "owner" || identity.role === "product_end_user" && identity.userId
+    && await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId, owned.tenantId) === "owner"))
+    return c.json({ error_code: "extension_update_owner_confirmation_required" }, 403);
 
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
   const receiptQuery = new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId, request_id: claims.requestId });
@@ -3123,13 +3149,15 @@ app.post(sharedExtensionUpdatePath, async c => {
   if (receiptResponse.ok) {
     const saved = await readBoundedResponseJson<{ receipt?: { request_id: string; installation_id: string; extension_id: string; from_version: string;
       to_version: string; source_manifest_sha256: string; candidate_manifest_sha256: string; artifact_sha256: string;
-      source_artifact_sha256: string; publisher_key_id: string; actor_id: string; created_at: string } }>(receiptResponse, 32 * 1024);
+      source_artifact_sha256: string; publisher_key_id: string; actor_id: string; authority_expansion: { permissions: string[]; capabilities: string[] };
+      created_at: string } }>(receiptResponse, 32 * 1024);
     const receipt = saved.receipt;
     if (!receipt || receipt.request_id !== claims.requestId || receipt.installation_id !== claims.installationId
       || receipt.extension_id !== claims.extensionId || receipt.from_version !== claims.fromVersion || receipt.to_version !== claims.toVersion
       || receipt.source_manifest_sha256 !== claims.sourceManifestSha256 || receipt.candidate_manifest_sha256 !== claims.candidateManifestSha256
       || receipt.source_artifact_sha256 !== claims.sourceArtifactSha256
-      || receipt.artifact_sha256 !== claims.artifactSha256 || receipt.publisher_key_id !== claims.publisherKeyId || receipt.actor_id !== identity.userId)
+      || receipt.artifact_sha256 !== claims.artifactSha256 || receipt.publisher_key_id !== claims.publisherKeyId || receipt.actor_id !== identity.userId
+      || JSON.stringify(receipt.authority_expansion) !== JSON.stringify(claims.authorityExpansion))
       return c.json({ error_code: "extension_update_request_id_conflict" }, 409);
     return c.json({ updated: true, replayed: true, receipt }, 200, { "cache-control": "private, no-store" });
   }
@@ -3174,7 +3202,11 @@ app.post(sharedExtensionUpdatePath, async c => {
     || sourceRelease.publisher?.id !== claims.publisherId || sourceRelease.publisher.key_id !== claims.publisherKeyId)
     return c.json({ error_code: "extension_update_source_release_changed" }, 409);
   const gadgetMigrations = spaceSharedGadgetMigrationPlan(sourceManifest, candidateNow.package.manifest);
-  if (!supportsVersionOnlySpaceSharedPackageUpdate(sourceManifest, candidateNow.package.manifest))
+  const recomputedAuthorityExpansion = spaceSharedAuthorityExpansion(sourceManifest, candidateNow.package.manifest);
+  const expectedAuthorityExpansion = recomputedAuthorityExpansion ?? { permissions: [], capabilities: [] };
+  if (JSON.stringify(authorityExpansion) !== JSON.stringify(expectedAuthorityExpansion)
+    || (!supportsVersionOnlySpaceSharedPackageUpdate(sourceManifest, candidateNow.package.manifest)
+      && !supportsOwnerApprovedSpaceSharedAuthorityExpansion(sourceManifest, candidateNow.package.manifest)))
     return c.json({ error_code: "extension_update_contract_not_supported" }, 409);
 
   if (gadgetMigrations) {
@@ -3217,7 +3249,8 @@ app.post(sharedExtensionUpdatePath, async c => {
   const response = await stub.fetch(new Request("http://space-do/space-shared-extension-update", { method: "POST",
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId),
       "x-naelao-tenant-id": owned.tenantId },
-    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, actorId: identity.userId, claims, reviewToken: body.review_token }) }));
+    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, actorId: identity.userId, claims, reviewToken: body.review_token,
+      confirmAuthorityExpansion: body.confirm_authority_expansion }) }));
   return new Response(response.body, { status: response.status,
     headers: { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "private, no-store" } });
 });

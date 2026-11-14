@@ -201,12 +201,16 @@ export default function ExtensionsPage() {
     const review = updateReviews[app.installation_id];
     if (!review?.review.apply_supported || !review.update_review_token || !review.update_review_expires_at
       || review.update_review_expires_at <= Date.now() || app.status !== "disabled") {
-      setError("Refresh the update review after pausing the installation and draining admitted work. Only eligible code-only updates can be applied here."); return;
+      setError("Refresh the update review after pausing the installation and draining admitted work. Only eligible signed code, additive migration, or explicitly approved authority updates can be applied here."); return;
     }
-    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}? The extension will remain paused until an owner enables it again.`)) return;
+    const authorityDetails = review.authority_expansion.permissions.length || review.authority_expansion.capabilities.length
+      ? ` This adds Space-wide package authority: permissions [${review.authority_expansion.permissions.join(", ") || "none"}] and capabilities [${review.authority_expansion.capabilities.join(", ") || "none"}]. The extension will remain paused after the update.`
+      : " The extension will remain paused until an owner enables it again.";
+    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}?${authorityDetails}`)) return;
     setApplyingUpdate(app.installation_id); setError(null);
     try {
-      const result = await applySpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, review.update_review_token);
+      const result = await applySpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, review.update_review_token,
+        review.review.authority_expanded);
       setUpdateReceipts(current => [result.receipt, ...current.filter(receipt => receipt.request_id !== result.receipt.request_id)].slice(0, 50));
       setUpdateReviews(current => { const next = { ...current }; delete next[app.installation_id]; return next; });
       await refresh();
@@ -266,7 +270,7 @@ export default function ExtensionsPage() {
         const review = updateReviews[app.installation_id];
         return <section style={{ margin: "12px 0", padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
           <strong>Signed release history</strong>
-          <p style={{ color: "var(--text3)", fontSize: 12 }}>Choose an exact signed release to review. The host rechecks the publisher, source and candidate manifest digests, and package. Updates require unchanged authority and configuration; an eligible Gadget update may append only additive SQL migrations. The installation must be paused and drained, and stays paused after apply.</p>
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>Choose an exact signed release to review. The host rechecks the publisher, source and candidate manifest digests, and package. Updates keep package configuration unchanged; additive top-level authority requires separate owner confirmation, and an eligible Gadget update may append only additive SQL migrations. The installation must be paused and drained, and stays paused after apply.</p>
           {!releases ? <Button variant="secondary" disabled={loadingReleaseHistory !== null} onClick={() => void loadReleaseHistory(app)}>
             {loadingReleaseHistory === app.installation_id ? "Loading releases…" : "Load signed releases"}
           </Button> : <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -302,7 +306,9 @@ export default function ExtensionsPage() {
             <p>Price terms: {review.price_terms.status}. No package price is declared.</p>
             {review.review.explicit_owner_approval_required && <p>Owner approval is required for this update review.</p>}
             {review.review.apply_supported
-              ? <><p>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration. Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
+              ? <><p>{review.review.authority_expanded
+                ? <>This update adds only the listed top-level permissions and capabilities. It does not change publisher, dependencies, settings, provider connections, shared-drive grants or package configuration. Applying it records your approval against the exact source and candidate manifests and artifact. The installation stays paused; review the authority again before enabling it.</>
+                : <>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration.</>} Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
                   onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed release…" : rollingBack
                     ? "Roll back to selected release and keep paused" : review.gadget_migrations.length
@@ -313,7 +319,7 @@ export default function ExtensionsPage() {
         </section>;
       })()}
       {updateReceipts.filter(receipt => receipt.installation_id === app.installation_id).slice(0, 5).map(receipt => <p key={receipt.request_id}
-        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
+        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · authority added: {(receipt.authority_expansion?.permissions ?? []).concat(receipt.authority_expansion?.capabilities ?? []).join(", ") || "none"} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null || app.status === "disabled" && app.publisher_trusted === false} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : app.publisher_trusted === false ? "Resume blocked" : "Resume extension"}</Button>

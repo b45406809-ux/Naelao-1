@@ -794,12 +794,13 @@ describe("runtime extension installation", () => {
       installationId, extensionId: candidateManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0",
       sourceManifestSha256: await digestExtensionManifest(currentManifest), candidateManifestSha256: await digestExtensionManifest(candidateManifest),
       sourceArtifactSha256: "a".repeat(64), artifactSha256: "c".repeat(64),
-      publisherId: "pub_example", publisherKeyId, expiresAt: Date.now() + 60_000, requestId: "0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed" };
+      publisherId: "pub_example", publisherKeyId, authorityExpansion: { permissions: [], capabilities: [] },
+      expiresAt: Date.now() + 60_000, requestId: "0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed" };
     const claimsPayload = JSON.stringify(claims);
     const reviewToken = `${btoa(claimsPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${await signHmac(claimsPayload, secret)}`;
     const apply = () => space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken }) }));
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken, confirmAuthorityExpansion: false }) }));
     const blockedByWork = await apply();
     expect(blockedByWork.status).toBe(409);
     expect(await blockedByWork.json()).toMatchObject({ error_code: "extension_runtime_work_not_drained" });
@@ -838,11 +839,78 @@ describe("runtime extension installation", () => {
       + "." + await signHmac(rollbackPayload, secret);
     const rollback = await space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims: rollbackClaims, reviewToken: rollbackToken }) }));
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims: rollbackClaims, reviewToken: rollbackToken, confirmAuthorityExpansion: false }) }));
     expect(rollback.status, await rollback.clone().text()).toBe(200);
     expect(await rollback.json()).toMatchObject({ updated: true, replayed: false, receipt: { from_version: "1.2.0", to_version: "1.0.0" } });
     expect(storage.sql.exec<{ release_version: string; status: string }>("SELECT release_version,status FROM extension_instances WHERE instance_id=?", installationId).toArray())
       .toEqual([{ release_version: "1.0.0", status: "disabled" }]);
+  });
+
+  it("requires owner confirmation and atomically records one exact authority expansion under concurrent reviews", async () => {
+    const storage = createDOStorage(), secret = "space-shared-authority-expansion-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    const token = await mintInternalToken(secret, "tenant"), publisherKeyId = "f".repeat(64);
+    const manifestFor = (version: string, expanded = false) => validateExtensionManifest({ id: "ext_static_canvas", type: "extension",
+      declaredPermissions: expanded ? ["assistant.phone.simulate"] : [],
+      capabilityRequirements: expanded ? ["extension.project_canvas", "assistant.phone.simulate"] : ["extension.project_canvas"],
+      gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_static_canvas", version,
+        primitives: [
+          { schemaVersion: "1.0", kind: "canvas", id: "dashboard", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+            component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
+          { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+            provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"] },
+        ] } }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
+    const currentManifest = manifestFor("1.0.0"), candidateManifest = manifestFor("1.2.0", true);
+    const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: currentManifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED",
+        gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "a".repeat(64), publisherId: "pub_example", publisherKeyId,
+        publisherSignature: "signed-current-release", publisherPayloadSha256: "b".repeat(64) }) }));
+    expect(install.status, await install.clone().text()).toBe(201);
+    const { installationId } = await install.json() as { installationId: string };
+    const imported = await space.fetch(new Request("http://space/extension-package-release/import", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", importedBy: "owner", extensionId: candidateManifest.id,
+        version: "1.2.0", manifestJson: JSON.stringify(candidateManifest), artifactSha256: "c".repeat(64), publisherId: "pub_example",
+        publisherKeyId, publisherSignature: "signed-candidate-release", publisherPayloadSha256: "e".repeat(64) }) }));
+    expect(imported.status, await imported.clone().text()).toBe(201);
+    const paused = await space.fetch(new Request("http://space/space-shared-extension-lifecycle", { method: "PATCH",
+      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", instanceId: installationId, action: "disable" }) }));
+    expect(paused.status).toBe(200);
+
+    const makeClaims = async (requestId: string) => ({ version: 2, purpose: "space_shared_extension_update", tenantId: "tenant", spaceId: "space",
+      actorId: "owner", installationId, extensionId: currentManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0",
+      sourceManifestSha256: await digestExtensionManifest(currentManifest), candidateManifestSha256: await digestExtensionManifest(candidateManifest),
+      sourceArtifactSha256: "a".repeat(64), artifactSha256: "c".repeat(64), publisherId: "pub_example", publisherKeyId,
+      authorityExpansion: { permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"] },
+      expiresAt: Date.now() + 60_000, requestId });
+    const apply = async (requestId: string, confirmAuthorityExpansion: boolean) => {
+      const claims = await makeClaims(requestId), payload = JSON.stringify(claims);
+      const reviewToken = `${btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${await signHmac(payload, secret)}`;
+      return space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+        body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken, confirmAuthorityExpansion }) }));
+    };
+    const declined = await apply("0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed", false);
+    expect(declined.status).toBe(409);
+    expect(storage.sql.exec<{ release_version: string }>("SELECT release_version FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ release_version: "1.0.0" }]);
+
+    const firstId = "43f83d14-14df-4c9a-a0a5-07ccf87a5d82", secondId = "ebc58e0e-6b3c-49a5-b451-09ac1e4a0b2e";
+    const results = await Promise.all([apply(firstId, true), apply(secondId, true)]);
+    const statuses = results.map(result => result.status).sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(storage.sql.exec<{ release_version: string; status: string }>("SELECT release_version,status FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ release_version: "1.2.0", status: "disabled" }]);
+    expect(storage.sql.exec<{ request_id: string; authority_expansion_json: string }>(
+      "SELECT request_id,authority_expansion_json FROM space_shared_extension_update_receipts WHERE installation_id=?", installationId).toArray())
+      .toEqual([{ request_id: firstId, authority_expansion_json: JSON.stringify({ permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"] }) }]);
+    const history = await space.fetch(new Request("http://space/space-shared-extension-updates?tenant_id=tenant&space_id=space", {
+      headers: { "x-naelao-internal-token": token },
+    }));
+    expect(await history.json()).toMatchObject({ receipts: [{ request_id: firstId, authority_expansion: {
+      permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"],
+    } }] });
   });
 
   it("imports publisher-attested release metadata idempotently and rejects immutable conflicts", async () => {

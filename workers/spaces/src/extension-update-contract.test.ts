@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateExtensionManifest } from "@naelao/agent-sdk";
-import { spaceSharedGadgetMigrationPlan, supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
+import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
+  supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 
 function packageManifest(version: string, options: { channel?: boolean; gadget?: boolean; dynamicCanvas?: boolean; permission?: string } = {}) {
   return validateExtensionManifest({
@@ -63,5 +64,30 @@ describe("Space-shared code-only update contract", () => {
       prior[0]!, { ...added, up: "ALTER TABLE records DROP COLUMN status;" },
     ]))).toBe(false);
     expect(supportsVersionOnlySpaceSharedPackageUpdate(current, gadgetPackage("1.1.0", prior))).toBe(false);
+  });
+
+  it("allows only additive top-level authority changes when all other package fields stay fixed", () => {
+    const current = packageManifest("1.0.0", { channel: true });
+    const candidate = validateExtensionManifest({ ...current, channels: undefined, declaredPermissions: ["assistant.phone.simulate"],
+      capabilityRequirements: [...current.capabilityRequirements, "assistant.phone.simulate"],
+      bundle: { ...current.bundle!, version: "1.1.0", primitives: current.bundle!.primitives.map(primitive => ({ ...primitive, version: "1.1.0" })) },
+    }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
+    expect(supportsVersionOnlySpaceSharedPackageUpdate(current, candidate)).toBe(false);
+    expect(supportsOwnerApprovedSpaceSharedAuthorityExpansion(current, candidate)).toBe(true);
+    expect(spaceSharedAuthorityExpansion(current, candidate)).toEqual({
+      permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"],
+    });
+
+    const removed = validateExtensionManifest({ ...candidate, channels: undefined, declaredPermissions: [],
+      capabilityRequirements: ["extension.project_canvas"],
+      bundle: { ...candidate.bundle!, version: "1.2.0", primitives: candidate.bundle!.primitives.map(primitive => ({ ...primitive, version: "1.2.0" })) },
+    }, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    expect(spaceSharedAuthorityExpansion(candidate, removed)).toBeNull();
+
+    const changedHandler = validateExtensionManifest({ ...candidate, channels: undefined, bundle: { ...candidate.bundle!, version: "1.2.0",
+      primitives: candidate.bundle!.primitives.map(primitive => primitive.kind === "channel"
+        ? { ...primitive, version: "1.2.0", handlerScript: "./other.ts" } : { ...primitive, version: "1.2.0" }) },
+    }, { gatekeeperCapabilities: ["extension.project_canvas", "assistant.phone.simulate"] });
+    expect(spaceSharedAuthorityExpansion(current, changedHandler)).toBeNull();
   });
 });

@@ -126,6 +126,62 @@ export function supportsVersionOnlySpaceSharedPackageUpdate(current: ExtensionMa
       && isSpaceSharedPackageShape(current) && isSpaceSharedPackageShape(candidate));
 }
 
+export interface SpaceSharedAuthorityExpansion {
+  permissions: string[];
+  capabilities: string[];
+}
+
+/** Return the exact additive top-level authority delta when every other signed package field is
+ * unchanged apart from release versions and, optionally, validated additive Gadget migrations.
+ * Permission removals, provider connections, dependencies, shared-drive access, and primitive-level
+ * authority changes require a different review contract and remain unsupported here. */
+export function spaceSharedAuthorityExpansion(
+  current: ExtensionManifest,
+  candidate: ExtensionManifest,
+): SpaceSharedAuthorityExpansion | null {
+  if (!isSpaceSharedPackageShape(current) || !isSpaceSharedPackageShape(candidate)
+    || current.id !== candidate.id || !current.bundle || !candidate.bundle
+    || current.bundle.version === candidate.bundle.version) return null;
+
+  const added = (before: string[], after: string[]) => [...new Set(after)].filter(value => !before.includes(value)).sort();
+  const removed = (before: string[], after: string[]) => [...new Set(before)].filter(value => !after.includes(value)).sort();
+  const permissions = added(current.declaredPermissions, candidate.declaredPermissions);
+  const capabilities = added(current.capabilityRequirements, candidate.capabilityRequirements);
+  if ((!permissions.length && !capabilities.length)
+    || removed(current.declaredPermissions, candidate.declaredPermissions).length
+    || removed(current.capabilityRequirements, candidate.capabilityRequirements).length) return null;
+
+  const normalize = (manifest: ExtensionManifest, ignoreMigrations: boolean): string => {
+    const copy = JSON.parse(JSON.stringify(manifest)) as ExtensionManifest;
+    if (!copy.bundle) return "";
+    copy.bundle.version = "__release_version__";
+    for (const primitive of copy.bundle.primitives) {
+      primitive.version = "__release_version__";
+      if (ignoreMigrations && primitive.kind === "gadget") primitive.migrations = [];
+    }
+    for (const channel of copy.channels ?? []) channel.version = "__release_version__";
+    copy.declaredPermissions = ["__owner_reviewed_authority__"];
+    copy.capabilityRequirements = ["__owner_reviewed_authority__"];
+    if (ignoreMigrations) for (const gadget of copy.gadgets ?? []) gadget.migrations = [];
+    return JSON.stringify(copy);
+  };
+
+  const sameExceptAuthorityAndRelease = normalize(current, false) === normalize(candidate, false);
+  const migrationPlan = spaceSharedGadgetMigrationPlan(current, candidate);
+  const sameExceptAuthorityReleaseAndAdditiveMigrations = migrationPlan !== null
+    && normalize(current, true) === normalize(candidate, true);
+  if (!sameExceptAuthorityAndRelease && !sameExceptAuthorityReleaseAndAdditiveMigrations) return null;
+  return { permissions, capabilities };
+}
+
+/** Accept only the separately reviewed additive authority shape for Space-shared updates. */
+export function supportsOwnerApprovedSpaceSharedAuthorityExpansion(
+  current: ExtensionManifest,
+  candidate: ExtensionManifest,
+): boolean {
+  return spaceSharedAuthorityExpansion(current, candidate) !== null;
+}
+
 function isSpaceSharedPackageShape(manifest: ExtensionManifest): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.some(part => part.kind === "canvas")
