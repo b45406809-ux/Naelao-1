@@ -140,6 +140,7 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --command="SELECT billing_json FROM agentport_services LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT monthly_budget_micros FROM agentport_apps LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT triggered_at,observed_at,source,status,unavailable_reason,metrics_json,alert_count,alerts_json FROM queue_health_checks LIMIT 0" --remote
+          npx wrangler d1 execute "$DB_ID" --command="SELECT id,sender_principal_id FROM agentport_channel_message_refs LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT email_alerts_enabled,email_recipient_kind FROM managed_service_cost_budgets LIMIT 0" --remote
           npx wrangler d1 execute "$DB_ID" --command="SELECT id,alert_id,tenant_id,space_id,project_id,user_id,recipient_kind,status,attempts,next_at,lease_token,lease_until,last_error,created_at,updated_at,accepted_at FROM managed_service_cost_budget_email_deliveries LIMIT 0" --remote
 

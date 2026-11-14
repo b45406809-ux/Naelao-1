@@ -92,6 +92,9 @@ def validate_data(
         )
         if not all(probe in workflow for probe in required_schema_probes):
             errors.append(f"{environment} deployment workflow is missing managed-service cost email schema probes")
+        agentport_sender_probe = "SELECT id,sender_principal_id FROM agentport_channel_message_refs LIMIT 0"
+        if agentport_sender_probe not in workflow:
+            errors.append(f"{environment} deployment workflow is missing the AgentPort sender-principal schema probe")
         phases = env_manifest.get("phases")
         if not isinstance(phases, list) or not phases:
             errors.append(f"{environment} manifest phases must be a non-empty ordered list")

@@ -125,6 +125,21 @@ class DeploymentManifestTests(unittest.TestCase):
         errors = validate_data(manifest, schema, workflows, workers)
         self.assertIn("production deployment workflow is missing managed-service cost email schema probes", errors)
 
+    def test_requires_agentport_sender_principal_schema_probe_in_both_deployment_workflows(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows["production"] = workflows["production"].replace(
+            "SELECT id,sender_principal_id FROM agentport_channel_message_refs LIMIT 0",
+            "SELECT id FROM agentport_channel_message_refs LIMIT 0",
+        )
+        errors = validate_data(manifest, schema, workflows, workers)
+        self.assertIn("production deployment workflow is missing the AgentPort sender-principal schema probe", errors)
+
     def test_requires_the_deployment_phase_to_invoke_the_durable_migration_runner(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))

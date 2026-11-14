@@ -40,6 +40,12 @@ META_TABLE = "naelao_release_migration_meta"
 SPECIAL_SKIP = {
     "0164_agentport_channel_message_refs.sql": "agentport_messages",
 }
+SPECIAL_SKIP_SCHEMA_DEPENDENCIES = {
+    "0164_agentport_channel_message_refs.sql": {
+        "reference_table": "agentport_channel_message_refs",
+        "next_migration": "0229_agentport_sender_principal_refs.sql",
+    },
+}
 
 
 class ReleaseError(RuntimeError):
@@ -316,6 +322,55 @@ def _record_skipped(d1: D1, entry: dict, execution_id: str, reason: str) -> None
     )
 
 
+def _prepare_skipped_migration_schema(d1: D1, migration_name: str, execution_id: str) -> None:
+    """Keep a reviewed legacy data-copy skip compatible with later schema migrations.
+
+    Migration 0164 copies/redacts legacy `agentport_messages` while also creating the
+    metadata-only reference table used by 0229. If the old content table never existed,
+    preserve that data-migration skip but install only the source migration's required
+    schema/index statements so later additive migrations can proceed.
+    """
+    dependency = SPECIAL_SKIP_SCHEMA_DEPENDENCIES.get(migration_name)
+    if not dependency:
+        raise ReleaseError(f"no schema prerequisite is defined for skipped migration {migration_name}")
+    reference_table = dependency["reference_table"]
+    existing = d1.query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=" + sql_quote(reference_table)
+    )
+    if existing:
+        return
+
+    sql = (MIGRATION_DIR / migration_name).read_text(encoding="utf-8")
+    patterns = (
+        r"CREATE TABLE IF NOT EXISTS agentport_channel_message_refs\s*\(.*?\);",
+        r"CREATE INDEX IF NOT EXISTS idx_agentport_message_refs_thread\s+ON\s+agentport_channel_message_refs\([^;]+;",
+        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_agentport_action_receipts_authorization\s+ON\s+agentport_action_receipts\([^;]+;",
+    )
+    statements = []
+    for pattern in patterns:
+        match = re.search(pattern, sql, re.DOTALL)
+        if not match:
+            raise ReleaseError(f"skipped migration {migration_name} is missing a required schema prerequisite")
+        statements.append(match.group(0))
+    if not _table_exists(d1, "agentport_action_receipts"):
+        raise ReleaseError("skipped migration 0164 requires agentport_action_receipts before installing its schema prerequisite")
+    receipt = json.dumps({"schema": "empty_reference_table_v1", "executionId": execution_id}, sort_keys=True)
+    statements.append(
+        f"INSERT INTO {META_TABLE}(key,value) VALUES("
+        f"{sql_quote(f'legacy_skip_schema:{migration_name}')},{sql_quote(receipt)}) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+    )
+    try:
+        d1.execute_file("\n".join(statements) + "\n")
+    except Exception as exc:
+        raise ReleaseError(f"could not prepare dependent schema for skipped migration {migration_name}") from exc
+
+
+def _table_exists(d1: D1, name: str) -> bool:
+    rows = d1.query("SELECT name FROM sqlite_master WHERE type='table' AND name=" + sql_quote(name))
+    return bool(rows)
+
+
 def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, Any]]) -> None:
     required = manifest["requiredSchemaVersion"] + ".sql"
     record = ledger.get(required)
@@ -405,6 +460,13 @@ def _required_schema_check(d1: D1, manifest: dict, ledger: dict[str, dict[str, A
     }
     if not cleanup_operation_expected.issubset(cleanup_operation_columns):
         raise ReleaseError("required schema check failed for extension_provider_cleanup_operations")
+    message_ref_columns = {
+        row.get("name")
+        for row in d1.query("PRAGMA table_info('agentport_channel_message_refs')")
+        if isinstance(row.get("name"), str)
+    }
+    if not {"id", "sender_principal_id"}.issubset(message_ref_columns):
+        raise ReleaseError("required schema check failed for agentport_channel_message_refs")
     managed_cost_budget_columns = {
         row.get("name")
         for row in d1.query("PRAGMA table_info('managed_service_cost_budgets')")
@@ -456,6 +518,18 @@ def run_migrations(
     try:
         entries = manifest["migrations"]
         ledger = validate_ledger(_table_rows(d1, MIGRATION_TABLE), manifest)
+        for migration_name, record in ledger.items():
+            dependency = SPECIAL_SKIP_SCHEMA_DEPENDENCIES.get(migration_name)
+            if not dependency or record.get("status") != "skipped":
+                continue
+            if _table_exists(d1, dependency["reference_table"]):
+                continue
+            dependent_record = ledger.get(dependency["next_migration"])
+            if dependent_record and dependent_record.get("status") == "applied":
+                raise ReleaseError(
+                    f"skipped migration {migration_name} lost schema required by applied {dependency['next_migration']}"
+                )
+            _prepare_skipped_migration_schema(d1, migration_name, execution_id)
         for entry in entries[len(ledger) :]:
             name = entry["filename"]
             _touch_lock(d1, execution_id, name)
@@ -465,6 +539,7 @@ def run_migrations(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name=" + sql_quote(table)
                 )
                 if not present:
+                    _prepare_skipped_migration_schema(d1, name, execution_id)
                     reason = f"legacy table {table} was absent"
                     _record_skipped(d1, entry, execution_id, reason)
                     ledger[name] = {**entry, "status": "skipped", "reason": reason}

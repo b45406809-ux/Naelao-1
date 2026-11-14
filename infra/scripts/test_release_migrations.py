@@ -48,6 +48,7 @@ class MemoryD1:
             "id", "alert_id", "tenant_id", "space_id", "project_id", "user_id", "recipient_kind", "status",
             "attempts", "next_at", "lease_token", "lease_until", "last_error", "created_at", "updated_at", "accepted_at",
         )
+        self.agentport_message_ref_columns = ("id", "sender_principal_id")
 
     def query(self, sql):
         if "name IN (" in sql:
@@ -85,6 +86,8 @@ class MemoryD1:
             return [{"name": name} for name in self.managed_cost_budget_columns]
         if sql.startswith("PRAGMA table_info('managed_service_cost_budget_email_deliveries')"):
             return [{"name": name} for name in self.managed_cost_email_delivery_columns]
+        if sql.startswith("PRAGMA table_info('agentport_channel_message_refs')"):
+            return [{"name": name} for name in self.agentport_message_ref_columns]
         return []
 
     def execute_file(self, sql):
@@ -122,6 +125,30 @@ class MemoryD1:
                 self.lock["last_migration"] = last_migration.group(1)
         if self.lock and "DELETE FROM naelao_release_migration_lock" in sql:
             self.lock = None
+
+
+class SQLiteD1:
+    """In-memory SQLite rehearsal backend for the release runner's fresh-schema path."""
+
+    def __init__(self):
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA foreign_keys=ON")
+
+    def query(self, sql):
+        cursor = self.connection.execute(sql)
+        return [dict(row) for row in cursor.fetchall()] if cursor.description else []
+
+    def execute_file(self, sql):
+        try:
+            self.connection.executescript("BEGIN IMMEDIATE;\n" + sql + "\nCOMMIT;")
+        except Exception:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
+
+    def close(self):
+        self.connection.close()
 
 
 class ReleaseMigrationTests(unittest.TestCase):
@@ -174,6 +201,123 @@ class ReleaseMigrationTests(unittest.TestCase):
                 database_id="db-1",
                 manifest=self.manifest,
             )
+
+    def test_fresh_sqlite_rehearsal_applies_the_full_manifest_and_required_schema(self):
+        d1 = SQLiteD1()
+        try:
+            version = release.run_migrations(
+                d1,
+                environment="staging",
+                database_id="fresh-sqlite-rehearsal",
+                execution_id="fresh-sqlite-rehearsal-run",
+                manifest=self.manifest,
+                baseline=self.baseline([], database_id="fresh-sqlite-rehearsal"),
+            )
+            self.assertEqual(version, self.manifest["requiredSchemaVersion"])
+            ledger = d1.query("SELECT status,COUNT(*) AS count FROM naelao_release_migrations GROUP BY status")
+            self.assertEqual(ledger, [{"status": "applied", "count": len(self.entries)}])
+            self.assertEqual(d1.query("PRAGMA foreign_key_check"), [])
+            self.assertEqual(d1.query("SELECT COUNT(*) AS count FROM managed_service_cost_budget_email_deliveries"),
+                [{"count": 0}])
+        finally:
+            d1.close()
+
+    def test_legacy_agentport_data_skip_keeps_later_reference_schema_migrations_runnable(self):
+        d1 = SQLiteD1()
+        try:
+            skip_index = next(
+                index for index, entry in enumerate(self.entries)
+                if entry["filename"] == "0164_agentport_channel_message_refs.sql"
+            )
+            prior_entries = self.entries[:skip_index]
+            prior_manifest = {
+                **self.manifest,
+                "migrations": prior_entries,
+                "requiredSchemaVersion": Path(prior_entries[-1]["filename"]).stem,
+            }
+            release.run_migrations(
+                d1,
+                environment="staging",
+                database_id="legacy-sqlite-rehearsal",
+                execution_id="legacy-prefix-rehearsal",
+                manifest=prior_manifest,
+                baseline=self.baseline([], database_id="legacy-sqlite-rehearsal"),
+                schema_probe=False,
+            )
+            d1.execute_file("DROP TABLE agentport_messages;\n")
+
+            version = release.run_migrations(
+                d1,
+                environment="staging",
+                database_id="legacy-sqlite-rehearsal",
+                execution_id="legacy-continuation-rehearsal",
+                manifest=self.manifest,
+                baseline=None,
+            )
+            self.assertEqual(version, self.manifest["requiredSchemaVersion"])
+            skipped = d1.query(
+                "SELECT status,reason FROM naelao_release_migrations WHERE filename='0164_agentport_channel_message_refs.sql'"
+            )
+            self.assertEqual(skipped, [{"status": "skipped", "reason": "legacy table agentport_messages was absent"}])
+            ref_columns = {row["name"] for row in d1.query("PRAGMA table_info('agentport_channel_message_refs')")}
+            self.assertIn("sender_principal_id", ref_columns)
+            repair = d1.query("SELECT value FROM naelao_release_migration_meta WHERE key='legacy_skip_schema:0164_agentport_channel_message_refs.sql'")
+            self.assertEqual(
+                json.loads(repair[0]["value"]),
+                {"schema": "empty_reference_table_v1", "executionId": "legacy-continuation-rehearsal"},
+            )
+        finally:
+            d1.close()
+
+    def test_prior_agentport_skip_repairs_missing_prerequisite_before_later_migrations(self):
+        d1 = SQLiteD1()
+        try:
+            skip_index = next(
+                index for index, entry in enumerate(self.entries)
+                if entry["filename"] == "0164_agentport_channel_message_refs.sql"
+            )
+            prior_entries = self.entries[:skip_index]
+            for entry in prior_entries:
+                d1.execute_file((release.MIGRATION_DIR / entry["filename"]).read_text(encoding="utf-8"))
+            d1.execute_file("DROP TABLE agentport_messages;\n")
+            legacy_skip = {
+                **self.entries[skip_index],
+                "status": "skipped",
+                "reason": "legacy table agentport_messages was absent",
+            }
+            baseline_entries = [
+                {**entry, "status": "applied"} for entry in prior_entries
+            ] + [legacy_skip]
+            schema_rows = d1.query(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            )
+            baseline = self.baseline(
+                baseline_entries,
+                database_id="prior-legacy-sqlite-rehearsal",
+                fingerprint=release.schema_fingerprint(schema_rows),
+            )
+
+            version = release.run_migrations(
+                d1,
+                environment="staging",
+                database_id="prior-legacy-sqlite-rehearsal",
+                execution_id="prior-legacy-continuation",
+                manifest=self.manifest,
+                baseline=baseline,
+            )
+            self.assertEqual(version, self.manifest["requiredSchemaVersion"])
+            self.assertIn(
+                "sender_principal_id",
+                {row["name"] for row in d1.query("PRAGMA table_info('agentport_channel_message_refs')")},
+            )
+            receipt = d1.query(
+                "SELECT value FROM naelao_release_migration_meta WHERE key='legacy_skip_schema:0164_agentport_channel_message_refs.sql'"
+            )
+            self.assertEqual(json.loads(receipt[0]["value"]), {
+                "schema": "empty_reference_table_v1", "executionId": "prior-legacy-continuation",
+            })
+        finally:
+            d1.close()
 
     def test_only_the_reviewed_legacy_agentport_skip_is_allowed(self):
         through_0164 = next(i for i, item in enumerate(self.entries) if item["filename"].startswith("0164_"))
@@ -309,6 +453,14 @@ class ReleaseMigrationTests(unittest.TestCase):
         incomplete = MemoryD1()
         incomplete.cleanup_operation_columns = ("operation_id", "status", "credential_name")
         with self.assertRaisesRegex(release.ReleaseError, "extension_provider_cleanup_operations"):
+            release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
+
+    def test_required_schema_probe_checks_agentport_sender_principal_reference_column(self):
+        required = self.entries[-1]["filename"]
+        ledger = {required: {**self.entries[-1], "status": "applied"}}
+        incomplete = MemoryD1()
+        incomplete.agentport_message_ref_columns = ("id",)
+        with self.assertRaisesRegex(release.ReleaseError, "agentport_channel_message_refs"):
             release._required_schema_check(incomplete, {**self.manifest, "requiredSchemaVersion": Path(required).stem}, ledger)
 
     def test_required_schema_probe_checks_opt_in_managed_cost_email_storage(self):
