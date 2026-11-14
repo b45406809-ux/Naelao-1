@@ -3,28 +3,25 @@
 
 ## Active checkpoint — 2026-11-14
 
-Managed-services setup compensation is IMPLEMENTED_LOCAL for Telegram and WhatsApp in pushed code
-`c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff` on `origin/Mcbt5s-Backup-2`. Migration 0242 distinguishes
-setup receipts and serializes pending operations by provider account. Exact randomized credential
-names are persisted before vault writes/provider effects; active state is committed only after
-provider acceptance. Failures compensate from that saved generation, and unresolved cleanup remains
-owner-visible with credentials retained. This closes the setup-recovery slice of P05/P10/P23; those
-requirements remain PARTIAL for broader lifecycle effects, other providers, token revocation, policy,
-retention and deployed/live acceptance.
+Setup recovery is pushed in `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`; U11 alert caller fixes are
+pushed in `88457f406f6d8e57c3c87880d7f43746c9d3a9e4`, both on `origin/Mcbt5s-Backup-2`. Telegram and
+WhatsApp setup now persist exact-generation intent before credentials/provider mutation, activate
+local access only after provider acceptance, and retain retryable owner-visible compensation when
+cleanup is unconfirmed. U11 cost-alert sweeps now rotate through bounded pages and push alerts
+recheck exact project-owner access before delivery. These are local Worker/SQLite paths only.
 
-Local evidence: Agents setup/cleanup/auth **23/23**, Spaces uninstall **3/3**, Agents/Spaces/Shell
-typechecks, release migration tests **15/15** with SQLite replay through 0242, release/deployment
-manifest validators and `git diff --check`. Provider calls were mocked. No D1 migration, deployment
-or live provider acceptance ran. `infra/scripts/__pycache__/` is preserved and all rollouts remain
-disabled.
+Verification: setup Agents tests **23/23**, Spaces uninstall **3/3**, Agents/Spaces/Shell typechecks,
+release migration tests **15/15** through migration 0242; U11 Agents suites **19/19**, Billing
+reservation/settlement **22/22**, Agents typecheck, manifest validators and `git diff --check`. No D1
+migration, deployment, provider call acceptance or invoice acceptance ran. `infra/scripts/__pycache__/`
+remains preserved; all rollouts stay disabled.
 
-The managed-services record is the next source of truth: audit U11 against its already implemented
-settlement, cost-threshold, alert-delivery and owner-control matrix, then U12 and remaining S4–S9
-gaps. Continue this platform plan afterward in dependency order from P01/P02 release/environment
-safety. P01/P02 actual resource identities, ownership, 158 read-only receipts and operator-attested
-D1 baselines remain external evidence gates; P03/P20 grace/restriction and refund/access/author
-accounting remain unresolved product contracts. Do not treat those as reasons to stop independent
-code work or to repeat completed audits without new evidence.
+P05/P10/P23 remain PARTIAL for broader provider journeys, update/uninstall effects, token revocation,
+retention and live acceptance. P01/P02 still need real environment resource IDs/ownership, read-only
+receipts and operator-attested D1 baselines. P03/P20 grace/restriction and refund/access/author
+accounting remain unresolved product contracts. Resume after managed U12 and S4–S9/U01–U12 from
+platform P01/P02 release/environment safety; then continue commercial recovery, guided templates,
+voice and Shared-Space requirements in their dependency order.
 
 Pushed code `d208ec02cdc047b455759d6887ed69e3abc680aa` adds atomic metadata-only coordination audit
 events for publish/amend/revoke, owner/admin-only paged reads and a Settings history view. Expiry

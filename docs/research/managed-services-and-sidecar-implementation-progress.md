@@ -3,28 +3,34 @@
 
 ## Current checkpoint — 2026-11-14
 
-Code `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff` is pushed to `origin/Mcbt5s-Backup-2` on
-`autonomous-managed-services-20261111`. Migration 0242 adds a setup operation kind and partial unique
-indexes for one unresolved setup per installed connection and provider account. Telegram and
-WhatsApp setup now persist exact credential-generation intent before vault writes or provider-side
-mutation, keep local routing inactive until provider acceptance, and commit active connection state
-with the completed receipt. Failed or ambiguous setup revokes local state and compensates from the
-saved generation; pending cleanup retains credentials and is visible/retryable in the owner panel.
+Setup recovery is pushed as `c1c5e0d48fb86e1ee27aabcf602aeaffa85fc4ff`. Migration 0242 adds a setup
+operation kind and partial unique indexes for unresolved setup by installed connection and provider
+account. Telegram/WhatsApp persist exact credential-generation intent before vault writes/provider
+mutation, leave local routes inactive until acceptance, and atomically commit active state plus the
+completed setup receipt. Rejection, ambiguous outcome or DB commit failure removes local access and
+compensates from that generation; unconfirmed cleanup keeps credentials and remains owner-retryable.
 
-Local verification: Agents setup/cleanup/auth tests **23/23**; Agents, Spaces and Shell typechecks;
-Spaces uninstall tests **3/3**; release migration tests **15/15** including local SQLite replay
-through 0242 and provider-account uniqueness; schema/deployment manifest validators; `git diff
---check`. Provider calls are mocked. No D1 migration, deployment, live provider or live acceptance
-ran. Preserve the pre-existing untracked Python cache and keep rollouts disabled.
+U11 code `88457f406f6d8e57c3c87880d7f43746c9d3a9e4` is also pushed. Cost-alert sweeps now rotate by
+last evaluation state rather than rescanning the first bounded page forever. Push delivery includes
+`project_id` in its saved receipt read and rechecks the same project-owner authority used by the
+owner-configured budget path; revoked project ownership suppresses delivery. The previous org/Space
+owner/admin checks remain.
+
+Local verification: setup Agents tests **23/23**, Agents/Spaces/Shell typechecks, Spaces uninstall
+**3/3**, release migrations **15/15** with local SQLite replay through 0242 and provider-account
+uniqueness, manifest validators; U11 Agents cost/observation/reconciliation/capability tests **19/19**,
+Billing reservation/settlement tests **22/22**, Agents typecheck, and `git diff --check`. Provider
+calls were mocked. No D1 migration, deployment, live provider or invoice acceptance ran. Keep the
+existing untracked Python cache and all rollout flags disabled.
 
 Setup compensation is IMPLEMENTED_LOCAL for Telegram/WhatsApp; P05/P10/P23 remain PARTIAL for other
-provider journeys, broader update/uninstall effects, token revocation, retention/replay policy and
-deployed/live acceptance. S2 remains local for supported lanes; S3–S9/U01–U12 retain the row-level
-gaps below. Exact next action: reconcile U11 settlement/cost/alert sources, persistence and reachable
-owner controls against current code; implement any specific independent gap, mark unsupported
-invoice and Cloudflare billed-idle/CPU-size feeds precisely, then audit U12 and finish the remaining
-S4–S9/U01–U12 caller gaps. Continue platform P01/P02 release/environment safety after the managed
-audit. Preserve `infra/scripts/__pycache__/`.
+provider journeys, broader update/uninstall effects, token revocation, policy/retention and deployed
+acceptance. U11 is IMPLEMENTED_LOCAL for supported settlement, cost, threshold and push-alert paths.
+Invoices and Cloudflare billed-idle/CPU-size feeds lack supported source APIs/receipts; the dashboard
+is not invoice reconciliation and thresholds do not enforce spend. Exact next action: reconcile U12's
+build scripts, staged dependency versions, CI callers and typecheck evidence with the current plan;
+close a source-backed code gap if present, then finish remaining S4–S9/U01–U12 gaps. Continue platform
+P01/P02 after the managed-services audit. Preserve `infra/scripts/__pycache__/`.
 
 Platform P08 code `87374fc2da4ae44a4c361ea145109308782571e5` is pushed to
 `origin/Mcbt5s-Backup-2`; it implements separately owner-gated, task-scoped video-frame questions
