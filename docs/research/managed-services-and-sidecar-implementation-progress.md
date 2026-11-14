@@ -1,31 +1,13 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint mission; P05 usage estimate refresh)
+## Active continuation — 2026-11-14 (joint mission; P05 lifecycle recovery)
 
-P05 code `236a2e2b88c6b4063e970101e8fe318a971b90f1` is pushed to `origin/Mcbt5s-Backup-2`. The
-Space owner activation-review caller now refreshes expected interaction volume 350 ms after input
-changes, cancels scheduled requests on change/close, and rejects stale responses. Empty values clear
-the projection. Shared validation covers integer bounds and partial inputs. Local evidence: Shell
-helper tests **3/3**, Shell typecheck, and `git diff --check`. No browser, deployment, provider, or
-live acceptance ran. Cost remains unknown: interactions are not billable units and no total is
-estimated.
+P05 Foundry conformance/publication recovery is pushed through `cf2d28f704ae207c0eed20f62f7e06237821d563` (`origin/Mcbt5s-Backup-2`). The owner draft persists request ID and exact payload fingerprint before export; host idempotency/status recovers the same job after a lost response; graduation is idempotent by certified job; the UI stores and restores the listing ID only after host success. Reload uses the exact owner-authorized status operation and repairs a lost local Gadget update. Product status preserves `suspended`/`retired` and maps terminal uncertified jobs out of `building`. Local evidence this turn: SDK dogfood **3/3**, SDK typecheck, and `git diff --check`; host recovery/graduation/migration **15/15** and Shell status caller **1/1** were recorded with `34c7da23`. No browser, deployment, provider or live acceptance ran.
 
-The prior Foundry authoring draft code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed too.
-It persists a bounded versioned draft and rechecks selected dependencies against current trusted
-releases; P05 multi-project setup and dependency feature inventory are complete locally in
-`bf55151a`, `ed924c83`, and `55d67648`. P05 remains partial for durable conformance/publish recovery,
-knowledge/action schema/runtime, full provider setup/lifecycle and verified rates. P06 remains partial
-for customer voice lifecycle/streaming, managed billing/invoices and provider/region acceptance. S2
-is implemented locally for supported lanes; S3–S9/U01–U12 keep the code and platform contract gaps in
-their requirement matrix. U05/U06 are unsupported runtime contracts, not credential blockers. Keep
-rollouts disabled and preserve `infra/scripts/__pycache__/`.
+P06's phone simulator `call.received`/`call.digits` action is already reachable through Shell and the host validator/renderer; the signed bounded keypad example has per-install settings, local preview, synthetic installed-handler test and a scoped read-only operations view. This corrects the stale simulator next-action recorded below; do not repeat it. S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL only at their row-specific uncoded paths, runtime/provider contracts, product/legal choices, missing data feeds and deployed/live gates. U05/U06 have unsupported producers/writer contracts, not missing credentials. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: add reload recovery to the Foundry conformance and graduation caller. Persist each
-host-issued job ID/status with the authoring draft, recheck through `blueprint.status`, and store the
-published listing identity only after the signed graduation call succeeds. Reconcile ambiguous
-responses from existing host status before retrying, and test reload/no duplicate behavior. Then
-continue remaining P05/P06 and S3–S9/U01–U12 gaps.
+Exact next action: implement an explicit owner/admin policy gate for new Space-member-visible coordination facts, disabled until configured. Persist an expected-revision setting, enforce it transactionally during publish/amend, require explicit unpublish before disabling while member facts remain, add the Settings control, and test authorization/concurrency. Preserve existing published entries and per-entry disclosure confirmation. Then continue §10 and the remaining uncoded requirements across both plans.
 
 
 ## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)

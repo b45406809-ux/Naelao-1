@@ -12,37 +12,13 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (guided-template usage estimate refresh)
+## Latest checkpoint — 2026-11-14 (Foundry lifecycle recovery)
 
-P05 code `236a2e2b88c6b4063e970101e8fe318a971b90f1` is pushed to `origin/Mcbt5s-Backup-2`.
-The owner activation-review usage projection refreshes 350 ms after assumption changes and fences
-older responses so stale replies cannot overwrite the latest estimate. Empty assumptions clear the
-projection; partial/out-of-range input is validated and surfaced. The estimate still reports
-interaction volume only, labels interactions as non-billable units, and leaves total operating cost
-unknown. Local evidence: Shell helper tests **3/3** (bounds, partial inputs and request ordering),
-Shell typecheck, and `git diff --check`. No browser, deployment, provider or live acceptance ran.
+P05 recovery is committed and pushed to `origin/Mcbt5s-Backup-2` through `cf2d28f704ae207c0eed20f62f7e06237821d563` (`34c7da23` host recovery; `64669caf` reload repair; `cf2d28f7` terminal-state correction). Foundry persists the exact export request/fingerprint before dispatch, recovers the host conformance job through owner-authorized status, saves the listing only after signed graduation succeeds, and reconciles retries without duplicate export/listing effects. Reload restores lifecycle and product state; completed but uncertified jobs no longer remain labeled `building`. Focused Agent SDK dogfood tests pass **3/3**, Agent SDK typecheck passes, and `git diff --check` passes. Earlier `34c7da23` evidence covers Spaces recovery/graduation/migration **15/15**, Shell status caller **1/1**, and related typechecks. All are local mocks/SQLite; no browser, deployed Worker/D1, provider, or live acceptance ran.
 
-The preceding P05 draft-resume code `56b23a31354519845834d4fb6b6bcf390e280cee` is also pushed.
-Foundry stores versioned authoring state in its scoped Gadget table, revalidates dependency IDs at
-resume, excludes preview values, and pins package `1.2.0` with the new `draft_json` migration. Its
-local evidence is SDK **5/5**, Spaces extension runtime/install **27/27**, SDK/Spaces typechecks and
-embedded Canvas script syntax. The candidate selector and feature inventory are in `ed924c83` and
-`55d67648`.
+P06's existing keypad simulator already exercises synthetic `call.received` and `call.digits` through the host response validator/renderer; the bounded phone-menu dashboard shows those simulations as synthetic and its signed per-installation configuration and read-only operations view. Do not repeat that task. P05 knowledge/action authoring still lacks a matching SpaceBlueprint/runtime contract; image/audio/raw binary extension media is not authorized by the text-only attachment contract. P06 conversational streaming, customer voice lifecycle, managed billing/invoices and provider/region acceptance remain unavailable or unverified. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain their documented row-specific contracts, policies, feeds and acceptance gates. Keep rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
 
-P05 remains PARTIAL: durable conformance/published-product lifecycle state is not carried through the
-Foundry draft, knowledge/action authoring lacks a matching SpaceBlueprint/runtime contract, and full
-provider setup, lifecycle effects, verified rates and live acceptance remain. Package feature
-summaries do not grant per-action authority. P06 remains PARTIAL for conversational voice
-streaming/lifecycle, managed billing/invoices and provider/region acceptance. S2 is IMPLEMENTED_LOCAL
-for supported lanes; S3–S9/U01–U12 remain open at the row-specific gaps in the managed-services
-ledger. Keep rollouts disabled and preserve untracked `infra/scripts/__pycache__/`.
-
-Exact next action: resume Foundry's conformance/publishing lifecycle after reload. Persist the exact
-host-issued conformance job ID and status alongside the authoring draft, recover status through the
-existing owner-authorized `blueprint.status` operation, and persist the marketplace listing ID/status
-only after the existing signed graduation operation returns success. Ensure retries cannot create a
-second export or listing; test lost responses/reload and keep server checks authoritative. Then
-continue remaining P05/P06 and S3–S9/U01–U12 work.
+Exact next action: implement an explicit owner/admin policy gate for new Space-member-visible coordination facts, defaulting to disabled until configured. Persist a revisioned setting, enforce it transactionally in publish/amend, require explicit unpublish before disabling while member facts remain, expose it in Space Settings, and cover races/authorization with DO and route tests. Preserve existing published entries and the current per-entry disclosure confirmation. Then continue the remaining §10 coordination policy/lifecycle rows and other uncoded requirements in both active plans.
 
 ## Previous checkpoint — 2026-11-14 (phone dashboard handoff; completed)
 
