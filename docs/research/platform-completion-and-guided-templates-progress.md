@@ -1,7 +1,33 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (shared-Space exact-key registry reservation)
+## Active continuation — 2026-11-14 (signed template coordination-default handoff)
+
+Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed. The signed SpaceBlueprint carries optional
+member-fact and exact singleton-key suggestions; Foundry authoring persists/restores them; activation
+preview presents the suggestion beside current policy. Applying requires owner/admin confirmation and
+revision zero, preserving existing rules. This extends the prior advisory coordination registry; it
+does not reserve external provider resources or grant project/service access. Local evidence: SDK
+blueprint/coordination/Foundry tests **15/15**, Spaces authoring/activation **37/37**, SDK/Spaces/Shell
+typechecks and `git diff --check`. No browser, deployed or live multi-user/provider acceptance ran.
+
+Reconciled source against stale queue entries: P04's jurisdiction-bound WorkspaceCoordinatorDO
+archive/restore bridge exists and is covered by `space-data-ops.test.ts`; P08 bounded sampled-frame
+analysis exists with separate owner opt-in and task-owned attachment checks; the signed phone-menu
+dashboard already has synthetic call-start, DTMF and supported Twilio speech preview/installed tests.
+These are local code/test paths, not deployed or live acceptance. P04 remains partial for other stores,
+retention/key/jurisdiction policy and recovery drills. P08 remains partial for provider/deployed
+acceptance. P06 remains partial for a full conversational voice-agent product, streaming, provider
+provisioning, invoice reconciliation and the Naelao publisher/signing/distribution/catalog contract.
+Rollouts stay disabled; preserve the untracked Python cache.
+
+Exact next action: let an owner select the exact active phone binding in the signed package dashboard
+when one installation serves multiple active lines. Carry its opaque binding ID in the synthetic test
+request; revalidate exact tenant/Space/install/provider/status in the Space route before invoking the
+handler. Preserve single-line behavior and keep speech limited to an eligible Twilio line. Then
+continue uncoded P05/P10 and S3–S9/U01–U12 gaps; fetch and safely integrate before each push.
+
+## Previous continuation — 2026-11-14 (shared-Space exact-key registry reservation)
 
 Code `4f634205a4f92d7132c5530092d4d73f05fff142` is pushed to `origin/Mcbt5s-Backup-2`. The
 shared-Space coordination registry now supports an optional owner/admin singleton set (up to 32
@@ -1302,9 +1328,9 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds per-installation persisted Twilio call history pinned to the admitted handler. `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin, minimized provider-cost persistence and per-call display. Twilio documents that its delayed `price` is connectivity-only; this remains an API observation, not an invoice. Telnyx remains DTMF-only. The bounded phone menu is not a first-party catalog release: publisher identity, signing authority/key custody and canonical distribution remain uncontracted. Streaming, managed voice, full lifecycle, complete cost/quality evidence and live provider/region acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
-| P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
+| P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
 | P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. Gadget/schema/data migration recovery, authority/dependency expansion, connection/price changes, scanning/retention and live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
@@ -1334,8 +1360,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
 3. P04's bounded object-byte capture, checksum restore and durable partial retry path are implemented
    in pushed code `937fbdd5`; `c310ae03` adds the currently omitted durable Space assistant workspace,
    learned skills and agent config prefixes, with focused SQLite/R2-mock coverage **11/11**. The
-   next P04 code gap is a jurisdiction-bound WorkspaceCoordinatorDO committed-state archive and
-   restore path; its heads/manifests/content are not in the SpaceDO export. P03/P20 independent
+   P04 already includes the jurisdiction-bound WorkspaceCoordinatorDO committed-state archive and
+   restore path: current SpaceDO source calls authenticated coordinator export/restore routes, scopes
+   referenced objects under the matching jurisdiction prefix, and the focused test covers conflict,
+   interruption and retry. No P04 archive-bridge code gap remains from that older queue entry. P03/P20 independent
    customer/creator status callers are implemented in pushed code `41996f29`; grace/restriction and
    refund/dispute/payout policies plus authenticated operator identity remain unresolved. The
    managed-services ledger reconciles S2–S9/U01–U12, including supported U11/U12 caller audits; do not

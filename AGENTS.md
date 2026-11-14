@@ -16,7 +16,34 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (§10.2 exact-key registry singleton rules)
+## Latest checkpoint — 2026-11-14 (signed template coordination-default handoff)
+
+Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111`. Signed `SpaceBlueprint` coordination defaults now support
+member-fact visibility and up to 32 canonical singleton keys; Foundry authoring persists/restores the
+suggestion; activation preview shows it beside current policy; owners/admins must opt in explicitly.
+Application is revision-zero only, so configured owner policy is preserved. Local evidence: SDK
+**15/15**, Spaces activation/authoring **37/37**, SDK/Spaces/Shell typechecks and `git diff --check`.
+No browser, deployed Worker, live multi-user or provider acceptance ran. The singleton policy governs
+only the advisory registry; it does not reserve external provider resources or grant project/service
+access.
+
+Current source also corrects stale P04/P08/voice entries in the ledgers: the jurisdiction-bound
+WorkspaceCoordinatorDO archive/restore bridge exists with a focused retry/conflict test; bounded
+sampled-frame analysis is implemented beside video audio transcription; and the signed phone-menu
+dashboard already supports synthetic call-start/DTMF plus Twilio-only speech. These are local code
+paths, not deployed/live acceptance. Keep P04 partial for other stores and policy/recovery gates, P08
+partial for provider/deployed acceptance, and S6 partial for external identity/content/command caller
+contracts. Keep all rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+Exact next action: extend the bounded phone-menu dashboard's synthetic installed-handler test to select
+one exact active line when the same signed installation is assigned to multiple lines. Carry the
+selected binding ID through the owner-only Space route and revalidate it against current active
+installation/provider state; preserve single-line behavior, Twilio-only speech, and no carrier request
+or call-session write. Add focused route/dashboard checks, then continue the next uncoded S3–S9/U01–U12/
+P01–P24 item. Fetch and safely integrate remote changes before each checkpoint push.
+
+## Previous checkpoint — 2026-11-14 (§10.2 exact-key registry singleton rules)
 
 Code `4f634205a4f92d7132c5530092d4d73f05fff142` is pushed to `origin/Mcbt5s-Backup-2`. The optional
 default-off owner/admin singleton policy for Space coordination facts now has migration-backed
