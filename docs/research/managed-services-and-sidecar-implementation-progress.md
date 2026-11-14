@@ -1,23 +1,30 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint mission; P05 multi-project setup checkpoint)
+## Active continuation — 2026-11-14 (joint mission; Foundry draft recovery)
 
-P05 multi-project visual setup authoring/export is pushed as `bf55151a` to
-`origin/Mcbt5s-Backup-2`. Foundry Studio selects 1–64 same-Space projects and exports separate,
-bounded setup groups; the Spaces owner route verifies selected-project membership and applies the
-shared SDK schema validator before artifact storage/conformance. Existing setup groups and activation
-preview are reused. Local evidence: Spaces **35/35**, SDK **13/13**, both typechecks, and
-`git diff --check`. No browser, deployment or live acceptance ran. P05 remains partial for visual
-dependency/action authoring, wider lifecycle, verified prices and live journeys. S2 remains local for
-supported lanes; S3–S9/U01–U12 remain open only at the specific code gaps/contracts in the matrix.
-Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+P05 code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed to `origin/Mcbt5s-Backup-2`. It adds
+Space-scoped persisted Foundry authoring drafts with a 48 KiB bound, schema version, restore-time
+shape checks, and revalidation of selected dependency IDs against current owner-authorized trusted
+releases. It resumes project groups, setup fields, channel defaults and conformance inputs; local
+preview values are excluded. Foundry catalog release `1.2.0` adds the draft column and the Foundry
+Space template pins its current manifest digest. Local evidence: Agent SDK **5/5**, Spaces extension
+runtime/install **27/27**, SDK/Spaces typechecks, embedded Canvas script syntax, and `git diff --check`.
+These are local checks only; no browser, deployed Space, provider or live acceptance ran. The prior
+dependency-candidate action is complete in `ed924c83`; package feature metadata followed in
+`55d67648`.
 
-Exact next action: expose an owner-authorized read-only list of the current Space's installed,
-publisher-trusted extension candidates (exact ID, version and manifest digest) through a bounded host
-operation and replace Foundry's raw dependency JSON inputs with candidate selection. Preserve export's
-existing exact server-side release checks. Test authorization, trust/revocation, and persisted pins;
-then continue the other uncoded P05/P06 and S3–S9/U01–U12 requirements.
+P05 remains partial for action/knowledge authoring without a corresponding template/runtime contract,
+provider setup, broader lifecycle, verified full rates and live acceptance. P06 remains partial for
+customer voice lifecycle/streaming, managed billing/invoices and live/region acceptance. S2 is local
+for supported lanes; S3–S9/U01–U12 retain their row-specific code and contract gaps in the matrix.
+U05/U06 remain unsupported runtime contracts, not credential blockers. Keep rollout disabled and
+preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: make customer-entered expected-usage estimates refresh automatically as inputs
+change in the existing owner activation-review caller, with debounce and stale-response fencing; keep
+total operating cost explicitly unknown and verify invalid and overlapping requests. Then proceed to
+the next independent P05/P06 or S3–S9/U01–U12 code gap.
 
 
 ## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)

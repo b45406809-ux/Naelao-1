@@ -12,27 +12,33 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (multi-project guided setup)
+## Latest checkpoint — 2026-11-14 (Foundry authoring draft recovery)
 
-P05 multi-project visual setup authoring/export is pushed as `bf55151a` to
-`origin/Mcbt5s-Backup-2`. Foundry Studio now selects 1–64 exact same-Space projects, keeps setup
-fields and preview values separate per project, and exports bounded `setupFieldsByProject` groups.
-The owner export route attaches groups only to selected projects and runs the shared SDK validator;
-SpaceDO uses parameterized project selection. SDK project-ID validation now accepts actual UUID IDs.
-This reuses the existing SDK `SpaceBlueprint.projects[].setupFields` contract and activation-preview
-groups; it does not introduce a new setup contract. Local evidence: Spaces **35/35**, SDK **13/13**,
-both typechecks and `git diff --check`. No browser, deployment, provider or live acceptance ran.
-P05 remains PARTIAL for action/dependency authoring, broader lifecycle, verified rates and live
-acceptance. S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain open at the
-specific code gaps and unsupported contracts in the managed-services ledger. Keep rollouts disabled
-and preserve the intentionally untracked `infra/scripts/__pycache__/`.
+P05 code `56b23a31354519845834d4fb6b6bcf390e280cee` is pushed to `origin/Mcbt5s-Backup-2`.
+The Foundry Canvas now persists a versioned, 48 KiB-bounded authoring draft in its existing
+Space-scoped Gadget table and restores project selection, setup declarations, channel preferences,
+dependency IDs, and conformance inputs after reload. Restored dependency IDs are matched against a
+fresh owner-authorized trusted candidate response before export; missing/revoked selections stay
+unexportable. Local setup-preview values are cleared and never persisted. Foundry package `1.2.0`
+adds `draft_json`; the Foundry Space template pins its new manifest digest. This reuses the existing
+scoped extension storage and signed package lifecycle. Local evidence: Agent SDK focused tests **5/5**,
+Spaces extension runtime/install tests **27/27**, SDK and Spaces typechecks, embedded Canvas script
+syntax through the SDK test, and `git diff --check`. These are local checks; no browser, deployed
+Space, provider, or live acceptance ran.
 
-Exact next action: add an owner-authorized, read-only host operation that returns only currently
-installed, trusted signed extension candidates (ID, name, exact version and manifest digest) to
-Foundry Studio; replace its free-form required-extension ID/version JSON with selection from that
-list, then keep the export route's existing server-side exact-release validation authoritative. Test
-owner authorization, revoked/untrusted candidates, and exported pins. Continue remaining P05/P06 and
-S3–S9/U01–U12 work afterward. No browser, deployment or live acceptance is implied by local checks.
+P05 remains PARTIAL: action/knowledge authoring has no matching SpaceBlueprint authoring/runtime
+contract, broad provider setup and lifecycle effects remain, and operating cost/rate data is
+incomplete. Extension feature summaries describe package-wide installed features, not per-action
+grants. P06 remains PARTIAL for conversational voice streaming/lifecycle, managed billing/invoices,
+and provider/region acceptance. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 remain
+open only at the specific code, runtime contract, policy, external evidence, and live gates in the
+managed-services ledger. Rollouts stay disabled. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: make the customer-entered expected-usage estimate refresh automatically when its
+inputs change, with debounce and stale-response fencing in the existing owner activation-review
+caller. Keep the result explicitly an interaction-volume projection with unknown total operating
+cost; test validation and overlapping-request behavior. Then continue uncoded P05/P06 and
+S3–S9/U01–U12 requirements. No live credential blocker was involved in the draft-resume slice.
 
 ## Previous checkpoint — 2026-11-14 (phone dashboard handoff; completed)
 
