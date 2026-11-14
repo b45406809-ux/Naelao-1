@@ -1632,6 +1632,10 @@ export interface ProjectMainRuntimeProfile {
     lastSeenAt: string | null;
     source: "control_plane_registry";
     liveHealthVerified: false;
+    budgetReservation: {
+      status: "held" | "expired" | "released" | "settled" | "missing";
+      expiresAt: string | null;
+    } | null;
   } | null;
   snapshotRetention: {
     state: "retained" | "reference_dropped" | "erasure_notified" | "ttl_elapsed_unverified";

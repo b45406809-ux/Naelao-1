@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0248_twilio_extension_call_history",
+  "requiredSchemaVersion": "0249_project_main_runtime_budget_reservations",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -995,6 +995,10 @@
     {
       "filename": "0248_twilio_extension_call_history.sql",
       "sha256": "69319aec8f3d173bcd6af586d288c74ef97d725d6bb99ee23475e3d0c0e0c796"
+    },
+    {
+      "filename": "0249_project_main_runtime_budget_reservations.sql",
+      "sha256": "4939758ef544a45973d22ad9d1a53654e4e791a7e8ec4e5fccd5be58f224afe1"
     }
   ]
 }

@@ -22,9 +22,12 @@ function capacityService() {
     slots.set(holder, Date.now() + ttl); return Response.json({ granted: true });
   } }) } };
 }
-function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean; snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean } = {}) {
+function runtime(options: { tier?: string; cpu?: number; memory?: number; profile?: string; capacity?: ReturnType<typeof capacityService>; enabled?: boolean;
+  snapshots?: boolean; erased?: boolean; writerAdmissionFails?: boolean; loseMainClaimAck?: boolean; omitBudgetReservationReceipt?: boolean } = {}) {
   const records = new Map<string, any>();
-  const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string; fencingToken: number; activeBranch: string; state: string }>();
+  const projectMainRegistry = new Map<string, { runtimeObjectName: string; allocationGeneration: number; allocationToken?: string;
+    budgetReservationId?: string; fencingToken: number; activeBranch: string; state: string }>();
+  const budgetReservations = new Map<string, { id: string; tenantId: string; spaceId: string; status: string; expiresAt: string }>();
   const capacity = options.capacity ?? capacityService();
   const billing: any[] = [];
   const snapshotRetentionWrites: string[] = [];
@@ -71,7 +74,12 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
   const env = { PLATFORM_SECRET: "secret", DYNAMIC_CONTAINERS_ENABLED: options.enabled === false ? "false" : "true",
     DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED: options.snapshots ? "true" : "false", CONCURRENCY_DO: capacity.namespace,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: (...values: unknown[]) => ({
-      first: async () => sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
+      first: async () => sql.includes("workflow_budget_reservations") ? (() => {
+        const [id, tenantId, spaceId] = values as [string, string, string];
+        const reservation = budgetReservations.get(id);
+        return reservation && reservation.tenantId === tenantId && reservation.spaceId === spaceId
+          && reservation.status === "held" && Date.parse(reservation.expiresAt) > Date.now() ? { id } : null;
+      })() : sql.includes("SELECT plan_tier") ? { plan_tier: options.tier ?? "free" }
         : sql.includes("SELECT profile FROM project_main_runtime_profiles") ? options.profile ? { profile: options.profile } : null
         : sql.includes("workspace_erasure_tombstones")
         ? workspaceErased ? { erased: 1 } : null : sql.includes("config_json")
@@ -88,6 +96,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
           const prior = projectMainRegistry.get(key);
           if (prior && (prior.runtimeObjectName !== runtimeObjectName || prior.allocationGeneration !== generation || prior.state === "erased")) return { meta: { changes: 0 } };
           projectMainRegistry.set(key, { runtimeObjectName, allocationGeneration: generation, allocationToken: prior?.allocationToken,
+            budgetReservationId: prior?.budgetReservationId,
             fencingToken: (prior?.fencingToken ?? 0) + (prior && prior.activeBranch !== branch ? 1 : 0), activeBranch: branch, state: prior?.state ?? "registered" });
           return { meta: { changes: 1 } };
         }
@@ -95,24 +104,24 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
           const row = [...projectMainRegistry.values()][0];
           if (!row) return { meta: { changes: 0 } };
           if (sql.includes("recover-project-main-generation")) {
-            const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, string, number, string, string];
+            const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, number, string, string, string];
             const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
               && row.allocationToken === token && row.activeBranch === branch;
             return { meta: { changes: matches ? 1 : 0 } };
           }
           if (sql.includes("retry-project-main-generation")) {
-            const [, , , , objectName, generation, token, branch] = values as [string, string, string, string, string, number, string, string];
+            const [, reservationId, , , , objectName, generation, token, branch] = values as [string, string, string, string, string, string, number, string, string];
             const matches = row.runtimeObjectName === objectName && row.allocationGeneration === generation
               && row.allocationToken === token && row.activeBranch === branch && row.state !== "erased";
-            if (matches) row.state = "recovery_required";
+            if (matches) { row.state = "recovery_required"; row.budgetReservationId = reservationId; }
             return { meta: { changes: matches ? 1 : 0 } };
           }
           if (sql.includes("claim-project-main-generation")) {
-            const [generation, token, , , , , objectName, expectedGeneration, branch] = values as [number, string, string, string, string, string, string, number, string];
+            const [generation, token, , reservationId, , , , objectName, expectedGeneration, branch] = values as [number, string, string, string, string, string, string, string, number, string];
             const matches = row.runtimeObjectName === objectName && row.allocationGeneration === expectedGeneration
               && row.activeBranch === branch && row.state !== "erased";
             if (!matches) return { meta: { changes: 0 } };
-            row.allocationGeneration = generation; row.allocationToken = token; row.state = "recovery_required";
+            row.allocationGeneration = generation; row.allocationToken = token; row.budgetReservationId = reservationId; row.state = "recovery_required";
             if (loseMainClaimAck) { loseMainClaimAck = false; throw new Error("simulated_lost_d1_ack"); }
             return { meta: { changes: 1 } };
           }
@@ -130,7 +139,18 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     }) }) },
     CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image, binding: "TOOL_SANDBOX", schedulingPolicy: "durable_object", networkPolicy: "none",
       cpuCores: options.cpu ?? .0625, memoryMb: options.memory ?? 256 }]),
-    BILLING_WORKER: { fetch: async (request: Request) => { billing.push({ path: new URL(request.url).pathname, ...await request.json() as any }); return Response.json({ ok: true }); } },
+      BILLING_WORKER: { fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        const body = await request.json() as any;
+        billing.push({ path, ...body });
+        if (path.endsWith("/reserve") && !options.omitBudgetReservationReceipt) budgetReservations.set(body.reservation_id, { id: body.reservation_id,
+          tenantId: request.headers.get("x-naelao-tenant-id") ?? "", spaceId: body.space_id, status: "held", expiresAt: body.expires_at });
+        if (path.endsWith("/settle") || path.endsWith("/release")) {
+          const reservation = budgetReservations.get(body.reservation_id);
+          if (reservation) reservation.status = path.endsWith("/settle") ? "settled" : "released";
+        }
+        return Response.json({ ok: true, reservation_id: body.reservation_id });
+      } },
   };
   let sandbox = new DynamicSandboxDO(ctx as never, env as never);
   async function invoke(path = "/prewarm", scopeChanges: Record<string, unknown> = {}) {
@@ -155,7 +175,7 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; profil
     return sandbox.fetch(new Request("http://sandbox/_internal/workspace/erase", { method: "POST", body: JSON.stringify({ scope, confirm: true }),
       headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken("secret", "tenant") } }));
   }
-  return { invoke, profile, transport, records, capacity, env, billing, projectMainRegistry, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  return { invoke, profile, transport, records, capacity, env, billing, projectMainRegistry, budgetReservations, snapshotRetentionWrites, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     setSnapshotRetentionFails: (value: boolean) => { snapshotRetentionFails = value; },
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { taskStarted = new Promise<void>(resolve => { markTaskStarted = resolve; }); task = new Promise<Response>(resolve => { releaseTask = resolve; }); },
@@ -174,6 +194,8 @@ describe("Cloudflare dynamic execution", () => {
     expect(r.projectMainRegistry.get(key)).toMatchObject({
       runtimeObjectName: "sandbox:space:project", allocationGeneration: 1, fencingToken: 0, activeBranch: "main", state: "active",
     });
+    expect(r.projectMainRegistry.get(key)?.budgetReservationId).toMatch(/^container:/);
+    expect(r.budgetReservations.get(r.projectMainRegistry.get(key)!.budgetReservationId!)?.status).toBe("held");
     const handoff = await r.invoke("/prewarm", { mainComputer: true, workspaceBranch: "feature/research" });
     expect(handoff.status, await handoff.clone().text()).toBe(200);
     expect(r.projectMainRegistry.get(key)).toMatchObject({ fencingToken: 1, activeBranch: "feature/research" });
@@ -187,6 +209,14 @@ describe("Cloudflare dynamic execution", () => {
     const response = await r.invoke("/prewarm", { mainComputer: true });
     expect(response.status, await response.clone().text()).toBe(200);
     expect(r.transport.start).toHaveBeenCalledWith(expect.objectContaining({ instance: "lite" }));
+  });
+
+  it("does not claim a project-main allocation when the authoritative budget hold is absent", async () => {
+    const r = runtime({ omitBudgetReservationReceipt: true });
+    const response = await r.invoke("/prewarm", { mainComputer: true });
+    expect(response.ok).toBe(false);
+    expect(r.transport.start).not.toHaveBeenCalled();
+    expect(r.projectMainRegistry.get("tenant:space:project")).toMatchObject({ allocationGeneration: 0, state: "registered" });
   });
 
   it("rejects a stale local generation before starting a replacement container", async () => {
@@ -215,7 +245,7 @@ describe("Cloudflare dynamic execution", () => {
     r.restart();
     const recovered = await r.invoke("/prewarm", { mainComputer: true });
     expect(recovered.status, await recovered.clone().text()).toBe(200);
-    expect(r.projectMainRegistry.get(key)).toMatchObject({ allocationGeneration: 1, state: "active" });
+    expect(r.projectMainRegistry.get(key)).toMatchObject({ allocationGeneration: 1, state: "active", budgetReservationId: expect.stringMatching(/^container:/) });
     expect(r.transport.start).toHaveBeenCalledOnce();
     expect(r.records.get("workspace_runtime_generation")).toBe(1);
   });

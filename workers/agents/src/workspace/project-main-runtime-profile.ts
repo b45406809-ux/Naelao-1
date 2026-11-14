@@ -11,6 +11,10 @@ export type ProjectMainRuntimeStatus = {
   lastSeenAt: string | null;
   source: "control_plane_registry";
   liveHealthVerified: false;
+  budgetReservation: {
+    status: "held" | "expired" | "released" | "settled" | "missing";
+    expiresAt: string | null;
+  } | null;
 } | null;
 
 function allowedProfiles(planTier: string): DynamicProfile[] {
@@ -41,9 +45,17 @@ export async function readProjectMainRuntimeProfile(
 
 /** Return only the persisted host-side state; this is not a provider health probe. */
 export async function readProjectMainRuntimeStatus(db: D1Database, scope: Scope): Promise<ProjectMainRuntimeStatus> {
-  const row = await db.prepare(`SELECT state,allocation_generation,last_seen_at FROM project_main_runtime_registry
-    WHERE tenant_id=? AND space_id=? AND project_id=?`)
-    .bind(scope.tenantId,scope.spaceId,scope.projectId).first<MainRuntimeRegistryRow>();
+  const row = await db.prepare(`SELECT r.state,r.allocation_generation,r.last_seen_at,
+      b.status AS budget_reservation_status,b.expires_at AS budget_reservation_expires_at,
+      r.budget_reservation_id
+    FROM project_main_runtime_registry r
+    LEFT JOIN workflow_budget_reservations b ON b.id=r.budget_reservation_id AND b.org_id=r.tenant_id AND b.space_id=r.space_id
+    WHERE r.tenant_id=? AND r.space_id=? AND r.project_id=?`)
+    .bind(scope.tenantId,scope.spaceId,scope.projectId).first<MainRuntimeRegistryRow & {
+      budget_reservation_id: string | null;
+      budget_reservation_status: string | null;
+      budget_reservation_expires_at: string | null;
+    }>();
   if (!row) return null;
   const knownStates = ["registered", "active", "sleeping", "recovery_required", "erased"] as const;
   return {
@@ -55,6 +67,13 @@ export async function readProjectMainRuntimeStatus(db: D1Database, scope: Scope)
     lastSeenAt: typeof row.last_seen_at === "string" ? row.last_seen_at : null,
     source: "control_plane_registry",
     liveHealthVerified: false,
+    budgetReservation: row.budget_reservation_id ? {
+      status: row.budget_reservation_status === "held" && row.budget_reservation_expires_at
+        && Date.parse(row.budget_reservation_expires_at) <= Date.now() ? "expired"
+        : (["held", "released", "settled"].includes(row.budget_reservation_status ?? "")
+          ? row.budget_reservation_status as "held" | "released" | "settled" : "missing"),
+      expiresAt: typeof row.budget_reservation_expires_at === "string" ? row.budget_reservation_expires_at : null,
+    } : null,
   };
 }
 

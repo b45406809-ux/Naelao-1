@@ -4,8 +4,11 @@ import { createFakeD1 } from "../../../../tests/stubs/d1-sqlite.js";
 import { readProjectMainRuntimeProfile, readProjectMainRuntimeStatus, saveProjectMainRuntimeProfile } from "./project-main-runtime-profile.js";
 
 const db = () => createFakeD1([
+  readFileSync(new URL("../../../../infra/migrations/0081_workflow_budget_reservations.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0189_project_main_runtime_registry.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../infra/migrations/0197_project_main_runtime_allocation_tokens.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../../../../infra/migrations/0198_project_main_runtime_profiles.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../infra/migrations/0249_project_main_runtime_budget_reservations.sql", import.meta.url), "utf8"),
 ]);
 const scope = { tenantId: "tenant", spaceId: "space", projectId: "project" };
 
@@ -54,13 +57,22 @@ describe("project main runtime profile preference", () => {
     const fixture = db();
     expect(await readProjectMainRuntimeStatus(fixture, scope)).toBeNull();
     await fixture.prepare(`INSERT INTO project_main_runtime_registry
-      (tenant_id,space_id,project_id,runtime_kind,runtime_object_name,allocation_generation,fencing_token,active_branch,state,last_seen_at)
-      VALUES(?, ?, ?, 'dynamic_sandbox', ?, ?, ?, ?, ?, ?)`)
-      .bind("tenant", "space", "project", "sandbox:space:project", 4, 2, "main", "recovery_required", "2026-11-12T12:00:00.000Z").run();
+      (tenant_id,space_id,project_id,runtime_kind,runtime_object_name,allocation_generation,fencing_token,active_branch,state,last_seen_at,budget_reservation_id)
+      VALUES(?, ?, ?, 'dynamic_sandbox', ?, ?, ?, ?, ?, ?, ?)`)
+      .bind("tenant", "space", "project", "sandbox:space:project", 4, 2, "main", "recovery_required", "2026-11-12T12:00:00.000Z", "container:reservation-a").run();
+    await fixture.prepare(`INSERT INTO workflow_budget_reservations
+      (id,org_id,space_id,workflow_id,budget_key,credits,status,expires_at) VALUES(?,?,?,?,?,?,?,?)`)
+      .bind("container:reservation-a", "tenant", "space", "container:reservation-a", "container:space:project", 20, "held", "2026-11-12T12:10:00.000Z").run();
 
     await expect(readProjectMainRuntimeStatus(fixture, scope)).resolves.toEqual({
       state: "recovery_required", allocationGeneration: 4, lastSeenAt: "2026-11-12T12:00:00.000Z",
       source: "control_plane_registry", liveHealthVerified: false,
+      budgetReservation: { status: "expired", expiresAt: "2026-11-12T12:10:00.000Z" },
+    });
+    await fixture.prepare("UPDATE workflow_budget_reservations SET expires_at='2099-01-01T00:00:00.000Z' WHERE id=?")
+      .bind("container:reservation-a").run();
+    await expect(readProjectMainRuntimeStatus(fixture, scope)).resolves.toMatchObject({
+      budgetReservation: { status: "held", expiresAt: "2099-01-01T00:00:00.000Z" },
     });
     await expect(readProjectMainRuntimeStatus(fixture, { ...scope, projectId: "other-project" })).resolves.toBeNull();
   });

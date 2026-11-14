@@ -230,7 +230,9 @@ export function ManagedRuntimeProfilesPanel({ spaceId, projectId, session }: { s
         : !mainProfile.runtimeStatus ? "no allocation is recorded in the control-plane registry."
           : <>{mainProfile.runtimeStatus.state.replaceAll("_", " ")} · generation {mainProfile.runtimeStatus.allocationGeneration}
             {mainProfile.runtimeStatus.lastSeenAt ? ` · last seen ${new Date(mainProfile.runtimeStatus.lastSeenAt).toLocaleString()}` : ""}.
-            {" "}{mainProfile.runtimeStatus.liveHealthVerified ? "Provider health verified." : "This control-plane record does not verify provider health or snapshot contents."}</>}
+            {" "}{mainProfile.runtimeStatus.liveHealthVerified ? "Provider health verified." : "This control-plane record does not verify provider health or snapshot contents."}
+            {mainProfile.runtimeStatus.budgetReservation ? <> Budget hold {mainProfile.runtimeStatus.budgetReservation.status.replaceAll("_", " ")}
+              {mainProfile.runtimeStatus.budgetReservation.expiresAt ? ` until ${new Date(mainProfile.runtimeStatus.budgetReservation.expiresAt).toLocaleString()}` : ""}; this is an internal credit reservation, not a provider invoice.</> : " No runtime budget reservation is attached to this allocation."}</>}
     </div>}
     {mainProfile && <p style={{ color: "var(--text3)", fontSize: 12, margin: "0 0 12px" }}>
       {!mainProfile.snapshotRetention ? "No provider snapshot receipt is recorded. This does not establish whether older provider snapshots exist."

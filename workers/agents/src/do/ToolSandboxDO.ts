@@ -119,6 +119,7 @@ interface ProjectMainGenerationAttempt {
   generation: number;
   branch: string;
   token: string;
+  budgetReservationId?: string;
 }
 
 const HARNESS_PORT = 8080;
@@ -486,26 +487,40 @@ export class ToolSandboxDO extends DurableObject {
     if (!this.isProjectMainRuntimeScope(scope, request)) return undefined;
     const db = (this.env as SandboxBindings).PLATFORM_DB;
     if (!db) throw new Error("project_main_runtime_registry_unavailable");
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    if (!meter || meter.tenantId !== scope.tenantId || meter.spaceId !== scope.spaceId || meter.endedAt !== undefined)
+      throw new Error("project_main_budget_reservation_unavailable");
+    const budgetReservation = await db.prepare(`SELECT id FROM workflow_budget_reservations
+      WHERE id=? AND org_id=? AND space_id=? AND status='held' AND julianday(expires_at)>julianday(?) LIMIT 1`)
+      .bind(meter.reservationId, scope.tenantId, scope.spaceId, new Date().toISOString()).first<{ id: string }>();
+    if (!budgetReservation || budgetReservation.id !== meter.reservationId)
+      throw new Error("project_main_budget_reservation_unavailable");
     const branch = scope.workspaceBranch ?? "main";
     const localGeneration = await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0;
     let attempt = await this.ctx.storage.get<ProjectMainGenerationAttempt>("project_main_generation_attempt");
     if (!attempt || attempt.generation < localGeneration || attempt.generation > localGeneration + 1 || attempt.branch !== branch) {
-      attempt = { generation: localGeneration + 1, branch, token: crypto.randomUUID() };
+      attempt = { generation: localGeneration + 1, branch, token: crypto.randomUUID(), budgetReservationId: meter.reservationId };
       // Persist the idempotency token before D1. It lets a retry discover a committed claim
       // when the response is lost, without accepting a different allocation's generation.
+      await this.ctx.storage.put("project_main_generation_attempt", attempt);
+    }
+    if (attempt.budgetReservationId && attempt.budgetReservationId !== meter.reservationId)
+      throw new Error("project_main_budget_reservation_changed");
+    if (!attempt.budgetReservationId) {
+      attempt = { ...attempt, budgetReservationId: meter.reservationId };
       await this.ctx.storage.put("project_main_generation_attempt", attempt);
     }
     const objectName = request.headers.get("x-naelao-runtime-object-name");
     const timestamp = new Date().toISOString();
     let claimed = await db.prepare(`UPDATE project_main_runtime_registry /* retry-project-main-generation */
-      SET state='recovery_required',last_seen_at=? WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=?
+      SET state='recovery_required',last_seen_at=?,budget_reservation_id=? WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=?
         AND allocation_generation=? AND allocation_token=? AND active_branch=? AND state<>'erased'`)
-      .bind(timestamp, scope.tenantId, scope.spaceId, scope.projectId, objectName, attempt.generation, attempt.token, branch).run();
+      .bind(timestamp, meter.reservationId, scope.tenantId, scope.spaceId, scope.projectId, objectName, attempt.generation, attempt.token, branch).run();
     if (!claimed.meta.changes && attempt.generation === localGeneration + 1) {
       claimed = await db.prepare(`UPDATE project_main_runtime_registry /* claim-project-main-generation */
-        SET allocation_generation=?,allocation_token=?,state='recovery_required',last_seen_at=?
+        SET allocation_generation=?,allocation_token=?,state='recovery_required',last_seen_at=?,budget_reservation_id=?
         WHERE tenant_id=? AND space_id=? AND project_id=? AND runtime_object_name=? AND allocation_generation=? AND active_branch=? AND state<>'erased'`)
-        .bind(attempt.generation, attempt.token, timestamp, scope.tenantId, scope.spaceId, scope.projectId,
+        .bind(attempt.generation, attempt.token, timestamp, meter.reservationId, scope.tenantId, scope.spaceId, scope.projectId,
           objectName, localGeneration, branch).run();
     }
     if (!claimed.meta.changes) throw new Error("project_main_runtime_registry_write_failed");
@@ -591,7 +606,12 @@ export class ToolSandboxDO extends DurableObject {
     }
     const now = Date.now();
     const creditsPerHour = this.allocationCreditsPerHour();
-    const meter: ContainerMeter = { ...(creditsPerHour === undefined ? {} : { creditsPerHour }), tenantId: scope.tenantId, spaceId: scope.spaceId, reservationId: "container:" + crypto.randomUUID(), startedAt: now, expiresAt: now + 360000 };
+    const mainAttempt = this.workspaceRuntimeKind() === "dynamic_sandbox" && scope.projectId && !scope.installationId
+      && !scope.workspaceBranch?.startsWith("race/")
+      ? await this.ctx.storage.get<ProjectMainGenerationAttempt>("project_main_generation_attempt") : undefined;
+    const reuseReservationId = mainAttempt?.branch === (scope.workspaceBranch ?? "main") ? mainAttempt.budgetReservationId : undefined;
+    const meter: ContainerMeter = { ...(creditsPerHour === undefined ? {} : { creditsPerHour }), tenantId: scope.tenantId, spaceId: scope.spaceId,
+      reservationId: reuseReservationId ?? "container:" + crypto.randomUUID(), startedAt: now, expiresAt: now + 360000 };
     // Persist the reservation intent before contacting billing so retries use the same key.
     let pending = await this.ctx.storage.get<ContainerMeter>("container_reservation_pending") ?? meter;
     if (pending.expiresAt <= now) {
@@ -1757,7 +1777,31 @@ export class ToolSandboxDO extends DurableObject {
       // harness protocol. Select only the authenticated installation's pin; never accept an
       // image from the execution body or model-generated command.
       await this.ctx.storage.put("container_egress_profile", egressProfile);
-      const reservedMainGeneration = startScope ? await this.reserveProjectMainGeneration(startScope, request) : undefined;
+      let reservedMainGeneration: number | undefined;
+      try {
+        reservedMainGeneration = startScope ? await this.reserveProjectMainGeneration(startScope, request) : undefined;
+      } catch (error) {
+        // The main allocation claim happens before the provider start call. Keep its exact
+        // reservation ID retryable if the claim acknowledgement is lost; do not settle a
+        // zero-runtime attempt and mint a second reservation for the same generation.
+        if (startScope && this.isProjectMainRuntimeScope(startScope, request)) {
+          const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+          if (meter) {
+            const retryable = { ...meter };
+            delete retryable.allocatedAt;
+            delete retryable.endedAt;
+            await this.ctx.storage.put("container_reservation_pending", retryable);
+            await this.ctx.storage.delete("container_meter");
+            try {
+              await finalizeWorkflowBudget(this.env as Env, meter.tenantId, meter.reservationId, "release");
+              await this.ctx.storage.delete("container_reservation_pending");
+            } catch {
+              // The pending record lets a retry repeat the same idempotent Billing reservation.
+            }
+          }
+        }
+        throw error;
+      }
       await this.startContainer(container, startScope);
       if (reservedMainGeneration === undefined) {
         const allocationGeneration = (await this.ctx.storage.get<number>("workspace_runtime_generation") ?? 0) + 1;
