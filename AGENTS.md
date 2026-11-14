@@ -16,35 +16,79 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 safe Project runtime settings archive; pushed)
+## Latest checkpoint — 2026-11-14 (P06 Telnyx published settings pin; U05 runtime contract gate; pushed)
 
-Code `e747b62d15da7f62405159595636726652de9153` is pushed to `origin/Mcbt5s-Backup-2`; fetch immediately before push showed no
-remote advance. Full Space archives now include a bounded version-1 snapshot of an Agent-owned
-Project main-runtime profile and inert restart recipes. The Agents export/preview/restore bridge
-authenticates the tenant, binds the exact tenant/Space/Project, validates schemas and size, and
-additively restores only when the destination has no current value. Restore actor audit rows are
-written only for inserted settings. The archive preview and durable restore status report restored
-versus preserved values. Allocations, live observations and provider snapshots remain excluded;
-recipes stay inert. Shell disclosure and apply confirmation describe those limits.
+Code `61384f4dfbabe4704cd1df3bc7b5b55840601075` is pushed to `origin/Mcbt5s-Backup-2`; fetch
+confirmed the remote stayed at `c0daaf86` before push. Telnyx DTMF call admission now resolves and
+persists the exact extension installation, handler digest and published settings revision. Call-start
+and later DTMF turns pass those pins to the Agents host, which resolves only the matching published
+settings version; unavailable or changed versions fail closed and end the call. SpaceDO migration 143
+backfills the current active settings revision, and ordinary active settings writes now retain bounded
+version receipts. Owner phone history shows the pinned revision. Rollout remains disabled.
 
-Local evidence: Agents profile/archive helper and internal-route tests **9/9**; Space archive codec
-and schema tests **7/7**; Space data-ops suite **17/17**, plus a rerun of its project archive/restore
-integration after partial-status recording; Shell archive panel **2/2**; Agents, Spaces and Shell
-typechecks; `git diff --check`. Migration-backed local tests cover destination-current-wins, actor
-audit, idempotent retry, strict scope/schema rejection, authenticated bridge, preview and integration
-through encrypted archive export/restore. No browser, deployment, R2 drill, provider call, or live
-acceptance ran. P04 remains PARTIAL for other service stores/private inbound data, approved retention,
-key and jurisdiction policy, RPO/RTO, and isolated/deployed recovery. Preserve untracked
-`infra/scripts/__pycache__/`; keep rollouts disabled.
+Local evidence: Spaces settings/migration/route suites **19/19**; Agents Telnyx/call-scope/phone suites
+**53/53**; Spaces, Agents and Shell typechecks; release manifest and release-runner tests **20/20**;
+`git diff --check`. No browser, carrier/provider call, deployment or live acceptance ran. P06 remains
+PARTIAL for first-party publisher identity/signing/catalog distribution, conversational voice, managed
+provisioning, complete cost/quality evidence and live acceptance.
 
-Exact next action: continue S3/U05 by implementing the reachable owner-authorized candidate allocation
-and reservation path against the existing project-main runtime lifecycle. Bind it to exact tenant,
-Space, Project, main allocation generation, selected template/image digest, current authorization and
-the budget reservation. Persist candidate state and expose an authorized caller; test stale and
-concurrent allocation, budget mismatch, revocation and no fabricated attestation. Keep candidates
-unqualified until a trusted runtime producer emits the required observations. Do not claim a live
-mount or U06 writer/drain/flush support. Then continue P04's independent cross-service gaps and the
-remaining S3–S9/U01–U12/P01–P24 requirements.
+U05 source reconciliation: no project-main candidate allocator was added because the current
+`project_main_runtime_registry` has no selectable immutable image digest and the main Container has no
+trusted mount/sync/flush/region observation producer. The verifier's live-mount candidates use the
+separate `sandbox_computers`/provider-allocation model. This is an unsupported platform contract and
+producer gap, not unavailable credentials. Do not fabricate an attestation or enable live workspace
+mode. Preserve untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue S3/U09 by replacing the branch-addressed DynamicSandbox main-computer
+identity with a project-wide registry/claim that serializes active ownership across branches and fences
+stale branch/container reconnects. Reuse existing allocation generations and budget holds; preserve
+branch-specific workspace revisions and snapshot receipts. Add cross-branch concurrent admission,
+stale-generation, lost-ack retry and owner authorization tests. Keep live mode disabled; then continue
+independent S3–S9/U01–U12 and P01–P24 gaps.
+
+## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; U05 runtime contract gate; pushed)
+
+Code `c0daaf86a2c8c05b2e211eccc360367c3c9adf44` is pushed to `origin/Mcbt5s-Backup-2`; fetch before
+push confirmed no remote advance. Space Template owners/admins can preview, detach, and reattach the
+setup-management association with exact artifact/setup-revision fencing. Detach deletes a pending setup
+draft and preserves published setup values, generated Projects, required extensions and Project
+Knowledge grants. A bounded durable actor/action history is exposed in owner status. Activation retries
+and setup migrations fail closed while detached. The Shell states that provider resources, licenses,
+recurring charges and extension grants are not changed; this is setup detachment, not full uninstall or
+billing cancellation.
+
+Local evidence: Spaces template lifecycle/activation/migration suites **36/36**, Spaces and Shell
+typechecks, and `git diff --check`. No browser, provider, deployment, package uninstall, or live
+acceptance ran. P05 remains PARTIAL for project/extension cleanup semantics, provider/license/charge
+reconciliation, Space-wide provider authority/payer/revocation policy and live acceptance.
+
+U05 source reconciliation: no project-main candidate allocator was added because the existing
+`project_main_runtime_registry` has no selectable immutable image digest, and the main Cloudflare
+Container has no trusted mount/sync/flush/region observation producer. The verifier's current
+live-mount candidates are a separate `sandbox_computers`/provider-allocation model and require those
+observations. An operator assertion or setup record cannot prove them. This is a missing runtime
+platform contract/producer, not a credential blocker; keep live workspace rollout false. Preserve
+untracked `infra/scripts/__pycache__/`.
+
+Exact next action: continue P06 voice integration at the supported Telnyx DTMF call path. Pin each
+admitted call to its exact extension installation/handler and the published settings revision used at
+call start; pass that pin through later DTMF turns and resolve only the matching published version.
+Fail closed if the pinned release/version is unavailable; do not silently use newer settings. Add
+bounded persistence, stale-update/retry/cleanup coverage and owner-facing revision evidence. Then
+continue P06 dashboards/voice and §10 shared-Space caller gaps, plus remaining S3–S9/U01–U12/P01–P24.
+Keep rollout disabled.
+
+## Previous checkpoint — 2026-11-14 (P04 safe Project runtime settings archive; pushed)
+
+Code `e747b62d15da7f62405159595636726652de9153` is pushed to `origin/Mcbt5s-Backup-2`. Full Space
+archives include a bounded, versioned Agent-owned Project main-runtime profile and inert restart
+recipes. The authenticated Agents bridge binds tenant/Space/Project, validates schema and size, previews
+conflicts and additively restores only missing settings with actor audit. Allocations, observations and
+provider snapshots remain excluded; recipes stay inert. Local Agents **9/9**, Space codec/schema **7/7**,
+data-ops **17/17** plus project archive integration rerun, Shell **2/2**, affected typechecks and
+`git diff --check` passed. No browser, deployment, R2 drill, provider call or live acceptance ran. P04
+remains PARTIAL for other service stores/private inbound data, retention/key/jurisdiction, RPO/RTO and
+isolated/deployed recovery.
 
 ## Previous checkpoint — 2026-11-14 (U05 exact project hold check; P04 next; pushed)
 

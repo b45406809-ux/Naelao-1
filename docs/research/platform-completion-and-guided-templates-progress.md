@@ -1,6 +1,48 @@
 # Platform completion and guided templates progress
 
-## Latest checkpoint — 2026-11-14 (P04 safe Project runtime settings archive; pushed)
+## Latest checkpoint — 2026-11-14 (P06 Telnyx published settings pin; U05 runtime contract gate; pushed)
+
+Joint-mission code `61384f4dfbabe4704cd1df3bc7b5b55840601075` is pushed to
+`origin/Mcbt5s-Backup-2`; fetch confirmed remote `c0daaf86` before push. Telnyx DTMF admission
+persists the exact extension installation, handler digest and active published settings revision.
+Call-start and later DTMF turns pass those pins to Agents, which resolves only the matching version;
+missing or changed pins fail closed and end the call. SpaceDO migration 143 backfills active settings
+versions, and active settings writes retain a bounded history. The owner phone history shows the
+revision.
+
+Local evidence: Spaces settings/migration/route suites **19/19**; Agents Telnyx/call-scope/phone suites
+**53/53**; Spaces, Agents and Shell typechecks; release manifest and release-runner tests **20/20**;
+`git diff --check`. No browser, carrier/provider call, deployment or live acceptance ran. P06 remains
+PARTIAL for first-party publisher identity/signing/catalog distribution, conversational voice,
+managed provisioning, complete cost/quality evidence and live acceptance.
+
+U05 source reconciliation: no project-main candidate allocator was added because the current
+`project_main_runtime_registry` has no selectable immutable image digest and the main Container has no
+trusted mount/sync/flush/region observation producer. The verifier's live-mount candidates use the
+separate `sandbox_computers`/provider-allocation model. This is an unsupported runtime contract and
+producer gap, not unavailable credentials. Keep live workspace mode disabled and preserve untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: continue S3/U09 by replacing branch-addressed DynamicSandbox main-computer identity
+with a project-wide registry/claim that serializes active ownership across branches and fences stale
+branch/container reconnects. Reuse existing allocation generations and budget holds; preserve
+branch-specific workspace revisions and snapshot receipts. Add cross-branch concurrent admission,
+stale-generation, lost-ack retry and owner authorization tests. Keep live mode disabled, then continue
+independent S3–S9/U01–U12 and P01–P24 gaps.
+
+## Previous checkpoint — 2026-11-14 (P05 guided setup lifecycle; pushed)
+
+Code `c0daaf86a2c8c05b2e211eccc360367c3c9adf44` is pushed to `origin/Mcbt5s-Backup-2`. Space Template
+owners/admins can preview, detach and reattach setup-management association with exact artifact/setup-
+revision fencing. Detach removes pending draft data while preserving published values, generated
+Projects, required extensions and Project Knowledge grants. Owner status shows a bounded durable
+actor/action history. This is not package uninstall or provider/license/recurring-charge cancellation.
+Spaces lifecycle/activation/migration suites **36/36**, Spaces and Shell typechecks, and
+`git diff --check` passed. No browser, provider, deployment or live acceptance ran. P05 remains PARTIAL for wider
+cleanup, provider/license/charge reconciliation and the Space-wide provider authority/payer/revocation
+contract.
+
+## Previous checkpoint — 2026-11-14 (P04 safe Project runtime settings archive; pushed)
 
 Joint-mission code `e747b62d15da7f62405159595636726652de9153` is pushed to `origin/Mcbt5s-Backup-2`; pre-push fetch showed no remote
 advance. Full Space archives now carry a bounded, versioned Agent-owned Project main-runtime profile
@@ -17,12 +59,10 @@ provider call or live acceptance ran. P04 remains PARTIAL for other service stor
 data, retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery. Rollouts remain off;
 preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: continue the managed-services S3/U05 code gap by adding a reachable,
-owner-authorized project-main candidate allocation/reservation path bound to tenant/Space/Project,
-allocation generation, selected template/image digest, current authorization and budget reservation.
-Persist and expose candidates but do not qualify them until trusted runtime observations exist. Test
-stale/concurrent allocation, budget mismatch, revocation and no fabricated attestation. Then continue
-independent P04 and remaining S3–S9/U01–U12/P01–P24 gaps.
+The prior proposed U05 candidate allocator action was superseded by source reconciliation: this
+project-main runtime has no selectable immutable image digest or trusted observation producer, and the
+current verifier schema is for a separate sandbox-computer lane. See the latest U05 gate above; do not
+infer candidate support from a caller assertion. Continue with independent S3–S9/U01–U12/P01–P24 work.
 
 ## Previous checkpoint — 2026-11-14 (U05 exact project hold check; P04 next; pushed)
 
@@ -1629,7 +1669,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Versioned platform/Product-user outboxes and deterministic Workflow dispatch remain. Migration 0252 scopes Product-user dunning provider outcomes to the exact product/end user/subscription; Notifications rechecks active tenancy, current `past_due` status, provider event version and verified recipient before sending. The authenticated Spaces/Router/Shell caller exposes only the current user’s subscription and recent non-PII provider outcomes; erasure deletes the scoped receipts. Current local verification: Billing **12/12**, Notifications **14/14**, Router **53/53**, Spaces **7/7**, plus affected typechecks. Grace/restriction/escalation and retry-cadence policy, inbox delivery and live acceptance remain. |
 | P04 | PARTIAL | Bounded encrypted Space archives capture supported SpaceDO state, workspace/extension objects, WorkspaceCoordinatorDO heads, and—since pushed code `e747b62d15da7f62405159595636726652de9153`—versioned Agent-owned Project main-runtime profiles and inert restart recipes. The cross-worker bridge validates exact tenant/Space/Project scope, previews current-value conflicts, additively restores only missing settings, writes restore-actor audit rows and reports durable restore counts. Runtime allocations, observations and provider snapshots are excluded. Existing format-v2 capture remains capped at 16 MiB/object and 64 MiB aggregate; restore is additive and checksum-verified. `75feeabb` excludes owner-managed grants; `452345fd` preserves uninstall status; `501b1526` prevents unsafe active-task replay. Current focused evidence: Agents helper/routes **9/9**, archive codec/schema **7/7**, Space data-ops **17/17** plus project archive/restore rerun, Shell panel **2/2**, affected typechecks. | Other service D1/DO/provider/runtime state, private inbound communications, approved retention/key/jurisdiction policy, RPO/RTO and isolated/deployed recovery remain open. No deployed/R2/live recovery acceptance ran. |
 | P05 | PARTIAL | Signed SpaceBlueprint knowledge/action requirements, trusted candidate review, setup drafts, durable activation/recovery, and owner-selected Knowledge intent carried to each created Project are local. Migration 137 stores default-empty per-Project grants; activation never writes a grant, and the owner saves through the publication-checked grant API. `75feeabb` prevents grant resurrection during archive restore. The current owner/admin status handoff links validated generated Projects and Space extensions, and discloses that no template uninstall/resource/billing cleanup occurs there (`53ff1c61`). | Actual broader update/uninstall lifecycle, cleanup/retained license/provider-charge semantics, Space-wide provider authority/payer/revocation contract, complete verified rates and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Code `7e218ae2` adds persisted Twilio-only `man`/`woman` `<Say>` style with bounded SDK/host validation and synthetic preview; `7f6f4591` adds owner-triggered exact-binding synthetic scenarios, and `c7b8b45a` shows host response versus saved-settings preview. Telnyx remains DTMF-only. Code `6bf8de58` adds schema-validated per-installation draft/publish, owner/admin confirmation with revision fencing, a 20-version published history and schema-compatible rollback drafts; synthetic draft scenarios remain owner-triggered while inbound handlers use published values. Twilio `price` remains delayed connectivity-only API evidence, not an invoice. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Code `7e218ae2` adds persisted Twilio-only `man`/`woman` `<Say>` style; `7f6f4591` adds owner-triggered exact-binding scenarios, and `c7b8b45a` shows host response versus saved-settings preview. Code `6bf8de58` adds per-installation draft/publish, owner/admin revision fences, bounded published history and compatible rollback drafts. Code `61384f4d` pins each Telnyx DTMF call to its admitted installation, handler digest and published settings revision, resolves historical settings per turn, and exposes the revision in owner call history; migration-backed local tests cover prior-version lookup, unavailable versions, retry and cleanup. Telnyx remains DTMF-only. Twilio `price` remains delayed connectivity-only API evidence, not an invoice. The bounded IVR is not a conversational voice-agent product. First-party listing still needs Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
