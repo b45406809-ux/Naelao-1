@@ -1,6 +1,20 @@
 # Managed services and sidecar implementation progress
 
 
+## Active continuation — 2026-11-14 (guided template channel defaults)
+
+P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
+Foundry Studio now emits the Agent SDK's validated `assistantChannels` shape; the Spaces owner export
+route rejects malformed channels and all email-provisioning directives before artifact storage. The
+UI describes these as preferences and collects no account credentials or provisioning choice. Local
+evidence: Spaces authoring/export **6/6**, Agent SDK dogfood **3/3**, Spaces and Agent SDK typechecks,
+embedded JavaScript syntax and `git diff --check`. No browser, provider, deployment or live acceptance
+ran. P05 remains partial for connections, action authoring, package lifecycle, verified rates and live
+acceptance. The feature is local code persisted in the signed blueprint; next verify activation
+persists the channel defaults in the target Space without provisioning. Preserve the untracked
+`infra/scripts/__pycache__/`; rollout remains disabled.
+
+
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)
 
 U12 fix `6ee3a16577fba9c14304aae4d4b24cb43050c254` and P10/P24 rollback code `0d121ab2` are pushed to
@@ -38,10 +52,8 @@ dogfood and setup-schema suites **13/13**, SDK typecheck, generated script synta
 `git diff --check`. No browser, deployed Template or live acceptance ran. P05 remains PARTIAL for
 channel/action authoring, package lifecycle effects, full cost rates and end-to-end acceptance.
 
-Exact next task: add validated assistant channel defaults to the Foundry Studio export contract using
-the existing `assistantChannels` schema. Render availability and phone prompt defaults as preferences
-only; do not connect accounts or provision resources. Test server validation and persisted export,
-then continue guided-template lifecycle and S3–S9/U01–U12 gaps.
+The earlier assistant-channel authoring action is complete in pushed commit `e96cc0a1`; the exact
+current continuation is recorded above.
 
 ## Prior checkpoint details
 

@@ -14,6 +14,21 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-14
 
+Latest guided-template checkpoint: Foundry Studio now authors validated `assistantChannels`
+availability and phone-prompt defaults. The owner export route reuses the Agent SDK validator and
+rejects email provisioning directives, so this authoring path cannot connect accounts or spend.
+Code `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e` is pushed to `origin/Mcbt5s-Backup-2`.
+Local evidence: Spaces authoring/export tests **6/6**, Agent SDK dogfood test **3/3**, Spaces and
+Agent SDK typechecks, embedded Foundry JavaScript syntax, and `git diff --check`. These are mocked
+local checks; no browser, deployment, provider, or live acceptance ran. P05 remains partial for
+channel connection, action authoring, package lifecycle, rates and live acceptance. Preserve the
+untracked `infra/scripts/__pycache__/` directory.
+
+Exact next action: verify a newly activated template persists its validated channel defaults into the
+target Space's channel-preference storage without triggering email or phone provisioning; add a
+focused activation test. Then continue the next uncoded guided-template lifecycle item and S3–S9 /
+U01–U12 gaps from the two ledgers. Keep rollouts disabled.
+
 The U12 typing fix is pushed to `origin/Mcbt5s-Backup-2` as
 `6ee3a16577fba9c14304aae4d4b24cb43050c254`.
 
@@ -61,10 +76,8 @@ Local evidence: Agent SDK dogfood/blueprint setup suites **13/13**, SDK typechec
 script syntax check. No browser session or deployed Template was exercised. P05 remains PARTIAL for
 channel/action authoring, package lifecycle effects, full cost/rate support and live acceptance.
 
-Exact next action: add template-authorable assistant channel defaults to Foundry Studio's validated
-blueprint export. Reuse the existing `assistantChannels` SDK validator; show channel availability and
-phone prompt preferences as defaults only, with no account connection or provisioning. Test rejected
-unknown channel/default fields and exact export persistence before continuing P05 lifecycle and S3–S9.
+The earlier assistant-channel authoring action was completed and pushed as `e96cc0a1`; see the latest
+checkpoint for its evidence and the exact next task.
 
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 

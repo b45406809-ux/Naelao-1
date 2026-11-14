@@ -1,6 +1,19 @@
 # Platform completion and guided templates progress
 
 
+## Active continuation — 2026-11-14 (guided template channel defaults)
+
+P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
+Foundry Studio emits validated channel availability and phone-prompt preferences. The owner export
+route uses the existing Agent SDK schema and rejects malformed or provisioning directives before it
+stores an artifact. Local evidence: Spaces authoring/export **6/6**, Agent SDK dogfood **3/3**, Spaces
+and Agent SDK typechecks, embedded JavaScript syntax and `git diff --check`. No browser/provider,
+deployed or live acceptance ran. P05 remains PARTIAL for provider connections, action authoring,
+install/update/uninstall lifecycle, full cost/rate authoring and live acceptance. Exact next action:
+test activation persistence of channel defaults into target Space storage and prove no provisioning is
+triggered; then continue the next uncoded P05 lifecycle gap. Rollouts remain disabled.
+
+
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)
 
 U12 fix `6ee3a16577fba9c14304aae4d4b24cb43050c254` and P10/P24 rollback `0d121ab2` are pushed to
@@ -36,10 +49,8 @@ blueprint setup suites **13/13**, SDK typecheck and generated script syntax. No 
 Template acceptance was run. P05 remains PARTIAL for channel/action authoring, broader package
 lifecycle, complete cost/rate disclosure and live acceptance.
 
-Exact next action: add template-authored `assistantChannels` defaults to the validated Foundry Studio
-blueprint export. Reuse the existing SDK validator and present them as availability/phone-prompt
-preferences only; do not imply an account connection or provision provider resources. Cover valid
-export persistence and invalid channel/default rejection, then continue P05 lifecycle and S3–S9.
+The earlier assistant-channel authoring action is complete in pushed commit `e96cc0a1`; the exact
+current continuation is recorded above.
 
 ## Previous checkpoint details
 
