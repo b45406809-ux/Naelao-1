@@ -1,5 +1,26 @@
 # Platform completion and guided templates progress
 
+## Active continuation — 2026-11-14 (P05 Space-shared provider connection scope)
+
+Read-only source reconciliation confirms Space-shared provider connections have no safe current
+caller contract. Migration 0112 makes `project_id` mandatory; the Slack OAuth ticket/callback, owner
+status, Telegram/WhatsApp setup, and revocation routes all revalidate a specific project installation
+(`workers/agents/src/index.ts:5348–5790`; Shell APIs `apps/shell/src/lib/api.ts:2194–2220`). Signed
+SpaceBlueprint dependencies are `SPACE_SHARED`; activation therefore marks required connections
+unsupported and blocks them (`workers/spaces/src/blueprint-activation.ts:124–135`). No Space-scoped
+connection reference or runtime consumer exists. This is a missing product/host authority contract,
+not a credential blocker. Before coding it, the product must identify who authorizes the shared
+provider account, which project/runtime beneficiaries may use it, payer/account-sharing rules, and
+whether revocation drains every dependent installation or only selected beneficiaries. Do not reuse
+UserPort MCP aliases as provider credentials. No code changed and no tests ran for this source trace;
+P05 remains PARTIAL.
+
+Code on the branch remains pushed through `e8a53a97`; no deployment or live provider acceptance ran.
+Exact next action: continue S5/MS08d against current official Modal lifecycle/authentication/hosting,
+region, cancellation, and pricing contracts; add no adapter without a stable supported interface and
+compatible host. If the host/API adoption is a product gate, record it and continue independent
+implementation gaps. Keep rollout flags disabled and fetch before each push.
+
 
 ## Active continuation — 2026-11-14 (U05 main-runtime budget reservation linkage)
 

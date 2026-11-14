@@ -16,32 +16,31 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (U05 main-runtime budget reservation linkage)
+## Latest checkpoint — 2026-11-14 (P05 Space-shared provider connection contract)
 
-Code `bbf9186c7ded715065b9aebd7e132f1bac9c1c7d` is pushed to `origin/Mcbt5s-Backup-2`. The existing
-Cloudflare project-main allocation generation now durably references its exact held Billing budget
-reservation. A generation claim fails closed unless the authoritative `workflow_budget_reservations`
-row matches tenant/Space and is still held. Lost-ack recovery reuses the same reservation ID; owner
-status shows held/expired/released/settled/missing without exposing it as a provider invoice. Migration
-0249 and release/deployment manifests are updated. Local evidence: DynamicSandboxDO and project-main
-profile tests **36/36**, Agents and Shell typechecks, release/deployment manifest validation and
-`git diff --check`. No deployment, provider, browser, or live runtime acceptance ran. The U05 runtime
-allocation/budget link is local; trusted mount/sync/flush observation production is still absent. U06's
-writer admission/drain/reconnect/handoff contract remains unsupported, so live rollout stays disabled.
+The source-to-caller trace confirms this P05 item is not implementable safely on the existing
+provider-connection authority model. Migration `0112` requires `project_id` and keys connection rows
+by tenant/Space/installation/connection. Slack OAuth tickets and callback revalidation, Telegram and
+WhatsApp setup, owner status, routes, and revocation all identify a concrete project installation
+(`workers/agents/src/index.ts:5348–5790`; Shell API `apps/shell/src/lib/api.ts:2194–2220`). The signed
+Blueprint activation preview correctly marks required Space-shared connections unsupported and
+blocks activation (`workers/spaces/src/blueprint-activation.ts:124–135`). There is no Space-shared
+provider connection reference, runtime consumer, or revocation ownership contract. This is missing
+host/product scope design, not missing credentials. A safe design must choose the authorizing owner,
+runtime/project beneficiaries, provider-account sharing and payer, and revocation effects before a
+schema or caller can be added. UserPort MCP aliases remain unrelated provider credentials.
 
-Reconciliation: the active P03/P12 outbox-to-workflow/retry/receipt action already has local code and
-focused evidence recorded at `ee41d123`; no new caller gap was found. The phone dashboard's exact
-active-line selection is already in `ce252033` and the current P06 matrix. Do not repeat those audits.
-P03/P12 grace/restriction/escalation and live delivery remain policy/acceptance gates.
+Code remains pushed through `e8a53a97`; no source code changed in this checkpoint. Existing local U05
+evidence remains `bbf9186c` (36/36 focused tests, Agents/Shell typechecks, release/deployment
+validators and diff check); this P05 read-only trace ran no tests. No deployment, browser, provider or
+live acceptance occurred. Preserve untracked `infra/scripts/__pycache__/`; keep rollouts disabled.
 
-Exact next action: continue P05's uncoded Space-shared provider-connection scope contract from signed
-Blueprint dependencies through activation and the reachable installation/provider-connection owner
-callers. Define a server-validated Space-shared connection reference and revocation lifecycle that
-reuses current secret-vault and owner authorization, or record the exact product contract if existing
-APIs cannot safely support it. Do not treat UserPort MCP aliases as provider credentials. Then return
-to U05 trusted observations only where the current runtime can produce verifiable facts; never assert
-mount/sync/flush behavior before U06 has a supported host contract. Resume all other S3–S9/U01–U12 and
-P01–P24 row-level gaps. Fetch before every push and safely incorporate remote advances.
+Exact next action: continue S5/MS08d by checking current official Modal lifecycle, authentication,
+hosting, regions, cancellation, and pricing against the repository's provider-neutral lifecycle
+scaffold. Implement a reachable adapter only for a stable documented interface and compatible host;
+otherwise record the precise product/host gate and move to another independently implementable
+requirement. Then continue all remaining S3–S9/U01–U12 and P01–P24 gaps. Fetch and safely integrate
+remote advances before every push; never force-push.
 ## Previous checkpoint — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed to `origin/Mcbt5s-Backup-2` from

@@ -1,5 +1,25 @@
 # Managed services and sidecar implementation progress
 
+## Active continuation — 2026-11-14 (P05 Space-shared provider connection scope)
+
+Read-only source-to-caller trace found no safe implementation path for a Space-shared provider
+connection in the current contract. Migration 0112 requires `project_id`; Slack OAuth ticket/callback,
+connection status, Telegram/WhatsApp setup, routes and revocation all bind to a concrete project
+installation (`workers/agents/src/index.ts:5348–5790`; Shell APIs `apps/shell/src/lib/api.ts:2194–2220`).
+The signed SpaceBlueprint activation preview correctly labels required dependencies unsupported and
+blocks activation (`workers/spaces/src/blueprint-activation.ts:124–135`). A new Space-level reference
+would need an explicit authorizer, beneficiary-project/runtime set, shared-account/payer semantics,
+and revocation/drain behavior. Those are missing product/host authority choices, not unavailable
+credentials. UserPort MCP aliases do not represent these provider credentials. No source code or
+tests changed for this trace; no provider or live acceptance ran.
+
+Code remains pushed through `e8a53a97`; preserve untracked `infra/scripts/__pycache__/` and keep
+rollouts disabled. Exact next task: continue S5/MS08d by verifying current official Modal lifecycle,
+authentication, host/runtime, region, cancellation and pricing against `script-engine/modal-lifecycle.ts`.
+Implement only a reachable integration supported by a stable documented interface and compatible
+host; otherwise record the precise host/product gate and proceed to the next independent code gap.
+Fetch and safely integrate remote advances before every push.
+
 
 ## Active continuation — 2026-11-14 (U05 main-runtime budget reservation linkage)
 
