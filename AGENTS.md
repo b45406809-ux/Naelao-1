@@ -16,7 +16,27 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P02 Wrangler-resolved resource preflight)
+## Latest checkpoint — 2026-11-14 (P16 owner-approved image attachment mode)
+
+Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. Channel
+extensions may declare an owner-approved one-image `read_image` grant, bounded to PNG/JPEG/WebP and
+480 KiB. SDK validation, explicit installation approval and Shell disclosure, Space installation
+metadata, exact active install/provider/message checks, stored-byte MIME signature/size validation,
+and isolated-handler dispatch are connected. Local evidence: SDK **31/31**, Agents **10/10**, Spaces
+**13/13**, four package typechecks and `git diff --check`. These are local checks; no deployment or
+live provider acceptance ran. P16 remains partial for audio/arbitrary binaries, ordinary
+non-ephemeral retrieval and live acceptance. P06's first-party phone package listing is gated by the
+missing Naelao publisher identity, signing/key-custody authority and canonical artifact distribution
+contract; do not add a fake listing. P01/P02 external resource/receipt gates remain fail-closed.
+Rollouts stay disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement §10.2's optional host-only coordination singleton reservation per
+approved capability key, configured by Space owners/admins and off by default. Persist and enforce it
+atomically during fact approval, expose only to authorized owners/admins, and test concurrent
+approval, rule changes and retirement. Then wire the Space Template policy handoff and continue
+remaining guided-template, S3–S9/U01–U12/P01–P24 gaps. Fetch and safely integrate before the next push.
+
+## Previous checkpoint — 2026-11-14 (P02 Wrangler-resolved resource preflight)
 
 Source `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
 `origin/Mcbt5s-Backup-2`. The release path now resolves all 28 Worker TOMLs in both staging and

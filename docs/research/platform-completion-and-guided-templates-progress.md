@@ -1,7 +1,32 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
+## Active continuation — 2026-11-14 (P16 owner-approved image attachment mode)
+
+Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. P05/P16
+now support a distinct owner-approved `read_image` channel grant: one PNG/JPEG/WebP image up to 480
+KiB, limited to the active installation/provider binding and exact unexpired message. The public
+metadata route remains key-free; the host verifies MIME signature, package byte cap and stored bytes
+before passing base64 to the isolated handler. SDK, Space persistence, Agents route/dispatch and Shell
+approval/disclosure are connected. Local evidence: SDK **31/31**, Agents **10/10**, Spaces **13/13**,
+Agents/Spaces/Shell/SDK typechecks and `git diff --check`; no deployed or live provider acceptance.
+
+P16 remains PARTIAL for ordinary non-ephemeral Discord retrieval, audio/arbitrary binaries and live
+provider acceptance. P05 remains PARTIAL for broader guided lifecycle, scoped provider/collection
+authority and deployment acceptance. P06 first-party catalog listing is a genuine publisher contract
+gate: `bounded-phone-menu` is a source example, not a centrally signed/distributed release. Required
+decision/evidence: Naelao publisher identity, key custody/signing authority, canonical signed artifact
+and distribution contract, and catalog policy. Do not fabricate listing or bypass signature/owner
+review. P01/P02 resource separation and operator receipts remain external evidence gates. Rollouts
+remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement §10.2's host-only coordination reservation as an optional owner/admin
+singleton rule per approved `capability_key`; persist the rule, enforce it atomically for active
+entries and publication proposals, keep it off by default, and restrict rule details to authorized
+owners/admins. Add contention, rule-change and retirement tests. Then wire the Space Template policy
+handoff and continue remaining guided-template, S3–S9/U01–U12/P01–P24 code gaps.
+
+## Previous continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
 
 Code `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
 `origin/Mcbt5s-Backup-2`. Both deployment preflights resolve all 28 Worker Wrangler TOMLs for
@@ -1251,8 +1276,8 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
-| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds per-installation persisted Twilio call history pinned to the admitted handler. `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin, minimized provider-cost persistence and per-call display. Twilio documents that its delayed `price` is connectivity-only; this remains an API observation, not an invoice. Telnyx remains DTMF-only. Streaming, managed voice, full lifecycle, complete cost/quality evidence and live provider/region acceptance remain. |
+| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost and deployed/live acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn. `36400108` adds per-installation persisted Twilio call history pinned to the admitted handler. `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin, minimized provider-cost persistence and per-call display. Twilio documents that its delayed `price` is connectivity-only; this remains an API observation, not an invoice. Telnyx remains DTMF-only. The bounded phone menu is not a first-party catalog release: publisher identity, signing authority/key custody and canonical distribution remain uncontracted. Streaming, managed voice, full lifecycle, complete cost/quality evidence and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
@@ -1262,7 +1287,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
 | P14 | PARTIAL | `product-end-user/logout` generation revocation and builder `/auth/revoke` are now awaited by reachable Portal/Shell/Dashboard callers; failures retain state and show retry. Product reset generation and DO cleanup are durable. localStorage bearer storage, cookie/CSRF/XSS transport decision and deployed copied-token acceptance remain. |
 | P15 | PARTIAL | Indexed bounded Blackboard paging has local scale evidence; representative relevance, membership density and deployed acceptance remain. |
-| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text-only extension handles exist locally. Discord non-ephemeral ingress, image/audio/raw binary extension access and provider/live acceptance remain unsupported or unverified. |
+| P16 | PARTIAL | Shared Discord media bounds/disclosure plus P05's scoped text and owner-approved one-image extension modes exist locally. Image access is limited to one PNG/JPEG/WebP up to 480 KiB and rechecks exact active install/provider/message and byte signature. Audio/arbitrary binary access, ordinary non-ephemeral Discord retrieval and provider/live acceptance remain unsupported or unverified. |
 | P17 | PARTIAL | Listing identity, freshness, purchase and install handoff are improved; cross-origin identity handoff and accounting policy remain. |
 | P18 | PARTIAL | Product password reset advances security generation atomically; builder/device token and deployed acceptance gaps remain. |
 | P19 | PARTIAL | Checked staging queue/workflow names and DLQs are separated from production; actual account resource identities and isolation receipts remain external. |

@@ -1,7 +1,33 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
+## Active continuation — 2026-11-14 (P16 owner-approved image attachment mode)
+
+Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. Channel
+extensions can declare `read_image` with one PNG/JPEG/WebP up to 480 KiB. The owner/admin install
+caller requires explicit approval; Agents rechecks the active install, provider binding and exact
+unexpired message row, verifies the image signature and declared byte cap, then passes raw bytes only
+to that isolated handler. SDK validation, Space installation metadata, Shell disclosure and runtime
+input bounds are wired. No provider URL, storage key or image bytes enter the public metadata route.
+Local evidence: SDK **31/31**, Agents attachment/runtime/capability suites **10/10**, Spaces owner
+approval **13/13**, Agents/Spaces/Shell/SDK typechecks, and `git diff --check`. These are local mock
+and type checks; no deployed or live provider acceptance occurred.
+
+P05/P16 remain PARTIAL for audio/arbitrary binaries, ordinary non-ephemeral Discord retrieval, richer
+voice behavior, provider acceptance and full guided-template lifecycle. P06 first-party discovery is
+still gated: the repository has a source example, not a centrally signed/distributed release. The
+missing contract is Naelao publisher identity, key custody/signing authority, and the canonical
+artifact/distribution and catalog policy. Do not add a static listing that bypasses release trust.
+S2 remains IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain their row-level gaps. Keep all
+rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+Exact next action: close §10.2's independent host-only coordination reservation gap. Add an optional,
+owner/admin-configured singleton rule per approved `capability_key`, durably enforce it against active
+Space entries and proposal approval with no default singleton, expose it only to authorized owners and
+admins, and test competing approvals, rule changes and retirement. Then continue the template posture
+handoff and remaining S3–S9/U01–U12/P01–P24 code gaps without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (P02 Wrangler-resolved release inventory)
 
 Code `6040847ea8967728f8ffb41df25231a939a61f62` is pushed to
 `origin/Mcbt5s-Backup-2`. Both deployment preflights resolve all 28 Worker Wrangler TOMLs for
