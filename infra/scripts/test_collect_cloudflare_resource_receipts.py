@@ -9,9 +9,11 @@ from typing import Any
 from collect_cloudflare_resource_receipts import (
     CloudflareReadOnlyApi,
     ReceiptCollectionError,
+    _load_current_source_map,
     _write_output,
     collect_receipts,
 )
+from validate_environment_resources import build_source_map
 
 
 class FakeApi(CloudflareReadOnlyApi):
@@ -99,6 +101,17 @@ class_name = "ExampleDO"
             _write_output(path, {"version": 1, "resources": [1]}, False)
         _write_output(path, {"version": 1, "resources": [1]}, True)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"version": 1, "resources": [1]})
+
+    def test_custom_resource_map_must_match_current_worker_source(self) -> None:
+        source_map = build_source_map(self.workers_dir)
+        path = self.root / "custom-resource-map.json"
+        path.write_text(json.dumps(source_map), encoding="utf-8")
+        self.assertEqual(_load_current_source_map(path, self.workers_dir), source_map)
+
+        stale_source_map = {**source_map, "deployment_surfaces": []}
+        path.write_text(json.dumps(stale_source_map), encoding="utf-8")
+        with self.assertRaisesRegex(ReceiptCollectionError, "resource_map_stale"):
+            _load_current_source_map(path, self.workers_dir)
 
 
 if __name__ == "__main__":

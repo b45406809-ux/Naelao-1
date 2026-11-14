@@ -247,6 +247,16 @@ def _load_source_map(path: Path) -> dict[str, Any]:
     return source_map
 
 
+def _load_current_source_map(resource_map_path: Path, workers_dir: Path) -> dict[str, Any]:
+    source_map = _load_source_map(resource_map_path)
+    from validate_environment_resources import build_source_map
+
+    source_now = build_source_map(workers_dir)
+    if source_now != source_map:
+        raise ReceiptCollectionError("resource_map_stale_regenerate_source_map_first")
+    return source_now
+
+
 def _write_output(path: Path, payload: dict[str, Any], replace_existing: bool) -> None:
     if path.exists() and not replace_existing:
         raise ReceiptCollectionError("output_exists_use_replace_existing")
@@ -279,15 +289,9 @@ def main() -> int:
     if not args.account_id or not ACCOUNT_ID_PATTERN.fullmatch(args.account_id):
         parser.error("set CLOUDFLARE_ACCOUNT_ID or pass a 32-character hexadecimal --account-id")
     try:
-        source_map = _load_source_map(args.resource_map)
-        source_now = None
-        if args.resource_map.resolve() == MAP_PATH.resolve():
-            from validate_environment_resources import build_source_map
-            source_now = build_source_map(args.workers_dir)
-            if source_now != source_map:
-                raise ReceiptCollectionError("resource_map_stale_regenerate_source_map_first")
+        source_map = _load_current_source_map(args.resource_map, args.workers_dir)
         api = CloudflareReadOnlyApi(args.account_id, token)
-        payload = collect_receipts(api, source_now or source_map, args.observer, args.workers_dir)
+        payload = collect_receipts(api, source_map, args.observer, args.workers_dir)
         if args.output:
             _write_output(args.output, payload, args.replace_existing)
             print(f"Wrote {len(payload['resources'])} read-only resource receipts to {args.output}")
