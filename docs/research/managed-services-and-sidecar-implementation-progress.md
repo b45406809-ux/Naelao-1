@@ -1,35 +1,16 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (S4/MS12 restart-recipe settings; P01 schema 0250)
+## Active checkpoint — 2026-11-14 (P03/P12 tenant-bound dunning dispatch; S4/MS12 settings)
 
-Code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` is pushed to `origin/Mcbt5s-Backup-2`. Migration
-0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed per-revision audit.
-Agents exposes owner/admin-only read/write with bounded input, shell/secret-shaped value rejection,
-compare-and-set revisions and single-winner concurrent audit behavior. Router now reaches the Agents
-route; the existing Shell project-runtime panel exposes the editor. Recipes are inert metadata:
-execution and health verification remain unsupported and explicitly disclosed. No credentials or
-runtime environment values are stored.
+S4/MS12 code `b26852c3ea17d24d3fabba4a4c6bc735abaeb932` and runbook/ledger checkpoint `1044097a0c67382b4d969c08873b0020af2d417b` are pushed to `origin/Mcbt5s-Backup-2`. Migration 0250 adds project-scoped, versioned restart-recipe metadata and actor-attributed audit. Owner/admin CAS routes, authenticated Router reachability and a Shell editor are present. Values are bounded and reject shell/secret-shaped inputs; execution/health verification remain explicitly unsupported. P01 now pins 250 migrations; fresh SQLite rehearsal, release manifest/runner suites and validators pass locally as recorded below.
 
-Local evidence: profile/persistence and route suites **9/9**, Agents typecheck, Shell typecheck and
-inert-state UI assertion **1/1**, Router route test **4/4** and typecheck, release manifest/runner
-unit suites **38/38**, full fresh SQLite migration rehearsal **1/1** through required schema 0250,
-release/deployment manifest validation, and `git diff --check`. These are local SQLite/mocked checks;
-no D1, Container, provider, deployment, browser or live acceptance ran. P01 now pins all **250**
-manifest migrations. P02 remains fail-closed pending actual per-environment resource ownership,
-read-only receipts and operator-attested D1 baselines.
+P03/P12 code `ca9aead9f8dca0ef77e66b154ee39d40368489d4` is pushed. Product-user dunning dispatch now verifies that the current product tenant matches `billing_dunning_outbox.tenant_id` before queueing; mismatched or missing ownership remains deferred and cannot cross tenant scope. This complements the existing stable outbox/workflow IDs, current-subscription recheck and notification receipts without changing billing policy.
 
-S4/MS12 remains PARTIAL: there is no accepted runtime adapter or U05 mount/sync/flush producer, U06
-writer-admission/drain/reconnect/handoff contract, separately encrypted private-state fallback,
-process restart execution, physical snapshot purge, or deployed isolation/recovery evidence. P04
-recovery still lacks the other service stores, private inbound state, approved retention/key/
-jurisdiction policy, RPO/RTO and isolated/deployed acceptance. Keep all rollouts disabled and preserve
-`infra/scripts/__pycache__/`.
+Local evidence: dunning outbox/dispatch/status tests **13/13**, Billing typecheck, Workflows queue/recovery tests **13/13**, and `git diff --check`. For S4: profile/route tests **9/9**, Agents typecheck, Shell typecheck and inert editor test **1/1**, Router route test **4/4** and typecheck. P01: full fresh SQLite migration rehearsal **1/1** through 0250, release manifest/runner suites **38/38**, release/deployment validators pass. All are local/mocked checks; no provider, remote D1, deployment, browser or live acceptance ran.
 
-Exact next action: trace P03/P12 from the durable Billing outbox and queue producers through workflow
-creation, retry scheduling and notification receipts. Close one concrete reachable contract or
-idempotency gap without selecting grace, restriction or retry-cadence policy; then continue the
-remaining S3–S9/U01–U12 and P01–P24 requirements in dependency order. Fetch and safely integrate
-remote advances before every push.
+P02 still requires actual per-environment resource ownership/IDs, fresh read-only receipts and operator-attested D1 baselines. P03/P12 still lack approved grace/restriction/escalation and retry-cadence policy plus live delivery acceptance. S4/MS12 still lacks the accepted runtime adapter, U05 observation producer, U06 writer admission/drain/reconnect/handoff contract, encrypted private-state byte fallback, recipe execution and physical snapshot purge. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: build the customer-facing signed keypad-extension microapp on the existing installation settings, owner phone dashboard and test-only simulation contracts. Keep simulation synthetic, preserve Twilio-only speech and Telnyx DTMF limits, and leave provider provisioning/streaming unavailable. Then continue the remaining guided-template setup, voice-dashboard and shared-Space coordination requirements plus S3–S9/U01–U12. Fetch and safely integrate remote advances before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
