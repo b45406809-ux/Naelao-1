@@ -24,10 +24,13 @@ local checks; no browser, deployment, provider, or live acceptance ran. P05 rema
 channel connection, action authoring, package lifecycle, rates and live acceptance. Preserve the
 untracked `infra/scripts/__pycache__/` directory.
 
-Exact next action: verify a newly activated template persists its validated channel defaults into the
-target Space's channel-preference storage without triggering email or phone provisioning; add a
-focused activation test. Then continue the next uncoded guided-template lifecycle item and S3–S9 /
-U01–U12 gaps from the two ledgers. Keep rollouts disabled.
+Activation persistence is verified in pushed test commit `6693d380914d248ac7885a90a10ddfc055d665ba`:
+the target DO stores `channels:template`, the owner preference endpoint resolves it, and email remains
+`none` / `provisionOnCreate:false`. Spaces activation test passes **3/3** and Spaces typecheck passes;
+no provider is invoked. Exact next action: include these validated defaults in the activation-preview
+API and render an explicit pre-install review in Shell, clearly separating preferences from account
+connections/provisioning. Then continue the next uncoded guided-template lifecycle item and S3–S9 /
+U01–U12. Keep rollouts disabled.
 
 The U12 typing fix is pushed to `origin/Mcbt5s-Backup-2` as
 `6ee3a16577fba9c14304aae4d4b24cb43050c254`.

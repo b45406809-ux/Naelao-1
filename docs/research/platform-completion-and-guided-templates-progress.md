@@ -1,7 +1,7 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (guided template channel defaults)
+## Active continuation — 2026-11-14 (guided template activation channel persistence)
 
 P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
 Foundry Studio emits validated channel availability and phone-prompt preferences. The owner export
@@ -9,9 +9,13 @@ route uses the existing Agent SDK schema and rejects malformed or provisioning d
 stores an artifact. Local evidence: Spaces authoring/export **6/6**, Agent SDK dogfood **3/3**, Spaces
 and Agent SDK typechecks, embedded JavaScript syntax and `git diff --check`. No browser/provider,
 deployed or live acceptance ran. P05 remains PARTIAL for provider connections, action authoring,
-install/update/uninstall lifecycle, full cost/rate authoring and live acceptance. Exact next action:
-test activation persistence of channel defaults into target Space storage and prove no provisioning is
-triggered; then continue the next uncoded P05 lifecycle gap. Rollouts remain disabled.
+install/update/uninstall lifecycle, full cost/rate authoring and live acceptance. Activation
+persistence is covered by `6693d380914d248ac7885a90a10ddfc055d665ba`: the target DO writes
+`channels:template`, the owner channel-preferences endpoint resolves those values, and email stays
+`none` / `provisionOnCreate:false`. Spaces activation tests pass **3/3** and Spaces typecheck passes;
+no provider or deployment ran. Exact next action: add validated channel defaults to the activation
+preview API and pre-install review UI, explicitly distinguishing availability preferences from
+account connections and provisioning. Then continue P05 lifecycle. Rollouts remain disabled.
 
 
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)

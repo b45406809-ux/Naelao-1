@@ -1,7 +1,7 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (guided template channel defaults)
+## Active continuation — 2026-11-14 (guided template activation channel persistence)
 
 P05 channel availability authoring/export is pushed as `e96cc0a1a983d64dd4e0a75e9326b67fa3669c4e`.
 Foundry Studio now emits the Agent SDK's validated `assistantChannels` shape; the Spaces owner export
@@ -10,9 +10,14 @@ UI describes these as preferences and collects no account credentials or provisi
 evidence: Spaces authoring/export **6/6**, Agent SDK dogfood **3/3**, Spaces and Agent SDK typechecks,
 embedded JavaScript syntax and `git diff --check`. No browser, provider, deployment or live acceptance
 ran. P05 remains partial for connections, action authoring, package lifecycle, verified rates and live
-acceptance. The feature is local code persisted in the signed blueprint; next verify activation
-persists the channel defaults in the target Space without provisioning. Preserve the untracked
-`infra/scripts/__pycache__/`; rollout remains disabled.
+acceptance. The feature is local code persisted in the signed blueprint. Activation persistence is
+covered by
+`6693d380914d248ac7885a90a10ddfc055d665ba`: the target DO writes `channels:template`, the existing
+owner preferences endpoint resolves the defaults, and no provisioning state is created (email stays
+`none` / false). Activation tests pass **3/3**, Spaces typecheck passes. No provider or deployment
+ran. Exact next action: expose validated defaults in the activation preview and review UI, then resume
+remaining guided-template lifecycle and S3–S9/U01–U12 gaps. Preserve the untracked
+`infra/scripts/__pycache__/`; rollouts remain disabled.
 
 
 ## Current checkpoint — 2026-11-14 (U12 verification resumed after P21)
