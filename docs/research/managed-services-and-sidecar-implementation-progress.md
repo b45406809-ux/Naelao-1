@@ -1,6 +1,35 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
+## Active checkpoint — 2026-11-14 (cross-plan P20 template subscription refund evidence)
+
+Code `5a4626268020d3f795b04df38117a78cb8246170` is pushed to `origin/Mcbt5s-Backup-2` after a
+pre-push fetch confirmed the remote at `a25109cd` with no concurrent advance. The signed Lemon
+Squeezy `subscription_payment_refunded` event now maps to an evidence-only normalized event.
+Migration 0251 records a deduplicated signed-body receipt, provider invoice/subscription references,
+an exact local subscription/Space match, and bounded review reason/state. Unknown or malformed refund
+amounts stay null; neither subscription access nor paid cycles, developer earnings, or payouts change.
+Marketplace buyer/author status is scoped to the Space tenant or listing author, and an operator-key/
+actor-audited read exposes unmatched cases without exposing the webhook body hash.
+
+Local evidence: billing-core provider tests **11/11**, template renewal/refund webhook tests **3/3**,
+Marketplace case routes **6/6**, Billing operator review **5/5**, fixed-license refund regression
+**8/8**, affected Billing/Marketplace/Marketplace-web/billing-core typechecks, release migration suite
+**20/20**, release/deployment manifest validators, and `git diff --check`. No provider sandbox,
+deployment, live buyer journey, or provider acceptance ran. P20 remains PARTIAL for fixed-license and
+template access/accounting/payout policy, disputes, live reconciliation, and deployment acceptance.
+P21's existing encrypted auth-email outboxes/status callers were verified in current source and were
+not duplicated. S2 remains IMPLEMENTED_LOCAL only for supported lanes; S3–S9/U01–U12 retain the
+specific runtime, product and live gates in the matrix. Rollouts stay disabled; preserve the untracked
+Python cache.
+
+Exact next action: continue P05 guided-template activation by carrying owner/admin-selected current
+published Project Knowledge collections from the signed SpaceBlueprint activation review into the
+existing migration-137 per-Project grant ledger. At commit and retry, recheck the active signed package
+declaration and current publication; omitted choices remain empty. Add authorization, retry and revoke
+coverage. Keep Space-wide provider connection authority/payer/revocation semantics separately gated.
+Then continue other uncoded P01–P24 and S3–S9/U01–U12 requirements; fetch/integrate before each push.
+
+## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
 Code `7e218ae2932fbd3c2f67df9c70e11d5b7d4a36d9` is pushed to `origin/Mcbt5s-Backup-2`; a fetch
 immediately before push confirmed the remote at `de27aea7` and no concurrent advance. Signed package

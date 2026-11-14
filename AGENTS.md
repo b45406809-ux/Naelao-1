@@ -16,7 +16,34 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
+## Latest checkpoint — 2026-11-14 (P20 template-subscription refund evidence)
+
+Code `5a4626268020d3f795b04df38117a78cb8246170` is pushed to `origin/Mcbt5s-Backup-2` after a
+pre-push fetch confirmed the remote was at `a25109cd` with no concurrent advance. Lemon Squeezy's
+documented `subscription_payment_refunded` event now normalizes with its event and invoice identity.
+Migration 0251 stores an idempotent signed-body refund receipt, links only an exact matching Space and
+subscription, and preserves unknown/invalid amounts for review. Marketplace exposes bounded no-store
+buyer/author case status; Billing has a separately keyed, audited operator read. The path does not
+change template access, paid cycles, creator earnings or payouts. Release schema/deployment manifests
+pin migration 0251.
+
+Local verification: billing-core provider **11/11**, template renewal/refund webhook **3/3**,
+Marketplace case routes **6/6**, Billing operator refund route **5/5**, fixed-license settlement
+regression **8/8**, affected Billing/Marketplace/Marketplace-web/billing-core typechecks, release
+migration suite **20/20**, release/deployment validators, and `git diff --check`. No provider sandbox,
+deployment, buyer browser, carrier or live acceptance ran. P20 remains PARTIAL for license/access and
+creator-accounting policy, disputes, payout recovery and live acceptance. P21's encrypted Product and
+builder auth-email outboxes/status paths were already present in pushed source; no P21 code was repeated.
+
+Exact next action: continue P05 guided-template activation. Carry explicit owner/admin selections of
+currently published Project Knowledge collections from signed SpaceBlueprint activation review into
+the existing migration-137 per-Project grant ledger. Revalidate the active signed declaration and
+publication at commit/retry, keep omitted selections empty, and add authorization/retry/revocation
+coverage. Preserve separate provider-connection authority/payer/revocation gates. Then continue the
+next uncoded P01–P24 and S3–S9/U01–U12 requirements. Rollouts remain disabled; preserve
+`infra/scripts/__pycache__/`; fetch and safely integrate before every push; never force-push or deploy.
+
+## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
 Code `7e218ae2932fbd3c2f67df9c70e11d5b7d4a36d9` is pushed to `origin/Mcbt5s-Backup-2` from
 `autonomous-managed-services-20261111`. Before pushing, fetch showed the remote at `de27aea7` with no
