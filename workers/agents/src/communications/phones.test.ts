@@ -1248,4 +1248,37 @@ describe("assistant telephone safety and lifecycle", () => {
    handler_sha256: "a".repeat(64), state: "completed", duration_seconds: 37, caller_hint: "•••• 0101" }));
  });
 
+ it("owner-confirms an exact inbound Twilio extension cost into the minimized ledger and read model", async () => {
+  const f = await phoneFixture();
+  const callSid = "CA" + "e".repeat(32), handlerSha256 = "f".repeat(64);
+  await f.db.prepare("UPDATE assistant_phone_bindings SET purpose='extension' WHERE id=?").bind(f.binding.id).run();
+  await f.db.prepare(`INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status)
+    VALUES(?, 'install-cost', ?, 'active')`).bind(f.binding.id, handlerSha256).run();
+  await f.db.prepare(`INSERT INTO assistant_phone_events(id,binding_id,kind,sender,status,extension_installation_id,handler_sha256)
+    VALUES(?,?,'call',?,'completed','install-cost',?)`).bind(callSid,f.binding.id,other,handlerSha256).run();
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith(`/Calls/${callSid}.json`)) return Response.json({ account_sid: account, sid: callSid, direction: "inbound",
+      from: other, to: number, status: "completed", price: "-0.02500", price_unit: "USD",
+      start_time: "2026-11-14T09:00:00Z", duration: "75" });
+    throw new Error(`unexpected provider read ${url}`);
+  }));
+  const request = { id: callSid, binding_id: f.binding.id, extension_call: true, confirm: true,
+    extension_installation_id: "install-cost", handler_sha256: handlerSha256 };
+  await expect(f.act("phone-twilio-cost", request)).resolves.toEqual({
+    status: "observed", amount: "0.02500", currency: "USD", provenance: "provider_api_observed",
+  });
+  const stored = await f.db.prepare(`SELECT provider,usage_kind,quantity_unit,quantity_micros,provider_cost_micros,currency,source_api,
+      operation_ref_sha256,account_ref_sha256 FROM managed_service_provider_cost_observations`).first<Record<string, unknown>>();
+  expect(stored).toMatchObject({ provider: "twilio", usage_kind: "voice", quantity_unit: "second", quantity_micros: 75_000_000,
+    provider_cost_micros: 25_000, currency: "USD", source_api: "twilio.calls.get" });
+  expect(JSON.stringify(stored)).not.toContain(callSid);
+  expect(JSON.stringify(stored)).not.toContain(account);
+  const status = await f.act("phone-status") as { recent_twilio_extension_calls: Array<Record<string, unknown>> };
+  expect(status.recent_twilio_extension_calls).toContainEqual(expect.objectContaining({ call_sid: callSid, binding_id: f.binding.id,
+    installation_id: "install-cost", handler_sha256: handlerSha256,
+    cost_report: { status: "reported", provider_cost_micros: 25_000, currency: "USD", provenance: "provider_api_observed" } }));
+  await expect(f.act("phone-twilio-cost", { ...request, confirm: false })).rejects.toThrow("twilio_cost_owner_confirmation_required");
+ });
+
 });

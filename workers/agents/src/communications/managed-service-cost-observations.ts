@@ -77,3 +77,26 @@ export async function recordProviderApiCostObservation(db: CostDatabase, input: 
   return { inserted: result.meta.changes === 1, replayed: result.meta.changes !== 1, provenance: "provider_api_observed" as const,
     providerCostMicros, currency: input.currency };
 }
+
+/** Read one exact minimized provider receipt without returning its hashed references. */
+export async function getProviderApiCostObservation(db: CostDatabase, input: Pick<ProviderApiCostObservationInput,
+  "tenantId" | "spaceId" | "projectId" | "provider" | "serviceId" | "operationRef" | "accountRef" | "usageKind" | "sourceApi">) {
+  if (!ID.test(input.tenantId) || !ID.test(input.spaceId) || (input.projectId != null && !ID.test(input.projectId))
+    || !/^[a-z][a-z0-9_-]{1,63}$/.test(input.provider) || !/^[a-z][a-z0-9_.:-]{1,128}$/.test(input.serviceId)
+    || !REF.test(input.operationRef) || !REF.test(input.accountRef)
+    || !["compute", "idle", "storage", "network", "request", "model", "voice", "sms", "email", "other"].includes(input.usageKind)
+    || !/^[a-z][a-z0-9_.:/-]{1,127}$/.test(input.sourceApi)) throw new Error("provider_cost_observation_lookup_invalid");
+  const [operationHash, accountHash] = await Promise.all([sha256(input.operationRef), sha256(input.accountRef)]);
+  const row = await db.prepare(`SELECT provider_cost_micros,currency FROM managed_service_provider_cost_observations
+    WHERE tenant_id=? AND space_id=? AND project_id IS ? AND provider=? AND service_id=?
+      AND operation_ref_sha256=? AND account_ref_sha256=? AND usage_kind=? AND source_api=?
+    ORDER BY observed_at DESC,id LIMIT 1`)
+    .bind(input.tenantId, input.spaceId, input.projectId ?? null, input.provider, input.serviceId,
+      operationHash, accountHash, input.usageKind, input.sourceApi)
+    .first<{ provider_cost_micros: number; currency: string }>();
+  const amount = row ? Number(row.provider_cost_micros) : NaN;
+  if (!row || !Number.isSafeInteger(amount) || amount < 0 || !/^[A-Z]{3}$/.test(row.currency))
+    return { status: "unknown" as const, provider_cost_micros: null, currency: null, provenance: null };
+  return { status: "reported" as const, provider_cost_micros: amount, currency: row.currency,
+    provenance: "provider_api_observed" as const };
+}

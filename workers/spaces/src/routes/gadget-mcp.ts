@@ -200,9 +200,22 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "", userId = c.req.header("x-naelao-user-id") ?? "";
     const { spaceId = "", appId = "" } = c.req.param();
     const role = c.req.header("x-naelao-role") ?? "viewer";
-    if (c.req.method !== "GET") return c.json({ error_code: "method_not_allowed" }, 405);
+    if (c.req.method !== "GET" && c.req.method !== "POST") return c.json({ error_code: "method_not_allowed" }, 405);
     if (!tenantId || !userId || !spaceId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
+    let requestedCallSid: string | null = null;
+    if (c.req.method === "POST") {
+      let body: { call_sid?: unknown; confirm?: unknown };
+      try {
+        const bytes = await readBoundedRequestBytes(c.req.raw, 8 * 1024);
+        body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as typeof body;
+      } catch { return c.json({ error_code: "bad_request" }, 400); }
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).some(key => !["call_sid", "confirm"].includes(key))
+        || body.confirm !== true || typeof body.call_sid !== "string" || !/^CA[a-fA-F0-9]{32}$/.test(body.call_sid))
+        return c.json({ error_code: "bad_request" }, 400);
+      requestedCallSid = body.call_sid;
+    }
     const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
       WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.json({ error_code: "not_found" }, 404);
@@ -225,8 +238,9 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
         recent_telnyx_extension_calls?: Array<{ binding_id?: unknown; installation_id?: unknown; handler_sha256?: unknown;
           state?: unknown; turn_count?: unknown; started_at?: unknown; duration_seconds?: unknown; caller_hint?: unknown;
           cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; leg_count?: unknown } }>;
-        recent_twilio_extension_calls?: Array<{ binding_id?: unknown; installation_id?: unknown; handler_sha256?: unknown;
-          state?: unknown; started_at?: unknown; duration_seconds?: unknown; caller_hint?: unknown }>;
+        recent_twilio_extension_calls?: Array<{ call_sid?: unknown; binding_id?: unknown; installation_id?: unknown; handler_sha256?: unknown;
+          state?: unknown; started_at?: unknown; duration_seconds?: unknown; caller_hint?: unknown;
+          cost_report?: { status?: unknown; provider_cost_micros?: unknown; currency?: unknown; provenance?: unknown } }>;
       }>(phoneStatus, 512 * 1024);
       const lines = (Array.isArray(status.extension_lines) ? status.extension_lines : [])
         .filter(line => line.installation_id === runtime.installationId && typeof line.id === "string"
@@ -256,12 +270,42 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const recentTwilioCalls = (Array.isArray(status.recent_twilio_extension_calls) ? status.recent_twilio_extension_calls : [])
         .filter(call => typeof call.binding_id === "string" && twilioBindingIds.has(call.binding_id)
           && call.installation_id === runtime.installationId && typeof call.handler_sha256 === "string" && /^[a-f0-9]{64}$/.test(call.handler_sha256))
-        .slice(0, 50).map(call => ({ handler_sha256: call.handler_sha256,
+        .slice(0, 50).map(call => ({ call_sid: typeof call.call_sid === "string" && /^CA[a-fA-F0-9]{32}$/.test(call.call_sid) ? call.call_sid : null,
+          binding_id: call.binding_id as string, installation_id: call.installation_id as string, handler_sha256: call.handler_sha256,
           state: typeof call.state === "string" && ["received", "in-progress", "answered", "completed", "busy", "failed", "no-answer", "canceled"].includes(call.state)
             ? call.state : "unknown",
           started_at: Number.isSafeInteger(call.started_at) ? call.started_at : null,
           duration_seconds: Number.isSafeInteger(call.duration_seconds) ? call.duration_seconds : null,
-          caller_hint: typeof call.caller_hint === "string" && /^•••• \d{4}$/.test(call.caller_hint) ? call.caller_hint : null }));
+          caller_hint: typeof call.caller_hint === "string" && /^•••• \d{4}$/.test(call.caller_hint) ? call.caller_hint : null,
+          cost_report: call.cost_report?.status === "reported" && Number.isSafeInteger(call.cost_report.provider_cost_micros)
+            && typeof call.cost_report.currency === "string" && /^[A-Z]{3}$/.test(call.cost_report.currency)
+            ? { status: "reported" as const, provider_cost_micros: call.cost_report.provider_cost_micros,
+                currency: call.cost_report.currency, provenance: "provider_api_observed" as const }
+            : { status: "unknown" as const, provider_cost_micros: null, currency: null, provenance: null } }));
+      if (requestedCallSid) {
+        const call = recentTwilioCalls.find(item => item.call_sid === requestedCallSid
+          && item.installation_id === runtime.installationId && item.binding_id && item.handler_sha256);
+        if (!call || call.call_sid === null || typeof call.handler_sha256 !== "string") return c.json({ error_code: "phone_call_not_found" }, 404);
+        const costResponse = await c.env.AGENTS_WORKER.fetch(new Request(
+          `http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?action=phone-twilio-cost`,
+          { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+              "x-naelao-user-id": userId, "x-naelao-role": role,
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+            body: JSON.stringify({ id: call.call_sid, binding_id: call.binding_id, extension_call: true, confirm: true,
+              extension_installation_id: runtime.installationId, handler_sha256: call.handler_sha256 }) }
+        ));
+        if (!costResponse.ok) return c.json({ error_code: costResponse.status === 403 ? "phone_dashboard_forbidden" : "phone_cost_unavailable" },
+          costResponse.status === 403 ? 403 : 503);
+        const cost = await readBoundedResponseJson<{ status?: unknown; amount?: unknown; currency?: unknown; provenance?: unknown }>(costResponse, 8 * 1024);
+        if (cost.status === "observed" && typeof cost.amount === "string" && /^[0-9]{1,12}(?:\.[0-9]{1,12})?$/.test(cost.amount)
+          && typeof cost.currency === "string" && /^[A-Z]{3}$/.test(cost.currency)) {
+          return new Response(JSON.stringify({ status: "observed", amount: cost.amount, currency: cost.currency,
+            provenance: "provider_api_observed" }), { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
+        }
+        if (cost.status === "pending") return new Response(JSON.stringify({ status: "pending" }),
+          { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
+        return c.json({ error_code: "phone_cost_unavailable" }, 503);
+      }
       const safeLines = lines.map(line => ({ provider: line.provider, status: line.status,
         handler_status: typeof line.handler_status === "string" ? line.handler_status : "unassigned",
         speech_input_allowed: line.provider === "twilio" && line.speech_input_allowed === true,
@@ -269,8 +313,11 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       return new Response(JSON.stringify({ installation_status: safeLines.some(line => line.handler_status === "active") ? "assigned" : "not_assigned",
         signed_release: { extension_id: runtime.extensionId, version: runtime.releaseVersion, publisher_id: runtime.publisherId,
           publisher_key_id: runtime.publisherKeyId, publisher_key_status: "active" },
-        lines: safeLines, recent_telnyx_calls: recentCalls, recent_twilio_calls: recentTwilioCalls,
-        cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges. Twilio inbound-call cost is not reported in this history." }),
+        lines: safeLines, recent_telnyx_calls: recentCalls,
+        recent_twilio_calls: recentTwilioCalls.map(call => ({ call_sid: call.call_sid, handler_sha256: call.handler_sha256,
+          state: call.state, started_at: call.started_at, duration_seconds: call.duration_seconds,
+          caller_hint: call.caller_hint, cost_report: call.cost_report })),
+        cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown. Twilio Calls API price covers call connectivity and may exclude other call-related features." }),
         { headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "private, no-store" } });
     } catch { return c.json({ error_code: "phone_dashboard_data_unavailable" }, 503); }
   };
@@ -378,6 +425,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.patch("/spaces/:spaceId/apps/:appId/api/assistant-voice", forwardAssistantVoice);
   app.get("/spaces/:spaceId/apps/:appId/api/phone-dashboard", forwardPhoneDashboard);
+  app.post("/spaces/:spaceId/apps/:appId/api/phone-dashboard", forwardPhoneDashboard);
   app.post("/spaces/:spaceId/apps/:appId/api/phone-simulate", forwardPhoneSimulation);
   app.get("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);
   app.patch("/spaces/:spaceId/apps/:appId/api/template-setup", forwardTemplateSetup);

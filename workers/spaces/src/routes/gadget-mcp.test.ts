@@ -170,11 +170,17 @@ describe("gadget MCP host adapter", () => {
     const runtime = { managed: true, active: true, releaseValid: true, installationId: "install-a", extensionId: "ext_phone_menu",
       releaseVersion: "1.2.0", publisherId: "pub_phone", publisherKeyId: "a".repeat(64), phoneChannel: true, phoneDashboardAllowed: true };
     const spaceFetch = vi.fn(async () => Response.json(runtime));
+    let twilioCostBody: unknown;
     const agentsFetch = vi.fn(async (request: Request) => {
-      expect(request.method).toBe("GET");
       expect(new URL(request.url).pathname).toBe("/spaces/s/assistant-communications");
-      expect(new URL(request.url).searchParams.get("action")).toBe("phone-status");
       expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+      if (request.method === "POST") {
+        expect(new URL(request.url).searchParams.get("action")).toBe("phone-twilio-cost");
+        twilioCostBody = await request.json();
+        return Response.json({ status: "observed", amount: "0.04200", currency: "USD", provenance: "provider_api_observed" });
+      }
+      expect(request.method).toBe("GET");
+      expect(new URL(request.url).searchParams.get("action")).toBe("phone-status");
       return Response.json({ extension_lines: [
         { id: "binding-a", provider: "telnyx", phone_number: "+14155550123", installation_id: "install-a", status: "active", handler_status: "active" },
         { id: "binding-b", provider: "twilio", phone_number: "+14155550999", installation_id: "install-b", status: "active", handler_status: "active" },
@@ -185,7 +191,8 @@ describe("gadget MCP host adapter", () => {
         { binding_id: "binding-b", installation_id: "install-b", handler_sha256: "b".repeat(64), state: "ended", turn_count: 7, started_at: 1_800_000_001, duration_seconds: 42, caller_hint: "•••• 0999",
           cost_report: { status: "reported", provider_cost_micros: 999999, currency: "USD", leg_count: 2 } },
       ], recent_twilio_extension_calls: [
-        { binding_id: "binding-c", installation_id: "install-a", handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002, duration_seconds: 37, caller_hint: "•••• 0124" },
+        { call_sid: `CA${"c".repeat(32)}`, binding_id: "binding-c", installation_id: "install-a", handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002, duration_seconds: 37, caller_hint: "•••• 0124",
+          cost_report: { status: "reported", provider_cost_micros: 42000, currency: "USD", provenance: "provider_api_observed" } },
         { binding_id: "binding-b", installation_id: "install-b", handler_sha256: "d".repeat(64), state: "completed", started_at: 1_800_000_003, duration_seconds: 42, caller_hint: "•••• 0999" },
       ] });
     });
@@ -211,8 +218,10 @@ describe("gadget MCP host adapter", () => {
     ], recent_telnyx_calls: [expect.objectContaining({ state: "ended", turn_count: 2, caller_hint: "•••• 0199",
       handler_sha256: "a".repeat(64),
       cost_report: { status: "reported", provider_cost_micros: 123456, currency: "USD", leg_count: 1 } })],
-      recent_twilio_calls: [{ handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002, duration_seconds: 37, caller_hint: "•••• 0124" }],
-      cost_disclosure: "Telnyx reports are provider API observations, not invoices or customer charges. Twilio inbound-call cost is not reported in this history." });
+      recent_twilio_calls: [{ call_sid: `CA${"c".repeat(32)}`, handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002,
+        duration_seconds: 37, caller_hint: "•••• 0124", cost_report: { status: "reported", provider_cost_micros: 42000,
+          currency: "USD", provenance: "provider_api_observed" } }],
+      cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown." });
     expect(JSON.stringify(result)).not.toContain("+14155550123");
     expect(JSON.stringify(result)).not.toContain("binding-b");
     expect(JSON.stringify(result)).not.toContain("install-b");
@@ -247,6 +256,18 @@ describe("gadget MCP host adapter", () => {
     expect(foreignTenant.status).toBe(404);
     expect(spaceFetch).toHaveBeenCalledTimes(3); // The foreign tenant is stopped before any runtime lookup.
     expect(agentsFetch).toHaveBeenCalledOnce();
+
+    runtime.active = true;
+    const cost = await app.request("/spaces/s/apps/phone_menu_dashboard/api/phone-dashboard", {
+      method: "POST", headers: await auth("t", { "x-naelao-user-id": "space-owner", "x-naelao-role": "owner", "content-type": "application/json" }),
+      body: JSON.stringify({ call_sid: `CA${"c".repeat(32)}`, confirm: true }),
+    }, env);
+    expect(cost.status, JSON.stringify({ body: twilioCostBody, response: await cost.clone().text() })).toBe(200);
+    expect(twilioCostBody).toEqual({ id: `CA${"c".repeat(32)}`, binding_id: "binding-c", extension_call: true,
+      confirm: true, extension_installation_id: "install-a", handler_sha256: "c".repeat(64) });
+    expect(cost.headers.get("cache-control")).toBe("private, no-store");
+    expect(await cost.json()).toEqual({ status: "observed", amount: "0.04200", currency: "USD", provenance: "provider_api_observed" });
+    expect(agentsFetch).toHaveBeenCalledTimes(3); // Status read, owner-authorized cost read, no calls for unauthorized/foreign cases.
   });
 
   it("runs the installed phone handler only for its exact active signed installation and binding", async () => {

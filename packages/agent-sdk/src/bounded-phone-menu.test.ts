@@ -37,9 +37,13 @@ describe("bounded phone menu package", () => {
     expect(parsed.declaredPermissions).toContain("assistant.phone.simulate");
     expect(dashboard).toContain("/api/phone-dashboard");
     expect(dashboard).toContain("/api/phone-simulate");
+    expect(dashboard).toContain("Check provider cost");
     expect(dashboard).toContain("Run installed handler test (synthetic)");
     expect(dashboard).toContain("saved installation settings");
-    expect(dashboard).toContain("Recent Telnyx calls");
+    expect(dashboard).toContain("Telnyx calls");
+    expect(dashboard).toContain("owner or admin can explicitly check a completed Twilio call");
+    expect(dashboard).toContain("Read this inbound call from the connected Twilio account");
+    expect(dashboard).toContain("/api/phone-dashboard");
     expect(dashboard).toContain("not invoices or customer charges");
     expect(dashboard).toContain("Preview current settings");
     expect(dashboard).toContain("aria-label=\"Simulated phone menu response\"");

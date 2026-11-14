@@ -26,6 +26,7 @@ import {
   xml,
 } from "./phone-provider.js";
 import { telnyxCallControlIdHash } from "./telnyx-voice-cost.js";
+import { getProviderApiCostObservation } from "./managed-service-cost-observations.js";
 
 type ExtensionCallCostSummary = {
   status: "reported" | "unavailable" | "not_linked";
@@ -644,18 +645,30 @@ export async function handlePhoneAction(
           .results
       : [];
     const recentTwilioExtensionCalls = manager
-      ? (await env.PLATFORM_DB.prepare(`SELECT e.binding_id,e.extension_installation_id,e.handler_sha256,e.sender,e.status,
+      ? (await env.PLATFORM_DB.prepare(`SELECT e.id AS call_sid,e.binding_id,e.extension_installation_id,e.handler_sha256,e.sender,e.status,
+          b.provider_account_sid,
           CAST(strftime('%s',e.created_at) AS INTEGER) AS started_at,e.duration_seconds
           FROM assistant_phone_events e JOIN assistant_phone_bindings b ON b.id=e.binding_id
           WHERE b.identity_id=? AND b.purpose='extension' AND COALESCE(b.provider,'twilio')='twilio'
             AND e.kind='call' AND e.created_at>=datetime('now','-7 days')
           ORDER BY e.created_at DESC,e.id DESC LIMIT 50`)
           .bind(identity.id)
-          .all<{ binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;sender:string;status:string;
-            started_at:number|null;duration_seconds:number|null }>())
+          .all<{ call_sid:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;sender:string;status:string;
+            provider_account_sid:string;started_at:number|null;duration_seconds:number|null }>())
           .results
       : [];
     const extensionCallCosts = await extensionCallCostSummaries(env, recentExtensionCallRows);
+    const twilioExtensionCallCosts = new Map<string, Awaited<ReturnType<typeof getProviderApiCostObservation>>>();
+    await Promise.all(recentTwilioExtensionCalls.map(async row => {
+      if (!row.call_sid || !row.provider_account_sid || !row.extension_installation_id
+        || !row.handler_sha256 || !/^[a-f0-9]{64}$/.test(row.handler_sha256)) return;
+      const cost = await getProviderApiCostObservation(env.PLATFORM_DB, {
+        tenantId: identity.tenant_id, spaceId: identity.space_id, projectId: identity.project_id,
+        provider: "twilio", serviceId: "phone-number", operationRef: row.call_sid,
+        accountRef: row.provider_account_sid, usageKind: "voice", sourceApi: "twilio.calls.get",
+      });
+      twilioExtensionCallCosts.set(`${row.binding_id}\0${row.call_sid}`, cost);
+    }));
     const recentExtensionCalls = recentExtensionCallRows.map(row => ({
       binding_id: row.binding_id,
       installation_id: row.extension_installation_id,
@@ -709,6 +722,7 @@ export async function handlePhoneAction(
       phone_handler_candidates: phoneHandlerCandidates,
       recent_telnyx_extension_calls: recentExtensionCalls,
       recent_twilio_extension_calls: recentTwilioExtensionCalls.map(row => ({
+        call_sid: row.call_sid,
         binding_id: row.binding_id,
         installation_id: row.extension_installation_id,
         handler_sha256: row.handler_sha256,
@@ -716,6 +730,8 @@ export async function handlePhoneAction(
         started_at: Number.isSafeInteger(row.started_at) ? row.started_at : null,
         duration_seconds: Number.isSafeInteger(row.duration_seconds) ? row.duration_seconds : null,
         caller_hint: maskedPhoneCaller(row.sender),
+        cost_report: twilioExtensionCallCosts.get(`${row.binding_id}\0${row.call_sid}`)
+          ?? { status: "unknown" as const, provider_cost_micros: null, currency: null, provenance: null },
       })),
       legacy_numbers: manager
         ? (
@@ -786,6 +802,22 @@ export async function handlePhoneAction(
     else await livePhoneAllowed(env, scope);
   }
   let binding = await assistantPhone(env, identity.id);
+  if (action === "phone-twilio-cost" && body.extension_call === true) {
+    if (!manager || agent || body.confirm !== true) throw new Error("twilio_cost_owner_confirmation_required");
+    if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new Error("air_gap_egress_denied");
+    const callSid = typeof body.id === "string" ? body.id : "";
+    const extensionBinding = await env.PLATFORM_DB.prepare(`SELECT b.* FROM assistant_phone_events e
+      JOIN assistant_phone_bindings b ON b.id=e.binding_id
+      WHERE e.id=? AND b.id=? AND e.kind='call' AND b.identity_id=? AND b.purpose='extension' LIMIT 1`)
+      .bind(callSid, String(body.binding_id ?? ""), identity.id).first<AssistantPhoneBinding>();
+    if (!extensionBinding || extensionBinding.provider !== "twilio" || extensionBinding.payer !== "byo"
+      || extensionBinding.status !== "active") throw new Error("twilio_cost_action_unavailable");
+    const credentials = await resolvePhoneCredentials(env, identity, extensionBinding.payer, extensionBinding);
+    if (!credentials) throw new Error("assistant_phone_credentials_missing");
+    return (await import("./twilio-cost.js")).observeTwilioExtensionCallCost(env, identity, credentials, callSid,
+      String(body.binding_id ?? ""),
+      String(body.extension_installation_id ?? ""), String(body.handler_sha256 ?? ""));
+  }
   if (action === "phone-telnyx-cost-status") {
     if (!manager || agent || !binding || binding.provider !== "telnyx" || binding.status !== "active")
       throw new Error("telnyx_call_cost_status_owner_required");

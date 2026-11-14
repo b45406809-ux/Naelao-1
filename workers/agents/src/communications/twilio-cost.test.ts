@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentsEnv } from "../index.js";
-import { observeTwilioSmsCost } from "./twilio-cost.js";
+import { observeTwilioExtensionCallCost, observeTwilioSmsCost } from "./twilio-cost.js";
 import { phoneProvider } from "./phone-provider.js";
 import { recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 import type { CommunicationIdentity } from "./core.js";
@@ -12,6 +12,7 @@ vi.mock("./managed-service-cost-observations.js", () => ({ recordProviderApiCost
 const phoneProviderMock = vi.mocked(phoneProvider);
 const recordCostMock = vi.mocked(recordProviderApiCostObservation);
 const sid = `SM${"a".repeat(32)}`;
+const callSid = `CA${"c".repeat(32)}`;
 const credentials = { accountSid: `AC${"b".repeat(32)}`, authToken: "t".repeat(32) };
 const identity = { tenant_id: "tenant_1", space_id: "space_1", project_id: "project_1" } as CommunicationIdentity;
 const binding = { id: "binding_1", provider: "twilio", payer: "byo", status: "active",
@@ -19,6 +20,15 @@ const binding = { id: "binding_1", provider: "twilio", payer: "byo", status: "ac
 
 function env(action = { id: "action_1", kind: "sms", recipient: "+15550000002", status: "sent", provider_sid: sid }) {
   const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(action) })) }));
+  return { PLATFORM_DB: { prepare } } as unknown as AgentsEnv;
+}
+
+const extensionPin = { extension_installation_id: "installation_1", handler_sha256: "d".repeat(64) };
+const extensionEvent = { id: callSid, sender: "+15550000003", status: "completed", ...extensionPin,
+  binding_id: "binding_extension", provider: "twilio", payer: "byo", provider_account_sid: credentials.accountSid,
+  phone_number: "+15550000001", binding_status: "active" };
+function extensionEnv(event = extensionEvent) {
+  const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(event) })) }));
   return { PLATFORM_DB: { prepare } } as unknown as AgentsEnv;
 }
 
@@ -72,5 +82,53 @@ describe("Twilio SMS cost observation", () => {
       usageKind: "voice", quantityUnit: "second", quantityMicros: 180_000_000,
       sourceApi: "twilio.calls.get", providerCost: "0.03000",
     }));
+  });
+
+  it("records an exact inbound extension call from the pinned BYO line as a provider observation", async () => {
+    phoneProviderMock.mockResolvedValue({ account_sid: credentials.accountSid, sid: callSid, direction: "inbound",
+      from: extensionEvent.sender, to: extensionEvent.phone_number, status: "completed", price: "-0.04000", price_unit: "USD",
+      start_time: "2026-11-11T12:00:00Z", duration: "123" });
+    await expect(observeTwilioExtensionCallCost(extensionEnv(), identity, credentials, callSid, "binding_extension",
+      extensionPin.extension_installation_id, extensionPin.handler_sha256))
+      .resolves.toEqual({ status: "observed", amount: "0.04000", currency: "USD", provenance: "provider_api_observed" });
+    expect(phoneProviderMock).toHaveBeenCalledWith(credentials, `Calls/${callSid}.json`);
+    expect(recordCostMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      provider: "twilio", operationRef: callSid, accountRef: credentials.accountSid, usageKind: "voice",
+      quantityUnit: "second", quantityMicros: 123_000_000, providerCost: "0.04000", sourceApi: "twilio.calls.get",
+    }));
+  });
+
+  it("rejects inbound call ID, account, direction, number, line, or release-pin mismatches", async () => {
+    const validReceipt = { account_sid: credentials.accountSid, sid: callSid, direction: "inbound", from: extensionEvent.sender,
+      to: extensionEvent.phone_number, status: "completed", price: "0.04", price_unit: "USD",
+      start_time: "2026-11-11T12:00:00Z", duration: "123" };
+    for (const receipt of [
+      { ...validReceipt, sid: `CA${"e".repeat(32)}` },
+      { ...validReceipt, account_sid: `AC${"e".repeat(32)}` },
+      { ...validReceipt, direction: "outbound-api" },
+      { ...validReceipt, from: "+15550000009" },
+      { ...validReceipt, to: "+15550000009" },
+    ]) {
+      phoneProviderMock.mockResolvedValueOnce(receipt);
+      await expect(observeTwilioExtensionCallCost(extensionEnv(), identity, credentials, callSid, "binding_extension",
+        extensionPin.extension_installation_id, extensionPin.handler_sha256)).rejects.toThrow("twilio_cost_receipt_mismatch");
+    }
+    await expect(observeTwilioExtensionCallCost(extensionEnv({ ...extensionEvent, id: `CA${"e".repeat(32)}` }), identity,
+      credentials, callSid, "binding_extension", extensionPin.extension_installation_id, extensionPin.handler_sha256))
+      .rejects.toThrow("twilio_cost_action_unavailable");
+    await expect(observeTwilioExtensionCallCost(extensionEnv(), identity, credentials, callSid, "another_binding",
+      extensionPin.extension_installation_id, extensionPin.handler_sha256)).rejects.toThrow("twilio_cost_action_unavailable");
+    await expect(observeTwilioExtensionCallCost(extensionEnv(), identity, credentials, callSid, "binding_extension",
+      "another_installation", extensionPin.handler_sha256)).rejects.toThrow("twilio_cost_action_unavailable");
+    expect(recordCostMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves pending or missing inbound price unknown and does not write a receipt", async () => {
+    phoneProviderMock.mockResolvedValue({ account_sid: credentials.accountSid, sid: callSid, direction: "inbound",
+      from: extensionEvent.sender, to: extensionEvent.phone_number, status: "completed", price: null, price_unit: null,
+      start_time: "2026-11-11T12:00:00Z", duration: "123" });
+    await expect(observeTwilioExtensionCallCost(extensionEnv(), identity, credentials, callSid, "binding_extension",
+      extensionPin.extension_installation_id, extensionPin.handler_sha256)).resolves.toEqual({ status: "pending" });
+    expect(recordCostMock).not.toHaveBeenCalled();
   });
 });

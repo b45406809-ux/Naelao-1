@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixture, scope } from "../../../../tests/fixtures/assistant-communications.js";
 import { getManagedServiceDashboard } from "./managed-service-dashboard.js";
-import { providerCostToMicros, recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
+import { getProviderApiCostObservation, providerCostToMicros, recordProviderApiCostObservation } from "./managed-service-cost-observations.js";
 
 describe("managed provider API cost observations", () => {
   it("converts decimal amounts to micros without floating point and rounds half up", () => {
@@ -27,6 +27,14 @@ describe("managed provider API cost observations", () => {
     expect(stored?.operation_ref_sha256).not.toBe(input.operationRef);
     expect(stored?.account_ref_sha256).not.toBe(input.accountRef);
     expect(JSON.stringify(stored)).not.toContain("private");
+    await expect(getProviderApiCostObservation(f.db, { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: null,
+      provider: "telnyx", serviceId: "phone-number", operationRef: input.operationRef, accountRef: input.accountRef,
+      usageKind: "sms", sourceApi: "telnyx.messages.get" })).resolves.toEqual({ status: "reported", provider_cost_micros: 4500,
+        currency: "USD", provenance: "provider_api_observed" });
+    await expect(getProviderApiCostObservation(f.db, { tenantId: scope.tenantId, spaceId: scope.spaceId, projectId: null,
+      provider: "telnyx", serviceId: "phone-number", operationRef: input.operationRef, accountRef: "another-account",
+      usageKind: "sms", sourceApi: "telnyx.messages.get" })).resolves.toEqual({ status: "unknown", provider_cost_micros: null,
+        currency: null, provenance: null });
 
     const dashboard = await getManagedServiceDashboard(f.env, scope, new Date("2026-11-12T02:00:00.000Z"));
     expect(dashboard.providerCosts30d).toEqual([{
