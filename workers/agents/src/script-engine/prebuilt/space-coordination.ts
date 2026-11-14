@@ -10,6 +10,7 @@ type CoordinationEntry = {
   audience: "space_members" | "space_admins";
   status: string;
   version: number;
+  last_confirmed_at?: string | null;
   expires_at?: string | null;
   advisory_only: true;
 };
@@ -66,7 +67,8 @@ export async function readVisibleSpaceCoordinationFacts(
     return [{ entry_id: entry.entry_id, capability_key: entry.capability_key, label: entry.label,
       ...(typeof entry.description === "string" ? { description: entry.description.slice(0, 1000) } : {}),
       audience: entry.audience, status: typeof entry.status === "string" ? entry.status : "active",
-      version: Number(entry.version), ...(typeof entry.expires_at === "string" ? { expires_at: entry.expires_at } : {}),
+      version: Number(entry.version), ...(typeof entry.last_confirmed_at === "string" ? { last_confirmed_at: entry.last_confirmed_at } : {}),
+      ...(typeof entry.expires_at === "string" ? { expires_at: entry.expires_at } : {}),
       advisory_only: true }];
   });
   return { entries, next_after: typeof page.next_after === "string" ? page.next_after : null,
@@ -75,10 +77,10 @@ export async function readVisibleSpaceCoordinationFacts(
 
 export function renderSpaceCoordinationContext(page: SpaceCoordinationFactPage): string | undefined {
   if (!page.entries.length) return undefined;
-  return JSON.stringify({ entries: page.entries.slice(0, 20).map(({ entry_id, capability_key, label, description, audience, status, version, expires_at }) => ({
+  return JSON.stringify({ entries: page.entries.slice(0, 20).map(({ entry_id, capability_key, label, description, audience, status, version, last_confirmed_at, expires_at }) => ({
     entry_id, capability_key, label, ...(description ? { description: description.slice(0, 400) } : {}),
-    audience, status, version, ...(expires_at ? { expires_at } : {}),
-  })), more_available: page.next_after !== null, advisory_only: true, untrusted: true });
+    audience, status, version, ...(last_confirmed_at ? { last_confirmed_at } : {}), ...(expires_at ? { expires_at } : {}),
+  })), more_available: page.entries.length > 20 || page.next_after !== null, advisory_only: true, untrusted: true });
 }
 
 async function listFacts(args: Record<string, unknown>, ctx: PrebuiltOpContext) {

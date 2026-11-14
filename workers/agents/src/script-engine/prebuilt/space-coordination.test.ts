@@ -17,7 +17,7 @@ describe("Space coordination assistant read", () => {
 
   it("uses the authenticated member identity, forwards only the host cursor, and returns advisory fields", async () => {
     const fetch = vi.fn(async () => Response.json({ schema_version: 2, entries: [
-      { entry_id: "fact-1", capability_key: "official.website", label: "Company website", audience: "space_members", status: "active", version: 2, advisory_only: true, created_by: "owner-secret" },
+      { entry_id: "fact-1", capability_key: "official.website", label: "Company website", audience: "space_members", status: "active", version: 2, last_confirmed_at: "2026-11-12T00:00:00.000Z", advisory_only: true, created_by: "owner-secret" },
       { entry_id: "bad-row", capability_key: 12, label: "invalid", audience: "space_members", version: 1 },
     ], next_after: "v2~members~2026-01-01~fact-2" }));
     const ctx = { env: { tenantId: "tenant", spaceId: "space / one", userId: "member-1", callerRole: "member", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
@@ -31,8 +31,21 @@ describe("Space coordination assistant read", () => {
     expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
     expect(result).toMatchObject({ advisory_only: true, untrusted: true, next_after: "v2~members~2026-01-01~fact-2" });
     expect(result.entries).toEqual([{ entry_id: "fact-1", capability_key: "official.website", label: "Company website",
-      audience: "space_members", status: "active", version: 2, advisory_only: true }]);
+      audience: "space_members", status: "active", version: 2, last_confirmed_at: "2026-11-12T00:00:00.000Z", advisory_only: true }]);
     expect(JSON.stringify(result)).not.toContain("owner-secret");
+  });
+
+  it("marks omitted facts and later pages as available in bounded model context", async () => {
+    const { renderSpaceCoordinationContext } = await import("./space-coordination.js");
+    const entries = Array.from({ length: 25 }, (_, index) => ({
+      entry_id: `fact-${index}`, capability_key: `capability.${index}`, label: `Fact ${index}`,
+      audience: "space_members" as const, status: "active", version: 1, advisory_only: true as const,
+    }));
+    const context = JSON.parse(renderSpaceCoordinationContext({ entries, next_after: null, advisory_only: true, untrusted: true })!) as {
+      entries: Array<unknown>; more_available: boolean;
+    };
+    expect(context.entries).toHaveLength(20);
+    expect(context.more_available).toBe(true);
   });
 
   it("rejects oversized or malformed cursors before the host call", async () => {
