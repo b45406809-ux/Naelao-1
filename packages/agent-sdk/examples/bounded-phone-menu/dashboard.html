@@ -145,7 +145,12 @@
             // The host validates binding_id against the owner's active line before dispatch.
             // The simulation response intentionally contains no line metadata or call receipt.
             const matched=actual.simulation===true&&canonical(actual.response)===canonical(expected);
-            const item=document.createElement('li');item.textContent=(matched?'Passed: ':'Failed: ')+scenario.label;scenarioResults.appendChild(item);if(matched)passed++;
+            const item=document.createElement('li');item.append(document.createTextNode((matched?'Passed: ':'Failed: ')+scenario.label+' '));
+            const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Compare responses';
+            const actualLabel=document.createElement('strong'),actualOutput=document.createElement('pre'),expectedLabel=document.createElement('strong'),expectedOutput=document.createElement('pre');
+            actualLabel.textContent='Host-validated handler response';actualOutput.textContent=JSON.stringify(actual.response??null,null,2);
+            expectedLabel.textContent='Preview for saved settings';expectedOutput.textContent=JSON.stringify(expected,null,2);
+            details.append(summary,actualLabel,actualOutput,expectedLabel,expectedOutput);item.append(details);scenarioResults.appendChild(item);if(matched)passed++;
           }
           scenarioStatus.textContent=(passed===scenarios.length?`${passed} of ${scenarios.length} saved-settings scenarios passed for ${line.provider}.`:`${passed} of ${scenarios.length} saved-settings scenarios matched the local preview. Review failed cases.`)+' '+scenarioNotes.join(' ')+' All inputs were synthetic; no carrier call or call session was created.';
         }catch(error){scenarioStatus.textContent=`Scenario checks stopped: ${error.message}. No carrier call or call session was created.`}

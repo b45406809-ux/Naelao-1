@@ -28,7 +28,7 @@ describe("bounded phone menu package", () => {
   it("declares signed per-installation settings and only the host-supported phone channel", () => {
     const parsed = validateExtensionManifest(manifest);
     expect(parsed.id).toBe("ext_bounded_phone_menu");
-    expect(manifest.releaseVersion).toBe("1.0.6");
+    expect(manifest.releaseVersion).toBe("1.0.7");
     expect(manifest.bundle.version).toBe(manifest.releaseVersion);
     expect(parsed.settingsSchema?.fields).toHaveLength(7);
     expect(parsed.settingsSchema?.fields.find(field => field.id === "speech_style")).toMatchObject({ type: "select", defaultValue: "default",
@@ -47,6 +47,8 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("Run synthetic menu scenario checks");
     expect(dashboard).toContain("/api/phone-simulate");
     expect(dashboard).toContain("no carrier call or call session was created.");
+    expect(dashboard).toContain("Host-validated handler response");
+    expect(dashboard).toContain("Preview for saved settings");
     expect(dashboard).toContain("saved installation settings");
     expect(dashboard).toContain("Telnyx calls");
     expect(dashboard).toContain("An owner or admin can explicitly check a Twilio call against the carrier Calls API");
