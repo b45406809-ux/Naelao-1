@@ -15,8 +15,9 @@ describe("Space coordination registry gateway", () => {
       PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("JOIN space_members") ? (spaceRole ? { role: spaceRole } : null) : { id: "space" } }) }) },
       SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
         calls.push(request);
+        if (new URL(request.url).pathname === "/space-coordination-policy") return Response.json({ schema_version: 2, configured: false, member_facts_enabled: false, revision: 0, active_member_facts: 0 });
         if (request.method === "GET") return Response.json({ schema_version: 1, entries: [], next_after: null });
-        return Response.json({ entry: { entry_id: "entry-1", version: request.method === "PATCH" ? 2 : 1 }, ...(request.method === "PATCH" ? { disclosure: { audience: "Space owners and administrators", effect: "advisory only" } } : {}) }, { status: request.method === "DELETE" || request.method === "PATCH" ? 200 : 201 });
+        return Response.json({ entry: { entry_id: "entry-1", version: request.method === "PATCH" ? 2 : 1 }, ...(request.method === "PATCH" ? { disclosure: { audience: "Space owners and administrators", effect: "advisory only" } } : {}) }, { status: request.method === "DELETE" || request.method === "PATCH" || request.method === "PUT" ? 200 : 201 });
       } }) },
     } as unknown as Env;
     return { bindings, calls };
@@ -36,6 +37,41 @@ describe("Space coordination registry gateway", () => {
     const unsigned = env();
     expect((await app.fetch(await request("/spaces/space/coordination-registry", "product_end_user", "GET", undefined, false), unsigned.bindings)).status).toBe(403);
     expect(unsigned.calls).toHaveLength(0);
+  });
+
+  it("restricts policy reads and writes to Space owners and admins and host-stamps the actor", async () => {
+    const member = env("member");
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/policy"), member.bindings)).status).toBe(403);
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/policy", "product_end_user", "PUT", {
+      member_facts_enabled: true, expected_revision: 0, confirm: true,
+    }), member.bindings)).status).toBe(403);
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/policy/history", "product_end_user"), member.bindings)).status).toBe(403);
+    expect(member.calls).toHaveLength(0);
+
+    const owner = env("owner");
+    const loaded = await app.fetch(await request("/spaces/space/coordination-registry/v2/policy"), owner.bindings);
+    expect(loaded.status).toBe(200);
+    expect(loaded.headers.get("cache-control")).toBe("no-store");
+    await expect(loaded.json()).resolves.toMatchObject({ schema_version: 2, member_facts_enabled: false, revision: 0 });
+
+    const missingConfirmation = await app.fetch(await request("/spaces/space/coordination-registry/v2/policy", "product_end_user", "PUT", {
+      member_facts_enabled: true, expected_revision: 0, confirm: false,
+    }), owner.bindings);
+    expect(missingConfirmation.status).toBe(400);
+    const changed = await app.fetch(await request("/spaces/space/coordination-registry/v2/policy", "product_end_user", "PUT", {
+      member_facts_enabled: true, expected_revision: 0, confirm: true,
+    }), owner.bindings);
+    expect(changed.status).toBe(200);
+    expect(owner.calls).toHaveLength(2);
+    const forwarded = await owner.calls[1]!.json() as Record<string, unknown>;
+    expect(forwarded).toEqual({ member_facts_enabled: true, expected_revision: 0, actor_id: "user", actor_role: "owner", confirmed: true });
+    expect(new URL(owner.calls[1]!.url).searchParams.get("tenant_id")).toBe("tenant");
+
+    const history = await app.fetch(await request("/spaces/space/coordination-registry/v2/policy/history?after=2"), owner.bindings);
+    expect(history.status).toBe(200);
+    expect(history.headers.get("cache-control")).toBe("no-store");
+    expect(new URL(owner.calls[2]!.url).pathname).toBe("/space-coordination-policy/history");
+    expect(new URL(owner.calls[2]!.url).searchParams.get("after")).toBe("2");
   });
 
   it("allows member reads and previews while owner/admin role gates publication", async () => {

@@ -14,7 +14,7 @@ describe("Space coordination registry v1 contract", () => {
     const calls: Array<{ path: string; method: string; body?: unknown }> = [];
     const client = createSpaceCoordinationClient({
       spaceId: "space / one",
-      request: async <T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown }) => {
+      request: async <T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }) => {
         calls.push({ path, method: init?.method ?? "GET", body: init?.body });
         return {} as T;
       },
@@ -48,12 +48,15 @@ describe("Space coordination registry v2 audience contract", () => {
     const calls: Array<{ path: string; method: string; body?: unknown }> = [];
     const client = createSpaceCoordinationClientV2({
       spaceId: "space / one",
-      request: async <T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown }) => {
+      request: async <T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }) => {
         calls.push({ path, method: init?.method ?? "GET", body: init?.body });
         return {} as T;
       },
     });
     const draft = { schema_version: 2 as const, capability_key: "official.website", label: "Company site", audience: "space_admins" as const, expires_at: null };
+    await client.policy();
+    await client.policyHistory("1");
+    await client.updatePolicy(true, 0, true);
     await client.list("cursor/1");
     await client.preview(draft);
     await client.publish(draft, true);
@@ -61,6 +64,9 @@ describe("Space coordination registry v2 audience contract", () => {
     await client.amend("entry/1", 3, { ...draft, label: "Company website" }, true);
     await client.history("entry/1", "event cursor");
     expect(calls).toEqual([
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy/history?after=1", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy", method: "PUT", body: { member_facts_enabled: true, expected_revision: 0, confirm: true } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2?after=cursor%2F1", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/preview", method: "POST", body: draft },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2", method: "POST", body: { ...draft, confirm_disclosure: true } },

@@ -1,9 +1,10 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2 } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
-import { amendSpaceCoordination, listSpaceCoordination, listSpaceCoordinationAuditHistory, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination } from "@/lib/api";
+import { ApiError } from "@/lib/request";
+import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, previewSpaceCoordination, publishSpaceCoordination, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -15,7 +16,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [capabilityKey, setCapabilityKey] = React.useState("");
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
-  const [audience, setAudience] = React.useState<SpaceCoordinationAudienceV2>("space_members");
+  const [audience, setAudience] = React.useState<SpaceCoordinationAudienceV2>("space_admins");
   const [expiresOn, setExpiresOn] = React.useState("");
   const [editingEntry, setEditingEntry] = React.useState<SpaceCoordinationEntryV2 | null>(null);
   const [preview, setPreview] = React.useState<{ draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string } } | null>(null);
@@ -25,6 +26,11 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [notice, setNotice] = React.useState<string | null>(null);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
   const [auditHistory, setAuditHistory] = React.useState<Record<string, { events: SpaceCoordinationAuditEventV2[]; nextAfter: string | null; open: boolean }>>({});
+  const [policy, setPolicy] = React.useState<Awaited<ReturnType<typeof getSpaceCoordinationPolicy>> | null>(null);
+  const [policyEnabledDraft, setPolicyEnabledDraft] = React.useState(false);
+  const [policyConfirmed, setPolicyConfirmed] = React.useState(false);
+  const [policyError, setPolicyError] = React.useState<string | null>(null);
+  const [policyHistory, setPolicyHistory] = React.useState<{ events: SpaceCoordinationPolicyEventV2[]; nextAfter: string | null; open: boolean } | null>(null);
 
   React.useEffect(() => {
     const updateClock = () => setNowMs(Date.now());
@@ -48,6 +54,20 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   }, [spaceId, session.sessionToken, session.endUserId, canManage]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
+
+  const refreshPolicy = React.useCallback(async () => {
+    if (!canManage) return;
+    try {
+      const current = await getSpaceCoordinationPolicy(spaceId, session);
+      setPolicy(current);
+      setPolicyEnabledDraft(current.member_facts_enabled);
+      setPolicyError(null);
+    } catch {
+      setPolicyError("The Space disclosure policy could not be loaded. Try again.");
+    }
+  }, [canManage, spaceId, session]);
+
+  React.useEffect(() => { void refreshPolicy(); }, [refreshPolicy]);
 
   async function loadMore() {
     if (!nextAfter || busy) return;
@@ -83,7 +103,7 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
 
   function cancelEdit() {
     setEditingEntry(null);
-    setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setExpiresOn("");
+    setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_admins"); setExpiresOn("");
     changed();
   }
 
@@ -125,10 +145,13 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         setNotice(preview.draft.audience === "space_admins" ? "The approved advisory fact is visible to Space owners and administrators." : "The approved advisory fact is visible to Space members.");
       }
       if (updatedEntry) setEntries(current => current.map(entry => entry.entry_id === updatedEntry!.entry_id ? updatedEntry! : entry));
-      setEditingEntry(null); setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_members"); setExpiresOn(""); setPreview(null); setConfirmed(false);
+      setEditingEntry(null); setCapabilityKey(""); setLabel(""); setDescription(""); setAudience("space_admins"); setExpiresOn(""); setPreview(null); setConfirmed(false);
       if (!updatedEntry) await refresh();
-    } catch {
-      setError(editingEntry ? "The fact changed or could not be updated. Refresh the list and review it again." : "The fact was not published. Review your role and try again.");
+      await refreshPolicy();
+    } catch (error) {
+      setError(error instanceof ApiError && error.errorCode === "coordination_member_facts_disabled"
+        ? "Space-member visibility is disabled. Ask an owner or administrator to enable it before publishing this fact."
+        : editingEntry ? "The fact changed or could not be updated. Refresh the list and review it again." : "The fact was not published. Review your role and try again.");
     } finally { setBusy(false); }
   }
 
@@ -140,8 +163,47 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
       await revokeSpaceCoordination(spaceId, session, entry.entry_id, entry.version);
       setNotice("The fact was unpublished.");
       await refresh();
+      await refreshPolicy();
     } catch {
       setError("The fact changed or could not be unpublished. Refresh the list and try again.");
+    } finally { setBusy(false); }
+  }
+
+  async function savePolicy() {
+    if (!policy || !policyConfirmed || policyEnabledDraft === policy.member_facts_enabled) return;
+    setBusy(true); setPolicyError(null);
+    try {
+      const updated = await updateSpaceCoordinationPolicy(spaceId, session, policyEnabledDraft, policy.revision, true);
+      setPolicy(updated);
+      setPolicyEnabledDraft(updated.member_facts_enabled);
+      setPolicyConfirmed(false);
+      setPolicyHistory(null);
+      setNotice(updated.member_facts_enabled
+        ? "Space-member visibility is enabled for new coordination facts."
+        : "Space-member visibility is disabled for new coordination facts.");
+    } catch (error) {
+      const code = error instanceof ApiError ? error.errorCode ?? "" : "";
+      setPolicyError(code.includes("coordination_member_facts_must_be_unpublished_first")
+        ? "Unpublish each active Space-member fact before disabling this policy. Existing facts are never silently hidden."
+        : code.includes("coordination_policy_revision_conflict")
+          ? "The policy changed in another session. Reload it and review the current setting."
+          : "The Space disclosure policy could not be saved. Try again.");
+      await refreshPolicy();
+    } finally { setBusy(false); }
+  }
+
+  async function loadPolicyHistory(after?: string) {
+    if (!after && policyHistory?.open) {
+      setPolicyHistory({ ...policyHistory, open: false });
+      return;
+    }
+    setBusy(true); setPolicyError(null);
+    try {
+      const page = await listSpaceCoordinationPolicyHistory(spaceId, session, after);
+      setPolicyHistory(current => ({ events: after ? [...(current?.events ?? []), ...page.events] : page.events,
+        nextAfter: page.next_after, open: true }));
+    } catch {
+      setPolicyError("Disclosure policy history could not be loaded. Check your Space role and try again.");
     } finally { setBusy(false); }
   }
 
@@ -209,6 +271,43 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     </div> : <p className="settings-row-sub" style={{ padding: "0 16px 14px", margin: 0 }}>No coordination facts have been published.</p>}
 
     {canManage && <div style={{ borderTop: "1px solid var(--border)", padding: 16, display: "grid", gap: 10 }}>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
+        <div className="settings-row-label">Space-member disclosure policy</div>
+        <p className="settings-row-sub" style={{ margin: 0 }}>
+          New facts default to Space owners and administrators. Enabling this allows an owner or administrator to explicitly publish individual facts to active Space members; it never grants access to their source projects or services.
+        </p>
+        {policy && <>
+          <label className="settings-row-sub" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+            <input type="checkbox" checked={policyEnabledDraft} disabled={busy} onChange={event => { setPolicyEnabledDraft(event.target.checked); setPolicyConfirmed(false); setPolicyError(null); }} />
+            Allow new or amended facts to be visible to all active Space members
+          </label>
+          <div className="settings-row-sub">{policy.active_member_facts} active member-visible fact{policy.active_member_facts === 1 ? "" : "s"} · policy revision {policy.revision}{policy.updated_at ? ` · last changed ${formatConfirmationTime(policy.updated_at)}` : " · not configured; disabled by default"}</div>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadPolicyHistory()}>
+            {policyHistory?.open ? "Hide policy history" : "View policy history"}
+          </button>
+          {policyHistory?.open && <div style={{ display: "grid", gap: 6 }}>
+            {policyHistory.events.map(event => <div key={event.event_id} className="settings-row-sub" style={{ borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+              <div>Revision {event.prior_revision ?? "new"} → {event.revision} · {formatConfirmationTime(event.created_at)}</div>
+              <div>{event.actor_role} actor {event.actor_id} · member visibility {event.prior_member_facts_enabled === null ? "unconfigured" : event.prior_member_facts_enabled ? "enabled" : "disabled"} → {event.member_facts_enabled ? "enabled" : "disabled"}</div>
+            </div>)}
+            {!policyHistory.events.length && <div className="settings-row-sub">No policy changes are recorded.</div>}
+            {policyHistory.nextAfter && <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+              onClick={() => void loadPolicyHistory(policyHistory.nextAfter ?? undefined)}>Load older policy changes</button>}
+          </div>}
+          {!policyEnabledDraft && policy.active_member_facts > 0 && <div className="settings-row-sub">Unpublish the active member-visible facts above before disabling this setting. They remain visible until individually unpublished or expired.</div>}
+          {policyEnabledDraft !== policy.member_facts_enabled && <>
+            <label className="settings-row-sub" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <input type="checkbox" checked={policyConfirmed} disabled={busy} onChange={event => setPolicyConfirmed(event.target.checked)} />
+              I approve this Space-wide disclosure policy change.
+            </label>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !policyConfirmed || (!policyEnabledDraft && policy.active_member_facts > 0)} onClick={() => void savePolicy()}>
+              Save disclosure policy
+            </button>
+          </>}
+        </>}
+        {!policy && !policyError && <div className="settings-row-sub">Loading the current disclosure policy…</div>}
+        {policyError && <p role="alert" className="settings-row-sub" style={{ color: "#dc2626", margin: 0 }}>{policyError}</p>}
+      </div>
       <div className="settings-row-label">{editingEntry ? "Edit an approved fact" : "Publish an approved fact"}</div>
       <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to the selected audience. Duplicate capability keys are allowed; this registry does not reserve or enforce a singleton resource.</p>
       <label className="settings-row-sub">Capability key
@@ -222,10 +321,11 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
       </label>
       <label className="settings-row-sub">Who can see this fact
         <select className="form-input" value={audience} disabled={busy} onChange={event => { setAudience(event.target.value as SpaceCoordinationAudienceV2); changed(); }}>
-          <option value="space_members">All active Space members</option>
+          <option value="space_members" disabled={!policy?.member_facts_enabled}>All active Space members</option>
           <option value="space_admins">Space owners and administrators</option>
         </select>
       </label>
+      {!policy?.member_facts_enabled && <div className="settings-row-sub">Space-member publication is disabled until an owner or administrator enables it above. Previously published member facts remain visible and retain their individual approval.</div>}
       <label className="settings-row-sub">Expiry day (UTC, optional)
         <input className="form-input" type="date" min={new Date().toISOString().slice(0, 10)} value={expiresOn} disabled={busy}
           onChange={event => { setExpiresOn(event.target.value); changed(); }} />

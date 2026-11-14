@@ -148,9 +148,36 @@ export interface SpaceCoordinationAuditHistoryPageV2 {
   next_after: string | null;
 }
 
+export interface SpaceCoordinationPolicyV2 {
+  schema_version: 2;
+  configured: boolean;
+  member_facts_enabled: boolean;
+  revision: number;
+  active_member_facts: number;
+  updated_by?: string;
+  updated_at?: string;
+}
+
+export interface SpaceCoordinationPolicyEventV2 {
+  event_id: string;
+  prior_revision: number | null;
+  revision: number;
+  prior_member_facts_enabled: boolean | null;
+  member_facts_enabled: boolean;
+  actor_id: string;
+  actor_role: "owner" | "admin";
+  created_at: string;
+}
+
+export interface SpaceCoordinationPolicyHistoryPageV2 {
+  schema_version: 2;
+  events: SpaceCoordinationPolicyEventV2[];
+  next_after: string | null;
+}
+
 export interface SpaceCoordinationClientOptions {
   spaceId: string;
-  request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown }): Promise<T>;
+  request<T>(path: string, init?: { method?: "GET" | "POST" | "DELETE" | "PATCH" | "PUT"; body?: unknown }): Promise<T>;
 }
 
 /** Small caller-neutral API client. The caller supplies its authenticated host transport. */
@@ -177,6 +204,18 @@ export function createSpaceCoordinationClient(options: SpaceCoordinationClientOp
 export function createSpaceCoordinationClientV2(options: SpaceCoordinationClientOptions) {
   const base = `/spaces/${encodeURIComponent(options.spaceId)}/coordination-registry/v2`;
   return {
+    policy(): Promise<SpaceCoordinationPolicyV2> {
+      return options.request(`${base}/policy`);
+    },
+    policyHistory(after?: string): Promise<SpaceCoordinationPolicyHistoryPageV2> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${base}/policy/history${query}`);
+    },
+    updatePolicy(memberFactsEnabled: boolean, expectedRevision: number, confirm: boolean): Promise<SpaceCoordinationPolicyV2> {
+      return options.request(`${base}/policy`, { method: "PUT", body: {
+        member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision, confirm,
+      } });
+    },
     list(after?: string): Promise<SpaceCoordinationPageV2> {
       const query = after ? `?after=${encodeURIComponent(after)}` : "";
       return options.request(`${base}${query}`);

@@ -2678,6 +2678,34 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_space_coordination_audit_entry
       ON space_coordination_audit_events(tenant_id,space_id,entry_id,created_at,event_id);`,
   },
+  {
+    version: 130,
+    description: "gate new member-visible coordination facts on explicit Space policy",
+    up: `CREATE TABLE space_coordination_policies (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      member_facts_enabled INTEGER NOT NULL CHECK(member_facts_enabled IN (0,1)),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id)
+    );
+    CREATE TABLE space_coordination_policy_events (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      prior_revision INTEGER CHECK(prior_revision IS NULL OR prior_revision >= 1),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      prior_member_facts_enabled INTEGER CHECK(prior_member_facts_enabled IS NULL OR prior_member_facts_enabled IN (0,1)),
+      member_facts_enabled INTEGER NOT NULL CHECK(member_facts_enabled IN (0,1)),
+      actor_id TEXT NOT NULL,
+      actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,event_id)
+    );
+    CREATE INDEX idx_space_coordination_policy_events_recent
+      ON space_coordination_policy_events(tenant_id,space_id,created_at DESC,event_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2952,6 +2980,97 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ schema_version: schemaVersion, entries, next_after: nextAfter });
   }
 
+  private async spaceCoordinationPolicy(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "";
+    const spaceId = url.searchParams.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    if (request.method === "GET") {
+      const current = queryOne<{ member_facts_enabled: number; revision: number; updated_by: string; updated_at: string }>(sql,
+        "SELECT member_facts_enabled,revision,updated_by,updated_at FROM space_coordination_policies WHERE tenant_id=? AND space_id=?",
+        tenantId, spaceId);
+      const activeMemberFacts = queryOne<{ count: number }>(sql,
+        "SELECT COUNT(*) AS count FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active' AND audience='space_members' AND (expires_at IS NULL OR expires_at>?)",
+        tenantId, spaceId, new Date().toISOString())?.count ?? 0;
+      return Response.json({ schema_version: 2, configured: Boolean(current), member_facts_enabled: current?.member_facts_enabled === 1,
+        revision: current?.revision ?? 0, active_member_facts: activeMemberFacts,
+        ...(current ? { updated_by: current.updated_by, updated_at: current.updated_at } : {}) });
+    }
+
+    const body = await request.json<{ member_facts_enabled?: unknown; expected_revision?: unknown; actor_id?: unknown; actor_role?: unknown; confirmed?: unknown }>().catch(() => null);
+    if (!body || Object.keys(body).some(key => !["member_facts_enabled", "expected_revision", "actor_id", "actor_role", "confirmed"].includes(key))
+      || typeof body.member_facts_enabled !== "boolean" || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0
+      || typeof body.actor_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.actor_id)
+      || (body.actor_role !== "owner" && body.actor_role !== "admin") || body.confirmed !== true) {
+      return Response.json({ error_code: "coordination_policy_invalid" }, { status: 400 });
+    }
+    if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "coordination_policy_storage_unavailable" }, { status: 503 });
+    const now = new Date().toISOString();
+    let outcome: "updated" | "unchanged" | "conflict" | "member_facts_exist";
+    let nextRevision = 0;
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const current = queryOne<{ member_facts_enabled: number; revision: number }>(sql,
+          "SELECT member_facts_enabled,revision FROM space_coordination_policies WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+        const currentRevision = current?.revision ?? 0;
+        if (currentRevision !== body.expected_revision) return "conflict";
+        if (current && current.member_facts_enabled === Number(body.member_facts_enabled)) {
+          nextRevision = current.revision;
+          return "unchanged";
+        }
+        if (!body.member_facts_enabled) {
+          const active = queryOne<{ count: number }>(sql,
+            "SELECT COUNT(*) AS count FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active' AND audience='space_members' AND (expires_at IS NULL OR expires_at>?)",
+            tenantId, spaceId, now)?.count ?? 0;
+          if (active > 0) return "member_facts_exist";
+        }
+        nextRevision = currentRevision + 1;
+        this.ctx.storage.sql.exec(`INSERT INTO space_coordination_policies(tenant_id,space_id,member_facts_enabled,revision,updated_by,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id) DO UPDATE SET member_facts_enabled=excluded.member_facts_enabled,
+          revision=excluded.revision,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+          tenantId, spaceId, Number(body.member_facts_enabled), nextRevision, body.actor_id, now);
+        execute(sql, `INSERT INTO space_coordination_policy_events(tenant_id,space_id,event_id,prior_revision,revision,prior_member_facts_enabled,member_facts_enabled,actor_id,actor_role,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`, tenantId, spaceId, crypto.randomUUID(), current?.revision ?? null, nextRevision,
+          current ? current.member_facts_enabled : null, Number(body.member_facts_enabled), body.actor_id, body.actor_role, now);
+        return "updated";
+      });
+    } catch {
+      return Response.json({ error_code: "coordination_policy_audit_write_failed" }, { status: 503 });
+    }
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_policy_revision_conflict" }, { status: 409 });
+    if (outcome === "member_facts_exist") return Response.json({ error_code: "coordination_member_facts_must_be_unpublished_first" }, { status: 409 });
+    const activeMemberFacts = queryOne<{ count: number }>(sql,
+      "SELECT COUNT(*) AS count FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND status='active' AND audience='space_members' AND (expires_at IS NULL OR expires_at>?)",
+      tenantId, spaceId, new Date().toISOString())?.count ?? 0;
+    const current = queryOne<{ member_facts_enabled: number; revision: number; updated_by: string; updated_at: string }>(sql,
+      "SELECT member_facts_enabled,revision,updated_by,updated_at FROM space_coordination_policies WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+    return Response.json({ schema_version: 2, configured: Boolean(current), member_facts_enabled: current?.member_facts_enabled === 1, revision: current?.revision ?? 0,
+      active_member_facts: activeMemberFacts, ...(current ? { updated_by: current.updated_by, updated_at: current.updated_at } : {}) });
+  }
+
+  private listSpaceCoordinationPolicyHistory(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const after = params.get("after");
+    const afterRevision = after === null ? 0 : Number(after);
+    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0 || (after !== null && String(afterRevision) !== after))
+      return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+    const requested = Number(params.get("limit") ?? "50");
+    const limit = Number.isInteger(requested) ? Math.min(100, Math.max(1, requested)) : 50;
+    const rows = queryAll<Record<string, unknown>>(this.ctx.storage.sql as never,
+      `SELECT event_id,prior_revision,revision,prior_member_facts_enabled,member_facts_enabled,actor_id,actor_role,created_at
+       FROM space_coordination_policy_events WHERE tenant_id=? AND space_id=? AND revision>?
+       ORDER BY revision LIMIT ?`, tenantId, spaceId, afterRevision, limit + 1);
+    const hasMore = rows.length > limit;
+    const events = rows.slice(0, limit).map(row => ({ ...row,
+      prior_member_facts_enabled: row.prior_member_facts_enabled === null ? null : row.prior_member_facts_enabled === 1,
+      member_facts_enabled: row.member_facts_enabled === 1,
+    }));
+    const lastRevision = rows.slice(0, limit).at(-1)?.revision;
+    return Response.json({ schema_version: 2, events,
+      next_after: !hasMore || typeof lastRevision !== "number" ? null : String(lastRevision) });
+  }
+
   private async publishSpaceCoordination(request: Request): Promise<Response> {
     const body = await request.json<{ tenant_id?: string; space_id?: string; entry_id?: string; schema_version?: number; actor_id?: string; approved_role?: string; confirmed?: unknown; draft?: unknown }>().catch(() => null);
     if (!body?.tenant_id || !body.space_id || !body.entry_id || !body.actor_id || !["owner", "admin"].includes(body.approved_role ?? "") || body.confirmed !== true) {
@@ -2985,8 +3104,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     if (expiresAt && Date.parse(expiresAt) <= Date.parse(now)) return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
     const eventId = crypto.randomUUID();
+    let publishOutcome: "published" | "member_facts_disabled";
     try {
-      this.ctx.storage.transactionSync(() => {
+      publishOutcome = this.ctx.storage.transactionSync(() => {
+        if (audience === "space_members") {
+          const policy = queryOne<{ member_facts_enabled: number }>(sql,
+            "SELECT member_facts_enabled FROM space_coordination_policies WHERE tenant_id=? AND space_id=?",
+            body.tenant_id, body.space_id);
+          if (policy?.member_facts_enabled !== 1) return "member_facts_disabled";
+        }
         execute(sql,
           `INSERT INTO space_coordination_entries
            (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at)
@@ -2997,10 +3123,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           (tenant_id,space_id,event_id,entry_id,action,prior_version,version,actor_id,actor_role,audience_before,audience_after,expires_at_before,expires_at_after,status_after,provenance,created_at)
           VALUES (?,?,?,?,'published',NULL,1,?,?,NULL,?,NULL,?,'active','explicit_owner_or_admin_approval',?)`,
         body.tenant_id, body.space_id, eventId, body.entry_id, body.actor_id, body.approved_role, audience, expiresAt, now);
+        return "published";
       });
     } catch {
       return Response.json({ error_code: "coordination_audit_write_failed" }, { status: 503 });
     }
+    if (publishOutcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
       `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at${schemaVersion === 2 ? ",created_by,approved_by,approved_role,provenance,revoked_by" : ""} FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?`,
       body.tenant_id, body.space_id, body.entry_id);
@@ -3062,7 +3190,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (expiresAt && Date.parse(expiresAt) <= Date.parse(validationNow)) return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
     const sql = this.ctx.storage.sql as never;
     let updatedAt = validationNow;
-    let outcome: "unavailable" | "conflict" | "updated";
+    let outcome: "unavailable" | "conflict" | "updated" | "member_facts_disabled";
     try {
       outcome = this.ctx.storage.transactionSync(() => {
         const current = queryOne<{ status: string; version: number; updated_at: string; audience: string; expires_at: string | null }>(sql,
@@ -3070,6 +3198,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           body.tenant_id, body.space_id, entryId);
         if (!current) return "unavailable";
         if (current.status !== "active" || current.version !== body.expected_version) return "conflict";
+        if (parsed.value.audience === "space_members") {
+          const policy = queryOne<{ member_facts_enabled: number }>(sql,
+            "SELECT member_facts_enabled FROM space_coordination_policies WHERE tenant_id=? AND space_id=?",
+            body.tenant_id, body.space_id);
+          if (policy?.member_facts_enabled !== 1) return "member_facts_disabled";
+        }
         const previousUpdatedAt = Date.parse(current.updated_at);
         updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
         const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_entries
@@ -3089,6 +3223,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "coordination_audit_write_failed" }, { status: 503 });
     }
     if (outcome === "unavailable") return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
+    if (outcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
     if (outcome !== "updated") return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
       "SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at,created_by,approved_by,approved_role,provenance,revoked_by FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
@@ -3780,6 +3915,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/internal/domain-glossary/lookup" && method === "POST") return this.lookupDomainGlossary(request);
       if (url.pathname === "/space-coordination-registry" && method === "GET") return this.listSpaceCoordination(url.searchParams);
       if (url.pathname === "/space-coordination-registry" && method === "POST") return this.publishSpaceCoordination(request);
+      if (url.pathname === "/space-coordination-policy" && (method === "GET" || method === "PUT")) return this.spaceCoordinationPolicy(request, url);
+      if (url.pathname === "/space-coordination-policy/history" && method === "GET") return this.listSpaceCoordinationPolicyHistory(url.searchParams);
       const coordinationHistory = url.pathname.match(/^\/space-coordination-registry\/([^/]+)\/history$/);
       if (coordinationHistory?.[1] && method === "GET") {
         try { return this.listSpaceCoordinationAuditHistory(url.searchParams, decodeURIComponent(coordinationHistory[1])); }

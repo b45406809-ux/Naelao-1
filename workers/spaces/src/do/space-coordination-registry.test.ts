@@ -3,10 +3,19 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("Space-owned advisory coordination registry", () => {
-  function setup() {
+  async function setup(enableMemberFacts = true) {
     const storage = createDOStorage();
     const space = new SpaceDO({ storage } as never, {} as never);
     const root = "http://space/space-coordination-registry";
+    const policyUrl = "http://space/space-coordination-policy?tenant_id=tenant&space_id=space";
+    const readPolicy = () => space.fetch(new Request(policyUrl));
+    const updatePolicy = (memberFactsEnabled: boolean, expectedRevision: number) => space.fetch(new Request(policyUrl, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision,
+        actor_id: "owner", actor_role: "owner", confirmed: true }),
+    }));
+    await readPolicy(); // ensure current migrations are applied in the test storage
+    if (enableMemberFacts) expect((await updatePolicy(true, 0)).status).toBe(200);
     const publish = (entryId: string, label = entryId) => space.fetch(new Request(root, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, actor_id: "owner", approved_role: "owner", confirmed: true,
@@ -17,11 +26,11 @@ describe("Space-owned advisory coordination registry", () => {
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, schema_version: 2, actor_id: "owner", approved_role: "owner", confirmed: true,
         draft: { schema_version: 2, capability_key: "official.website", label, description: "Approved for selected audience", audience, expires_at: expiresAt } }),
     }));
-    return { space, storage, root, publish, publishV2 };
+    return { space, storage, root, publish, publishV2, readPolicy, updatePolicy };
   }
 
   it("persists only bounded Space facts and keyset pages active entries", async () => {
-    const { space, root, publish } = setup();
+    const { space, root, publish } = await setup();
     expect((await publish("entry-a")).status).toBe(201);
     expect((await publish("entry-b")).status).toBe(201); // duplicates are advisory and permitted
     expect((await publish("entry-c")).status).toBe(201);
@@ -49,7 +58,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("requires publication confirmation, supports idempotency, and fences stale revocations", async () => {
-    const { space, root, publish } = setup();
+    const { space, root, publish } = await setup();
     const unconfirmed = await space.fetch(new Request(root, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
       tenant_id: "tenant", space_id: "space", entry_id: "entry", actor_id: "owner", approved_role: "owner", confirmed: false,
       draft: { capability_key: "official.website", label: "Company website" },
@@ -73,7 +82,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("preserves legacy member facts and filters administrator facts before role-bound pagination", async () => {
-    const { space, storage, root, publish, publishV2 } = setup();
+    const { space, storage, root, publish, publishV2 } = await setup();
     expect((await publishV2("admin-before", "space_admins")).status).toBe(201);
     expect((await publish("legacy-member")).status).toBe(201);
     expect((await publishV2("member-v2-a", "space_members")).status).toBe(201);
@@ -114,7 +123,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("keeps v2 entries out of the legacy revoke contract", async () => {
-    const { space, root, publishV2 } = setup();
+    const { space, root, publishV2 } = await setup();
     expect((await publishV2("admin-only", "space_admins")).status).toBe(201);
     const legacyRevoke = await space.fetch(new Request(`${root}/admin-only`, { method: "DELETE", headers: { "content-type": "application/json" },
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", expected_version: 1 }) }));
@@ -128,7 +137,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("expires facts for their selected audience and lets administrators review and renew them", async () => {
-    const { space, storage, root, publishV2 } = setup();
+    const { space, storage, root, publishV2 } = await setup();
     const initialExpiry = new Date(Date.now() + 60_000).toISOString();
     expect((await publishV2("expiring", "space_members", "Published service", initialExpiry)).status).toBe(201);
     const memberRead = () => space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member`));
@@ -150,7 +159,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("records metadata-only publish, amend and revoke history atomically with stable paging", async () => {
-    const { space, storage, root, publishV2 } = setup();
+    const { space, storage, root, publishV2 } = await setup();
     const firstExpiry = new Date(Date.now() + 86_400_000).toISOString();
     expect((await publishV2("audit-entry", "space_members", "Private label is not copied", firstExpiry)).status).toBe(201);
     expect((await publishV2("audit-entry", "space_members", "Private label is not copied", firstExpiry)).status).toBe(200);
@@ -186,7 +195,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("rolls back a coordination fact mutation when its audit event cannot be recorded", async () => {
-    const { space, storage, root, publishV2 } = setup();
+    const { space, storage, root, publishV2 } = await setup();
     await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space`)); // apply migrations before installing the failure trigger
     storage.sql.exec(`CREATE TRIGGER reject_coordination_audit BEFORE INSERT ON space_coordination_audit_events
       WHEN NEW.entry_id='atomic-entry' BEGIN SELECT RAISE(ABORT,'audit storage unavailable'); END`);
@@ -209,7 +218,7 @@ describe("Space-owned advisory coordination registry", () => {
   });
 
   it("amends a fact with explicit audience confirmation and expected-version fencing", async () => {
-    const { space, storage, root, publish } = setup();
+    const { space, storage, root, publish } = await setup();
     expect((await publish("entry", "Old company site")).status).toBe(201);
     const amend = (expectedVersion: number, confirmed: boolean, audience: "space_members" | "space_admins" = "space_admins") =>
       space.fetch(new Request(`${root}/entry`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
@@ -243,10 +252,104 @@ describe("Space-owned advisory coordination registry", () => {
     expect(ownerEntry).toMatchObject({ created_by: "owner", approved_by: "admin", approved_role: "admin", provenance: "explicit_owner_or_admin_approval" });
     expect(ownerEntry).toHaveProperty("revoked_by", null);
   });
+
+  it("defaults member visibility off while preserving admin-only facts and legacy member rows", async () => {
+    const { space, storage, publish, publishV2, readPolicy } = await setup(false);
+    await expect((await readPolicy()).json()).resolves.toMatchObject({
+      schema_version: 2, configured: false, member_facts_enabled: false, revision: 0, active_member_facts: 0,
+    });
+    expect((await publishV2("blocked-member", "space_members")).status).toBe(409);
+    expect(await (await space.fetch(new Request("http://space/space-coordination-registry?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner"))).json())
+      .toMatchObject({ entries: [] });
+    expect((await publishV2("admin-fact", "space_admins")).status).toBe(201);
+    expect((await publish("legacy-contract-member")).status).toBe(409);
+
+    // A row created before migration 130 remains readable; disabling a new-sharing policy never silently revokes it.
+    storage.sql.exec(`INSERT INTO space_coordination_entries
+      (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at)
+      VALUES ('tenant','space','legacy-member',1,'official.website','Legacy approved fact',NULL,'space_members','active',1,1,'explicit_owner_or_admin_approval','owner','owner','owner','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z','owner',NULL)`);
+    const memberPage = await space.fetch(new Request("http://space/space-coordination-registry?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=member"));
+    expect(await memberPage.json()).toMatchObject({ entries: [{ entry_id: "legacy-member" }] });
+    expect(storage.sql.exec("SELECT member_facts_enabled FROM space_coordination_policies").toArray()).toEqual([]);
+  });
+
+  it("requires active member facts to be unpublished before disabling and fences stale policy revisions", async () => {
+    const { space, root, publishV2, readPolicy, updatePolicy } = await setup();
+    expect((await publishV2("member-fact", "space_members")).status).toBe(201);
+    const blocked = await updatePolicy(false, 1);
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ error_code: "coordination_member_facts_must_be_unpublished_first" });
+    const unpublish = await space.fetch(new Request(`${root}/member-fact`, { method: "DELETE", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1 }) }));
+    expect(unpublish.status).toBe(200);
+    const disabled = await updatePolicy(false, 1);
+    expect(disabled.status).toBe(200);
+    await expect(disabled.json()).resolves.toMatchObject({ configured: true, member_facts_enabled: false, revision: 2, active_member_facts: 0 });
+    expect((await updatePolicy(true, 1)).status).toBe(409);
+    await expect((await readPolicy()).json()).resolves.toMatchObject({ member_facts_enabled: false, revision: 2 });
+    const events = storagePolicyEvents(space);
+    expect(events).toMatchObject([
+      { prior_revision: null, revision: 1, prior_member_facts_enabled: null, member_facts_enabled: 1, actor_id: "owner", actor_role: "owner" },
+      { prior_revision: 1, revision: 2, prior_member_facts_enabled: 1, member_facts_enabled: 0, actor_id: "owner", actor_role: "owner" },
+    ]);
+    const history = (after?: string) => space.fetch(new Request(`http://space/space-coordination-policy/history?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", limit: "1", ...(after ? { after } : {}) })}`));
+    const firstPage = await (await history()).json() as { events: Array<Record<string, unknown>>; next_after: string | null };
+    expect(firstPage).toMatchObject({ schema_version: 2, events: [{ prior_revision: null, revision: 1, member_facts_enabled: true, actor_id: "owner" }], next_after: "1" });
+    const secondPage = await (await history(firstPage.next_after ?? undefined)).json() as { events: Array<Record<string, unknown>>; next_after: string | null };
+    expect(secondPage).toMatchObject({ events: [{ prior_revision: 1, revision: 2, member_facts_enabled: false, actor_id: "owner" }], next_after: null });
+    expect((await history("01")).status).toBe(400);
+  });
+
+  it("blocks new member-visible amendments under the default-off policy but permits narrowing to admins", async () => {
+    const { space, storage, root } = await setup(false);
+    storage.sql.exec(`INSERT INTO space_coordination_entries
+      (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at)
+      VALUES ('tenant','space','legacy-amend',1,'official.website','Legacy approved fact',NULL,'space_members','active',1,1,'explicit_owner_or_admin_approval','owner','owner','owner','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z','2026-11-01T00:00:00.000Z','owner',NULL)`);
+    const amend = (audience: "space_members" | "space_admins") => space.fetch(new Request(`${root}/legacy-amend`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenant_id: "tenant", space_id: "space", actor_id: "admin", approved_role: "admin", schema_version: 2,
+        expected_version: 1, confirmed: true, draft: { schema_version: 2, capability_key: "official.website", label: "Updated fact", audience } }),
+    }));
+    expect((await amend("space_members")).status).toBe(409);
+    expect(storage.sql.exec("SELECT version,label,audience FROM space_coordination_entries WHERE entry_id='legacy-amend'").toArray())
+      .toEqual([{ version: 1, label: "Legacy approved fact", audience: "space_members" }]);
+    expect((await amend("space_admins")).status).toBe(200);
+    expect(storage.sql.exec("SELECT version,label,audience FROM space_coordination_entries WHERE entry_id='legacy-amend'").toArray())
+      .toEqual([{ version: 2, label: "Updated fact", audience: "space_admins" }]);
+  });
+
+  it("serializes concurrent policy disable and member publication without a disabled visible fact", async () => {
+    const { publishV2, readPolicy, updatePolicy } = await setup();
+    const [published, disabled] = await Promise.all([publishV2("racing-member", "space_members"), updatePolicy(false, 1)]);
+    const policy = await (await readPolicy()).json() as { member_facts_enabled: boolean; active_member_facts: number };
+    if (!policy.member_facts_enabled) {
+      expect(published.status).toBe(409);
+      expect(policy.active_member_facts).toBe(0);
+    } else {
+      expect(published.status).toBe(201);
+      expect(disabled.status).toBe(409);
+      expect(policy.active_member_facts).toBe(1);
+    }
+  });
+
+  it("rolls back policy changes when their metadata audit cannot be recorded", async () => {
+    const { space, storage, readPolicy, updatePolicy } = await setup(false);
+    storage.sql.exec(`CREATE TRIGGER reject_coordination_policy_audit BEFORE INSERT ON space_coordination_policy_events
+      BEGIN SELECT RAISE(ABORT,'policy audit unavailable'); END`);
+    const failed = await updatePolicy(true, 0);
+    expect(failed.status).toBe(503);
+    await expect((await readPolicy()).json()).resolves.toMatchObject({ configured: false, member_facts_enabled: false, revision: 0 });
+    expect(storagePolicyEvents(space)).toEqual([]);
+  });
 });
 
 function storageRow(space: SpaceDO) {
   const internals = space as unknown as { ctx: { storage: { sql: { exec<T>(query: string, ...args: unknown[]): { toArray(): T[] } } } } };
   return internals.ctx.storage.sql.exec<{ status: string; version: number; revoked_by: string; approved_by: string; approved_role: string }>(
     "SELECT status,version,revoked_by,approved_by,approved_role FROM space_coordination_entries WHERE entry_id='entry'").toArray()[0];
+}
+
+function storagePolicyEvents(space: SpaceDO) {
+  const internals = space as unknown as { ctx: { storage: { sql: { exec<T>(query: string, ...args: unknown[]): { toArray(): T[] } } } } };
+  return internals.ctx.storage.sql.exec("SELECT prior_revision,revision,prior_member_facts_enabled,member_facts_enabled,actor_id,actor_role FROM space_coordination_policy_events ORDER BY revision").toArray();
 }

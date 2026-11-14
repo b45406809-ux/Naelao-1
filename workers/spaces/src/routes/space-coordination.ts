@@ -7,6 +7,7 @@ import { resolveEndUserSpaceRole } from "../space-auth.js";
 
 const basePath = "/spaces/:spaceId/coordination-registry";
 const v2Path = `${basePath}/v2`;
+const policyPath = `${v2Path}/policy`;
 
 export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
   const noStoreHeader = async (c: Context<{ Bindings: Env }>, next: () => Promise<void>) => {
@@ -32,6 +33,43 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
     if (after !== undefined && (!after || after.length > 256)) return c.json({ error_code: "invalid_cursor" }, 400);
     const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, limit: "50", schema_version: "2", viewer_role: auth.role, ...(after ? { after } : {}) });
     return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-registry?${params}`)));
+  });
+
+  app.get(policyPath, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-policy?${params}`)));
+  });
+
+  app.get(`${policyPath}/history`, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const after = c.req.query("after");
+    if (after !== undefined && (!/^(0|[1-9][0-9]*)$/.test(after) || !Number.isSafeInteger(Number(after))))
+      return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-policy/history?${params}`)));
+  });
+
+  app.put(policyPath, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return c.json({ error_code: "coordination_policy_invalid" }, 400);
+    const input = raw as Record<string, unknown>;
+    if (Object.keys(input).some(key => !["member_facts_enabled", "expected_revision", "confirm"].includes(key))
+      || typeof input.member_facts_enabled !== "boolean" || !Number.isSafeInteger(input.expected_revision)
+      || Number(input.expected_revision) < 0 || input.confirm !== true) {
+      return c.json({ error_code: "coordination_policy_invalid" }, 400);
+    }
+    const response = await auth.stub.fetch(new Request(`http://space/space-coordination-policy?${new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId })}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ member_facts_enabled: input.member_facts_enabled, expected_revision: input.expected_revision,
+        actor_id: auth.userId, actor_role: auth.role, confirmed: true }),
+    }));
+    return noStore(response);
   });
 
   app.post(`${basePath}/preview`, async c => {

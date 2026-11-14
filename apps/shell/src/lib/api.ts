@@ -1,6 +1,6 @@
 import { ApiError, requestJson } from "./request";
 import type { ProjectKind } from "@naelao/agent-sdk";
-import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2 } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2 } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -121,6 +121,18 @@ export function listSpaceCoordinationAuditHistory(spaceId: string, session: Sess
   const query = after ? `?after=${encodeURIComponent(after)}` : "";
   return apiFetch<SpaceCoordinationAuditHistoryPageV2>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/${encodeURIComponent(entryId)}/history${query}`, { session, cache: "no-store" });
+}
+export function getSpaceCoordinationPolicy(spaceId: string, session: SessionCredentials) {
+  return apiFetch<SpaceCoordinationPolicyV2>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/policy`, { session, cache: "no-store" });
+}
+export function listSpaceCoordinationPolicyHistory(spaceId: string, session: SessionCredentials, after?: string) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return apiFetch<SpaceCoordinationPolicyHistoryPageV2>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/policy/history${query}`, { session, cache: "no-store" });
+}
+export function updateSpaceCoordinationPolicy(spaceId: string, session: SessionCredentials, memberFactsEnabled: boolean, expectedRevision: number, confirm: boolean) {
+  return apiFetch<SpaceCoordinationPolicyV2>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/policy`, {
+    method: "PUT", session, body: JSON.stringify({ member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision, confirm }),
+  });
 }
 export function previewSpaceCoordination(spaceId: string, session: SessionCredentials, draft: SpaceCoordinationDraftV2) {
   return apiFetch<{ schema_version: 2; draft: SpaceCoordinationDraftV2; disclosure: { audience: string; effect: string }; no_project_source: true }>(
