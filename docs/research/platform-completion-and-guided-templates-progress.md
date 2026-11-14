@@ -1,7 +1,32 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P16 owner-approved image attachment mode)
+## Active continuation — 2026-11-14 (shared-Space exact-key registry reservation)
+
+Code `4f634205a4f92d7132c5530092d4d73f05fff142` is pushed to `origin/Mcbt5s-Backup-2`. The
+shared-Space coordination registry now supports an optional owner/admin singleton set (up to 32
+canonical keys), revisioned private history, and atomically maintained reservations. Direct fact
+publication/amendment, private-project proposal approval, revoke and project retirement use the same
+SpaceDO authority; expiration permits replacement. SDK, authenticated no-store owner/admin routes,
+Shell editor, reservation display and history are wired. Local checks: SDK **6/6**; Spaces registry,
+gateway, proposal and migration suites **40/40**; Agent SDK, Spaces and Shell typechecks; diff check.
+No deployed or live multi-user acceptance ran.
+
+This closes only the registry-level subset of §10.2/§10.5. It does not reserve provider resources or
+gate template/project/provider provisioning and activation. Full §10.4 side-effect reservations,
+non-disclosure scenario coverage and live concurrency remain open; no project access is granted by a
+reservation. P06 first-party phone listing still requires publisher identity, key custody/signing,
+canonical artifact distribution and catalog policy. P01/P02 and the remaining plan matrices retain
+their recorded external gates and uncoded work. Rollouts stay disabled; preserve the untracked Python
+cache.
+
+Exact next action: add the optional singleton-key suggestion to signed SpaceBlueprint authoring and
+owner activation review; apply only with explicit confirmation when the owner policy revision is still
+zero, preserving any configured policy. Test authoring, persistence, authorization and replay, then
+continue other uncoded requirements in dependency order. Fetch before each push and never overwrite
+remote history.
+
+## Previous continuation — 2026-11-14 (P16 owner-approved image attachment mode)
 
 Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. P05/P16
 now support a distinct owner-approved `read_image` channel grant: one PNG/JPEG/WebP image up to 480

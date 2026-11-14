@@ -1,7 +1,34 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (P16 owner-approved image attachment mode)
+## Active continuation — 2026-11-14 (§10.2 exact-key registry singleton rules)
+
+Code `4f634205a4f92d7132c5530092d4d73f05fff142` is pushed to `origin/Mcbt5s-Backup-2`.
+Space owners/admins can configure up to 32 exact capability keys; default behavior still permits
+duplicates. Migration 134 stores revisioned policy/history and private current reservations. The
+SpaceDO enforces reservations atomically for direct publish, amendments and approved private-project
+proposals; revoke, expiry replacement and source-project retirement release or supersede stale
+reservations. Owner/admin no-store routes, SDK/API contracts, and a Shell policy/history editor are
+reachable. Local verification: SDK contract **6/6**; Spaces registry, gateway, proposal and migration
+suites **40/40**; Agent SDK, Spaces and Shell typechecks; `git diff --check`. All evidence is local
+mocked SQLite/Worker behavior; no deployed or live multi-user acceptance ran.
+
+This is a registry-only subset of §10.2/§10.4/§10.5, not an end-to-end provider-resource reservation:
+project/template/provider creation and activation paths do not yet consult it, and the registry fact
+does not grant service access. Broader non-disclosure, independent-Space and deployed concurrency
+acceptance remain open. P06's signed phone listing remains gated on Naelao publisher identity,
+signing/key custody authority, canonical artifact distribution and catalog policy. P01/P02 real
+resource separation/receipts and other S/P and S1–S9/U01–U12 ledger gaps remain as recorded. Keep
+rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+Exact next action: extend the signed SpaceBlueprint/template handoff with an optional suggested
+singleton-key set. Persist and validate it in Foundry authoring; show it in owner activation review;
+apply it only after explicit owner/admin confirmation and only when no owner singleton-policy
+revision exists. Never overwrite a configured owner policy. Add reachable authoring/activation tests,
+then continue remaining uncoded S3–S9/U01–U12 and P01–P24 requirements without repeating completed
+source audits. Fetch and safely integrate before each push.
+
+## Previous continuation — 2026-11-14 (P16 owner-approved image attachment mode)
 
 Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. Channel
 extensions can declare `read_image` with one PNG/JPEG/WebP up to 480 KiB. The owner/admin install

@@ -16,7 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P16 owner-approved image attachment mode)
+## Latest checkpoint — 2026-11-14 (§10.2 exact-key registry singleton rules)
+
+Code `4f634205a4f92d7132c5530092d4d73f05fff142` is pushed to `origin/Mcbt5s-Backup-2`. The optional
+default-off owner/admin singleton policy for Space coordination facts now has migration-backed
+revision/history, atomic reservation enforcement for fact publish/amend/proposal approval, release on
+revoke/project retirement and replacement after expiry. The authenticated no-store routes, SDK/API,
+and Shell editor/history are connected. Local evidence: SDK **6/6**; Spaces registry/gateway/proposal/
+migration suites **40/40**; SDK, Spaces and Shell typechecks; `git diff --check`. These are local
+Worker/SQLite mocks and static checks only; no deployed/live multi-user acceptance ran.
+
+Scope is deliberately registry-only. Provider resource creation/activation, template/project creation,
+end-to-end side-effect fencing and broader non-disclosure tests do not yet consult this policy; a
+reservation grants no service access. §10.2/§10.4/§10.5 remain PARTIAL. Other S1–S9/U01–U12 and P01–P24
+requirements retain their row-level states. P06 publisher/signing/distribution contract and P01/P02
+real resource receipts remain external gates. Keep rollouts disabled and preserve the untracked
+`infra/scripts/__pycache__/`.
+
+Exact next action: add the optional singleton-key suggestion to signed SpaceBlueprint/template
+persistence and owner activation review. Apply it only after explicit confirmation and only when the
+owner policy revision is zero; preserve configured owner rules. Add authoring/activation tests, then
+continue remaining uncoded plan requirements without repeating completed audits. Fetch and safely
+integrate before each push.
+
+## Previous checkpoint — 2026-11-14 (P16 owner-approved image attachment mode)
 
 Code `c697b8f93ea9976132c58b733f6d0387feb331ed` is pushed to `origin/Mcbt5s-Backup-2`. Channel
 extensions may declare an owner-approved one-image `read_image` grant, bounded to PNG/JPEG/WebP and
