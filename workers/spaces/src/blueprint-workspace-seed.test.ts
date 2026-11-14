@@ -12,6 +12,7 @@ const blueprint: SpaceBlueprint = {
 function fixture(initializationStatus = 201) {
   const events: string[] = [];
   const objects = new Map<string, Uint8Array>();
+  const durableValues = new Map<string, unknown>();
   const r2 = {
     put: vi.fn(async (key: string, value: string | Uint8Array) => {
       if (objects.has(key)) return null;
@@ -51,10 +52,15 @@ function fixture(initializationStatus = 201) {
     }
     return new Response("not found", { status: 404 });
   }) };
-  const instance = new SpaceDO({ storage: { sql, transactionSync: (run: () => unknown) => run(), put: vi.fn() } } as never,
+  const storagePut = vi.fn(async (key: unknown, value?: unknown) => {
+    if (typeof key === "string") durableValues.set(key, value);
+    else if (key && typeof key === "object") for (const [name, item] of Object.entries(key)) durableValues.set(name, item);
+  });
+  const instance = new SpaceDO({ storage: { sql, transactionSync: (run: () => unknown) => run(),
+    get: vi.fn(async (key: string) => durableValues.get(key)), put: storagePut } } as never,
     { PLATFORM_SECRET: "secret", UNIFIED_WORKSPACE_ENABLED: "true", SCRIPTS_R2: r2 as never, AGENTS_WORKER: agents as never });
   (instance as unknown as { initialized: boolean }).initialized = true;
-  return { instance, events, objects, r2, agents };
+  return { instance, events, objects, r2, agents, storagePut, durableValues };
 }
 
 describe("canonical blueprint workspace seeding", () => {
@@ -74,5 +80,24 @@ describe("canonical blueprint workspace seeding", () => {
     expect(f.events).not.toContain("project-visible");
     expect(f.events).toContain("rollback");
     expect(f.objects.size).toBe(0);
+  });
+
+  it("persists template channel availability defaults for the target Space without provisioning", async () => {
+    const f = fixture();
+    const defaults = { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" as const },
+      projectAssistants: { enabled: { email: false } } };
+    await f.instance.instantiateBlueprint({ ...blueprint, assistantChannels: defaults }, "space_01", "tenant_01");
+    expect(f.storagePut).toHaveBeenCalledExactlyOnceWith("channels:template", defaults);
+    expect(f.durableValues.get("channels:template")).toEqual(defaults);
+    expect([...f.durableValues.keys()]).toEqual(["channels:template"]);
+
+    const response = await f.instance.fetch(new Request("http://space/assistant-channels?user_id=owner_01"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      preferences: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },
+      templateDefaults: defaults,
+      emailProvisioning: { provider: "agentmail", defaultMode: "none", provisionOnCreate: false },
+    });
+    expect(f.agents.fetch).toHaveBeenCalledTimes(1);
   });
 });
