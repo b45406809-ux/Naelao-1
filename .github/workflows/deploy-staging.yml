@@ -38,6 +38,9 @@ jobs:
       - name: Test environment resource inventory and receipts
         run: python3 -m unittest discover -s infra/scripts -p "test_validate_environment_resources.py"
 
+      - name: Test GET-only Cloudflare resource receipt collector
+        run: python3 -m unittest discover -s infra/scripts -p "test_collect_cloudflare_resource_receipts.py"
+
       - name: Test durable D1 release migration runner
         run: python3 -m unittest discover -s infra/scripts -p "test_release_migrations.py"
 
