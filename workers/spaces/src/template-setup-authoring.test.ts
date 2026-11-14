@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type SpaceBlueprint, validateBlueprintSetupSchema } from "@naelao/agent-sdk";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 import spacesWorker from "./index.js";
 
 const sourceBlueprint = (): SpaceBlueprint => ({
@@ -107,6 +107,15 @@ describe("visual Template setup authoring export", () => {
     } } })).toThrow("blueprint_assistant_channel_provisioning_not_authorable");
   });
 
+  it("attaches only the signed member-facts suggestion without mutating the source", () => {
+    const source = sourceBlueprint();
+    const authored = attachBlueprintCoordinationDefaults(source, { memberFactsEnabled: true });
+    expect(authored.coordinationDefaults).toEqual({ memberFactsEnabled: true });
+    expect(source.coordinationDefaults).toBeUndefined();
+    expect(() => attachBlueprintCoordinationDefaults(source, { memberFactsEnabled: "yes" })).toThrow("blueprint_coordination_defaults_invalid");
+    expect(() => attachBlueprintCoordinationDefaults(source, { memberFactsEnabled: false, revealProjects: true })).toThrow("blueprint_coordination_defaults_invalid");
+  });
+
   it("rejects secrets, unknown exported projects, malformed fields and unbounded field lists", () => {
     const source = sourceBlueprint();
     expect(() => attachBlueprintSetupFields(source, { projectId: "support", schemaVersion: 1,
@@ -125,6 +134,7 @@ describe("visual Template setup authoring export", () => {
       body: JSON.stringify({ projectId: "support", requiredExtensions: [], name: "Support", description: "Support template",
         setupSchemaVersion: 2, setupFields,
         assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
+        coordinationDefaults: { memberFactsEnabled: true },
         stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } }),
     }), h.env);
     expect(response.status, await response.clone().text()).toBe(202);
@@ -133,6 +143,7 @@ describe("visual Template setup authoring export", () => {
     const payload = JSON.parse(h.writes[0]!.text) as { blueprint: SpaceBlueprint };
     expect(payload.blueprint).toMatchObject({ setupSchemaVersion: 2, projects: expect.arrayContaining([expect.objectContaining({ id: "support", setupFields })]),
       assistantChannels: { spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" }, projectAssistants: { enabled: { email: false } } },
+      coordinationDefaults: { memberFactsEnabled: true },
       metadata: { stateDeltaSuite: { fixtures: expect.arrayContaining([expect.objectContaining({ id: "fixture-0" })]) } } });
   });
 

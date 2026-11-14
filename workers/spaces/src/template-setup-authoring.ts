@@ -48,3 +48,15 @@ export function attachBlueprintAssistantChannelDefaults(
   blueprint.assistantChannels = checked as Pick<AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants">;
   return blueprint;
 }
+
+/** Attach the template author's advisory coordination default. Runtime publication still requires
+ * the target Space owner/admin to confirm it through the revisioned policy API. */
+export function attachBlueprintCoordinationDefaults(source: SpaceBlueprint, input: unknown): SpaceBlueprint {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("blueprint_coordination_defaults_invalid");
+  const raw = input as Record<string, unknown>;
+  if (Object.keys(raw).length !== 1 || typeof raw.memberFactsEnabled !== "boolean")
+    throw new Error("blueprint_coordination_defaults_invalid");
+  const blueprint = structuredClone(source);
+  blueprint.coordinationDefaults = { memberFactsEnabled: raw.memberFactsEnabled };
+  return blueprint;
+}

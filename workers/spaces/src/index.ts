@@ -64,7 +64,7 @@ import { summarizeExtensionForActivation, type ExtensionActivationSummary } from
 import { applyPublisherKeyRegistry, extensionReleaseAccessExpansion, isTrustedPublisherRelease, retainActivePublisherInstallations, type PublisherTaggedRelease } from "./extension-release-trust.js";
 import { SPACE_SHARED_PACKAGE_CAPABILITIES, SPACE_SHARED_PACKAGE_PERMISSIONS } from "./shared-extension-package-policy.js";
 import { supportsVersionOnlySpaceSharedCodeUpdate } from "./extension-update-contract.js";
-import { attachBlueprintAssistantChannelDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
+import { attachBlueprintAssistantChannelDefaults, attachBlueprintCoordinationDefaults, attachBlueprintSetupFields, attachBlueprintSetupFieldGroups } from "./template-setup-authoring.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -738,7 +738,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; coordinationDefaults?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
   if (exportOptions.requestId !== undefined && (typeof exportOptions.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exportOptions.requestId))) return c.json({ error_code: "invalid_export_request_id" }, 400);
   const requestId = exportOptions.requestId;
   const requestPayload = { ...exportOptions };
@@ -804,13 +804,17 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
       return c.json({ error_code: "blueprint_assistant_channel_defaults_invalid" }, 422);
     }
   }
+  if (exportOptions.coordinationDefaults !== undefined) {
+    try { rawBlueprint = attachBlueprintCoordinationDefaults(rawBlueprint, exportOptions.coordinationDefaults); }
+    catch { return c.json({ error_code: "blueprint_coordination_defaults_invalid" }, 422); }
+  }
   if (exportOptions.stateDeltaSuite) rawBlueprint.metadata.stateDeltaSuite = exportOptions.stateDeltaSuite;
   for (const project of rawBlueprint.projects) {
     const entry = project.id ? exportOptions.entries?.[project.id] : undefined;
     if (entry) project.configuration = { ...project.configuration, conformance_entry: entry };
   }
   const blueprint = sanitizeAndScrubBlueprint(rawBlueprint) as unknown as SpaceBlueprint;
-  try { validateBlueprintSetupSchema(blueprint); }
+  try { validateBlueprintSetupSchema(blueprint); instantiateBlueprint(blueprint, spaceId); }
   catch { return c.json({ error_code: "blueprint_setup_schema_invalid" }, 422); }
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
@@ -1334,6 +1338,18 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const rows = await result.json<{ installations: Array<{ instance_id?: string; extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; publisher_key_id?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
   const trustedInstallations = await trustedExtensionInstallations(c.env, tenantId, spaceId, rows.installations ?? []);
   const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(trustedInstallations), await installableSpaceExtensionPins(), runtimeReadiness);
+  let coordinationPolicyCurrent: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null = null;
+  if (preview.coordination_defaults) {
+    const coordinationPolicyResponse = await stub.fetch(new Request(`http://space-do/space-coordination-policy?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId })}`));
+    if (!coordinationPolicyResponse.ok) return c.json({ error_code: "coordination_policy_unavailable" }, 503);
+    const current = await coordinationPolicyResponse.json<{ configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number }>();
+    coordinationPolicyCurrent = {
+      configured: current.configured === true,
+      member_facts_enabled: current.member_facts_enabled === true,
+      revision: Number.isSafeInteger(current.revision) && current.revision >= 0 ? current.revision : 0,
+      active_member_facts: Number.isSafeInteger(current.active_member_facts) && current.active_member_facts >= 0 ? current.active_member_facts : 0,
+    };
+  }
   const conversationsPerMonth = c.req.query("conversations_per_month"), interactionsPerConversation = c.req.query("interactions_per_conversation");
   let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
   if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined) {
@@ -1343,7 +1359,7 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
   }
   const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);
-  return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security,
+  return c.json({ ...preview, coordination_policy_current: coordinationPolicyCurrent, blueprint_id: blueprint.id, target_space_id: spaceId, security,
     evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
       evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
     cost_estimate: costEstimate,
@@ -1432,7 +1448,9 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const selectedListing = selectedTemplateListingId(owned.config_json ?? null);
   if (selectedListing.kind === "invalid") return c.json({ error_code: "template_listing_selection_invalid" }, 409);
   const listingId = selectedListing.kind === "selected" ? selectedListing.listingId : null;
-  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown }));
+  const requestBody = await c.req.json<{ approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown }>().catch(() => ({} as { approved_shared_filesystem?: unknown; setup_values?: unknown; apply_coordination_default?: unknown }));
+  if (requestBody.apply_coordination_default !== undefined && typeof requestBody.apply_coordination_default !== "boolean")
+    return c.json({ error_code: "coordination_default_confirmation_invalid" }, 400);
   const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
   if (!storedValue) throw notFound("Blueprint");
   const certifiedBlueprint = storedValue.blueprint;
@@ -1445,6 +1463,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     "state-delta",
   )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const blueprint = certifiedBlueprint!;
+  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults === undefined)
+    return c.json({ error_code: "coordination_default_not_declared" }, 400);
   let setupValues: BlueprintSetupValues;
   try { setupValues = validateBlueprintSetupValues(blueprint, requestBody.setup_values ?? {}); }
   catch (error) { return c.json({ error_code: "template_setup_values_invalid", message: (error as Error).message.slice(0, 240) }, 400); }
@@ -1600,7 +1620,39 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
       }catch{assistantEmailSetups.push({kind,...(projectId?{projectId}:{}),status:"deferred",errorCode:"assistant_setup_unavailable"});}
     }
   }
-  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups},{status:response.status});
+  let coordinationPolicyApplication: { status: "not_requested" | "applied" | "existing_policy_preserved" | "needs_manual_unpublish" | "retry_in_settings"; member_facts_enabled?: boolean; revision?: number } = { status: "not_requested" };
+  if (requestBody.apply_coordination_default === true && blueprint.coordinationDefaults) {
+    const actorRole = identity.role === "product_end_user"
+      ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+      : identity.role;
+    if (actorRole !== "owner" && actorRole !== "admin") coordinationPolicyApplication = { status: "retry_in_settings" };
+    else {
+      const policyQuery = new URLSearchParams({ tenant_id: tenantId, space_id: spaceId });
+      const policyResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/space-coordination-policy?${policyQuery}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ member_facts_enabled: blueprint.coordinationDefaults.memberFactsEnabled, expected_revision: 0,
+          actor_id: identity.userId, actor_role: actorRole, confirmed: true }),
+      }));
+      if (policyResponse.ok) {
+        const saved: { member_facts_enabled?: boolean; revision?: number } = await policyResponse.json<{ member_facts_enabled?: boolean; revision?: number }>()
+          .catch(() => ({} as { member_facts_enabled?: boolean; revision?: number }));
+        coordinationPolicyApplication = { status: "applied", member_facts_enabled: saved.member_facts_enabled === true,
+          revision: typeof saved.revision === "number" && Number.isSafeInteger(saved.revision) ? saved.revision : 1 };
+      } else if (policyResponse.status === 409) {
+        const failure: { error_code?: string } = await policyResponse.json<{ error_code?: string }>()
+          .catch(() => ({} as { error_code?: string }));
+        const current = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/space-coordination-policy?${policyQuery}`));
+        const state: { member_facts_enabled?: boolean; revision?: number } = current.ok
+          ? await current.json<{ member_facts_enabled?: boolean; revision?: number }>().catch(() => ({} as { member_facts_enabled?: boolean; revision?: number }))
+          : {};
+        coordinationPolicyApplication = { status: failure.error_code === "coordination_member_facts_must_be_unpublished_first"
+          ? "needs_manual_unpublish" : "existing_policy_preserved",
+          member_facts_enabled: state.member_facts_enabled === true,
+          ...(typeof state.revision === "number" && Number.isSafeInteger(state.revision) ? { revision: state.revision } : {}) };
+      } else coordinationPolicyApplication = { status: "retry_in_settings" };
+    }
+  }
+  return Response.json({...((await response.json<Record<string,unknown>>().catch(()=>({})))),assistantEmailSetups,coordinationPolicyApplication},{status:response.status});
 });
 
 async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,

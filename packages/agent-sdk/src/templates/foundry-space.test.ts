@@ -33,4 +33,14 @@ describe("Foundry dogfood Space Template", () => {
     expect(DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog).toContain("/mcp");
     expect(DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog).toContain("tenant-owned export");
   });
+
+  it("authors a signed coordination suggestion and preserves it in resumable drafts", () => {
+    const canvas = DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog!;
+    expect(canvas).toContain("coordination-member-facts");
+    expect(canvas).toContain("coordinationDefaults");
+    expect(canvas).toContain("coordination_member_facts");
+    const scripts = [...canvas.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    expect(scripts).toHaveLength(1);
+    expect(() => new Function(scripts[0]![1]!)).not.toThrow();
+  });
 });

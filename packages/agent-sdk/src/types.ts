@@ -273,6 +273,8 @@ export interface SpaceBlueprint {
   /** Optional signed, data-only migrations for owner-reviewed template setup updates. */
   setupMigrations?: BlueprintSetupMigration[];
   assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
+  /** Suggested initial Space coordination policy; member visibility still needs target-owner approval. */
+  coordinationDefaults?: { memberFactsEnabled: boolean };
   id: string;
   schemaVersion: "2.0";
   metadata: Record<string, unknown> & { name?: string; exportedAt?: string };

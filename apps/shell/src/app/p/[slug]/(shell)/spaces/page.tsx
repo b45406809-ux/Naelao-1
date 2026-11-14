@@ -103,7 +103,7 @@ export default function SpacesPage() {
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
@@ -343,7 +343,7 @@ export default function SpacesPage() {
           const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
           await loadTemplateSetupDraft(created.id, fork.space_type_id, preview, true);
           setDependencyImports({});
-          setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview });
+          setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview, applyCoordinationDefault: false });
           setCreatedSpaceId(created.id);
           setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
           await refresh();
@@ -390,7 +390,8 @@ export default function SpacesPage() {
         });
         return [[extensionId, grants]];
       }));
-      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues);
+      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem, setupValues,
+        activationReview.applyCoordinationDefault === true);
       setCreateOpen(false);
       window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}?next=settings`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
@@ -862,6 +863,21 @@ export default function SpacesPage() {
                     return next;
                   })} />)}
               </fieldset>)}
+            </section>}
+            {activationReview.preview.coordination_defaults && activationReview.preview.coordination_policy_current && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+              <strong>Space coordination default</strong>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>
+                This signed template suggests {activationReview.preview.coordination_defaults.memberFactsEnabled ? "allowing owners and admins to publish explicitly approved coordination facts to Space members" : "keeping new member-visible coordination facts disabled"}. These facts are advisory summaries; this setting never grants access to project files or services. Existing approved facts keep their individual visibility.
+              </p>
+              {activationReview.preview.coordination_policy_current.revision > 0
+                ? <p role="status">This Space already has owner-configured coordination policy revision {activationReview.preview.coordination_policy_current.revision} ({activationReview.preview.coordination_policy_current.member_facts_enabled ? "member publication enabled" : "member publication disabled"}). The template will preserve it.</p>
+                : !activationReview.preview.coordination_defaults.memberFactsEnabled && activationReview.preview.coordination_policy_current.active_member_facts > 0
+                  ? <p role="status">Member publication is already disabled. {activationReview.preview.coordination_policy_current.active_member_facts} previously approved member facts remain visible; review and unpublish them individually before changing policy.</p>
+                  : <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <input type="checkbox" checked={activationReview.applyCoordinationDefault === true}
+                      onChange={event => setActivationReview(current => current ? { ...current, applyCoordinationDefault: event.target.checked } : current)} />
+                    <span>Apply this suggested default to new member-visible coordination facts now. This requires explicit owner/admin approval and can be changed later in Space Settings.</span>
+                  </label>}
             </section>}
             <strong>Assistant channel availability defaults</strong>
             {activationReview.preview.assistant_channel_defaults

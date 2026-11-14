@@ -2777,9 +2777,9 @@ export function applySpaceTemplateSetupUpdate(spaceId: string, blueprintId: stri
   });
 }
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
-  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}): Promise<unknown> {
+  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}, setupValues: SpaceTemplateSetupValues = {}, applyCoordinationDefault = false): Promise<unknown> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
-    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues }),
+    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem, setup_values: setupValues, apply_coordination_default: applyCoordinationDefault }),
   });
 }
 export interface SpaceTemplateSetupDraftSnapshot {
@@ -2831,6 +2831,8 @@ export function listSpaceTemplateInstallations(spaceId: string, session: Session
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
+  coordination_defaults: { memberFactsEnabled: boolean } | null;
+  coordination_policy_current: { configured: boolean; member_facts_enabled: boolean; revision: number; active_member_facts: number } | null;
   setup_schema_version: 1 | 2 | null;
   setup_fields: Array<{ project_id: string; project_name: string; fields: import("@naelao/agent-sdk").BlueprintSetupField[] }>;
   assistant_channel_defaults: Pick<import("@naelao/agent-sdk").AssistantChannelTemplateDefaults, "spaceAssistant" | "projectAssistants"> | null;

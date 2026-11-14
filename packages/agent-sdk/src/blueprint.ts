@@ -11,6 +11,14 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (!blueprint.id || !Array.isArray(blueprint.projects)) throw new Error("Invalid blueprint");
   const copy = structuredClone(blueprint);
   validateBlueprintSetupSchema(copy);
+  if (copy.coordinationDefaults !== undefined) {
+    const defaults = copy.coordinationDefaults as unknown;
+    if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)
+      || Object.keys(defaults).some(key => key !== "memberFactsEnabled")
+      || typeof (defaults as { memberFactsEnabled?: unknown }).memberFactsEnabled !== "boolean") {
+      throw new Error("Invalid coordination defaults");
+    }
+  }
   if (copy.requiredExtensionVersions !== undefined) {
     if (!copy.requiredExtensionVersions || typeof copy.requiredExtensionVersions !== "object" || Array.isArray(copy.requiredExtensionVersions)) throw new Error("Invalid required extension versions");
     const dependencies = new Set(copy.requiredExtensions ?? []);

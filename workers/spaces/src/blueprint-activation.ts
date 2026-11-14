@@ -20,6 +20,7 @@ export interface BlueprintActivationDependency {
 
 export interface BlueprintActivationPreview {
   ready: boolean;
+  coordination_defaults: { memberFactsEnabled: boolean } | null;
   dependencies: BlueprintActivationDependency[];
   extension_connections: Array<{ extension_id: string; connection_id: string; provider: string; purpose: string; required: boolean; status: "unsupported" | "optional_unsupported" }>;
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
@@ -150,6 +151,7 @@ export function previewBlueprintActivation(
     : null;
   return {
     ready: blockers.length === 0,
+    coordination_defaults: blueprint.coordinationDefaults ? { ...blueprint.coordinationDefaults } : null,
     dependencies,
     extension_connections,
     runtime_requirements,

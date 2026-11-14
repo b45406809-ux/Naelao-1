@@ -23,6 +23,13 @@ const blueprint = (overrides: Partial<SpaceBlueprint> = {}): SpaceBlueprint => {
 };
 
 describe("Space Template activation preview", () => {
+  it("exposes a signed coordination suggestion without applying it", () => {
+    const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [],
+      coordinationDefaults: { memberFactsEnabled: true } }), new Map(), new Map());
+    expect(preview.coordination_defaults).toEqual({ memberFactsEnabled: true });
+    expect(preview).toMatchObject({ requires_human_activation: true, installs_or_grants_applied: false });
+  });
+
   it("previews validated channel availability without exposing account provisioning directives", () => {
     const preview = previewBlueprintActivation(blueprint({ requiredExtensions: [], requiredCredentials: [], assistantChannels: {
       spaceAssistant: { enabled: { chat: true, phone: false }, phonePrompt: "recommended" },
@@ -395,15 +402,24 @@ describe("Space Template activation preview", () => {
 
   it("activates a certified template through the host for a fresh Space", async () => {
     const secret = "fresh-space-activation-secret";
-    const artifact = blueprint({ id: "tpl_fresh_target", projects: [], requiredExtensions: [], requiredCredentials: [] });
+    const artifact = blueprint({ id: "tpl_fresh_target", projects: [], requiredExtensions: [], requiredCredentials: [], coordinationDefaults: { memberFactsEnabled: true } });
     const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `fresh-${index}` })) };
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-fresh");
     if (!certificate) throw new Error("test_certificate_not_issued");
-    let activationCount = 0, activationBody: Record<string, unknown> | null = null;
+    let activationCount = 0, activationBody: Record<string, unknown> | null = null, policyEnabled = false, policyRevision = 0;
+    let policyWrite: Record<string, unknown> | null = null;
     let spaceConfig = "{}";
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/extension-installations") return Response.json({ installations: [] });
+      if (url.pathname === "/space-coordination-policy" && request.method === "GET") return Response.json({ configured: policyRevision > 0,
+        member_facts_enabled: policyEnabled, revision: policyRevision, active_member_facts: 0 });
+      if (url.pathname === "/space-coordination-policy" && request.method === "PUT") {
+        policyWrite = await request.json() as Record<string, unknown>;
+        if (policyRevision !== 0 || policyWrite.expected_revision !== 0) return Response.json({ error_code: "coordination_policy_revision_conflict" }, { status: 409 });
+        policyEnabled = policyWrite.member_facts_enabled === true; policyRevision = 1;
+        return Response.json({ configured: true, member_facts_enabled: policyEnabled, revision: policyRevision, active_member_facts: 0 });
+      }
       if (url.pathname === "/blueprints/instantiate") { activationCount++; activationBody = await request.json() as Record<string, unknown>; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
       return new Response("not found", { status: 404 });
     } };
@@ -413,12 +429,22 @@ describe("Space Template activation preview", () => {
     const headers = { "x-naelao-tenant-id": "tenant-fresh", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-fresh") };
     const preview = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
     expect(preview.status).toBe(200);
-    expect(await preview.json()).toMatchObject({ ready: true, target_space_id: "fresh-space", requires_human_activation: true });
+    expect(await preview.json()).toMatchObject({ ready: true, target_space_id: "fresh-space", requires_human_activation: true,
+      coordination_defaults: { memberFactsEnabled: true }, coordination_policy_current: { configured: false, revision: 0, member_facts_enabled: false } });
     spaceConfig = JSON.stringify({ template_listing_id: "listing-selected" });
-    const activation = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
+    const activation = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers,
+      body: JSON.stringify({ apply_coordination_default: true }) }), env, {} as ExecutionContext);
     expect(activation.status).toBe(201);
     expect(activationCount).toBe(1);
     expect(activationBody).toMatchObject({ listing_id: "listing-selected", blueprint: { id: artifact.id } });
+    expect(policyWrite).toMatchObject({ member_facts_enabled: true, expected_revision: 0, actor_id: "owner", actor_role: "owner", confirmed: true });
+    expect(policyEnabled).toBe(true);
+    expect(await activation.json()).toMatchObject({ coordinationPolicyApplication: { status: "applied", member_facts_enabled: true, revision: 1 } });
+    const replay = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activate`, { method: "POST", headers,
+      body: JSON.stringify({ apply_coordination_default: true }) }), env, {} as ExecutionContext);
+    expect(replay.status).toBe(201);
+    expect(policyEnabled).toBe(true);
+    expect(await replay.json()).toMatchObject({ coordinationPolicyApplication: { status: "existing_policy_preserved", member_facts_enabled: true, revision: 1 } });
   });
 
   it("cannot bypass required runtime blockers by calling activation directly", async () => {
