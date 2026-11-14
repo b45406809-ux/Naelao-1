@@ -1755,6 +1755,7 @@ export interface SpaceSharedExtensionUpdateReview {
       candidate: Array<{ id: string; provider: string; purpose: string; required: boolean }>; added: string[]; removed: string[]; changed: string[] } };
   schema_changes: { added: string[]; removed: string[]; changed: string[] };
   gadget_migrations: Array<{ gadget_id: string; migrations: Array<{ version: number; description: string; up: string }> }>;
+  schema_migrations_retained: Array<{ gadget_id: string; migrations: Array<{ version: number; description: string }> }>;
   shared_filesystem: { current: SharedFilesystemGrant[]; candidate: SharedFilesystemGrant[]; added: string[]; removed: string[]; changed: string[] };
   authority_expansion: { permissions: string[]; capabilities: string[] };
   authority_expansion_supported: boolean;
@@ -1768,7 +1769,9 @@ export interface SpaceSharedExtensionUpdateReview {
 export interface SpaceSharedExtensionUpdateReceipt {
   request_id: string; installation_id: string; extension_id: string; from_version: string; to_version: string;
   source_manifest_sha256: string; candidate_manifest_sha256: string; source_artifact_sha256: string; artifact_sha256: string;
-  publisher_key_id: string; actor_id: string; authority_expansion: { permissions: string[]; capabilities: string[] }; created_at: string;
+  publisher_key_id: string; actor_id: string; authority_expansion: { permissions: string[]; capabilities: string[] };
+  schema_migrations_retained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }>;
+  created_at: string;
 }
 export interface SpaceSharedExtensionInstallReviewPackage {
   extension_id: string; version: string; manifest_sha256: string; publisher_id: string; publisher_key_id: string;
@@ -1813,10 +1816,11 @@ export function previewSpaceSharedExtensionUpdate(spaceId: string, installationI
   });
 }
 export function applySpaceSharedExtensionUpdate(spaceId: string, installationId: string, session: SessionCredentials, reviewToken: string,
-  confirmAuthorityExpansion: boolean) {
+  confirmAuthorityExpansion: boolean, confirmSchemaMigrationsRetained: boolean) {
   return apiFetch<{ updated: true; replayed: boolean; receipt: SpaceSharedExtensionUpdateReceipt }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update`, {
-      method: "POST", session, body: JSON.stringify({ review_token: reviewToken, confirm_authority_expansion: confirmAuthorityExpansion }),
+      method: "POST", session, body: JSON.stringify({ review_token: reviewToken, confirm_authority_expansion: confirmAuthorityExpansion,
+        confirm_schema_migrations_retained: confirmSchemaMigrationsRetained }),
     });
 }
 export function listSpaceSharedExtensionUpdateReceipts(spaceId: string, session: SessionCredentials) {

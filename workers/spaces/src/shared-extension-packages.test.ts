@@ -104,7 +104,7 @@ async function signedRequest(path: string, method = "GET", body?: unknown, role 
 
 async function updateReviewHarness(options: { activePublisher?: boolean; signatureValid?: boolean; passive?: boolean; installationStatus?: "active" | "disabled";
   currentVersion?: string; candidateVersion?: string; candidateReleaseAvailable?: boolean; endUserSpaceRole?: string; activeWorkCount?: number;
-  gadgetMigration?: boolean; authorityExpansionOnly?: boolean; instanceKey?: string; migrationFailOnceForAppId?: string } = {}) {
+  gadgetMigration?: boolean; gadgetMigrationRollback?: boolean; authorityExpansionOnly?: boolean; instanceKey?: string; migrationFailOnceForAppId?: string } = {}) {
   const currentVersion = options.currentVersion ?? "1.0.0", candidateVersion = options.candidateVersion ?? "1.2.0";
   const passiveManifest = (version: string) => validateExtensionManifest({ id: "ext_customer_voice", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"],
     gadgets: [], daemons: [], commands: [], bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_customer_voice", version,
@@ -125,8 +125,8 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     }
     return validateExtensionManifest({ ...source, bundle: { ...source.bundle!, primitives } });
   };
-  const old = options.gadgetMigration
-    ? withGadgetMigrations(passiveManifest(currentVersion), currentVersion, [1])
+  const old = options.gadgetMigration || options.gadgetMigrationRollback
+    ? withGadgetMigrations(passiveManifest(currentVersion), currentVersion, options.gadgetMigrationRollback ? [1, 2] : [1])
     : options.passive ? passiveManifest(currentVersion) : structuredClone(manifest);
   if (!options.passive) {
     old.bundle!.version = currentVersion;
@@ -138,8 +138,8 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
   const candidateManifest = options.authorityExpansionOnly
     ? validateExtensionManifest({ ...passiveManifest(candidateVersion), declaredPermissions: ["assistant.phone.simulate"],
       capabilityRequirements: ["extension.project_canvas", "assistant.phone.simulate"] })
-    : options.gadgetMigration
-      ? withGadgetMigrations(passiveManifest(candidateVersion), candidateVersion, [1, 2])
+    : options.gadgetMigration || options.gadgetMigrationRollback
+      ? withGadgetMigrations(passiveManifest(candidateVersion), candidateVersion, options.gadgetMigrationRollback ? [1] : [1, 2])
       : options.passive ? passiveManifest(candidateVersion) : validateExtensionManifest({ ...manifest, bundle: { ...manifest.bundle!, version: candidateVersion,
     primitives: [...manifest.bundle!.primitives.map(primitive => ({ ...primitive, version: candidateVersion })),
       { schemaVersion: "1.0", kind: "gadget", id: "usage_stats", version: candidateVersion, permissions: [], capabilityRequirements: [], lifecycle: {},
@@ -191,12 +191,14 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
     if (path === "/space-shared-extension-update") {
       const body = await request.clone().json() as { actorId: string; claims: { requestId: string; installationId: string; extensionId: string;
         fromVersion: string; toVersion: string; sourceManifestSha256: string; candidateManifestSha256: string;
-        artifactSha256: string; publisherKeyId: string; authorityExpansion: { permissions: string[]; capabilities: string[] } } };
+        artifactSha256: string; publisherKeyId: string; authorityExpansion: { permissions: string[]; capabilities: string[] };
+        schemaMigrationsRetained: Array<{ id: string; source: "bundle"; migrations: Array<{ version: number; description: string }> }> } };
       return Response.json({ updated: true, replayed: false, receipt: { request_id: body.claims.requestId, tenant_id: "tenant-a", space_id: "space-a",
         installation_id: body.claims.installationId, extension_id: body.claims.extensionId, from_version: body.claims.fromVersion,
         to_version: body.claims.toVersion, source_manifest_sha256: body.claims.sourceManifestSha256,
         candidate_manifest_sha256: body.claims.candidateManifestSha256, artifact_sha256: body.claims.artifactSha256,
         publisher_key_id: body.claims.publisherKeyId, authority_expansion: body.claims.authorityExpansion,
+        schema_migrations_retained: body.claims.schemaMigrationsRetained,
         actor_id: body.actorId, created_at: new Date().toISOString() } });
     }
     return Response.json({ error_code: "unexpected_space_do_route" }, { status: 404 });
@@ -232,7 +234,8 @@ async function updateReviewHarness(options: { activePublisher?: boolean; signatu
       return { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
     } },
   } as never;
-  return { env, spaceRequests, microAppRequests, microAppActorNames, candidateRelease, options };
+  return { env, spaceRequests, microAppRequests, microAppActorNames, candidateRelease, options,
+    revokePublisher: () => { options.activePublisher = false; } };
 }
 
 async function installReviewHarness(options: { failNextRootInitialization?: boolean } = {}) {
@@ -646,7 +649,7 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, replayed: false, receipt: {
       installation_id: "install-voice", extension_id: "ext_customer_voice", from_version: "1.0.0", to_version: "1.2.0",
@@ -668,19 +671,19 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const adminAttempt = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: true,
+      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false,
     }, "admin"), h.env);
     expect(adminAttempt.status).toBe(403);
     expect(await adminAttempt.json()).toMatchObject({ error_code: "extension_update_owner_confirmation_required" });
 
     const unconfirmed = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: false,
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false,
     }), h.env);
     expect(unconfirmed.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
 
     const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
-      review_token: review.update_review_token, confirm_authority_expansion: true,
+      review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false,
     }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, replayed: false, receipt: {
@@ -710,7 +713,7 @@ describe("signed Space-shared package update review", () => {
     h.options.activePublisher = false;
     const applied = await spacesWorker.fetch(await signedRequest(
       "/spaces/space-a/shared-extension-installations/install-voice/update", "POST",
-      { review_token: review.update_review_token, confirm_authority_expansion: true }), h.env);
+      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false }), h.env);
     expect(applied.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
   });
@@ -724,7 +727,7 @@ describe("signed Space-shared package update review", () => {
     h.candidateRelease.artifact_sha256 = "d".repeat(64);
     const applied = await spacesWorker.fetch(await signedRequest(
       "/spaces/space-a/shared-extension-installations/install-voice/update", "POST",
-      { review_token: review.update_review_token, confirm_authority_expansion: true }), h.env);
+      { review_token: review.update_review_token, confirm_authority_expansion: true, confirm_schema_migrations_retained: false }), h.env);
     expect(applied.status).toBe(409);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
   });
@@ -746,11 +749,11 @@ describe("signed Space-shared package update review", () => {
 
     const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
     const interrupted = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
     expect(interrupted.status).toBe(503);
     expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
     const retry = await spacesWorker.fetch(await signedRequest(applyPath, "POST", { review_token: review.update_review_token,
-      confirm_authority_expansion: false }), h.env);
+      confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
     expect(retry.status, JSON.stringify(await retry.clone().json())).toBe(200);
     const result = await retry.json() as { receipt: { source_manifest_sha256: string; candidate_manifest_sha256: string;
       artifact_sha256: string } };
@@ -776,11 +779,68 @@ describe("signed Space-shared package update review", () => {
     expect(review.review.apply_supported).toBe(true);
     expect(review.candidate.version).toBe("1.0.0");
     const applied = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extension-installations/install-voice/update",
-      "POST", { review_token: review.update_review_token, confirm_authority_expansion: false }), h.env);
+      "POST", { review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false }), h.env);
     expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
     expect(await applied.json()).toMatchObject({ updated: true, receipt: {
       from_version: "1.2.0", to_version: "1.0.0", artifact_sha256: review.candidate.artifact_sha256,
     } });
+  });
+
+  it("requires owner confirmation to roll back Gadget code while retaining exact additive migrations forward", async () => {
+    const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", currentVersion: "1.2.0", candidateVersion: "1.0.0",
+      gadgetMigrationRollback: true });
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.2.0", candidate_version: "1.0.0" }, "admin"), h.env);
+    expect(reviewResponse.status, JSON.stringify(await reviewResponse.clone().json())).toBe(200);
+    const adminReview = await reviewResponse.json() as { review: { apply_supported: boolean; apply_block_reason: string | null };
+      update_review_token?: string };
+    expect(adminReview.review).toMatchObject({ apply_supported: false, apply_block_reason: "a verified Space owner must approve this Gadget code rollback" });
+    expect(adminReview.update_review_token).toBeUndefined();
+
+    const ownerReviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.2.0", candidate_version: "1.0.0" }), h.env);
+    const review = await ownerReviewResponse.json() as { review: { apply_supported: boolean };
+      schema_migrations_retained: Array<{ gadget_id: string; migrations: Array<{ version: number; description: string }> }>;
+      gadget_migrations: unknown[]; update_review_token: string };
+    expect(review.review.apply_supported).toBe(true);
+    expect(review.gadget_migrations).toEqual([]);
+    expect(review.schema_migrations_retained).toEqual([{ gadget_id: "usage_stats", migrations: [{ version: 2, description: "add status" }] }]);
+
+    const applyPath = "/spaces/space-a/shared-extension-installations/install-voice/update";
+    const adminApply = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+    }, "admin"), h.env);
+    expect(adminApply.status).toBe(403);
+    const unconfirmed = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: false,
+    }), h.env);
+    expect(unconfirmed.status).toBe(409);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
+
+    const applied = await spacesWorker.fetch(await signedRequest(applyPath, "POST", {
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+    }), h.env);
+    expect(applied.status, JSON.stringify(await applied.clone().json())).toBe(200);
+    expect(await applied.json()).toMatchObject({ receipt: { from_version: "1.2.0", to_version: "1.0.0",
+      schema_migrations_retained: [{ id: "usage_stats", source: "bundle", migrations: [{ version: 2, description: "add status" }] }] } });
+    expect(h.microAppRequests.filter(request => new URL(request.url).pathname === "/extension-schema-update")).toHaveLength(0);
+    const forwarded = h.spaceRequests.filter(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST").at(-1)!;
+    expect(await forwarded.clone().json()).toMatchObject({ confirmSchemaMigrationsRetained: true,
+      claims: { schemaMigrationsRetained: [{ id: "usage_stats", source: "bundle", migrations: [{ version: 2, description: "add status" }] }] } });
+  });
+
+  it("rejects a revoked publisher after owner-reviewed schema-retaining rollback", async () => {
+    const h = await updateReviewHarness({ passive: true, installationStatus: "disabled", currentVersion: "1.2.0", candidateVersion: "1.0.0",
+      gadgetMigrationRollback: true });
+    const reviewResponse = await spacesWorker.fetch(await signedRequest(path, "POST",
+      { expected_current_version: "1.2.0", candidate_version: "1.0.0" }), h.env);
+    const review = await reviewResponse.json() as { update_review_token: string };
+    h.revokePublisher();
+    const applied = await spacesWorker.fetch(await signedRequest("/spaces/space-a/shared-extension-installations/install-voice/update", "POST", {
+      review_token: review.update_review_token, confirm_authority_expansion: false, confirm_schema_migrations_retained: true,
+    }), h.env);
+    expect(applied.status).toBe(409);
+    expect(h.spaceRequests.some(request => new URL(request.url).pathname === "/space-shared-extension-update" && request.method === "POST")).toBe(false);
   });
 
   it("requires pause and drain before issuing an apply token, and rejects packages with runtime authority", async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateExtensionManifest } from "@naelao/agent-sdk";
 import { spaceSharedAuthorityExpansion, spaceSharedGadgetMigrationPlan, supportsOwnerApprovedSpaceSharedAuthorityExpansion,
-  supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
+  spaceSharedGadgetMigrationRetentionPlan, supportsVersionOnlySpaceSharedCodeUpdate, supportsVersionOnlySpaceSharedPackageUpdate } from "./extension-update-contract.js";
 
 function packageManifest(version: string, options: { channel?: boolean; gadget?: boolean; dynamicCanvas?: boolean; permission?: string } = {}) {
   return validateExtensionManifest({
@@ -64,6 +64,31 @@ describe("Space-shared code-only update contract", () => {
       prior[0]!, { ...added, up: "ALTER TABLE records DROP COLUMN status;" },
     ]))).toBe(false);
     expect(supportsVersionOnlySpaceSharedPackageUpdate(current, gadgetPackage("1.1.0", prior))).toBe(false);
+  });
+
+  it("permits code rollback only when signed Gadget migrations are an exact prefix and remain applied", () => {
+    const first = { version: 1, description: "create records", up: "CREATE TABLE records(id TEXT PRIMARY KEY);" };
+    const second = { version: 2, description: "add status", up: "ALTER TABLE records ADD COLUMN status TEXT DEFAULT 'open';" };
+    const current = gadgetPackage("1.2.0", [first, second]);
+    const candidate = gadgetPackage("1.0.0", [first]);
+    expect(supportsVersionOnlySpaceSharedPackageUpdate(current, candidate)).toBe(true);
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, candidate)).toEqual([{
+      id: "records", source: "bundle", migrations: [{ version: 2, description: "add status" }],
+    }]);
+
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, gadgetPackage("1.0.0", [
+      first, { ...second, up: "ALTER TABLE records DROP COLUMN status;" },
+    ]))).toBeNull();
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, gadgetPackage("1.0.0", [
+      { ...first, up: "DROP TABLE records;" },
+    ]))).toBeNull();
+    expect(spaceSharedGadgetMigrationRetentionPlan(gadgetPackage("1.2.0", [first, { ...second, up: "DROP TABLE records;" }]), candidate)).toBeNull();
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, gadgetPackage("1.3.0", [first]))).toBeNull();
+    const changedSchema = validateExtensionManifest({ ...candidate, bundle: { ...candidate.bundle!, primitives: candidate.bundle!.primitives.map(primitive =>
+      primitive.kind === "gadget" ? { ...primitive, schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY, status TEXT);" } : primitive) } });
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, changedSchema)).toBeNull();
+    const removedGadget = validateExtensionManifest({ ...candidate, bundle: { ...candidate.bundle!, primitives: candidate.bundle!.primitives.filter(primitive => primitive.kind !== "gadget") } });
+    expect(spaceSharedGadgetMigrationRetentionPlan(current, removedGadget)).toBeNull();
   });
 
   it("allows only additive top-level authority changes when all other package fields stay fixed", () => {

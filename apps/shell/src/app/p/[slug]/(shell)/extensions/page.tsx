@@ -201,16 +201,20 @@ export default function ExtensionsPage() {
     const review = updateReviews[app.installation_id];
     if (!review?.review.apply_supported || !review.update_review_token || !review.update_review_expires_at
       || review.update_review_expires_at <= Date.now() || app.status !== "disabled") {
-      setError("Refresh the update review after pausing the installation and draining admitted work. Only eligible signed code, additive migration, or explicitly approved authority updates can be applied here."); return;
+      setError("Refresh the update review after pausing the installation and draining admitted work. Only eligible signed code, additive migrations, owner-confirmed code rollback with schema retained forward, or explicitly approved authority updates can be applied here."); return;
     }
+    const retainedMigrations = review.schema_migrations_retained;
+    const retentionDetails = retainedMigrations.length
+      ? ` This rolls package code back while leaving schema and data forward. Migrations ${retainedMigrations.flatMap(gadget => gadget.migrations.map(migration => `${gadget.gadget_id} v${migration.version}`)).join(", ")} remain applied; no schema rollback SQL runs. The installation stays paused.`
+      : " The extension will remain paused until an owner enables it again.";
     const authorityDetails = review.authority_expansion.permissions.length || review.authority_expansion.capabilities.length
       ? ` This adds Space-wide package authority: permissions [${review.authority_expansion.permissions.join(", ") || "none"}] and capabilities [${review.authority_expansion.capabilities.join(", ") || "none"}]. The extension will remain paused after the update.`
-      : " The extension will remain paused until an owner enables it again.";
-    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}?${authorityDetails}`)) return;
+      : "";
+    if (!window.confirm(`Apply signed release ${review.candidate.version} to ${app.name}?${retainedMigrations.length ? retentionDetails : authorityDetails || retentionDetails}`)) return;
     setApplyingUpdate(app.installation_id); setError(null);
     try {
       const result = await applySpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, review.update_review_token,
-        review.review.authority_expanded);
+        review.review.authority_expanded, retainedMigrations.length > 0);
       setUpdateReceipts(current => [result.receipt, ...current.filter(receipt => receipt.request_id !== result.receipt.request_id)].slice(0, 50));
       setUpdateReviews(current => { const next = { ...current }; delete next[app.installation_id]; return next; });
       await refresh();
@@ -300,6 +304,11 @@ export default function ExtensionsPage() {
                 <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 240, overflow: "auto" }}>{migration.up}</pre>
               </div>)}
             </section>)}
+            {review.schema_migrations_retained.map(gadget => <section key={`retained:${gadget.gadget_id}`} aria-label={`Retained migrations for ${gadget.gadget_id}`}>
+              <strong>Gadget {gadget.gadget_id}: schema stays forward</strong>
+              <p>These already-applied additive migrations and their data remain in place. No rollback SQL runs.</p>
+              {gadget.migrations.map(migration => <p key={`${gadget.gadget_id}:${migration.version}`}>Retained version {migration.version} · {migration.description}</p>)}
+            </section>)}
             <p>Package dependencies: {review.dependencies.package.status}. Candidate pins: {review.dependencies.package.candidate_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") || "none"}. Provider connection changes: {review.dependencies.provider_connections.added.length} added, {review.dependencies.provider_connections.removed.length} removed, {review.dependencies.provider_connections.changed.length} changed.</p>
             {!review.dependency_resolution.candidate.resolved && <p role="alert">Dependency closure is unresolved: {review.dependency_resolution.candidate.error}. The host will not activate this package.</p>}
             <p>Shared folders — added: {review.shared_filesystem.added.join(", ") || "none"}; removed: {review.shared_filesystem.removed.join(", ") || "none"}; changed: {review.shared_filesystem.changed.join(", ") || "none"}</p>
@@ -308,10 +317,12 @@ export default function ExtensionsPage() {
             {review.review.apply_supported
               ? <><p>{review.review.authority_expanded
                 ? <>This update adds only the listed top-level permissions and capabilities. It does not change publisher, dependencies, settings, provider connections, shared-drive grants or package configuration. Applying it records your approval against the exact source and candidate manifests and artifact. The installation stays paused; review the authority again before enabling it.</>
-                : <>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration.</>} Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
+                : <>This candidate keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration.</>} {review.schema_migrations_retained.length
+                ? <>This code rollback leaves every listed schema migration and its data applied; no schema rollback SQL runs. Only the signed package release pin changes. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</>
+                : <>Any listed Gadget migrations use the signed candidate release and are limited to additive SQL. The host applies them to the exact installed Gadget actors, records a durable migration receipt, then updates the installation pin. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</>}</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
                   onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed release…" : rollingBack
-                    ? "Roll back to selected release and keep paused" : review.gadget_migrations.length
+                    ? review.schema_migrations_retained.length ? "Roll back code; keep schema forward and paused" : "Roll back to selected release and keep paused" : review.gadget_migrations.length
                       ? "Apply reviewed migrations and keep paused" : "Apply selected release and keep paused"}</Button></>
               : <p>Update is unavailable: {review.review.apply_block_reason ?? "refresh the review"}. {review.review.active_work_count > 0
                 ? `${review.review.active_work_count} admitted runtime operation(s) still need to finish before review can issue an apply token.` : ""}</p>}
@@ -319,7 +330,7 @@ export default function ExtensionsPage() {
         </section>;
       })()}
       {updateReceipts.filter(receipt => receipt.installation_id === app.installation_id).slice(0, 5).map(receipt => <p key={receipt.request_id}
-        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · authority added: {(receipt.authority_expansion?.permissions ?? []).concat(receipt.authority_expansion?.capabilities ?? []).join(", ") || "none"} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
+        style={{ color: "var(--text3)", fontSize: 12 }}>Applied {receipt.from_version} → {receipt.to_version} · authority added: {(receipt.authority_expansion?.permissions ?? []).concat(receipt.authority_expansion?.capabilities ?? []).join(", ") || "none"} · schema migrations retained: {receipt.schema_migrations_retained?.flatMap(gadget => gadget.migrations.map(migration => `${gadget.id} v${migration.version}`)).join(", ") || "none"} · source manifest {receipt.source_manifest_sha256.slice(0, 12)} · candidate manifest {receipt.candidate_manifest_sha256.slice(0, 12)} · source artifact {receipt.source_artifact_sha256.slice(0, 12)} · candidate artifact {receipt.artifact_sha256.slice(0, 12)} · {new Date(receipt.created_at).toLocaleString()} · installation remains paused unless enabled.</p>)}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
       <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null || app.status === "disabled" && app.publisher_trusted === false} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : app.publisher_trusted === false ? "Resume blocked" : "Resume extension"}</Button>

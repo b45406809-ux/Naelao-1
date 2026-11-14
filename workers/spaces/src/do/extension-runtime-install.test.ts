@@ -755,6 +755,8 @@ describe("runtime extension installation", () => {
     const storage = createDOStorage(), secret = "space-shared-update-secret";
     const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     const token = await mintInternalToken(secret, "tenant"), publisherKeyId = "d".repeat(64);
+    const firstMigration = { version: 1, description: "create records", up: "CREATE TABLE records(id TEXT PRIMARY KEY);" };
+    const secondMigration = { version: 2, description: "add status", up: "ALTER TABLE records ADD COLUMN status TEXT DEFAULT 'open';" };
     const canvasManifest = (version: string) => validateExtensionManifest({ id: "ext_static_canvas", type: "extension", declaredPermissions: [],
       capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_static_canvas", version, primitives: [
@@ -762,6 +764,8 @@ describe("runtime extension installation", () => {
           component: "./dashboard.html", layout: "CanvasMount", dynamicPage: false },
         { schemaVersion: "1.0", kind: "channel", id: "phone_handler", version, permissions: [], capabilityRequirements: [], lifecycle: {},
           provider: "phone", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received", "call.received", "call.digits"], outboundEvents: ["message.reply", "voice.reply"] },
+        { schemaVersion: "1.0", kind: "gadget", id: "records", version, permissions: [], capabilityRequirements: [], lifecycle: {},
+          scope: "SPACE_SHARED", schemaSql: "CREATE TABLE records(id TEXT PRIMARY KEY);", migrations: version === "1.0.0" ? [firstMigration] : [firstMigration, secondMigration] },
       ] } }, { gatekeeperCapabilities: ["extension.project_canvas"] });
     const currentManifest = canvasManifest("1.0.0"), candidateManifest = canvasManifest("1.2.0");
     const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -794,13 +798,14 @@ describe("runtime extension installation", () => {
       installationId, extensionId: candidateManifest.id, fromVersion: "1.0.0", toVersion: "1.2.0",
       sourceManifestSha256: await digestExtensionManifest(currentManifest), candidateManifestSha256: await digestExtensionManifest(candidateManifest),
       sourceArtifactSha256: "a".repeat(64), artifactSha256: "c".repeat(64),
-      publisherId: "pub_example", publisherKeyId, authorityExpansion: { permissions: [], capabilities: [] },
+      publisherId: "pub_example", publisherKeyId, authorityExpansion: { permissions: [], capabilities: [] }, schemaMigrationsRetained: [],
       expiresAt: Date.now() + 60_000, requestId: "0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed" };
     const claimsPayload = JSON.stringify(claims);
     const reviewToken = `${btoa(claimsPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${await signHmac(claimsPayload, secret)}`;
     const apply = () => space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken, confirmAuthorityExpansion: false }) }));
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken,
+        confirmAuthorityExpansion: false, confirmSchemaMigrationsRetained: false }) }));
     const blockedByWork = await apply();
     expect(blockedByWork.status).toBe(409);
     expect(await blockedByWork.json()).toMatchObject({ error_code: "extension_runtime_work_not_drained" });
@@ -833,15 +838,18 @@ describe("runtime extension installation", () => {
     const rollbackClaims = { ...claims, fromVersion: "1.2.0", toVersion: "1.0.0",
       sourceManifestSha256: await digestExtensionManifest(candidateManifest), candidateManifestSha256: await digestExtensionManifest(currentManifest),
       sourceArtifactSha256: "c".repeat(64), artifactSha256: "a".repeat(64),
+      schemaMigrationsRetained: [{ id: "records", source: "bundle" as const, migrations: [{ version: 2, description: "add status" }] }],
       expiresAt: Date.now() + 60_000, requestId: "43f83d14-14df-4c9a-a0a5-07ccf87a5d82" };
     const rollbackPayload = JSON.stringify(rollbackClaims);
     const rollbackToken = btoa(rollbackPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")
       + "." + await signHmac(rollbackPayload, secret);
     const rollback = await space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims: rollbackClaims, reviewToken: rollbackToken, confirmAuthorityExpansion: false }) }));
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims: rollbackClaims, reviewToken: rollbackToken,
+        confirmAuthorityExpansion: false, confirmSchemaMigrationsRetained: true }) }));
     expect(rollback.status, await rollback.clone().text()).toBe(200);
-    expect(await rollback.json()).toMatchObject({ updated: true, replayed: false, receipt: { from_version: "1.2.0", to_version: "1.0.0" } });
+    expect(await rollback.json()).toMatchObject({ updated: true, replayed: false, receipt: { from_version: "1.2.0", to_version: "1.0.0",
+      schema_migrations_retained: [{ id: "records", source: "bundle", migrations: [{ version: 2, description: "add status" }] }] } });
     expect(storage.sql.exec<{ release_version: string; status: string }>("SELECT release_version,status FROM extension_instances WHERE instance_id=?", installationId).toArray())
       .toEqual([{ release_version: "1.0.0", status: "disabled" }]);
   });
@@ -883,13 +891,15 @@ describe("runtime extension installation", () => {
       sourceManifestSha256: await digestExtensionManifest(currentManifest), candidateManifestSha256: await digestExtensionManifest(candidateManifest),
       sourceArtifactSha256: "a".repeat(64), artifactSha256: "c".repeat(64), publisherId: "pub_example", publisherKeyId,
       authorityExpansion: { permissions: ["assistant.phone.simulate"], capabilities: ["assistant.phone.simulate"] },
+      schemaMigrationsRetained: [],
       expiresAt: Date.now() + 60_000, requestId });
     const apply = async (requestId: string, confirmAuthorityExpansion: boolean) => {
       const claims = await makeClaims(requestId), payload = JSON.stringify(claims);
       const reviewToken = `${btoa(payload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.${await signHmac(payload, secret)}`;
       return space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
-        body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken, confirmAuthorityExpansion }) }));
+        body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims, reviewToken, confirmAuthorityExpansion,
+          confirmSchemaMigrationsRetained: false }) }));
     };
     const declined = await apply("0ab3a7cc-4f8d-4a6b-8f9f-6a5f86b458ed", false);
     expect(declined.status).toBe(409);

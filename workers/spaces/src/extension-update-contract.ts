@@ -44,6 +44,38 @@ export interface SpaceSharedGadgetMigrationPlanEntry {
   migrations: Array<{ version: number; description: string; up: string }>;
 }
 
+export interface SpaceSharedGadgetMigrationRetentionPlanEntry {
+  id: string;
+  source: "bundle";
+  migrations: Array<{ version: number; description: string }>;
+}
+
+export function isSpaceSharedGadgetMigrationRetentionPlan(value: unknown): value is SpaceSharedGadgetMigrationRetentionPlanEntry[] {
+  if (!Array.isArray(value) || value.length > 32) return false;
+  let totalMigrations = 0;
+  let priorId = "";
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).sort().join(",") !== "id,migrations,source"
+      || typeof entry.id !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(entry.id)
+      || entry.id <= priorId || entry.source !== "bundle" || !Array.isArray(entry.migrations)
+      || entry.migrations.length < 1 || entry.migrations.length > 32) return false;
+    priorId = entry.id;
+    let priorVersion = 0;
+    for (const migration of entry.migrations) {
+      if (!migration || typeof migration !== "object" || Array.isArray(migration)
+        || Object.keys(migration).sort().join(",") !== "description,version"
+        || !Number.isSafeInteger(migration.version) || migration.version <= priorVersion
+        || typeof migration.description !== "string" || migration.description.length > 256
+        || /[\u0000-\u001f\u007f]/.test(migration.description)) return false;
+      priorVersion = migration.version;
+      totalMigrations++;
+      if (totalMigrations > 32) return false;
+    }
+  }
+  return true;
+}
+
 /** Only allow append-only, additive SQL migrations on already-installed modular Space gadgets.
  * Gadget identity, scope, default schema, owner settings and every other manifest field remain
  * unchanged; MicroAppDO repeats the DDL validation before applying each migration. */
@@ -85,6 +117,63 @@ export function spaceSharedGadgetMigrationPlan(current: ExtensionManifest, candi
   return plan.sort((left, right) => left.id.localeCompare(right.id));
 }
 
+/** Identify an older signed release whose Gadget migrations are an exact prefix of the current
+ * release. The caller may roll back package code while retaining all additive schema/data in place;
+ * this helper never authorizes destructive DDL. */
+export function spaceSharedGadgetMigrationRetentionPlan(
+  current: ExtensionManifest,
+  candidate: ExtensionManifest,
+): SpaceSharedGadgetMigrationRetentionPlanEntry[] | null {
+  const currentVersion = current.bundle?.version, candidateVersion = candidate.bundle?.version;
+  if (!currentVersion || !candidateVersion || currentVersion === candidateVersion
+    || !isSpaceSharedPackageShape(current) || !isSpaceSharedPackageShape(candidate)) return null;
+  const compareSemver = (left: string, right: string) => {
+    const parse = (value: string) => {
+      const [core, prerelease] = value.split("-", 2);
+      return { core: core!.split(".").map(Number), prerelease: prerelease?.split(".") ?? null };
+    };
+    const a = parse(left), b = parse(right);
+    for (let index = 0; index < 3; index++) if (a.core[index] !== b.core[index]) return a.core[index]! < b.core[index]! ? -1 : 1;
+    if (!a.prerelease || !b.prerelease) return a.prerelease === b.prerelease ? 0 : a.prerelease ? -1 : 1;
+    for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index++) {
+      const av = a.prerelease[index], bv = b.prerelease[index];
+      if (av === undefined || bv === undefined) return av === bv ? 0 : av === undefined ? -1 : 1;
+      if (av === bv) continue;
+      const an = /^\d+$/.test(av), bn = /^\d+$/.test(bv);
+      if (an && bn) return Number(av) < Number(bv) ? -1 : 1;
+      if (an !== bn) return an ? -1 : 1;
+      return av < bv ? -1 : 1;
+    }
+    return 0;
+  };
+  if (compareSemver(candidateVersion, currentVersion) >= 0) return null;
+
+  const currentPrimitives = current.bundle?.primitives ?? [], candidatePrimitives = candidate.bundle?.primitives ?? [];
+  const before = new Map(currentPrimitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget")
+    .map(gadget => [gadget.id, gadget]));
+  const after = new Map(candidatePrimitives.filter((part): part is Extract<typeof part, { kind: "gadget" }> => part.kind === "gadget")
+    .map(gadget => [gadget.id, gadget]));
+  if (!before.size || before.size !== after.size || [...before.keys()].some(id => !after.has(id))) return null;
+  if (JSON.stringify((current.gadgets ?? []).map(gadget => gadget.migrations ?? []))
+    !== JSON.stringify((candidate.gadgets ?? []).map(gadget => gadget.migrations ?? []))) return null;
+
+  const plan: SpaceSharedGadgetMigrationRetentionPlanEntry[] = [];
+  for (const [id, currentGadget] of before) {
+    const candidateGadget = after.get(id)!;
+    const currentMigrations = currentGadget.migrations ?? [], candidateMigrations = candidateGadget.migrations ?? [];
+    if (candidateMigrations.length > currentMigrations.length
+      || JSON.stringify(currentMigrations.slice(0, candidateMigrations.length)) !== JSON.stringify(candidateMigrations)
+      || !currentMigrations.every(migration => additiveMigrationStatements(migration.up))) return null;
+    const retained = currentMigrations.slice(candidateMigrations.length);
+    if (!retained.every(migration => additiveMigrationStatements(migration.up))) return null;
+    if (retained.length) plan.push({ id, source: "bundle", migrations: retained.map(({ version, description }) => ({ version, description })) });
+  }
+  const totalMigrations = plan.reduce((sum, entry) => sum + entry.migrations.length, 0);
+  if (!plan.length || totalMigrations > 32 || !isSpaceSharedGadgetMigrationRetentionPlan(plan)
+    || normalizeGadgetMigrationLists(current) !== normalizeGadgetMigrationLists(candidate)) return null;
+  return plan.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+}
+
 function isCodeOnlySpaceSharedPackage(manifest: ExtensionManifest): boolean {
   const bundle = manifest.bundle;
   if (!bundle || !bundle.primitives.length
@@ -123,7 +212,8 @@ export function supportsVersionOnlySpaceSharedCodeUpdate(current: ExtensionManif
 export function supportsVersionOnlySpaceSharedPackageUpdate(current: ExtensionManifest, candidate: ExtensionManifest): boolean {
   return supportsVersionOnlySpaceSharedCodeUpdate(current, candidate)
     || (spaceSharedGadgetMigrationPlan(current, candidate) !== null
-      && isSpaceSharedPackageShape(current) && isSpaceSharedPackageShape(candidate));
+      && isSpaceSharedPackageShape(current) && isSpaceSharedPackageShape(candidate))
+    || spaceSharedGadgetMigrationRetentionPlan(current, candidate) !== null;
 }
 
 export interface SpaceSharedAuthorityExpansion {
