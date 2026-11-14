@@ -33,6 +33,7 @@ import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
 import { projectJournal } from "./project-journal.js";
 import { spaceBlackboard } from "./space-blackboard.js";
+import { spaceCoordination } from "./space-coordination.js";
 import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
@@ -138,6 +139,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // without walking every thread in it.
   [projectJournal.name]: projectJournal,
   [spaceBlackboard.name]: spaceBlackboard,
+  [spaceCoordination.name]: spaceCoordination,
   // Search the full uncompacted transcript — the other half of conversation compaction, so a
   // model that is missing detail can look it up instead of answering from a partial record.
   [conversation.name]: conversation,

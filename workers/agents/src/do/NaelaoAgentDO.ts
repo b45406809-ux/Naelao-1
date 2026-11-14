@@ -2292,6 +2292,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
       ...(userId ? { userId } : {}),
+      ...(callerRole ? { callerRole } : {}),
       ...(commitContext?.taskId ? { taskId: commitContext.taskId } : {}),
       ...(commitContext?.taskId ? { runId: commitContext.taskId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)

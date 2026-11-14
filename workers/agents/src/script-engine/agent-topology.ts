@@ -11,6 +11,7 @@ export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
   "plan",
   "attachments",
   "document-processing",
+  "space-coordination",
 ] as const;
 
 const UNIVERSAL_REPL_OPERATIONS = new Set([
