@@ -2929,20 +2929,44 @@ export interface SpaceTemplateActivationPreview {
     }>;
     not_estimated: string[];
     total_estimate_cents: null;
+    managed_model_catalog_status: "available" | "unavailable";
+    available_managed_models: Array<{
+      provider: "cloudflare"; service_id: "workers-ai"; operation_name: "generate-text"; model_id: string;
+      region: "global"; price_version: string; credits_per_operation: number; max_credits_per_operation: number;
+      max_output_tokens: number; max_operations_per_period: number | null; valid_until: string;
+    }>;
+    managed_model_scenario: null | {
+      status: "estimated" | "unavailable"; basis: "customer_entered_operation_assumption"; model_id: string;
+      provider: "cloudflare"; service_id: "workers-ai"; operation_name: "generate-text"; region: "global";
+      price_version?: string; credit_unit: "naelao_credit"; credits_per_operation?: number; operations_per_month: number;
+      max_credits_per_operation?: number; projected_credits?: number; max_output_tokens?: number; max_operations_per_period?: number | null;
+      within_plan_operation_limit?: boolean | null; rate_valid_until?: string;
+      reason?: "active_model_entitlement_unavailable" | "model_rate_catalog_unavailable" | "projection_out_of_range";
+    };
     expected_monthly_usage: null | {
       basis: "customer_entered_assumption";
       conversations: number;
       interactions_per_conversation: number;
       projected_interactions: number;
       estimated_cost_cents: null;
+      model_id?: string;
+      model_calls_per_interaction?: number;
     };
     reason?: "selected_listing_not_recorded" | "listing_price_unavailable";
   };
 }
-export interface SpaceTemplateExpectedUsageV1 { conversations_per_month: number; interactions_per_conversation: number }
+export interface SpaceTemplateExpectedUsageV1 {
+  conversations_per_month: number;
+  interactions_per_conversation: number;
+  managed_model_id?: string;
+  model_calls_per_interaction?: number;
+}
 export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials,
   expectedUsage?: SpaceTemplateExpectedUsageV1): Promise<SpaceTemplateActivationPreview> {
-  const query = expectedUsage ? `?${new URLSearchParams({ conversations_per_month: String(expectedUsage.conversations_per_month), interactions_per_conversation: String(expectedUsage.interactions_per_conversation) })}` : "";
+  const query = expectedUsage ? `?${new URLSearchParams({ conversations_per_month: String(expectedUsage.conversations_per_month),
+    interactions_per_conversation: String(expectedUsage.interactions_per_conversation),
+    ...(expectedUsage.managed_model_id ? { managed_model_id: expectedUsage.managed_model_id } : {}),
+    ...(expectedUsage.model_calls_per_interaction === undefined ? {} : { model_calls_per_interaction: String(expectedUsage.model_calls_per_interaction) }) })}` : "";
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview${query}`, { session, cache: "no-store" });
 }
 

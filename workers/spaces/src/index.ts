@@ -1380,11 +1380,15 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
     coordinationSingletonPolicyCurrent = { configured: current.configured === true, singleton_capability_keys: keys.value, revision: Number(current.revision) };
   }
   const conversationsPerMonth = c.req.query("conversations_per_month"), interactionsPerConversation = c.req.query("interactions_per_conversation");
+  const managedModelId = c.req.query("managed_model_id"), modelCallsPerInteraction = c.req.query("model_calls_per_interaction");
   let expectedUsage: ReturnType<typeof validateTemplateExpectedUsage> | undefined;
-  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined) {
+  if (conversationsPerMonth !== undefined || interactionsPerConversation !== undefined || managedModelId !== undefined || modelCallsPerInteraction !== undefined) {
     try {
       if (conversationsPerMonth === undefined || interactionsPerConversation === undefined) throw new Error("Both expected usage values are required");
-      expectedUsage = validateTemplateExpectedUsage({ conversations_per_month: Number(conversationsPerMonth), interactions_per_conversation: Number(interactionsPerConversation) });
+      expectedUsage = validateTemplateExpectedUsage({ conversations_per_month: Number(conversationsPerMonth),
+        interactions_per_conversation: Number(interactionsPerConversation),
+        ...(managedModelId === undefined ? {} : { managed_model_id: managedModelId }),
+        ...(modelCallsPerInteraction === undefined ? {} : { model_calls_per_interaction: Number(modelCallsPerInteraction) }) });
     } catch (error) { return c.json({ error_code: "template_expected_usage_invalid", message: (error as Error).message.slice(0, 160) }, 400); }
   }
   const costEstimate = await loadTemplateCostEstimate(c.env.PLATFORM_DB, tenantId, blueprint.id, listingId, new Date(), expectedUsage);

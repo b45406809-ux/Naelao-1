@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { loadTemplateCostEstimate, selectedTemplateListingId, validateTemplateExpectedUsage } from "./template-cost-estimate.js";
+import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
+
+const MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
+const RATE_VALID_UNTIL = "2026-12-13T00:00:00.000Z";
+
+function sqliteCostDb(planTier = "business") {
+  const db = createFakeD1([
+    "CREATE TABLE orgs(id TEXT PRIMARY KEY, plan_tier TEXT NOT NULL, status TEXT NOT NULL)",
+    "CREATE TABLE managed_service_capability_versions(provider TEXT, service_id TEXT, version INTEGER, operations_json TEXT, regions_json TEXT, account_modes_json TEXT, status TEXT, valid_until TEXT, PRIMARY KEY(provider, service_id, version))",
+    "CREATE TABLE managed_service_model_entitlements(plan_tier TEXT, provider TEXT, service_id TEXT, capability_version INTEGER, operation_name TEXT, model_id TEXT, region TEXT, price_version TEXT, credits_per_operation INTEGER, max_credits_per_operation INTEGER, max_output_tokens INTEGER, max_operations_per_period INTEGER, status TEXT, verified_by TEXT, verified_at TEXT, valid_until TEXT)",
+    "CREATE TABLE marketplace_forks(tenant_id TEXT, blueprint_id TEXT, listing_id TEXT)",
+    "CREATE TABLE marketplace_listings(id TEXT, pricing_model TEXT, price_cents INTEGER, status TEXT)",
+    "CREATE TABLE marketplace_license_purchases(tenant_id TEXT, listing_id TEXT, amount_cents INTEGER, created_at TEXT)",
+  ]);
+  db.db.prepare("INSERT INTO orgs VALUES('tenant-a', ?, 'active')").run(planTier);
+  db.db.prepare(`INSERT INTO managed_service_capability_versions VALUES
+    ('cloudflare','workers-ai',1,'["generate-text"]','["global"]','["naelao_managed"]','verified',?)`).run(RATE_VALID_UNTIL);
+  db.db.prepare(`INSERT INTO managed_service_model_entitlements VALUES
+    (?, 'cloudflare','workers-ai',1,'generate-text',?,'global','cf-model-fixed-v3',55,100,768,3000,'active','operator-1','2026-11-01T00:00:00.000Z',?)`)
+    .run(planTier, MODEL, RATE_VALID_UNTIL);
+  db.db.prepare("INSERT INTO marketplace_forks VALUES('tenant-a','blueprint-a','listing-a')").run();
+  db.db.prepare("INSERT INTO marketplace_listings VALUES('listing-a','fixed_license',0,'published')").run();
+  return db;
+}
 
 describe("guided template cost disclosure", () => {
   it("preserves an exact selected listing identity in the Space configuration", () => {
@@ -49,6 +73,64 @@ describe("guided template cost disclosure", () => {
       basis: "customer_entered_assumption", conversations: 200, interactions_per_conversation: 8,
       projected_interactions: 1600, estimated_cost_cents: null,
     } });
+  });
+
+  it("projects only the exact current verified model-credit price and plan limit from SQLite", async () => {
+    const db = sqliteCostDb();
+    const usage = validateTemplateExpectedUsage({ conversations_per_month: 200, interactions_per_conversation: 8,
+      managed_model_id: MODEL, model_calls_per_interaction: 2 });
+    const estimate = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), usage);
+    expect(estimate).toMatchObject({
+      total_estimate_cents: null,
+      managed_model_catalog_status: "available",
+      available_managed_models: [{ model_id: MODEL, price_version: "cf-model-fixed-v3", credits_per_operation: 55,
+        max_operations_per_period: 3000, valid_until: RATE_VALID_UNTIL }],
+      expected_monthly_usage: { projected_interactions: 1600, model_id: MODEL, model_calls_per_interaction: 2,
+        estimated_cost_cents: null },
+      managed_model_scenario: { status: "estimated", basis: "customer_entered_operation_assumption", model_id: MODEL,
+        price_version: "cf-model-fixed-v3", credit_unit: "naelao_credit", operations_per_month: 3200,
+        credits_per_operation: 55, projected_credits: 176000, max_operations_per_period: 3000,
+        within_plan_operation_limit: false, rate_valid_until: RATE_VALID_UNTIL },
+    });
+    expect(estimate.not_estimated).toContain("direct provider costs for managed-model inference and other services");
+    expect(estimate.not_estimated).toContain("taxes, regional pricing, and account-specific provider terms");
+    db.db.close();
+  });
+
+  it("returns an unavailable scenario for an unentitled model and rejects malformed multipliers", async () => {
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 4, interactions_per_conversation: 3,
+      managed_model_id: MODEL })).toThrow("expected_usage_invalid");
+    expect(() => validateTemplateExpectedUsage({ conversations_per_month: 4, interactions_per_conversation: 3,
+      model_calls_per_interaction: 2 })).toThrow("expected_usage_invalid");
+    const db = sqliteCostDb();
+    const estimate = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), { conversations_per_month: 4, interactions_per_conversation: 3,
+        managed_model_id: "unentitled-model", model_calls_per_interaction: 1 });
+    expect(estimate.managed_model_scenario).toMatchObject({ status: "unavailable", model_id: "unentitled-model",
+      reason: "active_model_entitlement_unavailable", operations_per_month: 12 });
+    db.db.close();
+  });
+
+  it("does not fall back to an older verified manifest or emit unsafe credit products", async () => {
+    const db = sqliteCostDb();
+    db.db.prepare(`INSERT INTO managed_service_capability_versions VALUES
+      ('cloudflare','workers-ai',2,'["generate-text"]','["global"]','["naelao_managed"]','draft',?)`).run(RATE_VALID_UNTIL);
+    const newerDraft = await loadTemplateCostEstimate(db, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), { conversations_per_month: 4, interactions_per_conversation: 3,
+        managed_model_id: MODEL, model_calls_per_interaction: 1 });
+    expect(newerDraft.available_managed_models).toEqual([]);
+    expect(newerDraft.managed_model_scenario).toMatchObject({ status: "unavailable", reason: "active_model_entitlement_unavailable" });
+    db.db.close();
+
+    const largeDb = sqliteCostDb();
+    largeDb.db.prepare("UPDATE managed_service_model_entitlements SET credits_per_operation=2000000000, max_credits_per_operation=2000000000").run();
+    const tooLarge = await loadTemplateCostEstimate(largeDb, "tenant-a", "blueprint-a", "listing-a",
+      new Date("2026-11-13T00:00:00.000Z"), { conversations_per_month: 1_000_000, interactions_per_conversation: 500,
+        managed_model_id: MODEL, model_calls_per_interaction: 10 });
+    expect(tooLarge.managed_model_scenario).toMatchObject({ status: "unavailable", reason: "projection_out_of_range",
+      operations_per_month: 5_000_000_000 });
+    largeDb.db.close();
   });
 
   it("does not infer a price when legacy installation metadata or listing evidence is missing", async () => {

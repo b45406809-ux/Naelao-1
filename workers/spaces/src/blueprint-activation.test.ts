@@ -438,6 +438,14 @@ describe("Space Template activation preview", () => {
     } });
     expect(queries.find(query => query.sql.includes("marketplace_license_purchases"))?.values)
       .toEqual(["tenant-buyer", artifact.id, "listing-selected"]);
+    const modelScenario = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview?conversations_per_month=200&interactions_per_conversation=8&managed_model_id=%40cf%2Fexample-model&model_calls_per_interaction=2`, { headers }), env, {} as ExecutionContext);
+    expect(modelScenario.status).toBe(200);
+    expect(await modelScenario.json()).toMatchObject({ cost_estimate: {
+      expected_monthly_usage: { conversations: 200, interactions_per_conversation: 8, model_id: "@cf/example-model", model_calls_per_interaction: 2 },
+      managed_model_scenario: { status: "unavailable", model_id: "@cf/example-model", operations_per_month: 3200,
+        reason: "model_rate_catalog_unavailable" },
+      total_estimate_cents: null,
+    } });
     const invalidUsage = await worker.fetch(new Request(`https://spaces/spaces/space-cost/blueprints/${artifact.id}/activation-preview?conversations_per_month=200&interactions_per_conversation=501`, { headers }), env, {} as ExecutionContext);
     expect(invalidUsage.status).toBe(400);
     expect(await invalidUsage.json()).toMatchObject({ error_code: "template_expected_usage_invalid" });

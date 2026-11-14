@@ -114,6 +114,8 @@ export default function SpacesPage() {
   const [savingSetupDraft, setSavingSetupDraft] = React.useState(false);
   const [expectedConversations, setExpectedConversations] = React.useState("");
   const [expectedInteractions, setExpectedInteractions] = React.useState("");
+  const [expectedManagedModelId, setExpectedManagedModelId] = React.useState("");
+  const [expectedModelCalls, setExpectedModelCalls] = React.useState("1");
   const [updatingUsageEstimate, setUpdatingUsageEstimate] = React.useState(false);
   const [usageEstimateError, setUsageEstimateError] = React.useState("");
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
@@ -133,6 +135,13 @@ export default function SpacesPage() {
   const expectedUsageBlueprintId = activationReview?.blueprintId ?? null;
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
+
+  React.useEffect(() => {
+    setExpectedConversations("");
+    setExpectedInteractions("");
+    setExpectedManagedModelId("");
+    setExpectedModelCalls("1");
+  }, [expectedUsageBlueprintId, expectedUsageSpaceId]);
 
   function patchDependencyImport(extensionId: string, patch: Partial<TemplateDependencyImportProgress>) {
     setDependencyImports(current => ({ ...current, [extensionId]: {
@@ -274,7 +283,7 @@ export default function SpacesPage() {
 
   function updateExpectedUsageEstimate() {
     if (!expectedUsageSpaceId || !expectedUsageBlueprintId) return;
-    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions);
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls);
     const requestId = expectedUsageEstimateRequests.issue();
     void fetchExpectedUsageEstimate(input.usage, requestId, input.valid ? null : input.message);
   }
@@ -286,7 +295,7 @@ export default function SpacesPage() {
       setUsageEstimateError("");
       return;
     }
-    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions);
+    const input = parseTemplateExpectedUsageInput(expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls);
     const requestId = expectedUsageEstimateRequests.issue();
     if (!input.valid) setUsageEstimateError(input.message);
     const timer = window.setTimeout(() => {
@@ -296,7 +305,7 @@ export default function SpacesPage() {
       window.clearTimeout(timer);
       if (expectedUsageEstimateRequests.isCurrent(requestId)) expectedUsageEstimateRequests.invalidate();
     };
-  }, [creds, expectedConversations, expectedInteractions, expectedUsageBlueprintId, expectedUsageEstimateRequests,
+  }, [creds, expectedConversations, expectedInteractions, expectedManagedModelId, expectedModelCalls, expectedUsageBlueprintId, expectedUsageEstimateRequests,
     expectedUsageSpaceId, fetchExpectedUsageEstimate]);
 
   const refresh = React.useCallback(async () => {
@@ -956,10 +965,26 @@ export default function SpacesPage() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
                 <label>Customer conversations per month<input aria-label="Expected conversations per month" type="number" min={1} max={1_000_000} step={1} value={expectedConversations} onChange={event => setExpectedConversations(event.target.value)} /></label>
                 <label>Interactions per conversation<input aria-label="Expected interactions per conversation" type="number" min={1} max={500} step={1} value={expectedInteractions} onChange={event => setExpectedInteractions(event.target.value)} /></label>
+                <label>Managed model for credit scenario<select aria-label="Managed model for credit scenario" value={expectedManagedModelId} onChange={event => setExpectedManagedModelId(event.target.value)}>
+                  <option value="">No managed-model scenario</option>
+                  {activationReview.preview.cost_estimate.available_managed_models.map(model => <option key={`${model.provider}:${model.service_id}:${model.model_id}:${model.region}`} value={model.model_id}>
+                    {model.model_id} · {model.credits_per_operation.toLocaleString()} Naelao credits/operation
+                  </option>)}
+                </select></label>
+                {expectedManagedModelId && <label>Model calls per interaction<input aria-label="Managed model calls per interaction" type="number" min={1} max={10} step={1} value={expectedModelCalls} onChange={event => setExpectedModelCalls(event.target.value)} /></label>}
               </div>
+              {activationReview.preview.cost_estimate.managed_model_catalog_status === "unavailable"
+                ? <p role="status">The current verified managed-model rate catalogue could not be loaded. No model credit scenario is available.</p>
+                : activationReview.preview.cost_estimate.available_managed_models.length === 0
+                  ? <p role="status">No current verified managed-model rates are available for this plan.</p> : null}
               <Button variant="secondary" onClick={() => void updateExpectedUsageEstimate()} disabled={updatingUsageEstimate}>{updatingUsageEstimate ? "Updating…" : "Refresh estimate"}</Button>
               {usageEstimateError && <p role="alert">{usageEstimateError}</p>}
               {activationReview.preview.cost_estimate.expected_monthly_usage && <p role="status">Customer-entered projection: {activationReview.preview.cost_estimate.expected_monthly_usage.conversations.toLocaleString()} conversations × {activationReview.preview.cost_estimate.expected_monthly_usage.interactions_per_conversation} interactions = {activationReview.preview.cost_estimate.expected_monthly_usage.projected_interactions.toLocaleString()} interactions/month. Estimated cost remains unknown.</p>}
+              {activationReview.preview.cost_estimate.managed_model_scenario && <p role="status">{activationReview.preview.cost_estimate.managed_model_scenario.status === "estimated"
+                ? <>Customer-entered model scenario for {activationReview.preview.cost_estimate.managed_model_scenario.model_id}: {activationReview.preview.cost_estimate.expected_monthly_usage?.conversations.toLocaleString()} conversations × {activationReview.preview.cost_estimate.expected_monthly_usage?.interactions_per_conversation} interactions × {activationReview.preview.cost_estimate.expected_monthly_usage?.model_calls_per_interaction} model calls = {activationReview.preview.cost_estimate.managed_model_scenario.operations_per_month.toLocaleString()} operations. At {activationReview.preview.cost_estimate.managed_model_scenario.credits_per_operation?.toLocaleString()} Naelao credits/operation (per-operation ceiling {activationReview.preview.cost_estimate.managed_model_scenario.max_credits_per_operation?.toLocaleString()}; up to {activationReview.preview.cost_estimate.managed_model_scenario.max_output_tokens} output tokens), that projects {activationReview.preview.cost_estimate.managed_model_scenario.projected_credits?.toLocaleString()} Naelao credits/month ({activationReview.preview.cost_estimate.managed_model_scenario.price_version}, valid through {new Date(activationReview.preview.cost_estimate.managed_model_scenario.rate_valid_until!).toLocaleDateString()}). {activationReview.preview.cost_estimate.managed_model_scenario.within_plan_operation_limit === false ? "This exceeds the verified monthly cap; Billing rejects operations after it is reached." : activationReview.preview.cost_estimate.managed_model_scenario.within_plan_operation_limit === true ? "Below the verified monthly cap, before existing usage; Billing checks it at each operation." : "No verified monthly operation cap is set."} Direct provider charges are excluded and not controlled by this cap; total cost remains unknown.</>
+                : activationReview.preview.cost_estimate.managed_model_scenario.reason === "projection_out_of_range"
+                  ? `The model rate is available for ${activationReview.preview.cost_estimate.managed_model_scenario.model_id}, but this volume is too large for a safe credit projection.`
+                  : `No scenario rate is currently available for ${activationReview.preview.cost_estimate.managed_model_scenario.model_id}: ${activationReview.preview.cost_estimate.managed_model_scenario.reason}.`}</p>}
             </section>
             <p>A total operating-cost estimate is not available. These costs are not estimated: {activationReview.preview.cost_estimate.not_estimated.join("; ")}.</p>
             <p>Any listed license amount is an already recorded payment or the current zero-price listing base; it is not a quote for future provider usage. Optional managed services still require their own current quote and owner confirmation.</p>
