@@ -341,10 +341,12 @@ export async function queue(
 ): Promise<void> {
   for (const message of batch.messages) {
     try {
-      if (isValidEvent(message.body)) {
-        writeEvent(env.ANALYTICS, message.body);
+      if (!isValidEvent(message.body)) {
+        console.warn("[analytics/queue] invalid event — retrying to configured DLQ");
+        message.retry();
+        continue;
       }
-      // Ack even for invalid messages — we don't want to retry unparseable events
+      writeEvent(env.ANALYTICS, message.body);
       message.ack();
     } catch (err) {
       console.error("[analytics/queue] failed to write event:", err);

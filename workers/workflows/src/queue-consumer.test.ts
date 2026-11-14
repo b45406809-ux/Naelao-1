@@ -102,7 +102,7 @@ describe("data erasure queue dispatch", () => {
     expect(msg.retry).not.toHaveBeenCalled();
   });
 
-  it("discards malformed or oversized erasure requests without creating workflows", async () => {
+  it("routes malformed or oversized erasure requests to the configured DLQ without creating workflows", async () => {
     for (const body of [
       { type: "data.erasure", orgId: "tenant-a", requestedBy: "user-a" },
       { type: "data.erasure", orgId: "tenant-a", requestedBy: "user-a", reason: "x".repeat(2001) },
@@ -113,8 +113,8 @@ describe("data erasure queue dispatch", () => {
       const create = vi.fn(async () => undefined);
       await queue({ messages: [msg] } as never, { DATA_ERASURE: { create } } as never);
       expect(create).not.toHaveBeenCalled();
-      expect(msg.ack).toHaveBeenCalledOnce();
-      expect(msg.retry).not.toHaveBeenCalled();
+      expect(msg.retry).toHaveBeenCalledOnce();
+      expect(msg.ack).not.toHaveBeenCalled();
     }
   });
 });

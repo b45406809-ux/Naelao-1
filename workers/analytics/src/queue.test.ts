@@ -23,4 +23,13 @@ describe("analytics queue erasure markers", () => {
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();
   });
+
+  it("retries an invalid event to the configured DLQ instead of silently acknowledging it", async () => {
+    const writeDataPoint = vi.fn();
+    const message = { body: { eventType: "invalid" }, ack: vi.fn(), retry: vi.fn() };
+    await queue({ messages: [message] } as never, { ANALYTICS: { writeDataPoint } } as never);
+    expect(writeDataPoint).not.toHaveBeenCalled();
+    expect(message.retry).toHaveBeenCalledOnce();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
 });

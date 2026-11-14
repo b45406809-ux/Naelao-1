@@ -44,8 +44,8 @@ export async function queue(
               typeof body.requestedBy !== "string" || !body.requestedBy || body.requestedBy.length > 256 ||
               typeof body.reason !== "string" || body.reason.length > 2000 ||
               typeof body.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.requestId)) {
-            console.warn(`[queue] discarding malformed data.erasure message ${message.id}`);
-            message.ack();
+            console.warn(`[queue] malformed data.erasure message ${message.id} — retrying to configured DLQ`);
+            message.retry();
             break;
           }
           await createWorkflowOnce(env.DATA_ERASURE, message.id, body);

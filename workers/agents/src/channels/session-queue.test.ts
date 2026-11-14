@@ -77,7 +77,7 @@ describe("channel session queue", () => {
     expect(process).toHaveBeenNthCalledWith(1, inbound, "queue-message-1");
   });
 
-  it("acks malformed poison messages instead of retrying them forever", async () => {
+  it("routes malformed poison messages through bounded retries to the configured DLQ", async () => {
     const poison = queueMessage({ type: "unexpected" });
     const process = vi.fn();
     const logError = vi.fn();
@@ -85,8 +85,8 @@ describe("channel session queue", () => {
     await handleChannelSessionQueue([poison.message], { process, logError });
 
     expect(process).not.toHaveBeenCalled();
-    expect(poison.ack).toHaveBeenCalledOnce();
-    expect(poison.retry).not.toHaveBeenCalled();
+    expect(poison.ack).not.toHaveBeenCalled();
+    expect(poison.retry).toHaveBeenCalledOnce();
     expect(logError).toHaveBeenCalledOnce();
   });
 });

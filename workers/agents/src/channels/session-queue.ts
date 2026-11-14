@@ -109,10 +109,10 @@ export async function handleChannelSessionQueue(
   for (const message of messages) {
     if (!isChannelSessionQueueMessage(message.body)) {
       deps.logError(
-        "[channel-sessions] invalid queue message",
+        "[channel-sessions] invalid queue message — retrying to configured DLQ",
         new Error("invalid_message")
       );
-      message.ack();
+      message.retry();
       continue;
     }
     try {

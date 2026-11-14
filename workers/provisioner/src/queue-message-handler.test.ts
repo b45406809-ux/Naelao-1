@@ -20,12 +20,12 @@ function queueMessage(body: unknown) {
 }
 
 describe("provision queue dispatch", () => {
-  it("acknowledges malformed or unknown messages without invoking side effects", async () => {
+  it("routes malformed or unknown messages to the configured DLQ without invoking side effects", async () => {
     const entry = queueMessage({ ...validMessage, type: "unknown" });
     const handlers = { provision: vi.fn(), deprovision: vi.fn() };
     await handleProvisionQueueMessage(entry.message, handlers);
-    expect(entry.ack).toHaveBeenCalledOnce();
-    expect(entry.retry).not.toHaveBeenCalled();
+    expect(entry.retry).toHaveBeenCalledOnce();
+    expect(entry.ack).not.toHaveBeenCalled();
     expect(handlers.provision).not.toHaveBeenCalled();
     expect(handlers.deprovision).not.toHaveBeenCalled();
   });
