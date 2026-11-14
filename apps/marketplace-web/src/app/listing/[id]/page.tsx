@@ -235,12 +235,21 @@ export default function ListingPage() {
               <h2 className="text-sm font-semibold text-amber-900">Refund status</h2>
               <ul className="mt-2 space-y-3">
                 {refundCases.map(refundCase => <li key={refundCase.id} className="text-xs text-amber-900">
-                  <p className="font-medium">{refundCase.audience === "buyer" ? "Buyer update" : "Creator update"} · {refundCase.state.replace(/_/g, " ")}</p>
-                  {refundCase.state === "review_required" ? <p className="mt-1">The provider reported a refund and policy review is pending.</p>
-                    : refundCase.state === "unmatched_purchase" ? <p className="mt-1">The refund event could not be matched to a recorded purchase and needs review.</p>
-                      : <p className="mt-1">The refund details do not match purchase records and need review.</p>}
+                  <p className="font-medium">{refundCase.case_type === "template_subscription" ? "Template subscription" : "Fixed license"} · {refundCase.audience === "buyer" ? "Buyer update" : "Creator update"} · {refundCase.state.replace(/_/g, " ")}</p>
+                  {refundCase.case_type === "template_subscription"
+                    ? refundCase.state === "review_required"
+                      ? <p className="mt-1">A provider refund notice is recorded for review. Subscription access, paid cycles, creator earnings and payouts have not been changed automatically.</p>
+                      : refundCase.state === "unmatched_subscription"
+                        ? <p className="mt-1">The provider refund notice could not be matched to a recorded template subscription. It is retained for review and does not change access or accounting.</p>
+                        : <p className="mt-1">The provider refund notice conflicts with the recorded subscription or Space. It is retained for review and does not change access or accounting.</p>
+                    : refundCase.state === "review_required"
+                      ? <p className="mt-1">The provider reported a refund and policy review is pending.</p>
+                      : refundCase.state === "unmatched_purchase"
+                        ? <p className="mt-1">The refund event could not be matched to a recorded purchase and needs review.</p>
+                        : <p className="mt-1">The refund details do not match purchase records and need review.</p>}
                   {refundCase.refund_amount_cents !== null && <p className="mt-1">Provider-reported refund amount: {refundCase.currency} {(refundCase.refund_amount_cents / 100).toFixed(2)}.</p>}
-                  <p className="mt-1">License access and creator earnings are not automatically reversed while policy review is open.</p>
+                  {refundCase.refund_amount_cents === null && <p className="mt-1">The signed event did not provide a confirmed refund amount.</p>}
+                  {refundCase.case_type === "fixed_license" && <p className="mt-1">License access and creator earnings are not automatically reversed while policy review is open.</p>}
                 </li>)}
               </ul>
             </section>}

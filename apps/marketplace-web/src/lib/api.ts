@@ -35,10 +35,11 @@ export interface MarketplaceLicenseStatus {
 export interface MarketplaceRefundCaseStatus {
   id: string;
   listing_id: string;
+  case_type: "fixed_license" | "template_subscription";
   audience: "buyer" | "author";
   refund_amount_cents: number | null;
   currency: string;
-  state: "review_required" | "unmatched_purchase" | "policy_conflict";
+  state: "review_required" | "unmatched_purchase" | "unmatched_subscription" | "policy_conflict";
   created_at: string;
 }
 

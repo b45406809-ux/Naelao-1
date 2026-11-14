@@ -12,6 +12,7 @@
  *   subscription_payment_success → payment.success
  *   subscription_payment_failed  → payment.failed
  *   subscription_payment_recovered → payment.success
+ *   subscription_payment_refunded → refund.issued (evidence only; settlement policy is separate)
  *
  * spaceId path: order events → event.meta.custom_data.spaceId;
  *               subscription events → event.data.attributes.custom_data.spaceId.
@@ -60,6 +61,7 @@ const EVENT_MAP: Record<string, NormalizedBillingEvent["type"]> = {
   subscription_payment_success: "payment.success",
   subscription_payment_failed: "payment.failed",
   subscription_payment_recovered: "payment.success",
+  subscription_payment_refunded: "refund.issued",
   // A subscription that actually ENDED (grace period over). Previously unmapped — parseWebhookEvent
   // threw "Unmapped Lemon Squeezy event" and the webhook 200-skipped it, so an expired subscription
   // silently kept its paid tier forever (business subscriptions AND builder platform plans).
@@ -112,14 +114,22 @@ export class LemonSqueezyProvider implements BillingProvider {
 
     const attrs = event.data?.attributes ?? {};
     // spaceId comes from meta.custom_data (orders) or attributes.custom_data (subscriptions).
-    const spaceId =
+    const spaceIdValue =
       event.meta?.custom_data?.["spaceId"] ?? attrs.custom_data?.["spaceId"] ?? "";
+    const spaceId = typeof spaceIdValue === "string" ? spaceIdValue : "";
 
     const isOrder = eventName.startsWith("order_");
     const isSubscriptionPayment = eventName.startsWith("subscription_payment_");
     const amountCents = parseInt(String(attrs["total"] ?? attrs["total_usd"] ?? "0"), 10) || 0;
-    const refundAmountRaw = attrs["refund_amount"] ?? attrs["refunded_amount"] ?? attrs["total_refunded"];
-    const refundAmountCents = refundAmountRaw !== undefined ? parseInt(String(refundAmountRaw), 10) : NaN;
+    const refundAmountRaw = attrs["refund_amount"] ?? attrs["refunded_amount"] ?? attrs["total_refunded"] ?? attrs["amount_refunded"];
+    const refundAmountText = typeof refundAmountRaw === "number" && Number.isSafeInteger(refundAmountRaw)
+      ? String(refundAmountRaw)
+      : typeof refundAmountRaw === "string" ? refundAmountRaw.trim() : "";
+    const refundAmountCents = /^\d+$/.test(refundAmountText) ? Number(refundAmountText) : NaN;
+    const explicitInvoiceId = attrs["invoice_id"] ?? attrs["order_id"] ?? attrs["payment_id"];
+    const providerInvoiceId = typeof explicitInvoiceId === "string" ||
+      (typeof explicitInvoiceId === "number" && Number.isSafeInteger(explicitInvoiceId))
+      ? String(explicitInvoiceId).trim() : undefined;
 
     const providerStatus = !isOrder && attrs["status"] ? String(attrs["status"]) : null;
     const currentPeriodEnd = !isOrder && (attrs["renews_at"] ?? attrs["ends_at"]) ? String(attrs["renews_at"] ?? attrs["ends_at"]) : null;
@@ -128,6 +138,7 @@ export class LemonSqueezyProvider implements BillingProvider {
     return {
       type,
       provider: "lemon_squeezy",
+      providerEventType: eventName,
       spaceId,
       customerId: String(attrs["customer_id"] ?? ""),
       subscriptionId: isOrder ? (attrs["subscription_id"] ? String(attrs["subscription_id"]) : null)
@@ -142,11 +153,14 @@ export class LemonSqueezyProvider implements BillingProvider {
       // the complete raw event body instead of treating the subscription id as a payment id.
       providerEventId: isSubscriptionPayment
         ? String(attrs["order_id"] ?? attrs["payment_id"] ?? attrs["invoice_id"] ??
-          (attrs["updated_at"] ? `${event.data?.id ?? "subscription"}:${eventName}:${attrs["updated_at"]}` : "")) || null
+          (attrs["updated_at"] ? `${event.data?.id ?? "subscription"}:${eventName}:${attrs["updated_at"]}` :
+            eventName === "subscription_payment_refunded" ? event.data?.id ?? "" : "")) || null
         : event.data?.id ?? null,
+      ...(providerInvoiceId ? { providerInvoiceId } : {}),
       variantOrPriceId: String(attrs["variant_id"] ?? attrs["first_order_item"] ?? ""),
       amountCents,
       ...(Number.isSafeInteger(refundAmountCents) && refundAmountCents > 0 ? { refundAmountCents } : {}),
+      ...(refundAmountRaw !== undefined && (!Number.isSafeInteger(refundAmountCents) || refundAmountCents <= 0) ? { refundAmountInvalid: true } : {}),
       currency: String(attrs["currency"] ?? "USD"),
       metadata: event.meta?.custom_data ?? attrs.custom_data ?? {},
       ...(providerStatus ? { providerStatus } : {}),

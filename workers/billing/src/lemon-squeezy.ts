@@ -366,6 +366,99 @@ async function settleNativeTemplateRoyalty(event: NormalizedBillingEvent, env: L
   return true;
 }
 
+/** Record Lemon Squeezy subscription refund evidence without applying a refund policy. */
+async function recordNativeTemplateSubscriptionRefund(
+  event: NormalizedBillingEvent,
+  webhookBodySha256: string,
+  env: LemonSqueezyEnv,
+): Promise<void> {
+  if (event.providerEventType !== "subscription_payment_refunded") throw new Error("unexpected template subscription refund event type");
+  if (!/^[a-f0-9]{64}$/.test(webhookBodySha256)) throw new Error("invalid signed webhook body digest");
+
+  const metadataSubscriptionValue = event.metadata?.template_subscription_id;
+  const metadataSubscriptionRaw = typeof metadataSubscriptionValue === "string" ? metadataSubscriptionValue.trim() : "";
+  const metadataSubscriptionId = metadataSubscriptionRaw && metadataSubscriptionRaw.length <= 160 ? metadataSubscriptionRaw : null;
+  const eventSpaceId = typeof event.spaceId === "string" ? event.spaceId.trim() : "";
+  const spaceId = eventSpaceId.length <= 160 ? eventSpaceId || null : null;
+  const providerEventId = event.providerEventId ?? `body:${webhookBodySha256}`;
+  if (providerEventId.length > 200 || (event.subscriptionId?.length ?? 0) > 200) {
+    throw new Error("template subscription refund provider identity exceeds storage bounds");
+  }
+  const select = `SELECT ts.id,ts.space_id,ts.marketplace_listing_id,ts.developer_user_id,ts.provider_subscription_id
+    FROM template_subscriptions ts`;
+  const byMetadataId = metadataSubscriptionId && spaceId
+    ? await env.PLATFORM_DB.prepare(`${select} WHERE ts.id=? AND ts.space_id=?`)
+      .bind(metadataSubscriptionId, spaceId).first<{
+        id: string; space_id: string; marketplace_listing_id: string | null; developer_user_id: string; provider_subscription_id: string | null;
+      }>()
+    : null;
+  const byProviderId = event.subscriptionId && spaceId
+    ? await env.PLATFORM_DB.prepare(`${select} WHERE ts.provider_subscription_id=? AND ts.space_id=?`)
+      .bind(event.subscriptionId, spaceId).first<{
+        id: string; space_id: string; marketplace_listing_id: string | null; developer_user_id: string; provider_subscription_id: string | null;
+      }>()
+    : null;
+
+  let linked = byMetadataId ?? byProviderId;
+  let state: "review_required" | "unmatched_subscription" | "policy_conflict" = "review_required";
+  let reason = "policy_pending";
+  if (byMetadataId && byProviderId && byMetadataId.id !== byProviderId.id) {
+    linked = null;
+    state = "policy_conflict";
+    reason = "subscription_identity_conflict";
+  } else if (metadataSubscriptionId && byProviderId && !byMetadataId) {
+    linked = null;
+    state = "policy_conflict";
+    reason = "subscription_identity_conflict";
+  } else if (linked && event.subscriptionId && linked.provider_subscription_id !== event.subscriptionId) {
+    linked = null;
+    state = "policy_conflict";
+    reason = "subscription_identity_conflict";
+  } else if (!linked && metadataSubscriptionRaw && !metadataSubscriptionId) {
+    state = "policy_conflict";
+    reason = "subscription_identity_conflict";
+  } else if (!linked) {
+    const probe = metadataSubscriptionId
+      ? await env.PLATFORM_DB.prepare(`${select} WHERE ts.id=?`).bind(metadataSubscriptionId).first<{ id: string; space_id: string }>()
+      : event.subscriptionId
+        ? await env.PLATFORM_DB.prepare(`${select} WHERE ts.provider_subscription_id=?`).bind(event.subscriptionId).first<{ id: string; space_id: string }>()
+        : null;
+    if (probe) {
+      state = "policy_conflict";
+      reason = "space_mismatch";
+    } else {
+      state = "unmatched_subscription";
+      reason = "subscription_not_observed";
+    }
+  } else if (!event.providerInvoiceId || event.providerInvoiceId.length > 200) {
+    reason = "invoice_identity_missing";
+  } else if (event.refundAmountInvalid) {
+    reason = "refund_amount_invalid";
+  } else if (!event.refundAmountCents) {
+    reason = "refund_amount_unknown";
+  } else if (!/^[A-Z]{3}$/.test(event.currency.toUpperCase()) || event.currency.toUpperCase() !== "USD") {
+    reason = "unsupported_currency";
+  }
+
+  const currency = /^[A-Za-z]{3}$/.test(event.currency) ? event.currency.toUpperCase() : "UNK";
+  const result = await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_template_subscription_refund_cases
+    (id,provider,provider_event_id,provider_invoice_id,provider_subscription_id,webhook_body_sha256,
+     template_subscription_id,space_id,listing_id,refund_amount_cents,currency,state,review_reason)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(crypto.randomUUID(), event.provider, providerEventId, event.providerInvoiceId && event.providerInvoiceId.length <= 200 ? event.providerInvoiceId : null,
+      event.subscriptionId ?? null, webhookBodySha256, linked?.id ?? null, linked?.space_id ?? spaceId,
+      linked?.marketplace_listing_id ?? null,
+      event.refundAmountCents && Number.isSafeInteger(event.refundAmountCents) ? event.refundAmountCents : null,
+      currency, state, reason).run();
+  if ((result.meta?.changes ?? 0) !== 1) {
+    // A duplicate body is safe only when its immutable receipt already exists. The webhook
+    // delivery gate normally catches this first; this guard also protects partial recovery.
+    const existing = await env.PLATFORM_DB.prepare("SELECT id FROM marketplace_template_subscription_refund_cases WHERE webhook_body_sha256=?")
+      .bind(webhookBodySha256).first<{ id: string }>();
+    if (!existing) throw new Error("template subscription refund receipt was not persisted");
+  }
+}
+
 async function syncNativeTemplateSubscriptionStatus(event: NormalizedBillingEvent, env: LemonSqueezyEnv): Promise<boolean> {
   if (!event.type.startsWith("subscription.")) return false;
   const id = event.metadata?.kind === "template_subscription" ? event.metadata.template_subscription_id : undefined;
@@ -470,7 +563,7 @@ export async function handleLemonSqueezyWebhook(
   // space-dispatch machinery — with their own exactly-once gate and retry-release, mirroring
   // the main path's semantics below.
   const topCustom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (event.type === "refund.issued" && !event.providerEventId) {
+  if (event.type === "refund.issued" && !event.providerEventId && event.providerEventType !== "subscription_payment_refunded") {
     return Response.json({ error: "missing_provider_event_id" }, { status: 500 });
   }
   if (topCustom["kind"] === "template_subscription" &&
@@ -524,13 +617,15 @@ export async function handleLemonSqueezyWebhook(
   const templateSubscriptionId = topCustom["kind"] === "template_subscription"
     ? String(topCustom["template_subscription_id"] ?? "")
     : mappedTemplateSubscription?.id;
-  if (templateSubscriptionId) {
+  const isTemplateSubscriptionRefund = event.providerEventType === "subscription_payment_refunded";
+  if (templateSubscriptionId || isTemplateSubscriptionRefund) {
     const templateEventId = `body:${await sha256Hex(rawBody)}`;
     const firstDelivery = await markEventProcessedOnce("lemon_squeezy", templateEventId, event.type, env.PLATFORM_DB);
     if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "template_subscription" });
     try {
       if (event.type === "payment.success") await settleNativeTemplateRoyalty(event, env);
       else if (event.type.startsWith("subscription.")) await syncNativeTemplateSubscriptionStatus(event, env);
+      else if (isTemplateSubscriptionRefund) await recordNativeTemplateSubscriptionRefund(event, await sha256Hex(rawBody), env);
     } catch (err) {
       console.error("[billing/ls] template royalty/status failed:", (err as Error).message);
       await unmarkEventProcessed("lemon_squeezy", templateEventId, env.PLATFORM_DB);

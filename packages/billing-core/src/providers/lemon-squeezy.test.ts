@@ -49,6 +49,25 @@ describe("Lemon Squeezy payment event identities", () => {
     }));
     expect(event).toMatchObject({ type: "refund.issued", providerEventId: "order-42", amountCents: 5000, refundAmountCents: 1200 });
   });
+
+  it("retains subscription refund event and invoice identity without inferring a refund amount", () => {
+    const event = provider.parseWebhookEvent(JSON.stringify({
+      meta: { event_name: "subscription_payment_refunded", custom_data: { spaceId: "space-1", kind: "template_subscription", template_subscription_id: "template-sub-1" } },
+      data: { id: "invoice-resource", attributes: { subscription_id: "ls-sub-1", order_id: "invoice-42", total: 2000, currency: "USD" } },
+    }));
+    expect(event).toMatchObject({ type: "refund.issued", providerEventType: "subscription_payment_refunded",
+      providerEventId: "invoice-42", providerInvoiceId: "invoice-42", subscriptionId: "ls-sub-1", amountCents: 2000 });
+    expect(event.refundAmountCents).toBeUndefined();
+  });
+
+  it("marks a malformed explicit subscription refund amount without parsing a prefix", () => {
+    const event = provider.parseWebhookEvent(JSON.stringify({
+      meta: { event_name: "subscription_payment_refunded" },
+      data: { id: "invoice-resource", attributes: { subscription_id: "ls-sub-1", order_id: "invoice-42", refunded_amount: "12.5USD" } },
+    }));
+    expect(event).toMatchObject({ type: "refund.issued", refundAmountInvalid: true });
+    expect(event.refundAmountCents).toBeUndefined();
+  });
 });
 
 describe("Lemon Squeezy provider response boundaries", () => {

@@ -84,4 +84,28 @@ describe("marketplace refund operator review API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ limit: 1, has_more: true, cases: [{ id: "case-a" }] });
   });
+
+  it("offers a separately authorized, audited read for template subscription refund evidence", async () => {
+    const h = harness([{ id: "template-case-a", provider_event_id: "invoice-event", provider_invoice_id: "invoice-a",
+      provider_subscription_id: "subscription-a", template_subscription_id: "template-sub-a", space_id: "space-a",
+      listing_id: "listing-a", refund_amount_cents: null, currency: "USD", state: "unmatched_subscription",
+      review_reason: "subscription_not_observed", created_at: "2026-11-13T00:00:00.000Z" }]);
+    const path = "/internal/marketplace/operator/template-subscription-refund-cases?listing_id=listing-a&state=unmatched_subscription&limit=20&offset=40";
+    const denied = await h.app.request(path, { headers: { "x-managed-services-operator-key": "wrong", "x-managed-services-operator-id": "ops-user-4" } }, env(h.db));
+    expect(denied.status).toBe(403);
+    expect(h.queries).toHaveLength(0);
+    const response = await h.app.request(path, {
+      headers: { "x-managed-services-operator-key": operatorKey, "x-managed-services-operator-id": "ops-user-4" },
+    }, env(h.db));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      operator_id: "ops-user-4", offset: 40, limit: 20, has_more: false,
+      policy: "review_only_no_automatic_subscription_access_earning_or_payout_change",
+      cases: [{ id: "template-case-a", provider_invoice_id: "invoice-a", review_reason: "subscription_not_observed" }],
+    });
+    expect(h.queries[0]?.sql).toContain("FROM marketplace_template_subscription_refund_cases");
+    expect(h.queries[0]?.values).toEqual(["listing-a", "unmatched_subscription", 21, 40]);
+    expect(h.queries[1]?.sql).toContain("INSERT INTO audit_log");
+    expect(JSON.stringify(h.queries[1]?.values)).not.toContain("invoice-a");
+  });
 });

@@ -190,6 +190,43 @@ export function registerMarketplaceLicenseRoutes(app: Hono<{ Bindings: BillingEn
     return c.json({ cases, operator_id: actorId, offset, limit,
       has_more: page.length > limit, policy: "review_only_no_automatic_license_or_earning_reversal" });
   });
+  app.get("/internal/marketplace/operator/template-subscription-refund-cases", async c => {
+    const expected = c.env.MANAGED_SERVICES_OPERATOR_SECRET;
+    if (!expected) return c.json({ error_code: "marketplace_refund_operator_key_unavailable" }, 503);
+    if (!operatorSecretMatches(expected, c.req.header("x-managed-services-operator-key") ?? "")) return c.json({ error_code: "forbidden" }, 403);
+    const actorId = c.req.header("x-managed-services-operator-id") ?? "";
+    if (!/^[A-Za-z0-9._:@-]{1,160}$/.test(actorId)) return c.json({ error_code: "operator_id_required" }, 400);
+
+    const state = c.req.query("state");
+    if (state && !["review_required", "unmatched_subscription", "policy_conflict"].includes(state)) {
+      return c.json({ error_code: "invalid_refund_case_state" }, 400);
+    }
+    const listingId = c.req.query("listing_id");
+    if (listingId !== undefined && (!listingId || listingId.length > 160)) return c.json({ error_code: "invalid_listing_id" }, 400);
+    const rawLimit = c.req.query("limit"), rawOffset = c.req.query("offset");
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    const offset = rawOffset === undefined ? 0 : Number(rawOffset);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0 || offset > 10_000) {
+      return c.json({ error_code: "invalid_pagination" }, 400);
+    }
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (listingId) { clauses.push("listing_id=?"); values.push(listingId); }
+    if (state) { clauses.push("state=?"); values.push(state); }
+    const rows = await c.env.PLATFORM_DB.prepare(`SELECT id,provider_event_id,provider_invoice_id,provider_subscription_id,
+        template_subscription_id,space_id,listing_id,refund_amount_cents,currency,state,review_reason,created_at
+      FROM marketplace_template_subscription_refund_cases${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).bind(...values, limit + 1, offset).all();
+    const page = rows.results ?? [];
+    const cases = page.slice(0, limit);
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO audit_log
+      (id,tenant_id,actor_id,actor_type,event_type,resource_type,resource_id,event_data)
+      VALUES (?,? ,?,'platform_operator','marketplace_template_subscription_refund_cases_listed','marketplace_template_subscription_refund_cases',?,?)`)
+      .bind(crypto.randomUUID(), "platform", actorId, listingId ?? "all",
+        JSON.stringify({ state: state ?? null, limit, offset, result_count: cases.length })).run();
+    return c.json({ cases, operator_id: actorId, offset, limit, has_more: page.length > limit,
+      policy: "review_only_no_automatic_subscription_access_earning_or_payout_change" });
+  });
   app.get("/internal/marketplace/license-refund-cases", async c => {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     if (!tenantId) return c.json({ error_code: "tenant_required" }, 400);

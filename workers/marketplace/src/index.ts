@@ -21,6 +21,16 @@ interface Listing {
   status: string; install_count: number; avg_rating: number; rating_count: number;
   published_at: string | null; created_at: string; updated_at: string;
 }
+interface MarketplaceRefundCaseRow {
+  id: string;
+  listing_id: string;
+  audience: "buyer" | "author";
+  refund_amount_cents: number | null;
+  currency: string;
+  state: "review_required" | "unmatched_purchase" | "unmatched_subscription" | "policy_conflict";
+  created_at: string;
+  case_type: "fixed_license" | "template_subscription";
+}
 function identity(c: { req: { header(name: string): string | undefined } }) {
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", userId: c.req.header("x-naelao-user-id") ?? "", role: c.req.header("x-naelao-role") ?? "member" };
 }
@@ -172,23 +182,34 @@ app.get("/v1/marketplace/:id/refund-cases", async c => {
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
   const listingId = c.req.param("id");
   if (!listingId || listingId.length > 160) return c.json({ error_code: "invalid_listing_id" }, 400);
-  const result = await c.env.PLATFORM_DB.prepare(`SELECT id,listing_id,
+  const [fixedResult, subscriptionResult] = await Promise.all([
+    c.env.PLATFORM_DB.prepare(`SELECT id,listing_id,
       CASE WHEN tenant_id=? THEN 'buyer' ELSE 'author' END AS audience,
-      refund_amount_cents,currency,state,created_at
+      refund_amount_cents,currency,state,created_at,'fixed_license' AS case_type
     FROM marketplace_license_refund_cases
     WHERE listing_id=? AND (tenant_id=? OR EXISTS (
       SELECT 1 FROM marketplace_listings l WHERE l.id=marketplace_license_refund_cases.listing_id AND l.tenant_id=?
     ))
-    ORDER BY created_at DESC,id DESC LIMIT 20`).bind(tenantId, listingId, tenantId, tenantId).all<{
-      id: string; listing_id: string; audience: "buyer" | "author"; refund_amount_cents: number | null;
-      currency: string; state: "review_required" | "unmatched_purchase" | "policy_conflict"; created_at: string;
-    }>();
-  const cases = result.results ?? [];
+    ORDER BY created_at DESC,id DESC LIMIT 20`).bind(tenantId, listingId, tenantId, tenantId).all<MarketplaceRefundCaseRow>(),
+    c.env.PLATFORM_DB.prepare(`SELECT id,listing_id,
+      CASE WHEN EXISTS (SELECT 1 FROM spaces s WHERE s.id=marketplace_template_subscription_refund_cases.space_id AND s.tenant_id=?)
+        THEN 'buyer' ELSE 'author' END AS audience,
+      refund_amount_cents,currency,state,created_at,'template_subscription' AS case_type
+    FROM marketplace_template_subscription_refund_cases
+    WHERE listing_id=? AND (
+      EXISTS (SELECT 1 FROM spaces s WHERE s.id=marketplace_template_subscription_refund_cases.space_id AND s.tenant_id=?)
+      OR EXISTS (SELECT 1 FROM marketplace_listings l WHERE l.id=marketplace_template_subscription_refund_cases.listing_id AND l.tenant_id=?)
+    ) ORDER BY created_at DESC,id DESC LIMIT 20`).bind(tenantId, listingId, tenantId, tenantId).all<MarketplaceRefundCaseRow>(),
+  ]);
+  const cases = [...(fixedResult.results ?? []), ...(subscriptionResult.results ?? [])]
+    .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id))
+    .slice(0, 20);
   await c.env.PLATFORM_DB.prepare(`INSERT INTO audit_log
     (id,tenant_id,actor_id,actor_type,event_type,resource_type,resource_id,event_data)
-    VALUES (?,? ,?,'marketplace_user','marketplace_license_refund_status_viewed','marketplace_listing',?,?)`)
-    .bind(crypto.randomUUID(), tenantId, userId, listingId, JSON.stringify({ result_count: cases.length })).run();
-  return c.json({ cases, policy: "review_only_no_automatic_license_or_earning_reversal" }, {
+    VALUES (?,? ,?,'marketplace_user','marketplace_refund_status_viewed','marketplace_listing',?,?)`)
+    .bind(crypto.randomUUID(), tenantId, userId, listingId, JSON.stringify({ result_count: cases.length,
+      fixed_license_count: fixedResult.results?.length ?? 0, template_subscription_count: subscriptionResult.results?.length ?? 0 })).run();
+  return c.json({ cases, policy: "review_only_no_automatic_access_earning_or_payout_change" }, {
     headers: { "cache-control": "private, no-store" },
   });
 });

@@ -26,12 +26,18 @@ export interface NormalizedBillingEvent {
    *  order recording — never a synthetic derived key, which can collide across genuinely
    *  distinct events (S0.3). */
   providerEventId: string | null;
+  /** Provider event name retained for bounded event-specific evidence handling. */
+  providerEventType?: string;
+  /** Explicit order/invoice/payment identity when the provider includes one. */
+  providerInvoiceId?: string;
   variantOrPriceId: string;
   /** Always an integer, always cents. */
   amountCents: number;
   /** Explicit refunded amount in cents when the provider supplies one. Never infer a refund amount
    * from the original order total: partial refunds must not revoke a full paid entitlement. */
   refundAmountCents?: number;
+  /** True only when a refund amount field was present but could not be parsed as a positive integer. */
+  refundAmountInvalid?: boolean;
   currency: string;
   metadata: Record<string, string>;
   /** Raw provider subscription status (e.g. LS's "active"/"cancelled"/"past_due"/"paused"/
