@@ -35,18 +35,22 @@ function operatorSecretMatches(expected: string | undefined, provided: string): 
 async function attachPendingRefundCases(env: LicenseSettlementEnv, providerOrderId: string, tenantId: string, listingId: string, purchaseId: string): Promise<void> {
   await env.PLATFORM_DB.prepare(`UPDATE marketplace_license_refund_cases
     SET purchase_id = ?, state = CASE
+      WHEN review_reason = 'refund_amount_invalid' THEN 'policy_conflict'
       WHEN currency = 'USD'
         AND (order_amount_cents IS NULL OR order_amount_cents = (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?))
         AND (refund_amount_cents IS NULL OR refund_amount_cents <= (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?))
         THEN 'review_required'
       ELSE 'policy_conflict' END,
       review_reason = CASE
+        WHEN review_reason = 'refund_amount_invalid' THEN 'refund_amount_invalid'
         WHEN currency <> 'USD' THEN 'unsupported_currency'
         WHEN order_amount_cents IS NOT NULL AND order_amount_cents <> (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?) THEN 'order_amount_mismatch'
         WHEN refund_amount_cents > (SELECT amount_cents FROM marketplace_license_purchases WHERE id = ?) THEN 'refund_exceeds_purchase'
         ELSE 'policy_pending' END,
       updated_at = datetime('now')
-    WHERE provider_order_id = ? AND tenant_id = ? AND listing_id = ? AND purchase_id IS NULL AND state = 'unmatched_purchase'`)
+    WHERE provider_order_id = ? AND tenant_id = ? AND listing_id = ? AND purchase_id IS NULL
+      AND (state = 'unmatched_purchase' OR (state = 'policy_conflict'
+        AND review_reason NOT IN ('tenant_mismatch', 'purchase_identity_mismatch')))`)
     .bind(purchaseId, purchaseId, purchaseId, purchaseId, purchaseId, providerOrderId, tenantId, listingId).run();
 }
 

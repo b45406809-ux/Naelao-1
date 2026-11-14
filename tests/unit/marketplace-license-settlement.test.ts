@@ -102,6 +102,19 @@ describe("paid marketplace license settlement", () => {
     db.db.close();
   });
 
+  it("links an invalid refund conflict to a later matching purchase without clearing the conflict", async () => {
+    const { db, env, paymentEvent } = await marketplaceLicenseFixture();
+    const invalidRefund = { ...paymentEvent, type: "refund.issued", refundAmountCents: -1 } as const;
+    await recordMarketplaceLicenseRefundEvent(invalidRefund, "f".repeat(64), env);
+    expect(db.db.prepare("SELECT state, review_reason, purchase_id FROM marketplace_license_refund_cases").get())
+      .toMatchObject({ state: "policy_conflict", review_reason: "refund_amount_invalid", purchase_id: null });
+
+    await settleMarketplaceLicenseEvent(paymentEvent, env);
+    expect(db.db.prepare("SELECT state, review_reason, purchase_id FROM marketplace_license_refund_cases").get())
+      .toMatchObject({ state: "policy_conflict", review_reason: "refund_amount_invalid", purchase_id: expect.any(String) });
+    db.db.close();
+  });
+
   it("closes an exact confirmed duplicate-charge refund task without changing the primary earning", async () => {
     const { db, env, paymentEvent } = await marketplaceLicenseFixture();
     await settleMarketplaceLicenseEvent(paymentEvent, env);
