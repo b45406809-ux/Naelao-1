@@ -1,29 +1,31 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (shared Gadget schema update path)
+## Active continuation — 2026-11-14 (U05 main-runtime budget reservation linkage)
 
-Code `035a3274` is pushed to `origin/Mcbt5s-Backup-2`. P10's owner-reviewed signed package update now
-supports only unchanged Space-shared Gadget identities/default schemas with append-only additive SQL.
-The review shows exact migration text and binds approval to source/candidate manifest and artifact
-hashes. Apply requires a paused installation with no admitted work, rechecks source/candidate releases
-and publisher identity, and uses per-actor MicroAppDO transactions and durable receipts for retry after
-partial multi-Gadget progress. Destructive or changed historical migrations, stale pins and
-cross-installation identity mismatches fail closed. The Shell review and receipts show exact digest
-prefixes. Local evidence: Spaces route/contract/DO/migration tests **64/64**, Spaces/Shell typechecks and
-`git diff --check`. No deployment, browser, provider or live acceptance ran; rollouts stay disabled.
+Cross-plan code checkpoint `bbf9186c7ded715065b9aebd7e132f1bac9c1c7d` is pushed to
+`origin/Mcbt5s-Backup-2`. The project-main runtime generation claim now stores its exact authoritative
+Billing budget reservation ID, verifies that the held D1 row matches tenant and Space before runtime
+start, and reuses that same ID during lost-ack recovery. The existing owner profile displays only the
+reservation state/expiry and says it is an internal credit hold, not a provider invoice. Migration 0249
+is registered in both release manifests. Local evidence: DynamicSandboxDO/profile tests **36/36**,
+Agents/Shell typechecks, release/deployment manifest validation and `git diff --check`. No browser,
+deployment, provider or live runtime acceptance ran; all rollouts remain disabled.
 
-P10 remains PARTIAL for authority/dependency expansion, connection/price changes, scanning/retention,
-broader migration rollback and live acceptance. P01/P02 stay fail-closed on actual Cloudflare resource
-separation, ownership, receipts, account/time evidence and D1 baselines. P03/P12 and P20 retain explicit
-business-policy gates; they do not block independent caller code. No P requirement is live-accepted.
+P03/P12's durable outbox → queue → deterministic workflow → retry/receipt path is already covered by
+the `ee41d123` source/caller record and focused local tests; no independent caller mismatch was found.
+The P06 exact-line selection is already implemented in `ce252033`. Grace/restriction/escalation and live
+delivery remain product/acceptance gates. U05 now has a candidate generation/internal budget link, but
+trusted mount/sync/flush observations remain uncoded. U06 still lacks a supported writer/drain/flush/
+reconnect/handoff contract. P01/P02 remain fail-closed on actual Cloudflare resource ownership,
+separation, receipts and operator-attested baselines. No platform requirement is live-accepted.
 
-Exact next action: continue the recorded P03/P12 trace from the durable billing outbox and dunning queue
-producers through workflow creation, retry scheduling and notification receipts. Implement one concrete
-reachable idempotency/caller-contract gap without choosing grace, restriction or retry-cadence policy.
-Then resume S3–S9/U01–U12 and P01–P24 at their row-level gaps; reuse completed implementations and do
-not repeat completed audits. Fetch before each push.
-
+Exact next action: continue P05's uncoded Space-shared provider-connection scope contract across signed
+Blueprint dependencies, activation, owner connection selection and revocation. Reuse the current vault
+and authorization services and validate the Space-shared binding server-side; if the current host
+cannot express its scope safely, record that exact contract as a product decision and advance to the
+next independent code requirement. Do not treat UserPort MCP aliases as provider credentials. Fetch
+before every push and integrate remote advances without overwriting history.
 ## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed. The signed SpaceBlueprint carries optional

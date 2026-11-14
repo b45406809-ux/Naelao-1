@@ -16,29 +16,32 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (owner-reviewed shared Gadget schema updates)
+## Latest checkpoint — 2026-11-14 (U05 main-runtime budget reservation linkage)
 
-Code `035a3274` is pushed to `origin/Mcbt5s-Backup-2`. The signed Space-shared update review accepts
-only unchanged Gadget identities/default schemas with append-only additive DDL, shows exact SQL to
-Space admins, and binds approval to source/candidate manifest and artifact digests. Apply rechecks
-the exact paused installation and publisher, verifies no admitted runtime work remains, then applies
-each Gadget migration in that installation's MicroApp DO using a signed host authorization and an
-atomic per-actor migration/operation journal. Destructive SQL, stale pins, publisher changes, shared
-Gadget scope/tier changes and identity mismatches fail closed. The SpaceDO update receipt records
-both manifest digests and source/candidate artifact digests; Shell displays them. Local evidence:
-Spaces route/contract/DO/migration suites **64/64**, Spaces and Shell typechecks, `git diff --check`.
-No deployment, browser, provider or live acceptance ran. Rollouts remain disabled.
+Code `bbf9186c7ded715065b9aebd7e132f1bac9c1c7d` is pushed to `origin/Mcbt5s-Backup-2`. The existing
+Cloudflare project-main allocation generation now durably references its exact held Billing budget
+reservation. A generation claim fails closed unless the authoritative `workflow_budget_reservations`
+row matches tenant/Space and is still held. Lost-ack recovery reuses the same reservation ID; owner
+status shows held/expired/released/settled/missing without exposing it as a provider invoice. Migration
+0249 and release/deployment manifests are updated. Local evidence: DynamicSandboxDO and project-main
+profile tests **36/36**, Agents and Shell typechecks, release/deployment manifest validation and
+`git diff --check`. No deployment, provider, browser, or live runtime acceptance ran. The U05 runtime
+allocation/budget link is local; trusted mount/sync/flush observation production is still absent. U06's
+writer admission/drain/reconnect/handoff contract remains unsupported, so live rollout stays disabled.
 
-Exact next action: continue the already-recorded P03/P12 reconciliation from the durable billing
-outbox and dunning queue producers through workflow creation, retry scheduling and notification
-receipts. Close one reachable local idempotency or caller-contract gap without selecting grace,
-restriction or retry-cadence policy. Then resume S3–S9/U01–U12 and P01–P24 from their row-level gaps;
-do not repeat completed audits. Fetch before each push and safely incorporate remote advances.
+Reconciliation: the active P03/P12 outbox-to-workflow/retry/receipt action already has local code and
+focused evidence recorded at `ee41d123`; no new caller gap was found. The phone dashboard's exact
+active-line selection is already in `ce252033` and the current P06 matrix. Do not repeat those audits.
+P03/P12 grace/restriction/escalation and live delivery remain policy/acceptance gates.
 
-The prior `ce252033`/`be8a13df` multi-line voice checkpoint is recorded below. Both active plans remain
-governing; after compaction, interruption or a new session read both plans, both progress ledgers,
-inspect this worktree, and resume from the exact next action above.
-
+Exact next action: continue P05's uncoded Space-shared provider-connection scope contract from signed
+Blueprint dependencies through activation and the reachable installation/provider-connection owner
+callers. Define a server-validated Space-shared connection reference and revocation lifecycle that
+reuses current secret-vault and owner authorization, or record the exact product contract if existing
+APIs cannot safely support it. Do not treat UserPort MCP aliases as provider credentials. Then return
+to U05 trusted observations only where the current runtime can produce verifiable facts; never assert
+mount/sync/flush behavior before U06 has a supported host contract. Resume all other S3–S9/U01–U12 and
+P01–P24 row-level gaps. Fetch before every push and safely incorporate remote advances.
 ## Previous checkpoint — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed to `origin/Mcbt5s-Backup-2` from
