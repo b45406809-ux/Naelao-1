@@ -30,7 +30,8 @@ export function registerGraduationRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!original) return c.json({ error_code: "conformance_artifact_missing" }, 422);
     const { blueprint: source } = await original.json<{ blueprint: SpaceBlueprint }>();
     const existingListing = await c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published' LIMIT 1").bind(tenantId, source.id).first<{ id: string }>();
-    if (existingListing) return c.json({ error_code: "already_graduated", listing_id: existingListing.id, blueprint_id: source.id }, 409);
+    if (existingListing) return c.json({ space_id: spaceId, stage: "marketplace_published", blueprint_id: source.id,
+      listing_id: existingListing.id, alreadyPublished: true }, 200);
     const stored = await c.env.SCRIPTS_R2.get(certifiedBlueprintKey(tenantId, source.id))
       ?? await c.env.SCRIPTS_R2.get(`blueprints/${source.id}.json`);
     if (!stored) return c.json({ error_code: "conformance_not_certified" }, 422);
@@ -42,26 +43,44 @@ export function registerGraduationRoutes(app: Hono<{ Bindings: Env }>): void {
     const listingId = crypto.randomUUID();
     const developerDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(developerId)));
     const developerHandle = `fde-${[...developerDigest].slice(0, 20).map(value => value.toString(16).padStart(2, "0")).join("")}`;
-    const hasSpaceGraduation = await c.env.PLATFORM_DB.prepare("SELECT 1 AS present FROM fde_graduations WHERE space_id=? AND stage='marketplace_published'").bind(spaceId).first();
     const listingName = body.name?.trim() || String(blueprint.metadata.name ?? space.name).slice(0, 160);
     const listingDescription = body.description?.trim() || String(blueprint.metadata.description ?? `Certified blueprint for ${listingName}`).slice(0, 2000);
     await c.env.PLATFORM_DB.batch([
-      ...(!hasSpaceGraduation ? GRADUATION_STAGES.map(stage => c.env.PLATFORM_DB.prepare("INSERT INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(crypto.randomUUID(), spaceId, developerId, stage, stage === "consulting_embed" ? null : blueprint.id, stage === "marketplace_published" ? listingId : null)) : []),
       c.env.PLATFORM_DB.prepare(`INSERT INTO marketplace_listings
         (id, space_type_id, tenant_id, developer_user_id, author_name, name, description, category, pricing, pricing_model, price_cents, plan_gated_features_json, status, blueprint_id, published_at, conformance_artifact_json, conformance_certificate_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'vertical-saas', 'free', 'freemium_tiered', 0, '["growth","pro"]', 'published', ?, datetime('now'), ?, ?)`)
-        .bind(listingId, blueprint.id, tenantId, developerId, developerId, listingName, listingDescription, blueprint.id, JSON.stringify(blueprint), JSON.stringify(envelope.conformanceCertificate)),
+        SELECT ?, ?, ?, ?, ?, ?, ?, 'vertical-saas', 'free', 'freemium_tiered', 0, '["growth","pro"]', 'published', ?, datetime('now'), ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published')`)
+        .bind(listingId, blueprint.id, tenantId, developerId, developerId, listingName, listingDescription, blueprint.id,
+          JSON.stringify(blueprint), JSON.stringify(envelope.conformanceCertificate), tenantId, blueprint.id),
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id)
+        SELECT ?, ?, ?, 'consulting_embed', NULL, NULL WHERE EXISTS
+        (SELECT 1 FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published')`)
+        .bind(crypto.randomUUID(), spaceId, developerId, tenantId, blueprint.id),
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id)
+        SELECT ?, ?, ?, 'blueprint_staged', ?, NULL WHERE EXISTS
+        (SELECT 1 FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published')`)
+        .bind(crypto.randomUUID(), spaceId, developerId, blueprint.id, tenantId, blueprint.id),
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id)
+        SELECT ?, ?, ?, 'marketplace_published', ?, (SELECT id FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published' LIMIT 1)
+        WHERE EXISTS (SELECT 1 FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published')`)
+        .bind(crypto.randomUUID(), spaceId, developerId, blueprint.id, tenantId, blueprint.id, tenantId, blueprint.id),
       // Certification is the cohort entry point. D1 serializes this batch so at most fifty
       // successfully graduated developers receive a pioneer rank.
-      c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO developer_partner_profiles (user_id, handle, status) VALUES (?, ?, 'active')")
-        .bind(developerId, developerHandle),
+      c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO developer_partner_profiles (user_id, handle, status)
+        SELECT ?, ?, 'active' WHERE EXISTS (SELECT 1 FROM marketplace_listings WHERE id=? AND developer_user_id=?)`)
+        .bind(developerId, developerHandle, listingId, developerId),
       c.env.PLATFORM_DB.prepare(`UPDATE developer_partner_profiles
         SET pioneer_rank = (SELECT COALESCE(MAX(pioneer_rank), 0) + 1 FROM developer_partner_profiles WHERE pioneer_rank IS NOT NULL)
         WHERE user_id = ? AND pioneer_rank IS NULL
+          AND EXISTS (SELECT 1 FROM marketplace_listings WHERE id=? AND developer_user_id=?)
           AND (SELECT COUNT(*) FROM developer_partner_profiles WHERE pioneer_rank IS NOT NULL) < 50`)
-        .bind(developerId),
+        .bind(developerId, listingId, developerId),
     ]);
-    return c.json({ space_id: spaceId, stage: "marketplace_published", blueprint_id: blueprint.id, listing_id: listingId, security }, 201);
+    const published = await c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published' LIMIT 1")
+      .bind(tenantId, blueprint.id).first<{ id: string }>();
+    if (!published) throw new Error("graduation_listing_not_persisted");
+    const created = published.id === listingId;
+    return c.json({ space_id: spaceId, stage: "marketplace_published", blueprint_id: blueprint.id, listing_id: published.id,
+      ...(created ? {} : { alreadyPublished: true }), security }, created ? 201 : 200);
   });
 }

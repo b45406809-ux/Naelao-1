@@ -27,11 +27,24 @@ const setupFields = [
 
 function exportHarness() {
   const blueprint = sourceBlueprint(), writes: Array<{ key: string; text: string }> = [], jobs: unknown[] = [], spaceRequests: Request[] = [];
+  const exportRequests = new Map<string, { id: string; artifact_key: string; request_sha256: string }>(), artifacts = new Map<string, string>(), workflows = new Map<string, unknown>();
   const env = {
     PLATFORM_SECRET: "template-setup-authoring-secret",
-    PLATFORM_DB: { prepare: (query: string) => ({ bind: (..._values: unknown[]) => ({
-      first: async () => query.includes("FROM spaces WHERE id") ? { id: "space-studio" } : null,
-      run: async () => ({ success: true, meta: { changes: 1 } }),
+    PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({
+      first: async () => {
+        if (query.includes("FROM spaces WHERE id")) return { id: "space-studio" };
+        if (query.includes("FROM blueprint_export_jobs") && query.includes("request_id=?"))
+          return exportRequests.get(`${values[0]}:${values[1]}:${values[2]}`) ?? null;
+        return null;
+      },
+      run: async () => {
+        if (query.includes("INSERT OR IGNORE INTO blueprint_export_jobs")) {
+          const key = `${values[1]}:${values[2]}:${values[4]}`;
+          if (exportRequests.has(key)) return { success: true, meta: { changes: 0 } };
+          exportRequests.set(key, { id: String(values[0]), artifact_key: String(values[3]), request_sha256: String(values[5]) });
+        }
+        return { success: true, meta: { changes: 1 } };
+      },
     }) }) },
     SPACE_DO: { idFromName: () => "space-studio-do", get: () => ({ fetch: async (request: Request) => {
       spaceRequests.push(request);
@@ -39,11 +52,14 @@ function exportHarness() {
       const selected = body.project_ids ? new Set(body.project_ids) : body.project_id ? new Set([body.project_id]) : null;
       return Response.json(selected ? { ...blueprint, projects: blueprint.projects.filter(project => selected.has(project.id!)) } : blueprint);
     } }) },
-    SCRIPTS_R2: { put: async (key: string, value: string) => { writes.push({ key, text: value }); } },
-    BLUEPRINT_CONFORMANCE_WORKFLOW: { create: async (job: unknown) => { jobs.push(job); } },
+    SCRIPTS_R2: { put: async (key: string, value: string) => { writes.push({ key, text: value }); artifacts.set(key, value); },
+      get: async (key: string) => artifacts.has(key) ? { text: async () => artifacts.get(key)! } : null,
+      delete: async (key: string) => { artifacts.delete(key); } },
+    BLUEPRINT_CONFORMANCE_WORKFLOW: { create: async (job: { id: string }) => { if (workflows.has(job.id)) throw new Error("workflow_exists"); jobs.push(job); workflows.set(job.id, { ...job, status: async () => ({ status: "running" }) }); },
+      get: async (id: string) => { const workflow = workflows.get(id); if (!workflow) throw new Error("workflow_missing"); return workflow; } },
     LOADER: {}, CONFORMANCE_SANDBOX_DO: {}, CONFORMANCE_EXECUTOR: {},
   } as never;
-  return { blueprint, env, writes, jobs, spaceRequests };
+  return { blueprint, env, writes, jobs, spaceRequests, exportRequests, artifacts };
 }
 
 function conformanceSuite(projectCount = 1) {
@@ -138,6 +154,33 @@ describe("visual Template setup authoring export", () => {
       { project_id: "support", project_name: "Support", fields: setupFields },
       { project_id: billingProjectId, project_name: "Billing", fields: billingFields },
     ]);
+  });
+
+  it("reconciles a lost export response by request ID and rejects changed input under the same key", async () => {
+    const h = exportHarness(), requestId = "d8d5f430-8d8a-4ea7-a33d-16ec59ce01a5";
+    const body = { requestId, projectId: "support", requiredExtensions: [], name: "Support", description: "Support template",
+      stateDeltaSuite: conformanceSuite(), entries: { support: "/workspace/eval/conformance.ts" } };
+    const request = (payload: unknown) => spacesWorker.fetch(new Request("https://spaces.test/spaces/space-studio/export-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-studio",
+        "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" }, body: JSON.stringify(payload),
+    }), h.env);
+    const [first, retry] = await Promise.all([request(body), request(body)]);
+    const [firstResult, retryResult] = await Promise.all([first.json(), retry.json()]) as [{ jobId: string }, { jobId: string }];
+    expect(first.status).toBe(202);
+    expect(retry.status).toBe(202);
+    expect(retryResult.jobId).toBe(firstResult.jobId);
+    expect(h.jobs).toHaveLength(1);
+    expect(h.artifacts.size).toBe(1);
+    const recovered = await spacesWorker.fetch(new Request(`https://spaces.test/spaces/space-studio/export-template?request_id=${requestId}`, {
+      headers: { "x-naelao-tenant-id": "tenant-studio", "x-naelao-user-id": "owner-studio", "x-naelao-role": "owner" },
+    }), h.env);
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toMatchObject({ found: true, jobId: firstResult.jobId, status: "running" });
+    const conflict = await request({ ...body, description: "Changed authoring input" });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ error_code: "export_request_id_reused_with_different_input" });
+    expect(h.jobs).toHaveLength(1);
+    expect(h.artifacts.size).toBe(1);
   });
 
   it("requires owner authorization and rejects credential-like fields before creating an export job", async () => {

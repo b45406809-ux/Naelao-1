@@ -1770,9 +1770,12 @@ export function callSpaceSharedExtensionOperation(spaceId: string, session: Sess
   }
   if (capability === "blueprint.export") return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template`, { method: "POST", session, body: JSON.stringify(input) });
   if (capability === "blueprint.status") {
-    const jobId = input && typeof input === "object" ? (input as { jobId?: unknown }).jobId : undefined;
-    if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(jobId)) throw new Error("A valid conformance job id is required");
-    return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template/${encodeURIComponent(jobId)}`, { session, cache: "no-store" });
+    const value = input && typeof input === "object" ? input as { jobId?: unknown; requestId?: unknown } : {};
+    if (typeof value.jobId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value.jobId))
+      return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template/${encodeURIComponent(value.jobId)}`, { session, cache: "no-store" });
+    if (typeof value.requestId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.requestId))
+      return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template?request_id=${encodeURIComponent(value.requestId)}`, { session, cache: "no-store" });
+    throw new Error("A valid conformance job or export request id is required");
   }
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/graduate`, { method: "POST", session, body: JSON.stringify(input) });
 }

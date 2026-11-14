@@ -105,4 +105,21 @@ describe("latest D1 deployment migration batch", () => {
     storage.sql.exec("INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,status,connected_by,connected_at,updated_at) VALUES('t','s','p1','i1','wa1','whatsapp','wa-phone-1','Business 1','cred-wa-1','hash','active','owner','now','now')");
     expect(() => storage.sql.exec("INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,status,connected_by,connected_at,updated_at) VALUES('t2','s2','p2','i2','wa2','whatsapp','wa-phone-1','Business 1','cred-wa-2','hash','active','owner','now','now')")).toThrow();
   });
+
+  it("adds owner and Space scoped idempotency keys to conformance export jobs", () => {
+    const storage = createDOStorage();
+    storage.sql.exec(`CREATE TABLE blueprint_export_jobs (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, artifact_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key) VALUES('legacy-job','tenant-a','space-a','legacy.json')");
+    storage.sql.exec(readFileSync(join(__dirname, "../../../infra/migrations/0246_blueprint_export_idempotency.sql"), "utf8"));
+    expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('blueprint_export_jobs')").toArray().map(row => row.name))
+      .toEqual(expect.arrayContaining(["request_id", "request_sha256"]));
+    expect(storage.sql.exec<{ request_id: string | null }>("SELECT request_id FROM blueprint_export_jobs WHERE id='legacy-job'").toArray())
+      .toEqual([{ request_id: null }]);
+    storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key,request_id,request_sha256) VALUES('job-a','tenant-a','space-a','a.json','request-a','a')");
+    expect(() => storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key,request_id,request_sha256) VALUES('job-b','tenant-a','space-a','b.json','request-a','b')")).toThrow();
+    expect(() => storage.sql.exec("INSERT INTO blueprint_export_jobs(id,tenant_id,space_id,artifact_key,request_id,request_sha256) VALUES('job-c','tenant-a','space-b','c.json','request-a','c')")).not.toThrow();
+  });
 });

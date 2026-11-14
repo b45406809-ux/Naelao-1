@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0245_builder_password_reset_email_outbox",
+  "requiredSchemaVersion": "0246_blueprint_export_idempotency",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -983,6 +983,10 @@
     {
       "filename": "0245_builder_password_reset_email_outbox.sql",
       "sha256": "3ccb51a217cd001d1f9410bb23521396c5bc8f647ee8c4ab5e54a84df3b5d4a2"
+    },
+    {
+      "filename": "0246_blueprint_export_idempotency.sql",
+      "sha256": "6f7822f467d753b4308d81b182578a2e0013f1d3a88a52b73b62f86fa7c02214"
     }
   ]
 }

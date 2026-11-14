@@ -712,6 +712,24 @@ app.get("/spaces/:spaceId/template-extension-candidates", async c => {
   return c.json({ extensions }, 200, { "cache-control": "private, no-store" });
 });
 
+async function ensureBlueprintConformanceWorkflow(env: Env, job: { id: string; tenantId: string; key: string; digest: string }): Promise<void> {
+  const workflow = env.BLUEPRINT_CONFORMANCE_WORKFLOW;
+  if (!workflow) throw new Error("conformance_runtime_unavailable");
+  try {
+    await workflow.get(job.id);
+    return;
+  } catch {
+    try {
+      await workflow.create({ id: job.id, params: { tenantId: job.tenantId, jobId: job.id, key: job.key, digest: job.digest } });
+    } catch (createError) {
+      // A concurrent retry may have created this exact workflow after the lookup. Re-read its
+      // immutable ID before surfacing the create error; never mint a second job ID for one key.
+      try { await workflow.get(job.id); return; }
+      catch { throw createError; }
+    }
+  }
+}
+
 app.post("/spaces/:spaceId/export-template", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   const spaceId = c.req.param("spaceId");
@@ -720,7 +738,25 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
-  const exportOptions = await c.req.json<{ projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  const exportOptions = await c.req.json<{ requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { requestId?: string; projectId?: string; projectIds?: string[]; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string; setupSchemaVersion?: unknown; setupFields?: unknown; setupFieldsByProject?: unknown; assistantChannels?: unknown; stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  if (exportOptions.requestId !== undefined && (typeof exportOptions.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exportOptions.requestId))) return c.json({ error_code: "invalid_export_request_id" }, 400);
+  const requestId = exportOptions.requestId;
+  const requestPayload = { ...exportOptions };
+  delete requestPayload.requestId;
+  const requestSha256 = requestId ? await conformanceDigest(JSON.stringify(requestPayload)) : null;
+  if (requestId) {
+    const existing = await c.env.PLATFORM_DB.prepare(`SELECT id, artifact_key, request_sha256 FROM blueprint_export_jobs
+      WHERE tenant_id=? AND space_id=? AND request_id=?`).bind(tenantId, spaceId, requestId).first<{ id: string; artifact_key: string; request_sha256: string | null }>();
+    if (existing) {
+      if (existing.request_sha256 !== requestSha256) return c.json({ error_code: "export_request_id_reused_with_different_input" }, 409);
+      if (!c.env.BLUEPRINT_CONFORMANCE_WORKFLOW || !c.env.LOADER || !c.env.CONFORMANCE_SANDBOX_DO || !c.env.CONFORMANCE_EXECUTOR) return c.json({ error_code: "conformance_runtime_unavailable" }, 503);
+      const artifact = await c.env.SCRIPTS_R2.get(existing.artifact_key);
+      if (!artifact) return c.json({ error_code: "conformance_artifact_missing" }, 422);
+      const payload = await artifact.text();
+      await ensureBlueprintConformanceWorkflow(c.env, { id: existing.id, tenantId, key: existing.artifact_key, digest: await conformanceDigest(payload) });
+      return c.json({ jobId: existing.id, status: "testing", statusUrl: `/spaces/${spaceId}/export-template/${existing.id}`, artifactUrl: `/spaces/${spaceId}/export-template-artifact/${existing.id}` }, 202);
+    }
+  }
   if (exportOptions.projectId !== undefined && (typeof exportOptions.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(exportOptions.projectId))) return c.json({ error_code: "invalid_project_id" }, 400);
   if (exportOptions.projectIds !== undefined && (exportOptions.projectId !== undefined || !Array.isArray(exportOptions.projectIds) || exportOptions.projectIds.length < 1 || exportOptions.projectIds.length > 64
     || exportOptions.projectIds.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) || new Set(exportOptions.projectIds).size !== exportOptions.projectIds.length)) return c.json({ error_code: "invalid_project_ids" }, 400);
@@ -786,8 +822,26 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const payload = JSON.stringify({ blueprint, suite, security });
   if (payload.length > 5 * 1024 * 1024) return c.json({ error_code: "conformance_artifact_size_limit" }, 413);
   await c.env.SCRIPTS_R2.put(key, payload, { httpMetadata: { contentType: "application/json" } });
-  await c.env.PLATFORM_DB.prepare("INSERT INTO blueprint_export_jobs (id, tenant_id, space_id, artifact_key) VALUES (?, ?, ?, ?)").bind(jobId, tenantId, spaceId, key).run();
-  await c.env.BLUEPRINT_CONFORMANCE_WORKFLOW.create({ id: jobId, params: { tenantId, jobId, key, digest: await conformanceDigest(payload) } });
+  if (requestId) {
+    const insert = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO blueprint_export_jobs
+      (id, tenant_id, space_id, artifact_key, request_id, request_sha256) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(jobId, tenantId, spaceId, key, requestId, requestSha256).run();
+    if ((insert.meta?.changes ?? 1) === 0) {
+      const winner = await c.env.PLATFORM_DB.prepare(`SELECT id, artifact_key, request_sha256 FROM blueprint_export_jobs
+        WHERE tenant_id=? AND space_id=? AND request_id=?`).bind(tenantId, spaceId, requestId).first<{ id: string; artifact_key: string; request_sha256: string | null }>();
+      if (!winner) throw new Error("blueprint_export_idempotency_record_missing");
+      await c.env.SCRIPTS_R2.delete(key);
+      if (winner.request_sha256 !== requestSha256) return c.json({ error_code: "export_request_id_reused_with_different_input" }, 409);
+      const winnerArtifact = await c.env.SCRIPTS_R2.get(winner.artifact_key);
+      if (!winnerArtifact) return c.json({ error_code: "conformance_artifact_missing" }, 422);
+      const winnerPayload = await winnerArtifact.text();
+      await ensureBlueprintConformanceWorkflow(c.env, { id: winner.id, tenantId, key: winner.artifact_key, digest: await conformanceDigest(winnerPayload) });
+      return c.json({ jobId: winner.id, status: "testing", statusUrl: `/spaces/${spaceId}/export-template/${winner.id}`, artifactUrl: `/spaces/${spaceId}/export-template-artifact/${winner.id}` }, 202);
+    }
+  } else {
+    await c.env.PLATFORM_DB.prepare("INSERT INTO blueprint_export_jobs (id, tenant_id, space_id, artifact_key) VALUES (?, ?, ?, ?)").bind(jobId, tenantId, spaceId, key).run();
+  }
+  await ensureBlueprintConformanceWorkflow(c.env, { id: jobId, tenantId, key, digest: await conformanceDigest(payload) });
   return c.json({ jobId, status: "testing", statusUrl: `/spaces/${spaceId}/export-template/${jobId}`, artifactUrl: `/spaces/${spaceId}/export-template-artifact/${jobId}` }, 202);
 });
 
@@ -800,6 +854,23 @@ app.get("/spaces/:spaceId/export-template-artifact/:jobId", async c => {
   if (!object) throw notFound("Blueprint export artifact");
   const { blueprint } = await object.json<{ blueprint: SpaceBlueprint }>();
   return c.json({ artifact: blueprint });
+});
+
+app.get("/spaces/:spaceId/export-template", async c => {
+  const { tenantId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const requestId = c.req.query("request_id") ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) return c.json({ error_code: "invalid_export_request_id" }, 400);
+  const job = await c.env.PLATFORM_DB.prepare(`SELECT id, artifact_key FROM blueprint_export_jobs
+    WHERE tenant_id=? AND space_id=? AND request_id=?`).bind(tenantId, spaceId, requestId).first<{ id: string; artifact_key: string }>();
+  if (!job) return c.json({ found: false, requestId }, 200, { "cache-control": "private, no-store" });
+  if (!c.env.SCRIPTS_R2 || !c.env.BLUEPRINT_CONFORMANCE_WORKFLOW || !c.env.LOADER || !c.env.CONFORMANCE_SANDBOX_DO || !c.env.CONFORMANCE_EXECUTOR) return c.json({ error_code: "conformance_runtime_unavailable" }, 503);
+  const artifact = await c.env.SCRIPTS_R2.get(job.artifact_key);
+  if (!artifact) return c.json({ error_code: "conformance_artifact_missing" }, 422);
+  await ensureBlueprintConformanceWorkflow(c.env, { id: job.id, tenantId, key: job.artifact_key, digest: await conformanceDigest(await artifact.text()) });
+  const instance = await c.env.BLUEPRINT_CONFORMANCE_WORKFLOW.get(job.id);
+  return c.json({ found: true, jobId: job.id, ...await instance.status() }, 200, { "cache-control": "private, no-store" });
 });
 
 app.get("/spaces/:spaceId/export-template/:jobId", async c => {

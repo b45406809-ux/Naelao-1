@@ -45,6 +45,13 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundry).toContain("function restoreProductDraft");
     expect(foundry).toContain("function saveAuthoringDraft");
     expect(foundry).toContain("draft_json:raw");
+    expect(foundry).toContain("export_request_id");
+    expect(foundry).toContain("export_fingerprint");
+    expect(foundry).toContain("conformance_job_id");
+    expect(foundry).toContain("refreshConformanceStatus({quiet:true})");
+    expect(foundry).toContain("marketplace_listing_id:activeLifecycle.marketplace_listing_id||null");
+    expect(foundry).toContain("requestId" );
+    expect(foundry).toContain("This exact draft is certified");
     expect(foundry).toContain("Local preview values were cleared");
     expect(foundry).not.toContain("preview_values:");
     expect(foundry.toLowerCase()).toContain("provider credentials");
@@ -52,7 +59,7 @@ describe("dogfooded enterprise extensions", () => {
     expect(foundryScript).toBeTruthy();
     expect(() => new Function(foundryScript!)).not.toThrow();
     const foundryManifest = DOGFOOD_EXTENSIONS.find(manifest => manifest.id === "ext_foundry_catalog");
-    expect(foundryManifest?.releaseVersion).toBe("1.2.0");
+    expect(foundryManifest?.releaseVersion).toBe("1.3.0");
     expect(foundryManifest?.gadgets[0]?.migrations).toEqual(expect.arrayContaining([
       expect.objectContaining({ version: 2, up: expect.stringContaining("ADD COLUMN draft_json TEXT NOT NULL DEFAULT '{}'" ) }),
     ]));
