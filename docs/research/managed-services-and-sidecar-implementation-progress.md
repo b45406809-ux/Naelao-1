@@ -1,34 +1,34 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P06 synthetic phone-menu scenarios; pushed)
+## Active checkpoint — 2026-11-14 (P06 synthetic scenario response comparison; pushed)
 
-Code `7f6f4591642dd1fea064d9e9174bf410db4bf5f2` is pushed to `origin/Mcbt5s-Backup-2`; pre-push
-fetch confirmed remote tip `1d9f6d38` with no advance. The signed `bounded-phone-menu` source is now
-version 1.0.6. Its owner-triggered scenario suite sends synthetic call-start, valid/invalid DTMF and
-eligible owner-enabled Twilio speech to the exact selected active binding via `/api/phone-simulate`,
-then compares host-validated output with the preview of saved settings. It labels results synthetic.
-Endpoint source and tests confirm the binding is checked server-side and simulation creates no carrier
-call, call receipt or saved session. A response-shape assumption found during source tracing was
-corrected before commit. Telnyx remains DTMF-only; this remains a bounded IVR, not a conversational
-agent.
+Code `c7b8b45ac21badaf7719f48d56a490fd537c1f75` is pushed to `origin/Mcbt5s-Backup-2`; pre-push
+fetch confirmed remote tip `bafa3d9c` with no advance. The package-owned phone dashboard now displays
+the host-validated synthetic response beside its saved-settings preview for each scenario. Output is
+rendered with `textContent`; manifest, bundle, Canvas and channel versions advance to **1.0.7** so the
+content update cannot reuse 1.0.6. The prior `7f6f4591` checkpoint supplies exact active-line scoping,
+call-start/DTMF and eligible Twilio speech scenarios, with no carrier call or session.
 
-Local evidence: Agent SDK suite **6/6**, SDK typecheck, Agents synthetic simulation tests **2/2**,
-Agents typecheck, and `git diff --check`. No browser, carrier/provider, deployment or live acceptance
-ran. P06 remains PARTIAL for first-party catalog/provisioning, conversational streaming, complete cost
-accounting and live acceptance. Keep rollout flags disabled; preserve `infra/scripts/__pycache__/`.
+Local evidence for this slice: SDK package/dashboard suite **6/6**, SDK typecheck, and `git diff --check`;
+the prior checkpoint's host simulation tests passed **2/2**, with Agents typecheck. No browser,
+carrier/provider, deployment or live acceptance ran. P06 remains partial for explicit configuration
+publication, first-party publisher/catalog/provisioning, conversational streaming, complete cost
+accounting and live acceptance. Preserve untracked `infra/scripts/__pycache__/` and keep rollouts off.
 
-Other durable gates remain unchanged: P01/P02 await actual resource separation/ownership, current
-read-only receipts and operator-attested D1 baselines; P03/P20 policy decisions remain open; P04 lacks
-approved retention/key/jurisdiction/RPO-RTO policy and isolated/deployed drills; U06 lacks an upstream
-trusted writer-admission/drain/flush/handoff contract. These are not missing ordinary implementation
-or generic credential blockers.
+The previously recorded P05/§10.3 collaboration-posture task was already implemented in current
+source (`a3791d51`, `06250151`): validated signed defaults, Foundry authoring, owner review and explicit
+owner/admin application at expected revision 0, preserving existing policy. Focused authoring and
+activation tests pass **37/37**. No duplicate code was added. P01/P02 resource and operator baseline
+gates, P03/P20 policy decisions, P04 retention/jurisdiction/RPO-RTO and isolated recovery, and U06's
+missing upstream writer/drain/flush/handoff contract remain distinct external/policy gates.
 
-Exact next action: implement P05/§10.3's Space Template collaboration-posture handoff. Reconcile the
-current signed SpaceBlueprint schema, activation review and revisioned Space policy API. Add an optional
-signed default posture, show it to the owner, and apply only after explicit confirmation when no owner
-policy revision exists. Wire authoring and durable retry through existing contracts; test authorization,
-retries and default-off behavior without overriding owner policy or changing existing facts. Then
-continue independent P05/P06/shared-Space/S3–S9/U01–U12/P01–P24 code gaps.
+Exact next action: add draft-versus-published settings to the bounded phone menu. Its generic settings
+PATCH currently updates the row read by live handler calls, so a save immediately changes behavior.
+Persist validated draft values per exact signed installation, publish via an owner/admin-authorized
+optimistic-revision route, keep the handler on active settings only, and let the owner test a draft
+synthetically before publication. Add metadata-only revision audit plus conflict/rollback tests; a
+failed publication must leave active settings unchanged. Then continue independent P05/P06/shared-Space
+and S3–S9/U01–U12/P01–P24 gaps.
 
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge selection handoff)
 

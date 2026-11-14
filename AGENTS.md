@@ -16,35 +16,36 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 synthetic phone-menu scenarios; pushed)
+## Latest checkpoint — 2026-11-14 (P06 synthetic scenario response comparison; pushed)
 
-Code `7f6f4591642dd1fea064d9e9174bf410db4bf5f2` is pushed to
-`origin/Mcbt5s-Backup-2`; immediately before push, fetching found no remote advance from `1d9f6d38`.
-The signed `bounded-phone-menu` source is now version 1.0.6 and its owner-triggered dashboard runs
-synthetic call-start, valid/invalid DTMF and eligible owner-enabled Twilio speech through the exact
-selected active binding's `/api/phone-simulate` path. It compares host-validated responses with the
-saved-settings preview and labels results synthetic. A source check caught and fixed a response-shape
-assumption: the endpoint deliberately returns no line metadata, so the UI trusts its server-validated
-simulation response while the request remains scoped to the selected binding. Existing host tests
-prove simulation invokes neither a carrier nor durable call receipts/sessions. Telnyx remains DTMF-only;
-the example remains a bounded IVR, not a conversational agent.
+Code `c7b8b45ac21badaf7719f48d56a490fd537c1f75` is pushed to `origin/Mcbt5s-Backup-2`; the
+pre-push fetch confirmed remote tip `bafa3d9c` with no advance. The bounded phone-menu dashboard now
+shows each host-validated synthetic response beside the preview generated from saved settings. Results
+are rendered as text, and the package is version 1.0.7 so changed signed artifact content cannot reuse
+1.0.6. The prior `7f6f4591` scenario suite is still binding-scoped, owner-triggered, Twilio-policy
+limited and simulation-only; the bounded sample is not a conversational agent.
 
-Local verification: SDK dashboard/handler suite **6/6**, SDK typecheck, Agents simulation tests **2/2**,
-Agents typecheck and `git diff --check`. No browser, carrier, provider, deployment or live acceptance
-ran. P06 remains PARTIAL for first-party catalog/provisioning, a conversational streaming lifecycle,
-complete costs and live acceptance. P01/P02 resource IDs, ownership, fresh receipts and operator D1
-baselines remain evidence gates; P03/P20 policy choices remain open; P04 retention, jurisdiction,
-RPO/RTO and isolated drills remain open; U06 still lacks the upstream trusted writer-admission,
-drain/flush and generation-fenced handoff contract. Rollouts remain disabled; preserve untracked
-`infra/scripts/__pycache__/`.
+Local verification: SDK dashboard/handler suite **6/6**, SDK typecheck and `git diff --check`. The
+underlying host simulation tests passed **2/2** in the previous pushed checkpoint. No browser, carrier,
+provider, deployment or live acceptance ran. P06 remains PARTIAL for config publication lifecycle,
+first-party catalog/provisioning, conversational streaming, complete cost evidence and live acceptance.
+The first-party listing has a real publisher identity/key custody/artifact distribution contract gate,
+not a credential blocker. Rollouts remain disabled; preserve untracked `infra/scripts/__pycache__/`.
 
-Exact next action: implement the P05/§10.3 Space Template collaboration-posture handoff. Reconcile
-the current signed SpaceBlueprint schema, owner activation review and revisioned Space policy API;
-add an optional signed default posture, show it in the owner review, and apply it only after explicit
-owner confirmation when no owner policy revision exists. Wire authoring/persistence through existing
-contracts and add authorization, retry and default-off regressions. Do not overwrite owner policy or
-change existing coordination facts. Then continue independent P05/P06, shared-Space, S3–S9/U01–U12 and
-P01–P24 gaps. Fetch and safely integrate before each push; never force-push, deploy or enable rollouts.
+The stale coordination-posture next action was checked against current source and is already complete:
+`a3791d51` attaches a validated advisory coordination default, `06250151` applies reviewed singleton
+defaults, and activation shows the signed choices, requires owner/admin confirmation, writes only at
+expected revision 0, and preserves existing policies. Focused activation and authoring tests pass
+**37/37**. No duplicate implementation is needed.
+
+Exact next action: implement explicit draft-versus-published configuration for the bounded phone menu.
+Today its generic installation settings `PATCH` replaces the settings row that the live handler reads,
+so saving a menu immediately changes runtime behavior. Add durable, schema-validated per-installation
+draft state and owner/admin publication with optimistic revision fencing; keep runtime reads on the
+active published row, expose an owner preview/simulation of the draft, audit revisions without values,
+and verify failed/conflicting publication never changes active settings. Reuse exact signed install and
+existing settings authorization. Then continue independent P05/P06/shared-Space/S3–S9/U01–U12/P01–P24
+gaps. Fetch and integrate before every push; no deploy or rollout enablement.
 
 ## Previous checkpoint — 2026-11-14 (P06 owner-selected Twilio voice style)
 
