@@ -1,6 +1,33 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+## Active checkpoint — 2026-11-14 (P05 Project Knowledge grants)
+
+Code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to `origin/Mcbt5s-Backup-2`.
+Space-shared channel extensions receive no Project Knowledge by default. Space owners/admins can
+select only collections both declared by the active signed installation and currently published in
+that Project. Migration 137 stores revisioned Space/Project/installation selections and bounded
+actor-attributed history. Empty selections revoke access; uninstall clears grants and records a
+revocation event. The Project page is wired to the owner-only list/update routes. Before external
+search, the Agents host requires a Project ID, reads internal policy and intersects grants with the
+active signed manifest; malformed or unavailable state fails closed. Project-scoped behavior is
+unchanged.
+
+Local evidence: Spaces runtime/migration/authorization suites **38/38**, Agents selection/attachment
+routes **12/12**, Spaces/Agents/Shell typechecks and `git diff --check`. These are local tests only; no
+browser, deployment, live multi-user, Knowledge provider or channel acceptance ran. P05 remains
+PARTIAL for guided-template-to-Project grant handoff, Space-shared provider connection authority,
+payer/beneficiary/revocation semantics, other setup/cost requirements and live acceptance. The provider
+connection gap is a product contract, not a credential blocker. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
+
+Exact next action: trace signed SpaceBlueprint activation and resumable setup to map each created
+Project, Space-shared installation and owner-published collection. Carry explicit per-Project
+Knowledge selections from activation review into migration 137, revalidating current publication and
+active signed declaration at commit and retry; omitted selections remain empty. Add focused
+authorization, retry and revocation checks without adding a second grant ledger. Keep shared provider
+connections gated. Fetch and safely integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
 
 Code `db56ee37` (P16) and `da6245fe` (P13) are pushed to `origin/Mcbt5s-Backup-2`. P16 validates a
 current Discord-signed ephemeral URL, exact event channel and attachment path IDs, size declaration,
@@ -1455,7 +1482,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector; `6040847e` resolves all 56 Worker/environment configurations through Wrangler and compares the resolved resource bindings to the receipt inventory. The checks pass locally but preflight still rejects one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership, operator-attested per-D1 baselines and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
-| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. `d3044a66`/`d4b1652e` add an owner-only verified Workers AI credit scenario and a customer-entered planning-budget comparison; this is not an enforced/persisted cap, and provider charges/full operating total remain unknown. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle and deployed/live acceptance remain. |
+| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirements, trusted-candidate authoring, exact-pin checks, activation review and durable receipt. `6d189f45` adds default-empty per-Project Knowledge grants for Space-shared channels, owner/admin publication validation, migration-137 revision/history, Project UI and Agents-host manifest intersection; explicit empty save and uninstall revoke. The signed template activation flow does not yet collect/apply these grants. Exact-message channel access supports owner-approved text and one-image modes (PNG/JPEG/WebP, 480 KiB), with install/provider/message checks. `d3044a66`/`d4b1652e` add a verified model-credit scenario and an unpersisted, unenforced planning budget; provider charges/full USD total remain unknown. Earlier forms, multi-project groups, dependency selection/draft recovery, conformance, exact-pin import/recovery and setup compensation remain as recorded. Space-shared provider connection authority, payer/beneficiary/revocation semantics, broader lifecycle and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
@@ -1503,8 +1530,10 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    review/migration/recovery paths exist. Foundry visual setup and durable conformance/publication
    recovery are implemented locally. §10.3's owner/admin policy gate is complete in `4c458a9e`; the
    assistant read caller and fresh pre-planning context are complete in `a6c3233a`, `d9733888` and
-   `96c3da48`. The P05 signed requirement/review slice in `3007890d` is complete; collection/action
-   grants and provider scope remain open as genuine authority-contract gaps. P22's
+   `96c3da48`. The P05 signed requirement/review slice in `3007890d` is complete; `6d189f45` closes
+   direct default-empty per-Project collection grants for Space-shared channels. The guided activation
+   handoff still does not apply those choices, and Space-wide provider scope remains a genuine
+   authority-contract gap. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary

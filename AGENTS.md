@@ -16,7 +16,33 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+## Latest checkpoint — 2026-11-14 (P05 owner-controlled Project Knowledge grants)
+
+Code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to `origin/Mcbt5s-Backup-2`.
+Space-shared channel extensions now receive no Project Knowledge by default. Space owners/admins can
+select only collections that are both declared by the active signed installation and currently
+published in that Project. Migration 137 stores revisioned Space/Project/installation selections and
+bounded actor-attributed history; an empty selection revokes access, and uninstall clears grants with
+a revocation event. The Project page exposes the selection. Before every extension search, the Agents
+host requires a Project ID, reads the internal policy, and intersects grants with the active signed
+manifest; malformed or unavailable state fails closed. Project-scoped extension behavior is unchanged.
+
+Local evidence: Spaces runtime/migration/authorization suites **38/38**, Agents selection/attachment
+routes **12/12**, Spaces/Agents/Shell typechecks, and `git diff --check`. These are local tests only;
+no browser, deployment, live multi-user, Knowledge provider, or channel acceptance ran. P05 remains
+PARTIAL for guided-template-to-Project grant handoff, shared provider-connection authority/payer/
+beneficiary/revocation semantics, broader setup/cost requirements, and live acceptance. The provider
+connection gap is a product contract, not a credential blocker. Keep all rollouts disabled and preserve
+the untracked `infra/scripts/__pycache__/`.
+
+Exact next action: trace signed SpaceBlueprint activation and resumable setup to map each created
+Project, Space-shared installation, and owner-published collection. Carry explicit per-Project
+Knowledge selections from activation review into the existing migration-137 grant ledger, validating
+current publication and active signed declaration at commit/retry; omitted selections must stay empty.
+Add focused retry, revocation, and authorization coverage without creating a second grant store. Keep
+Space-wide provider connections separately gated. Fetch and safely integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
 
 P16 code `db56ee37` and P13 code `da6245fe` are pushed to `origin/Mcbt5s-Backup-2`. P16 now requires
 a current Discord-signed ephemeral URL (`ex`, `is`, `hm`), exact event channel/attachment path

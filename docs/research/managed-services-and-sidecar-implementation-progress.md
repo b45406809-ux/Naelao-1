@@ -1,6 +1,30 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
+## Active checkpoint — 2026-11-14 (cross-plan P05 Project Knowledge grants)
+
+Cross-plan code `6d189f450ee61fa9dc74227dab7f95c12b12670d` is pushed to
+`origin/Mcbt5s-Backup-2`. Space-shared channel Knowledge now has a fail-closed per-Project grant
+path: no access by default; owner/admin selections are limited to current owner-published IDs that
+the active signed installation declares; revisioned storage/history is keyed by tenant, Space,
+Project and installation; explicit empty selections and uninstall revoke access. Shell exposes the
+owner control, and the Agents host requires a Project ID and intersects the stored selection with the
+active signed manifest before search. Existing PROJECT_BOUND behavior is unchanged.
+
+Local evidence: Spaces migration/runtime/authorization tests **38/38**, Agents selection/attachment
+routes **12/12**, Spaces/Agents/Shell typechecks and `git diff --check`. No deployment, browser, live
+multi-user, provider or channel acceptance ran. This does not change the S2–S9/U01–U12 rows below:
+their supported local implementations and genuine runtime, billing, retention, authorization and
+provider-contract gates remain separate. P01/P02 are still fail-closed on remote resource evidence.
+Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+
+Exact next action: trace signed SpaceBlueprint activation and resumable setup to map created Projects,
+Space-shared installations and owner-published collections. Carry explicit per-Project Knowledge
+choices from activation review into the existing migration-137 grant ledger; revalidate publication
+and active signed declaration during commit/retry, leave omitted selections empty, and add focused
+authorization/retry/revocation tests. Keep shared provider connections separately gated. Fetch and
+safely integrate before every push.
+
+## Previous checkpoint — 2026-11-14 (P16 Discord attachment bounds; P13 queue coverage)
 
 Cross-plan code `db56ee37` (P16) and `da6245fe` (P13) is pushed to
 `origin/Mcbt5s-Backup-2`. P16's supported ephemeral Discord path now requires the current signed URL,
