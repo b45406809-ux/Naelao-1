@@ -1,40 +1,27 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (P06 Twilio speech; P01 SQLite rehearsal)
+## Active continuation — 2026-11-14 (P05 signed knowledge/action requirements)
 
-Code `eec28fafb0b16721c264409171f48041bf87d4e1` is pushed to
-`origin/Mcbt5s-Backup-2`. Signed phone-menu example v1.0.4 receives canonical provider and policy
-state from the Agents DO. The host supports one completed Twilio speech turn only when owner policy
-enables it; deterministic exact-label routing falls back on ambiguous/unmatched text. Ingress and
-simulation cap transcript input at **2,000 UTF-8 bytes**. Telnyx and disabled Twilio speech remain
-DTMF-only. The signed owner dashboard displays policy/readiness and provides a synthetic test through
-the existing response validator/renderer for the exact active installation. This closes only a
-bounded one-turn slice of P06/§9.5; it does not add conversational AI, streaming, voice quality/language
-claims, managed voice billing, or provider support.
+Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to
+`origin/Mcbt5s-Backup-2`. SpaceBlueprint now carries bounded knowledge and host-action references.
+Foundry authors from active trusted package candidates; Spaces validates exact pinned version/digest
+and signed manifest declarations before export. Activation preview displays availability and blockers,
+requires explicit owner/admin review, and persists a durable actor/time/requirements-digest receipt.
+Declarations do not grant collection access, connections or action authority. This closes only the
+signed-requirement/review slice; P05 remains PARTIAL for Space/Project collection binding, per-action
+grants/revocation, provider connection scope, broader lifecycle, full cost and live acceptance.
 
-Local evidence: Agent SDK phone-menu **5/5**, Agents phone/DO suites **44/44**, Spaces Gadget MCP
-routes **18/18**, Agents and Spaces typechecks, dashboard inline-JavaScript syntax and
-`git diff --check`. No browser, carrier, deployed Worker or live call was exercised.
+Local evidence: Agent SDK focused tests **8/8**; Spaces authoring, activation, candidate, runtime and
+migration suites **68/68**; Agent SDK/Spaces/Shell typechecks; `git diff --check`. No browser, deployed
+Worker/D1, provider or live customer acceptance ran. No credentials blocked this source work. P01
+fresh SQLite rehearsal is local only; P02 remains fail-closed on shared/unresolved resource IDs and
+missing operator receipts. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-P01's fresh SQLite rehearsal and legacy 0164 skip prerequisite repair are pushed as
-`db5a915e16965691506ba50334befa62e52cdcd4`. The actual release runner applies the full 247-migration
-manifest to fresh in-memory SQLite with foreign keys enabled; safe schema-only repair permits later
-0229 and fails closed for inconsistent applied history. Release runner tests **20/20**, deployment
-manifest tests **12/12**, both validators and `git diff --check` pass, and both workflows already run
-the migration suite. This does not establish operator-attested D1 baselines, isolated staging or
-production, data recovery/rollback or deployed acceptance.
-
-P02 remains fail-closed on one shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent
-account/time receipts and 158 missing resource observations; no Cloudflare account was queried. P03/
-P20 policy decisions and other row-specific product/contract/live gates remain below. Rollouts remain
-disabled; preserve `infra/scripts/__pycache__/`.
-
-Exact next action: implement the P05 signed SpaceBlueprint knowledge and host-action requirement
-contract through SDK validation, Foundry authoring/export, persistence and explicit owner activation
-review. Reuse existing package knowledge and host capability declarations. Declarations must not
-create provider connections or grant collection/action access. Continue remaining P01–P24 and
-S2–S9/U01–U12 gaps.
+Exact next action: continue P04 disaster recovery by mapping archived D1/DO records and R2 object
+prefixes to current write callers; implement the next missing enumerable local coverage path with
+checksum, partial-retry and non-overwrite verification. Preserve archive limits and merge semantics
+until retention/RPO/RTO policy is approved. Continue P01–P24 and S2–S9/U01–U12.
 
 ## Previous continuation — 2026-11-14 (template coordination defaults completed locally)
 
@@ -1153,7 +1140,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P02 | PARTIAL | Resource inventory/preflight is local and fail-closed. Code `174f092c` also verifies cross-script Durable Object targets have a named Worker owner in the same environment; `368a2f23` adds the GET-only exact-resource receipt collector. The preflight clears map freshness but still rejects a shared D1, eleven shared KV IDs, unresolved `naelao-calls`, absent account/time evidence and 158 missing read-only receipts. Actual resource separation/ownership and deployed isolation remain external inventory/evidence gates. |
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include Space-local extension artifacts with checksum-checked partial retry; cross-Space signed package closure import is implemented under P24. Code `849bf78a` adds rolled-back per-table merge preview counts and durable applied skip counts; `6fccacaa` adds the owner/admin full-export caller with session-stored request-ID recovery. Archive caps, cross-service coverage, key/legal/jurisdiction policy and isolated/live recovery remain; archive envelopes stay bound to the original tenant/Space. |
-| P05 | PARTIAL | `50dd1fa4` adds customer-form preview; `bf55151a` multi-project setup groups; `ed924c83`/`55d67648` trusted dependency selection and package feature disclosure; `56b23a31` persists/restores bounded Space-scoped authoring drafts; `236a2e2b` refreshes the activation usage projection while total cost stays unknown. Foundry `1.3.0` persists conformance/publication lifecycle: `34c7da23` host request/job/listing idempotency and owner status recovery, `64669caf` reload repair, `cf2d28f7` terminal status correction. `5e0c6501` adds owner-approved scoped text handles. `536853b9`/`b646ec16` connect activation to exact-pin dependency import; `edf08814` resumes install after reload; `a75c0862` provider cleanup; `c1c5e0d4` Telegram/WhatsApp setup compensation. Knowledge/action authoring has no matching SpaceBlueprint/runtime contract; complete provider setup, broader lifecycle, verified rates/total cost, image/audio/binary extension access and deployed/live acceptance remain. |
+| P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, scoped text handles, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost, media access and deployed/live acceptance remain. |
 | P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, cost observations and dated host-catalog list-rate estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn behind owner policy, exact option-label routing and synthetic installed-handler test; Telnyx remains DTMF-only. Existing release/installation binding and phone response validator remain authoritative. This is not streaming or an AI voice agent. Customer lifecycle, voice catalogs/quality tests, managed billing, invoices and live provider/region acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, task-authorized video-frame questions are implemented locally in `87374fc2`; deployed Container and Workers AI/provider acceptance remain. |

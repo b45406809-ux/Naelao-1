@@ -16,48 +16,30 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P06 Twilio speech turn and P01 SQLite rehearsal)
+## Latest checkpoint — 2026-11-14 (P05 signed knowledge/action requirements)
 
-Code `eec28fafb0b16721c264409171f48041bf87d4e1` is pushed to
-`origin/Mcbt5s-Backup-2`. The signed bounded phone menu is version **1.0.4**. Its host now supplies
-the authoritative provider and phone-policy state to the handler. An owner-enabled Twilio line can
-collect one completed speech turn and route only one exact configured option-label phrase; ambiguous
-or unmatched text takes the fallback. Transcript bodies are capped at 2,000 UTF-8 bytes. Telnyx and
-disabled Twilio speech remain DTMF-only. The owner dashboard displays the policy state and can run
-the handler through the existing synthetic test path on the exact active signed installation. No
-carrier commands, phone calls, AI calls, streaming, or call sessions are created by tests.
+Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. SpaceBlueprint now carries bounded, validated knowledge and
+host-action requirement references. Foundry authors them from the active trusted package candidates;
+the server checks exact pinned version/digest and manifest declarations before signing the artifact.
+Activation preview shows availability and blockers, requires explicit owner/admin review, and stores a
+durable actor/time/requirements-digest receipt. Declarations do not grant collection access, provider
+connections or action authority. P05 remains PARTIAL: Space/Project collection selection and binding,
+per-action grants/revocation, provider connection scope, broader lifecycle, full cost and live journey
+acceptance are still open.
 
-Local evidence: Agent SDK phone-menu tests **5/5**, Agents phone suites **44/44**, Spaces Gadget MCP
-route suite **18/18**, Agents and Spaces typechecks, dashboard inline JavaScript syntax, and
-`git diff --check`. The UI preview and host simulation remain local evidence; no browser, carrier,
-deployed Worker, or live-call acceptance ran. This closes only the bounded Twilio one-turn speech slice
-of P06/§9.5. P06 remains PARTIAL for conversational voice lifecycle, supported language/quality
-evidence, broader dashboards, billing/invoice reconciliation, provider/region acceptance and live
-operations.
+Local evidence: Agent SDK focused tests **8/8**, Spaces focused authoring/activation/package/runtime/
+migration tests **68/68**, Agent SDK/Spaces/Shell typechecks, and `git diff --check`. These are local
+tests and static checks; no browser, deployed Worker/D1, provider or live customer acceptance ran.
+No live credential blocked this work. P01 SQLite rehearsal remains local; P02 still fails closed on
+shared/unresolved resource IDs and absent operator receipts. Keep rollouts disabled and preserve
+intentionally untracked `infra/scripts/__pycache__/`.
 
-P01 local fresh-install rehearsal and the legacy migration `0164` skip prerequisite repair are pushed
-as `db5a915e16965691506ba50334befa62e52cdcd4`. SQLite applies the full **247** migration manifest
-through the actual release runner with foreign keys enabled; the reviewed skip installs only the
-schema needed by later migration `0229`, records repair metadata, and fails closed on inconsistent
-applied history. Release migration tests pass **20/20**, deployment-manifest tests **12/12**, and both
-validators pass. Both staging and production preflights already invoke these tests. This is local
-SQLite evidence only; operator-attested D1 baselines, actual environment isolation, rollback/recovery
-and deployed acceptance remain open.
-
-P02 remains fail-closed on the configured shared D1, eleven shared KV IDs, unresolved `naelao-calls`,
-missing account/time receipts and 158 missing resource observations; no Cloudflare account was queried.
-P13's generic replay contract remains blocked by absent operator identity/route, queue-specific scope,
-payload retention/redaction and duplicate-side-effect policy. These are external inventory or
-product/route contracts, not reasons to label unwritten code credential-blocked. U11 opted-in email
-remains locally implemented; invoices, provider-billed idle/CPU-size sources and approved spend
-enforcement remain open. Rollouts stay disabled. Preserve intentionally untracked
-`infra/scripts/__pycache__/`.
-
-Exact next action: continue P05 guided microapp setup by adding a signed SpaceBlueprint contract for
-owner-selected knowledge and host action requirements, with SDK validation, Foundry authoring/export,
-activation review and reachable owner-approved setup. Reuse existing extension-bundle knowledge and
-host-mediated capability contracts; do not infer collection access, create provider connections, or
-grant tool authority from a declaration. Then continue the remaining S2–S9/U01–U12 and P01–P24 gaps.
+Exact next action: continue P04 disaster recovery by comparing the current archive's captured D1/DO
+records and R2 object prefixes with their write callers. Implement the next missing enumerable local
+coverage path with checksum, partial-retry and non-overwrite tests; leave snapshot limits and merge
+semantics unchanged until a policy decision supports changing them. Then continue P01–P24 and
+S2–S9/U01–U12, keeping provider/live acceptance separate from local evidence.
 
 ## Previous checkpoint — 2026-11-14 (signed template coordination defaults)
 

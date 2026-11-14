@@ -1,43 +1,29 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint plans: P06 speech and P01 migration rehearsal)
+## Active continuation — 2026-11-14 (P05 signed knowledge/action requirements)
 
-Platform voice code `eec28fafb0b16721c264409171f48041bf87d4e1` is pushed to
-`origin/Mcbt5s-Backup-2`. Signed phone-menu example v1.0.4 now receives canonical provider and
-speech-policy state from the Agents DO. Twilio may gather one completed transcript only under the
-owner's existing speech-input policy; the example routes one exact option-label phrase and uses its
-fallback for ambiguity. Ingress and simulation cap speech at **2,000 UTF-8 bytes**. Telnyx remains
-DTMF-only. The owner microapp surfaces the setting, local preview and owner-only synthetic test for
-the exact active installation. This is a P06/§9.5 feature slice, not conversational AI, streaming or
-voice-provider acceptance.
+Code `3007890d7df2f51d51ff23954281bcfbe9270e96` is pushed to
+`origin/Mcbt5s-Backup-2`. SpaceBlueprint now carries bounded, SDK-validated knowledge and host-action
+requirement references. Foundry authors them from active trusted package candidates; the Spaces export
+route checks each reference against the exact pinned version, manifest digest and package declaration
+before signing. Target activation preview reports availability/blockers, requires explicit owner/admin
+review, and persists a durable actor/time/requirements-digest receipt. These references do not grant
+collection access, provider connections or action authority.
 
-Local evidence: Agent SDK phone-menu **5/5**, Agents phone/DO suites **44/44**, Spaces Gadget MCP
-routes **18/18**, Agents and Spaces typechecks, dashboard inline-JavaScript syntax and
-`git diff --check`. These are local package/Worker tests; no browser, carrier, deployed Worker or live
-call ran.
+Local evidence: Agent SDK focused tests **8/8**; Spaces authoring, activation, package-candidate,
+runtime and migration suites **68/68**; Agent SDK/Spaces/Shell typechecks; `git diff --check`. No
+browser, deployed Worker/D1, provider or live customer acceptance ran. P05 remains PARTIAL: collection
+selection/binding and per-action grants/revocation lack a Space-scope contract; provider connection
+scope, broader lifecycle, verified total cost, media access and live acceptance remain. P01 migration
+rehearsal is local only. P02 remains fail-closed on shared/unresolved resource IDs and missing operator
+receipts. No credentials blocked this implementation; rollouts stay disabled and preserve
+`infra/scripts/__pycache__/`.
 
-P01 migration rehearsal and 0164 legacy-skip repair are pushed as
-`db5a915e16965691506ba50334befa62e52cdcd4`. The full 247-migration manifest passes the actual
-release runner against in-memory SQLite with foreign keys enabled. The skip installs only schema
-needed by dependent 0229, records its repair metadata, and fails closed on inconsistent applied
-history. Release runner tests **20/20**, deployment-manifest tests **12/12**, both validators and
-`git diff --check` pass; both release preflights already run the expanded suite. This is local SQLite
-rehearsal only. Operator-attested per-environment D1 baselines, actual resource isolation, rollback/
-recovery and deployed acceptance are still absent.
-
-P02's local receipt collector is implemented, but the configured shared D1, eleven shared KV IDs,
-unresolved `naelao-calls`, missing account/timestamp receipts and 158 missing observations remain
-fail-closed. No Cloudflare account was queried. P13 replay remains a genuine operator identity/route,
-queue-scope, retention/redaction and duplicate-effect contract gap. U11 email remains local; invoice
-reconciliation, provider-billed idle/CPU-size inputs, approved spend enforcement and provider/inbox
-acceptance remain open. Preserve intentionally untracked `infra/scripts/__pycache__/`; rollouts stay
-disabled.
-
-Exact next action: implement the P05 signed SpaceBlueprint knowledge and host-action requirement
-contract through SDK validation, Foundry authoring/export and owner activation review. Use existing
-package knowledge/host capability declarations and an explicit owner approval caller; a declaration
-must not itself grant collection or action access. Continue all other P01–P24 and S2–S9/U01–U12.
+Exact next action: continue P04 by mapping archived D1/DO records and R2 object prefixes to current
+write callers, then implement the next missing enumerable local coverage path with checksum, partial-
+retry and non-overwrite verification. Preserve archive size and merge semantics until retention/RPO/
+RTO policy is approved. Continue S2–S9/U01–U12 and all other P01–P24 code gaps.
 
 ## Previous continuation — 2026-11-14 (signed template coordination defaults)
 
