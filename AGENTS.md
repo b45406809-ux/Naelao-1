@@ -16,37 +16,37 @@ a new session, read `docs/research/managed-services-and-sidecar-runtime-plan.md`
 actual branch, worktree and uncommitted changes; then resume from the exact next unfinished action in
 the records.
 
-## Latest checkpoint — 2026-11-14 (P04 task replay safety)
+## Latest checkpoint — 2026-11-14 (P04 recovery; S4 runtime caller reachability)
 
-Code `501b1526` is pushed to `origin/Mcbt5s-Backup-2` from
-`autonomous-managed-services-20261111`. Space archive restore now converts only newly inserted
-`pending`/`in_progress` tasks to `blocked` with `REQUIRES_HUMAN_INTERVENTION`, clears archived claimant
-and lease values, and records the preview estimate and actual count in the durable restore receipt.
-The task lease route rejects blocked/intervention-required and terminal tasks. Existing destination
-rows and archived terminal states remain intact. The owner archive preview and completion notice
-explain this safety action.
+P04 archive safety code `501b1526` and docs checkpoint `8c5fb4e9` are pushed. Restore pauses only newly
+inserted active tasks for human review, clears stale leases, records preview/receipt counts and rejects
+blocked/intervention-required or terminal task claims. Existing destination and archived terminal
+state are preserved. Archive tests **17/17**, task coordination **5/5**, Shell archive panel **2/2**,
+Spaces/Shell typechecks and `git diff --check` pass locally. Provider/deployed recovery remains untested.
 
-Verification: Space data-operations/archive **17/17**, task coordination **5/5**, Shell archive panel
-**2/2**, Spaces and Shell typechecks, and `git diff --check` pass. Tests use local SQLite/Worker/R2
-mocks; no browser, deployed D1/R2, isolated recovery drill, provider or live acceptance ran. Earlier
-P04 grant-restore safety `75feeabb` and uninstall-preservation regression `452345fd` remain pushed.
-P04 stays PARTIAL for other service state, private inbound communications, retention/key/jurisdiction
-policy, RPO/RTO, and isolated/deployed recovery. P05's handoff commits `e9be8aee` and `38f50b41` remain
-pushed; provider-scope and broader lifecycle/cost gaps remain. Keep rollouts disabled and preserve
-`infra/scripts/__pycache__/`.
+A fresh caller trace found that Shell project runtime-profile and retention APIs were implemented in
+Agents but Router's `/spaces/*` fallback sent them to Spaces. Code `11251168` adds explicit authenticated
+routing for main/sidecar runtime profiles, reset, execution limits, transfer receipts and workspace
+retention. Router route tests **4/4**, typecheck and diff check pass. No deployed or live request ran.
 
-Exact next action: continue S4/MS12 by adding an owner/admin-authorized, versioned project-main service
-restart-recipe registry with bounded schema, durable audit, a reachable API and Shell editor. Treat
-recipes as inert configuration until the supported runtime adapter can execute and verify them; do not
-add secrets or claim process recovery. Test scope, validation, revision conflicts and disabled-runtime
-presentation. Then continue the next S4/S5 implementation gaps in dependency order. Fetch before each
-checkpoint push and never force-push.
+P04 remains PARTIAL for other service stores, private inbound data, retention/key/jurisdiction policy,
+RPO/RTO and isolated/deployed recovery. S4 remains PARTIAL because the Cloudflare runtime adapter,
+private-state fallback, restart execution, snapshot purge and live acceptance are unavailable or
+unverified. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement S4/MS12 project-main service restart-recipe configuration. Add a new
+expand-only migration for a project-scoped, versioned recipe set and actor-attributed audit; expose
+owner/admin-only read/write routes with compare-and-set revisions; render an editor in the existing
+project runtime panel. Bound recipe count, IDs, labels, relative working directory, argv tokens and
+manual verification notes; store no environment values or credentials. Keep recipes inert and show
+that execution/health verification is unavailable while the runtime adapter is unsupported. Test
+scope, malformed/unsafe values, revision conflicts and disabled-runtime display. Fetch and safely
+integrate before every push.
 
 The user has authorized coherent checkpoint commits and pushes to `origin/Mcbt5s-Backup-2`. After
 meaningful verified slices, fetch that branch, safely integrate any advance, commit the checkpoint,
 and push without force. Do not deploy, purchase services, or enable rollouts; preserve all untracked
 work, including `infra/scripts/__pycache__/`.
-
 ## Previous checkpoint — 2026-11-14 (P05 guided Project Knowledge handoff)
 
 Guided activation handoff code `e9be8aee` and its missing-Project-ID recovery fix `38f50b41` are

@@ -1,28 +1,32 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P04 task replay safety)
+## Active checkpoint — 2026-11-14 (P04 recovery; S4 runtime caller reachability)
 
-Code `501b1526` is pushed to `origin/Mcbt5s-Backup-2`. Archive restore pauses only newly inserted
-pending/in-progress tasks for human review, clears stale leases, records preview and actual counts,
-and rejects unsafe claims. Existing destination state and archived terminal states are preserved. The
-Shell archive UI shows the restore behavior. Earlier grant-restore safety `75feeabb`, extension
-uninstall restore regression `452345fd`, and P05 guided Knowledge handoff `e9be8aee`/`38f50b41` remain
-pushed.
+P04 archive safety code `501b1526` and docs `8c5fb4e9` are pushed. Restore pauses only newly inserted
+active tasks for human review, clears stale leases, records preview and durable receipt counts, and
+rejects blocked/intervention-required or terminal claims. Existing destination and archived terminal
+state are preserved. Earlier grant safety `75feeabb` and extension-uninstall regression `452345fd`
+remain pushed.
 
-Local evidence: archive/data-operations **17/17**, task coordination **5/5**, Shell archive panel **2/2**,
-Spaces/Shell typechecks and `git diff --check`. These are local SQLite/Worker/UI checks only; no
-browser, deployed R2/D1, isolated restore drill, provider or live acceptance ran. P04 remains PARTIAL
-for other service stores, private inbound communications, retention/key/jurisdiction policy, RPO/RTO
-and deployed recovery. P05 remains PARTIAL for general package lifecycle, complete cost and setup,
-Space-wide provider connection authority/payer/revocation semantics and live acceptance. P01/P02 and
-P03/P20 external/policy gates remain as recorded below. Rollouts stay disabled; preserve
-`infra/scripts/__pycache__/`.
+A source-to-caller trace found that the Shell project's runtime profile and retention APIs lived in
+Agents, while Router's `/spaces/*` catch-all sent those requests to Spaces. Router code `11251168` now
+routes main/sidecar profiles, reset, execution limits, transfer receipts and workspace retention to
+Agents with verified user identity and an internal token. Local Router routing tests **4/4**, typecheck
+and `git diff --check` pass; no deployment/live request ran.
 
-Exact next action: continue S4/MS12 with an owner/admin-authorized, versioned project-main service
-restart-recipe registry, bounded schema validation, durable audit, a reachable API and Shell editor.
-Keep recipes inert until a supported runtime adapter can execute and verify them; add no secrets and do
-not claim process recovery. Test scope, validation, revision conflicts and disabled-runtime UI, then
-continue S4/S5 implementation gaps before the later voice and shared-Space work. Fetch and safely
+P04 remains PARTIAL for other service stores, private inbound data, retention/key/jurisdiction policy,
+RPO/RTO and isolated/deployed recovery. P05 remains PARTIAL for broader lifecycle/setup/cost,
+Space-wide provider connection authority/payer/revocation and live acceptance. S4 remains PARTIAL for
+runtime execution, private-state fallback, restart execution and physical snapshot purge. Rollouts
+stay disabled; preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement S4/MS12 project-main service restart-recipe configuration. Add a new
+expand-only migration for a project-scoped, versioned recipe set and actor-attributed audit; expose
+owner/admin-only read/write routes with compare-and-set revisions; render an editor in the existing
+project runtime panel. Bound recipe count, IDs, labels, relative working directory, argv tokens and
+manual verification notes; store no environment values or credentials. Keep recipes inert and show
+that execution/health verification is unavailable while the runtime adapter is unsupported. Test
+scope, malformed/unsafe values, revision conflicts and disabled-runtime display. Fetch and safely
 integrate before every push.
 
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
@@ -1551,6 +1555,10 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
 | P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update and exact historical rollback receipts (`c7412170`, `0d121ab2`), runtime-work admission/drain (`15a04f7e`), authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`), and installed-package trust warning/revocation-aware Shell actions (`f3a04010`, `ad3888eb`) are local. Cross-tenant artifact rights, broader schema/data migration and rollback, proactive alert policy, scanning, retention and live acceptance remain. |
+
+## S4 source-to-caller correction
+
+`11251168` closes a concrete Router gap found during the active checkpoint: authenticated Shell paths for main runtime profiles, sidecar profile/reset/execution settings, artifact-transfer receipts and workspace retention now reach their Agents-owned handlers before the generic Spaces catch-all. Local Router routing tests pass **4/4**; this establishes only mocked local reachability. Runtime execution and provider acceptance remain disabled/unverified. The next exact S4 action is the versioned inert restart-recipe configuration task recorded above.
 
 ## Requirement queue
 
