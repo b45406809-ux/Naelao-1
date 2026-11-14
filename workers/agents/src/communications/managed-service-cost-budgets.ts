@@ -1,6 +1,6 @@
 import type { AgentsEnv } from "../index.js";
 import type { CommunicationScope } from "./core.js";
-import { readBoundedResponseJson } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 type Provenance = "operator_imported" | "provider_api_observed";
 type CostBudgetInput = {
@@ -132,8 +132,10 @@ export async function sweepManagedServiceCostBudgetAlerts(
 ):Promise<{scanned:number;alertsCreated:number;thresholdsReset:number;deferred:number}>{
   if(!Number.isInteger(limit)||limit<1||limit>250)throw new Error("managed_service_cost_budget_sweep_limit_invalid");
   const windowEnd=now.toISOString(),windowStart=new Date(now.getTime()-30*86_400_000).toISOString();
-  const due=await env.PLATFORM_DB.prepare(`SELECT id,tenant_id,space_id,project_id,provider,service_id,provenance,currency,
-      limit_provider_cost_micros,updated_at FROM managed_service_cost_budgets ORDER BY updated_at,id LIMIT ?`)
+  const due=await env.PLATFORM_DB.prepare(`SELECT b.id,b.tenant_id,b.space_id,b.project_id,b.provider,b.service_id,b.provenance,b.currency,
+      b.limit_provider_cost_micros,b.updated_at FROM managed_service_cost_budgets b
+      LEFT JOIN managed_service_cost_budget_alert_state s ON s.budget_id=b.id
+      ORDER BY COALESCE(s.updated_at,''),b.updated_at,b.id LIMIT ?`)
     .bind(limit).all<CostBudgetRow>();
   const result={scanned:0,alertsCreated:0,thresholdsReset:0,deferred:0};
   for(const budget of due.results){
@@ -203,7 +205,7 @@ export async function listManagedServiceCostBudgetAlerts(env:AgentsEnv,scope:Com
     pushDeliveryStatus:typeof row.push_delivery_status==="string"?row.push_delivery_status:null}));
 }
 
-type CostAlertDeliveryRow={id:string;alert_id:string;tenant_id:string;space_id:string;user_id:string;attempts:number;
+type CostAlertDeliveryRow={id:string;alert_id:string;tenant_id:string;space_id:string;project_id:string|null;user_id:string;attempts:number;
   provider:string;service_id:string;currency:string;observed_provider_cost_micros:number;limit_provider_cost_micros:number;acknowledged_at:string|null};
 
 /** Deliver dashboard crossings to the configuring user's opted-in browser subscriptions.
@@ -227,7 +229,7 @@ export async function sweepManagedServiceCostBudgetAlertDeliveries(
       AND ((status='pending' AND next_at<=?) OR (status='running' AND lease_until<=?))`)
       .bind(token,new Date(now.getTime()+60_000).toISOString(),at,candidate.id,at,at).run();
     if(!claimed.meta.changes){result.deferred++;continue;}
-    const row=await env.PLATFORM_DB.prepare(`SELECT d.id,d.alert_id,d.tenant_id,d.space_id,d.user_id,d.attempts,
+    const row=await env.PLATFORM_DB.prepare(`SELECT d.id,d.alert_id,d.tenant_id,d.space_id,d.user_id,d.attempts,a.project_id,
         a.provider,a.service_id,a.currency,a.observed_provider_cost_micros,a.limit_provider_cost_micros,a.acknowledged_at
       FROM managed_service_cost_budget_alert_deliveries d JOIN managed_service_cost_budget_alerts a ON a.id=d.alert_id
       WHERE d.id=? AND d.lease_token=?`).bind(candidate.id,token).first<CostAlertDeliveryRow>();
@@ -237,11 +239,21 @@ export async function sweepManagedServiceCostBudgetAlertDeliveries(
         last_error='already_acknowledged',updated_at=? WHERE id=? AND lease_token=?`).bind(at,row.id,token).run();
       result.suppressed++;continue;
     }
-    const stillAuthorized=await env.PLATFORM_DB.prepare(`SELECT 1 AS ok FROM orgs o JOIN spaces s ON s.tenant_id=o.id
+    let stillAuthorized=!!await env.PLATFORM_DB.prepare(`SELECT 1 AS ok FROM orgs o JOIN spaces s ON s.tenant_id=o.id
       WHERE o.id=? AND o.status='active' AND s.id=? AND s.status='active' AND
         (o.owner_id=? OR EXISTS(SELECT 1 FROM org_members m WHERE m.org_id=o.id AND m.user_id=? AND m.role IN ('owner','admin') AND m.joined_at IS NOT NULL)
           OR EXISTS(SELECT 1 FROM space_members sm WHERE sm.space_id=s.id AND sm.end_user_id=? AND sm.role IN ('owner','admin') AND sm.suspended_at IS NULL)) LIMIT 1`)
       .bind(row.tenant_id,row.space_id,row.user_id,row.user_id,row.user_id).first<{ok:number}>();
+    if(!stillAuthorized&&row.project_id&&env.SPACES_WORKER){
+      try{
+        const response=await env.SPACES_WORKER.fetch(new Request(`http://spaces/spaces/${encodeURIComponent(row.space_id)}/projects/${encodeURIComponent(row.project_id)}/assistant-access?user_id=${encodeURIComponent(row.user_id)}`,{
+          headers:{"x-naelao-tenant-id":row.tenant_id,"x-naelao-user-id":row.user_id,"x-naelao-role":"product_end_user",
+            "x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,row.tenant_id)},
+        }));
+        const access=await response.json<{effective_role?:string}>().catch(()=>({} as {effective_role?:string}));
+        stillAuthorized=response.ok&&access.effective_role==="owner";
+      }catch{stillAuthorized=false;}
+    }
     if(!stillAuthorized){
       await env.PLATFORM_DB.prepare(`UPDATE managed_service_cost_budget_alert_deliveries SET status='suppressed',lease_token=NULL,lease_until=NULL,
         last_error='recipient_access_revoked',updated_at=? WHERE id=? AND lease_token=?`).bind(at,row.id,token).run();

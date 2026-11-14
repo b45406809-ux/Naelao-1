@@ -9,6 +9,19 @@ import { recordProviderApiCostObservation } from "./managed-service-cost-observa
 import { registerCommunicationRoutes } from "./routes.js";
 
 describe("managed-service provider-cost threshold notices", () => {
+  it("rotates the bounded alert sweep through budgets beyond its per-run limit", async () => {
+    const f=fixture();
+    for(let index=0;index<105;index++){
+      await setManagedServiceCostBudget(f.env,scope,{provider:"test-provider",serviceId:`service-${String(index).padStart(3,"0")}`,
+        provenance:"provider_api_observed",currency:"USD",limitProviderCostMicros:1_000});
+    }
+    const first=await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"),50);
+    const second=await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:01:00.000Z"),50);
+    const third=await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:02:00.000Z"),50);
+    expect([first.scanned,second.scanned,third.scanned]).toEqual([50,50,50]);
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM managed_service_cost_budget_alert_state").get()).toEqual({count:105});
+  });
+
   it("keeps the owner-selected rolling threshold scoped by space, source and currency", async () => {
     const f = fixture();
     await recordProviderApiCostObservation(f.db, {
@@ -259,5 +272,38 @@ describe("managed-service provider-cost threshold notices", () => {
     expect(notify).not.toHaveBeenCalled();
     expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries").get())
       .toEqual({status:"suppressed",last_error:"recipient_access_revoked"});
+  });
+
+  it("rechecks exact project-owner authority before delivering project-scoped alerts", async () => {
+    const f=fixture();
+    const projectScope={...scope,projectId:"project-costs"};
+    for(const serviceId of ["project-service-a","project-service-b"]){
+      await recordProviderApiCostObservation(f.db,{tenantId:scope.tenantId,spaceId:scope.spaceId,projectId:projectScope.projectId,
+        provider:"telnyx",serviceId,operationRef:`${serviceId}-operation`,accountRef:"private-account-ref",usageKind:"sms",
+        quantityUnit:"message",quantityMicros:1_000_000,providerCost:"0.010000",currency:"USD",
+        periodStart:"2026-11-12T01:00:00.000Z",sourceApi:"telnyx.messages.get",observedAt:"2026-11-12T01:01:00.000Z"});
+      await setManagedServiceCostBudget(f.env,projectScope,{provider:"telnyx",serviceId,provenance:"provider_api_observed",
+        currency:"USD",limitProviderCostMicros:5_000});
+    }
+    await sweepManagedServiceCostBudgetAlerts(f.env,new Date("2026-11-12T02:00:00.000Z"));
+    await f.db.prepare("UPDATE orgs SET owner_id='another-user' WHERE id=?").bind(scope.tenantId).run();
+    await f.db.prepare("INSERT INTO org_members(org_id,user_id,role,joined_at) VALUES(?,?,?,?)").bind(scope.tenantId,"another-user","owner","now").run();
+    await f.db.prepare("UPDATE space_members SET role='member' WHERE space_id=? AND end_user_id=?").bind(scope.spaceId,scope.userId).run();
+    let projectRole="owner";
+    f.fetch.mockImplementation(async request=>request.url.includes("assistant-access")
+      ?Response.json({effective_role:projectRole})
+      :Response.json({preferences:{enabled:{email:true,phone:false}}}));
+    f.env.NOTIFICATIONS_WORKER={fetch:vi.fn(async()=>{
+      projectRole="viewer";
+      return Response.json({delivered:true,channel:"web_push",devices:1});
+    })} as unknown as Fetcher;
+
+    const deliveryResult=await sweepManagedServiceCostBudgetAlertDeliveries(f.env,new Date("2026-11-12T02:01:00.000Z"));
+    expect(deliveryResult).toMatchObject({scanned:2,delivered:1,suppressed:1,deferred:0});
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch.mock.calls.every(([request])=>String(request.url).includes(`/projects/${projectScope.projectId}/assistant-access?user_id=${scope.userId}`))).toBe(true);
+    expect(f.env.NOTIFICATIONS_WORKER.fetch).toHaveBeenCalledTimes(1);
+    expect(f.db.db.prepare("SELECT status,last_error FROM managed_service_cost_budget_alert_deliveries ORDER BY id").all())
+      .toEqual(expect.arrayContaining([{status:"delivered",last_error:null},{status:"suppressed",last_error:"recipient_access_revoked"}]));
   });
 });
