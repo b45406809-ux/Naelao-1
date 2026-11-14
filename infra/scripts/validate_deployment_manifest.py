@@ -123,6 +123,25 @@ def validate_data(
 
         if phase_ids[:2] != ["preflight", "migrations_and_schema_probes"]:
             errors.append(f"{environment} release must begin with preflight then migrations and schema probes")
+        migration_job = phase_jobs.get("migrations_and_schema_probes")
+        migration_body = _workflow_job_body(workflow, migration_job) if migration_job else ""
+        runner = "infra/scripts/release_migrations.py"
+        runner_position = migration_body.find(runner)
+        if runner_position < 0:
+            errors.append(f"{environment} migration phase must invoke the durable D1 release migration runner")
+        else:
+            runner_command = migration_body[runner_position:]
+            for argument in (
+                f"--environment {environment}",
+                "--database-id",
+                f"--baseline infra/release/baselines/{environment}.json",
+                "--wrangler",
+            ):
+                if argument not in runner_command:
+                    errors.append(f"{environment} migration runner must pass {argument}")
+            schema_probe = re.search(r'npx wrangler d1 execute [^\n]*--command=[^\n]*--remote', runner_command)
+            if not schema_probe:
+                errors.append(f"{environment} migration phase must run remote D1 schema probes after the migration runner")
         if environment == "production":
             components = _components_for(phases, "workers")
             match = re.search(r"WORKERS=\((.*?)\)", workflow, re.DOTALL)
@@ -192,15 +211,8 @@ def _components_for(phases: list[Any], phase_id: str) -> list[str]:
 
 
 def _workflow_job_needs(workflow: str, job: str) -> set[str]:
-    lines = workflow.splitlines()
-    start = next((index for index, line in enumerate(lines) if line == f"  {job}:"), None)
-    if start is None:
-        return set()
-    end = next(
-        (index for index in range(start + 1, len(lines)) if re.fullmatch(r"  [a-zA-Z0-9_-]+:", lines[index])),
-        len(lines),
-    )
-    for line in lines[start + 1 : end]:
+    body = _workflow_job_body(workflow, job)
+    for line in body.splitlines()[1:]:
         match = re.match(r"^    needs:\s*(.*)$", line)
         if match:
             value = match.group(1).strip()
@@ -208,6 +220,18 @@ def _workflow_job_needs(workflow: str, job: str) -> set[str]:
                 return {item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()}
             return {value.strip("\"'")} if value else set()
     return set()
+
+
+def _workflow_job_body(workflow: str, job: str) -> str:
+    lines = workflow.splitlines()
+    start = next((index for index, line in enumerate(lines) if line == f"  {job}:"), None)
+    if start is None:
+        return ""
+    end = next(
+        (index for index in range(start + 1, len(lines)) if re.fullmatch(r"  [a-zA-Z0-9_-]+:", lines[index])),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
 
 
 def validate(root: Path = ROOT) -> list[str]:

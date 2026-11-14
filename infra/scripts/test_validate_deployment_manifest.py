@@ -110,6 +110,36 @@ class DeploymentManifestTests(unittest.TestCase):
         errors = validate_data(manifest, schema, out_of_preflight, workers)
         self.assertIn("production preflight does not test the durable D1 release migration runner", errors)
 
+    def test_requires_the_deployment_phase_to_invoke_the_durable_migration_runner(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows["production"] = workflows["production"].replace(
+            "python3 infra/scripts/release_migrations.py \\",
+            "echo skipped production migrations",
+        )
+        errors = validate_data(manifest, schema, workflows, workers)
+        self.assertIn("production migration phase must invoke the durable D1 release migration runner", errors)
+
+    def test_migration_runner_must_use_its_environment_baseline_before_schema_probes(self):
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(SCHEMA_MANIFEST_PATH.read_text(encoding="utf-8"))
+        workflows = {
+            "staging": (ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8"),
+            "production": (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8"),
+        }
+        workers = {path.parent.name for path in (ROOT / "workers").glob("*/wrangler.toml")}
+        workflows["staging"] = workflows["staging"].replace(
+            "--baseline infra/release/baselines/staging.json",
+            "--baseline infra/release/baselines/production.json",
+        )
+        errors = validate_data(manifest, schema, workflows, workers)
+        self.assertIn("staging migration runner must pass --baseline infra/release/baselines/staging.json", errors)
+
     def test_health_probe_domains_must_match_current_worker_configuration(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         changed = copy.deepcopy(manifest)
