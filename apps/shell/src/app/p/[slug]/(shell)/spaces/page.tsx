@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, getSpaceTemplateSetupDraft, saveSpaceTemplateSetupDraft, listSpaceTemplateInstallations, previewSpaceTemplateSetupUpdate, applySpaceTemplateSetupUpdate, previewSpaceSharedExtensionImport, importSpaceSharedExtension, previewSpaceSharedExtensionInstall, installSpaceSharedExtension, type SpaceTemplateInstallationRecord, type SpaceTemplateActivationPreview, type SpaceTemplateSetupMigrationPreview, type SpaceTemplateExpectedUsageV1, type SpaceTemplateSetupValue, type SpaceTemplateSetupValues, type SpaceSummary, type SpaceTemplateListing, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReview } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { isBlueprintSetupFieldVisible, resolveBlueprintSetupFieldHelpText, resolveBlueprintSetupFieldLabel, resolveBlueprintSetupOptionLabel, type BlueprintSetupField } from "@naelao/agent-sdk";
@@ -87,6 +88,7 @@ function TemplateSetupInput({ projectId, field, value, onChange }: {
 export default function SpacesPage() {
   const product = useProduct();
   const { session } = useProductAuth();
+  const { setActiveSpace } = useActiveSpace();
   const { toast, show } = useToast();
   const [spaces, setSpaces] = React.useState<SpaceSummary[]>([]);
   const [templates, setTemplates] = React.useState<SpaceTemplateListing[]>([]);
@@ -105,6 +107,7 @@ export default function SpacesPage() {
   const [activationNotice, setActivationNotice] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; applyCoordinationDefault?: boolean; applyCoordinationSingletonDefault?: boolean; extensionRequirementsReviewed?: boolean; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
+  const [knowledgeSetupProjects, setKnowledgeSetupProjects] = React.useState<{ spaceId: string; projectIds: string[] } | null>(null);
   const [dependencyImports, setDependencyImports] = React.useState<Record<string, TemplateDependencyImportProgress>>({});
   const [dependencyImportBusy, setDependencyImportBusy] = React.useState<string | null>(null);
   const [setupValues, setSetupValues] = React.useState<SpaceTemplateSetupValues>({});
@@ -415,6 +418,18 @@ export default function SpacesPage() {
       if (result.coordinationSingletonPolicyApplication?.status === "retry_in_settings") {
         setActivationNotice("The Space Template was installed, but its singleton suggestion could not be saved. Review and apply it in Space Settings; existing owner rules remain unchanged.");
         setActivationReview(current => current ? { ...current, applyCoordinationSingletonDefault: false } : current);
+        return;
+      }
+      const needsExternalProjectKnowledge = activationReview.preview.extension_requirements.knowledge
+        .some(requirement => requirement.access === "owner_published_external");
+      const projectIds = Array.isArray(result.projectIds)
+        ? result.projectIds.filter(projectId => typeof projectId === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(projectId))
+        : [];
+      if (needsExternalProjectKnowledge && projectIds.length > 0) {
+        setCreateOpen(false);
+        setActivationReview(null);
+        setActivationNotice(null);
+        setKnowledgeSetupProjects({ spaceId: activationReview.spaceId, projectIds });
         return;
       }
       setCreateOpen(false);
@@ -941,7 +956,7 @@ export default function SpacesPage() {
             </li>)}</ul> : <p>None declared</p>}
             {(activationReview.preview.extension_requirements.knowledge.length > 0 || activationReview.preview.extension_requirements.actions.length > 0) && <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
               <strong>Signed package knowledge and action requirements</strong>
-              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These references are checked against the exact trusted package declarations. They do not create collection grants, provider connections, or additional permissions. Space Template to Project Knowledge selection is not available yet; external channel search continues to require the package's existing owner-published collection policy.</p>
+              <p style={{ margin: "4px 0", color: "var(--text3)" }}>These references are checked against the exact trusted package declarations; review does not create grants. New Projects start with no Space-shared Project Knowledge access. After activation, publish the required collection in each Project, then use its Space-shared channel access controls to grant only a current publication declared by the active signed package. Provider connections and other permissions remain separate approvals.</p>
               {activationReview.preview.extension_requirements.knowledge.length > 0 && <><strong>Knowledge</strong><ul>{activationReview.preview.extension_requirements.knowledge.map(item => <li key={`${item.extension_id}:${item.knowledge_id}`}>
                 {item.extension_id} · {item.knowledge_id} · {item.access} · {item.status}{item.required ? " · required" : " · optional"} — {item.purpose}{item.package_purpose ? ` (package: ${item.package_purpose})` : ""}
               </li>)}</ul></>}
@@ -1000,6 +1015,31 @@ export default function SpacesPage() {
             {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}
           </div>}
         </form>
+      </Modal>
+
+      <Modal open={knowledgeSetupProjects !== null} onClose={() => setKnowledgeSetupProjects(null)} title="Finish Project Knowledge setup"
+        footer={<Button variant="secondary" onClick={() => {
+          const spaceId = knowledgeSetupProjects?.spaceId;
+          setKnowledgeSetupProjects(null);
+          if (spaceId) {
+            setActiveSpace(spaceId, spaces.find(space => space.id === spaceId)?.name ?? null);
+            window.location.assign(`/p/${product.slug}/spaces/${encodeURIComponent(spaceId)}?next=settings`);
+          }
+        }}>Continue to Space</Button>}>
+        <p>The template is installed. Space-shared channel extensions receive no Project Knowledge by default.</p>
+        <p>For each Project, add and index documents, publish a collection with an ID declared by the signed package, then explicitly grant that collection in the Project&apos;s Space-shared channel access controls. Only current published collections can be granted.</p>
+        <ul>
+          {knowledgeSetupProjects?.projectIds.map((projectId, index) => (
+            <li key={projectId}>
+              <Link href={`/p/${product.slug}/projects/${encodeURIComponent(projectId)}?setup=knowledge`} onClick={() => {
+                const handoff = knowledgeSetupProjects;
+                if (handoff) setActiveSpace(handoff.spaceId, spaces.find(space => space.id === handoff.spaceId)?.name ?? null);
+              }}>
+                Open Project {index + 1} to publish and grant Knowledge
+              </Link>
+            </li>
+          ))}
+        </ul>
       </Modal>
       <Modal open={templateStatusSpace !== null} onClose={() => setTemplateStatusSpace(null)} title={`Template status · ${templateStatusSpace?.name ?? "Space"}`} width={760}
         footer={<Button variant="secondary" onClick={() => setTemplateStatusSpace(null)}>Close</Button>}>

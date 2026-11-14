@@ -97,6 +97,7 @@ export default function ProjectDetailPage() {
   const [creating, setCreating] = React.useState(false);
   const [threadQuery, setThreadQuery] = React.useState("");
   const settingsRef = React.useRef<HTMLDivElement>(null);
+  const externalKnowledgeSetupRef = React.useRef<HTMLDivElement>(null);
 
   const [docs, setDocs] = React.useState<KbDocument[]>([]);
   const [docsLoading, setDocsLoading] = React.useState(true);
@@ -269,6 +270,12 @@ export default function ProjectDetailPage() {
     void refreshDocs();
     void refreshExternalKnowledge();
   }, [refresh, refreshDocs, refreshExternalKnowledge]);
+
+  React.useEffect(() => {
+    if (searchParams.get("setup") !== "knowledge") return;
+    const timer = window.setTimeout(() => externalKnowledgeSetupRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchParams, params.projectId]);
 
   React.useEffect(() => {
     if (!docs.some((document) => document.status === "deleting")) return;
@@ -880,12 +887,15 @@ export default function ProjectDetailPage() {
         </div>
       )}
 
-      <div className="page-header" style={{ marginTop: 24 }}>
+      <div ref={externalKnowledgeSetupRef} className="page-header" style={{ marginTop: 24 }}>
         <div className="section-label" style={{ marginBottom: 0 }}>External extension Knowledge</div>
         <div className="page-subtitle">
           Select indexed project documents to publish as a named collection. Only a channel extension explicitly configured for this collection can retrieve it; publishing does not connect a provider or enable a bot.
         </div>
       </div>
+      {searchParams.get("setup") === "knowledge" && <p role="status" className="settings-block" style={{ padding: 12, color: "var(--text2)" }}>
+        This template requires owner-published Knowledge for a Space-shared channel. Publish a collection here, then grant only that current collection in the Project access controls below. No extension receives Project Knowledge until you save an explicit grant.
+      </p>}
       {publicationLoadError ? (
         <div role="status" className="settings-block" style={{ padding: 12, color: "var(--text2)" }}>
           Couldn't load published collections. Check project access and try again.
@@ -935,7 +945,12 @@ export default function ProjectDetailPage() {
                       ? `Owner selection active · revision ${installation.revision}`
                       : "No owner selection saved · this extension has no Project Knowledge access"}
                   </div>
-                  {available.length > 0 ? (
+                  <div className="settings-row-sub" style={{ marginTop: 6 }}>
+                    Signed package collection IDs: {installation.declared_publication_ids.join(", ")}
+                  </div>
+                  {publicationLoadError ? (
+                    <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>Current Project publications are unavailable; retry before changing access.</div>
+                  ) : available.length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
                       {available.map(publication => (
                         <label key={publication.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13 }}>
@@ -954,7 +969,9 @@ export default function ProjectDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="settings-row-sub" style={{ marginTop: 8 }}>No currently published collection is declared by this package.</div>
+                    <div className="settings-row-sub" style={{ marginTop: 8 }}>
+                      No signed package collection is published in this Project yet. Publish a collection above with one of the declared IDs, then save an explicit grant.
+                    </div>
                   )}
                   {unavailableGrants.length > 0 && (
                     <div role="status" className="settings-row-sub" style={{ marginTop: 8 }}>

@@ -2824,6 +2824,7 @@ export function applySpaceTemplateSetupUpdate(spaceId: string, blueprintId: stri
   });
 }
 export interface SpaceTemplateActivationResult extends Record<string, unknown> {
+  projectIds?: string[];
   coordinationSingletonPolicyApplication?: {
     status: "not_requested" | "applied" | "existing_policy_preserved" | "active_duplicates" | "retry_in_settings";
     singleton_capability_keys?: string[];
