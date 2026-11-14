@@ -16,6 +16,7 @@ describe("Space coordination registry gateway", () => {
       SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
         calls.push(request);
         if (new URL(request.url).pathname === "/space-coordination-policy") return Response.json({ schema_version: 2, configured: false, member_facts_enabled: false, revision: 0, active_member_facts: 0 });
+        if (new URL(request.url).pathname === "/space-coordination-singletons") return Response.json({ schema_version: 1, configured: false, singleton_capability_keys: [], revision: 0, reservations: [] });
         if (request.method === "GET") return Response.json({ schema_version: 1, entries: [], next_after: null });
         return Response.json({ entry: { entry_id: "entry-1", version: request.method === "PATCH" ? 2 : 1 }, ...(request.method === "PATCH" ? { disclosure: { audience: "Space owners and administrators", effect: "advisory only" } } : {}) }, { status: request.method === "DELETE" || request.method === "PATCH" || request.method === "PUT" ? 200 : 201 });
       } }) },
@@ -72,6 +73,39 @@ describe("Space coordination registry gateway", () => {
     expect(history.headers.get("cache-control")).toBe("no-store");
     expect(new URL(owner.calls[2]!.url).pathname).toBe("/space-coordination-policy/history");
     expect(new URL(owner.calls[2]!.url).searchParams.get("after")).toBe("2");
+  });
+
+  it("keeps singleton policy private to owners and admins and forwards only validated host-stamped changes", async () => {
+    const member = env("member");
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons"), member.bindings)).status).toBe(403);
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons/history"), member.bindings)).status).toBe(403);
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons", "product_end_user", "PUT", {
+      singleton_capability_keys: ["official.website"], expected_revision: 0, confirm: true,
+    }), member.bindings)).status).toBe(403);
+    expect(member.calls).toHaveLength(0);
+
+    const owner = env("owner");
+    const loaded = await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons"), owner.bindings);
+    expect(loaded.status).toBe(200);
+    expect(loaded.headers.get("cache-control")).toBe("no-store");
+    await expect(loaded.json()).resolves.toMatchObject({ configured: false, singleton_capability_keys: [], revision: 0 });
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons", "product_end_user", "PUT", {
+      singleton_capability_keys: ["Official.Website"], expected_revision: 0, confirm: true,
+    }), owner.bindings)).status).toBe(400);
+    expect((await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons", "product_end_user", "PUT", {
+      singleton_capability_keys: ["official.website", "official.website"], expected_revision: 0, confirm: true,
+    }), owner.bindings)).status).toBe(400);
+    const saved = await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons", "product_end_user", "PUT", {
+      singleton_capability_keys: ["service.phone", "official.website"], expected_revision: 0, confirm: true,
+    }), owner.bindings);
+    expect(saved.status).toBe(200);
+    expect(saved.headers.get("cache-control")).toBe("no-store");
+    expect(await owner.calls[1]!.json()).toEqual({ singleton_capability_keys: ["official.website", "service.phone"],
+      expected_revision: 0, actor_id: "user", actor_role: "owner", confirmed: true });
+    const history = await app.fetch(await request("/spaces/space/coordination-registry/v2/singletons/history?after=1"), owner.bindings);
+    expect(history.status).toBe(200);
+    expect(new URL(owner.calls[2]!.url).pathname).toBe("/space-coordination-singletons/history");
+    expect(new URL(owner.calls[2]!.url).searchParams.get("after")).toBe("1");
   });
 
   it("allows member reads and previews while owner/admin role gates publication", async () => {

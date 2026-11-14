@@ -8,13 +8,22 @@ describe("Space-owned advisory coordination registry", () => {
     const space = new SpaceDO({ storage } as never, {} as never);
     const root = "http://space/space-coordination-registry";
     const policyUrl = "http://space/space-coordination-policy?tenant_id=tenant&space_id=space";
+    const singletonUrl = "http://space/space-coordination-singletons?tenant_id=tenant&space_id=space";
     const readPolicy = () => space.fetch(new Request(policyUrl));
+    const readSingletonPolicy = () => space.fetch(new Request(singletonUrl));
+    const updateSingletonPolicy = (keys: string[], expectedRevision: number) => space.fetch(new Request(singletonUrl, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ singleton_capability_keys: keys, expected_revision: expectedRevision,
+        actor_id: "owner", actor_role: "owner", confirmed: true }),
+    }));
     const updatePolicy = (memberFactsEnabled: boolean, expectedRevision: number) => space.fetch(new Request(policyUrl, {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision,
         actor_id: "owner", actor_role: "owner", confirmed: true }),
     }));
     await readPolicy(); // ensure current migrations are applied in the test storage
+    storage.sql.exec("INSERT INTO spaces(id,name,space_type) VALUES('space','Space','workspace')");
+    storage.sql.exec("INSERT INTO space_members(space_id,user_id,role) VALUES('space','owner','owner')");
     if (enableMemberFacts) expect((await updatePolicy(true, 0)).status).toBe(200);
     const publish = (entryId: string, label = entryId) => space.fetch(new Request(root, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -26,8 +35,68 @@ describe("Space-owned advisory coordination registry", () => {
       body: JSON.stringify({ tenant_id: "tenant", space_id: "space", entry_id: entryId, schema_version: 2, actor_id: "owner", approved_role: "owner", confirmed: true,
         draft: { schema_version: 2, capability_key: "official.website", label, description: "Approved for selected audience", audience, expires_at: expiresAt } }),
     }));
-    return { space, storage, root, publish, publishV2, readPolicy, updatePolicy };
+    return { space, storage, root, publish, publishV2, readPolicy, updatePolicy, readSingletonPolicy, updateSingletonPolicy };
   }
+
+  it("keeps singleton rules off by default and atomically reserves a single active fact per configured key", async () => {
+    const { space, storage, root, publish, publishV2, readSingletonPolicy, updateSingletonPolicy } = await setup();
+    await expect((await readSingletonPolicy()).json()).resolves.toMatchObject({ configured: false, singleton_capability_keys: [], revision: 0, reservations: [] });
+    expect((await publish("duplicate-a")).status).toBe(201);
+    expect((await publish("duplicate-b")).status).toBe(201);
+    const rejected = await updateSingletonPolicy(["official.website"], 0);
+    expect(rejected.status).toBe(409);
+    await expect(rejected.json()).resolves.toMatchObject({ error_code: "coordination_singleton_active_duplicates" });
+    await expect((await readSingletonPolicy()).json()).resolves.toMatchObject({ configured: false, revision: 0, reservations: [] });
+
+    const revoked = await space.fetch(new Request(`${root}/duplicate-b`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1,
+    }) }));
+    expect(revoked.status).toBe(200);
+    const configured = await updateSingletonPolicy(["official.website", "service.phone"], 0);
+    expect(configured.status).toBe(200);
+    await expect(configured.json()).resolves.toMatchObject({ configured: true, revision: 1,
+      singleton_capability_keys: ["official.website", "service.phone"], reservations: [{ capability_key: "official.website", entry_id: "duplicate-a" }] });
+    expect((await publishV2("blocked-duplicate", "space_admins")).status).toBe(409);
+    expect(storage.sql.exec("SELECT capability_key,entry_id FROM space_coordination_singleton_reservations ORDER BY capability_key").toArray())
+      .toEqual([{ capability_key: "official.website", entry_id: "duplicate-a" }]);
+  });
+
+  it("serializes concurrent singleton publication and releases a reservation on revocation or key change", async () => {
+    const { space, storage, root, publishV2, updateSingletonPolicy } = await setup();
+    expect((await updateSingletonPolicy(["official.website", "service.phone"], 0)).status).toBe(200);
+    const [first, second] = await Promise.all([publishV2("race-a", "space_admins"), publishV2("race-b", "space_admins")]);
+    expect([first.status, second.status].sort()).toEqual([201, 409]);
+    const winner = first.status === 201 ? "race-a" : "race-b";
+    expect(storage.sql.exec("SELECT capability_key,entry_id FROM space_coordination_singleton_reservations").toArray())
+      .toEqual([{ capability_key: "official.website", entry_id: winner }]);
+    const changed = await space.fetch(new Request(`${root}/${winner}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 1, confirmed: true,
+      draft: { schema_version: 2, capability_key: "service.phone", label: winner, audience: "space_admins", expires_at: null },
+    }) }));
+    expect(changed.status).toBe(200);
+    expect(storage.sql.exec("SELECT capability_key,entry_id FROM space_coordination_singleton_reservations ORDER BY capability_key").toArray())
+      .toEqual([{ capability_key: "service.phone", entry_id: winner }]);
+    const revoked = await space.fetch(new Request(`${root}/${winner}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      tenant_id: "tenant", space_id: "space", actor_id: "owner", approved_role: "owner", schema_version: 2, expected_version: 2,
+    }) }));
+    expect(revoked.status).toBe(200);
+    expect(storage.sql.exec("SELECT * FROM space_coordination_singleton_reservations").toArray()).toEqual([]);
+    expect((await publishV2("after-release", "space_admins")).status).toBe(201);
+  });
+
+  it("expires stale reservation rows when an approved fact expires", async () => {
+    const { space, storage, root, publishV2, updateSingletonPolicy } = await setup();
+    const expiry = new Date(Date.now() + 60_000).toISOString();
+    expect((await publishV2("expiring-singleton", "space_admins", "Temporary fact", expiry)).status).toBe(201);
+    expect((await updateSingletonPolicy(["official.website"], 0)).status).toBe(200);
+    storage.sql.exec("UPDATE space_coordination_entries SET expires_at=? WHERE entry_id='expiring-singleton'", new Date(Date.now() - 1_000).toISOString());
+    const replacement = await publishV2("replacement-singleton", "space_admins");
+    expect(replacement.status).toBe(201);
+    expect(storage.sql.exec("SELECT capability_key,entry_id FROM space_coordination_singleton_reservations").toArray())
+      .toEqual([{ capability_key: "official.website", entry_id: "replacement-singleton" }]);
+    expect((await space.fetch(new Request(`${root}?tenant_id=tenant&space_id=space&schema_version=2&viewer_role=owner`)).then(response => response.json()))
+      .entries).toMatchObject([{ entry_id: "expiring-singleton", status: "expired" }, { entry_id: "replacement-singleton", status: "active" }]);
+  });
 
   it("persists only bounded Space facts and keyset pages active entries", async () => {
     const { space, root, publish } = await setup();

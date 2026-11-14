@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSpaceCoordinationClient, createSpaceCoordinationClientV2, createSpaceCoordinationProposalClient, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2 } from "./space-coordination.js";
+import { createSpaceCoordinationClient, createSpaceCoordinationClientV2, createSpaceCoordinationProposalClient, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys } from "./space-coordination.js";
 
 describe("Space coordination registry v1 contract", () => {
   it("normalizes bounded facts and rejects authority or hidden-source fields", () => {
@@ -33,6 +33,14 @@ describe("Space coordination registry v1 contract", () => {
 });
 
 describe("Space coordination registry v2 audience contract", () => {
+  it("validates a bounded, canonical optional singleton-key set", () => {
+    expect(validateSpaceCoordinationSingletonKeys(["official.website", "service.phone"])).toEqual({
+      ok: true, value: ["official.website", "service.phone"],
+    });
+    expect(validateSpaceCoordinationSingletonKeys(["Official.Website"]).ok).toBe(false);
+    expect(validateSpaceCoordinationSingletonKeys(["official.website", "official.website"]).ok).toBe(false);
+    expect(validateSpaceCoordinationSingletonKeys(Array.from({ length: 33 }, (_, index) => `service.${index}`)).ok).toBe(false);
+  });
   it("requires a declared audience and rejects arbitrary authority fields", () => {
     expect(validateSpaceCoordinationDraftV2({ schema_version: 2, capability_key: "official.website", label: "Company site", audience: "space_admins" }))
       .toEqual({ ok: true, value: { schema_version: 2, audience: "space_admins", capability_key: "official.website", label: "Company site", expires_at: null } });
@@ -57,6 +65,9 @@ describe("Space coordination registry v2 audience contract", () => {
     await client.policy();
     await client.policyHistory("1");
     await client.updatePolicy(true, 0, true);
+    await client.singletonPolicy();
+    await client.singletonPolicyHistory("2");
+    await client.updateSingletonPolicy(["service.phone", "official.website"], 0, true);
     await client.list("cursor/1");
     await client.preview(draft);
     await client.publish(draft, true);
@@ -70,6 +81,9 @@ describe("Space coordination registry v2 audience contract", () => {
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy/history?after=1", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/policy", method: "PUT", body: { member_facts_enabled: true, expected_revision: 0, confirm: true } },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/singletons", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/singletons/history?after=2", method: "GET", body: undefined },
+      { path: "/spaces/space%20%2F%20one/coordination-registry/v2/singletons", method: "PUT", body: { singleton_capability_keys: ["official.website", "service.phone"], expected_revision: 0, confirm: true } },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2?after=cursor%2F1", method: "GET", body: undefined },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2/preview", method: "POST", body: draft },
       { path: "/spaces/space%20%2F%20one/coordination-registry/v2", method: "POST", body: { ...draft, confirm_disclosure: true } },

@@ -113,6 +113,46 @@ export function validateSpaceCoordinationDraftV2(input: unknown):
   return { ok: true, value: { schema_version: 2, audience: value.audience, ...parsed.value, expires_at: expiresAt } };
 }
 
+export function validateSpaceCoordinationSingletonKeys(input: unknown):
+  | { ok: true; value: string[] }
+  | { ok: false; error: "invalid_singleton_capability_keys" } {
+  if (!Array.isArray(input) || input.length > 32) return { ok: false, error: "invalid_singleton_capability_keys" };
+  const keys: string[] = [];
+  for (const candidate of input) {
+    if (typeof candidate !== "string" || candidate !== candidate.trim() || !/^[a-z][a-z0-9_.:-]{0,95}$/.test(candidate)
+      || keys.includes(candidate)) return { ok: false, error: "invalid_singleton_capability_keys" };
+    keys.push(candidate);
+  }
+  return { ok: true, value: keys.sort() };
+}
+
+export interface SpaceCoordinationSingletonPolicy {
+  schema_version: 1;
+  configured: boolean;
+  singleton_capability_keys: string[];
+  revision: number;
+  reservations: Array<{ capability_key: string; entry_id: string; reserved_at: string }>;
+  updated_by?: string;
+  updated_at?: string;
+}
+
+export interface SpaceCoordinationSingletonPolicyEvent {
+  event_id: string;
+  prior_revision: number | null;
+  revision: number;
+  prior_capability_keys: string[];
+  capability_keys: string[];
+  actor_id: string;
+  actor_role: "owner" | "admin";
+  created_at: string;
+}
+
+export interface SpaceCoordinationSingletonPolicyHistory {
+  schema_version: 1;
+  events: SpaceCoordinationSingletonPolicyEvent[];
+  next_after: string | null;
+}
+
 export interface SpaceCoordinationPageV1 {
   schema_version: 1;
   entries: SpaceCoordinationEntryV1[];
@@ -279,6 +319,7 @@ export function createSpaceCoordinationClient(options: SpaceCoordinationClientOp
 /** Version 2 adds an explicit, owner-selected visibility audience without granting use rights. */
 export function createSpaceCoordinationClientV2(options: SpaceCoordinationClientOptions) {
   const base = `/spaces/${encodeURIComponent(options.spaceId)}/coordination-registry/v2`;
+  const singletonBase = `${base}/singletons`;
   return {
     policy(): Promise<SpaceCoordinationPolicyV2> {
       return options.request(`${base}/policy`);
@@ -304,6 +345,20 @@ export function createSpaceCoordinationClientV2(options: SpaceCoordinationClient
     updatePolicy(memberFactsEnabled: boolean, expectedRevision: number, confirm: boolean): Promise<SpaceCoordinationPolicyV2> {
       return options.request(`${base}/policy`, { method: "PUT", body: {
         member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision, confirm,
+      } });
+    },
+    singletonPolicy(): Promise<SpaceCoordinationSingletonPolicy> {
+      return options.request(singletonBase);
+    },
+    singletonPolicyHistory(after?: string): Promise<SpaceCoordinationSingletonPolicyHistory> {
+      const query = after ? `?after=${encodeURIComponent(after)}` : "";
+      return options.request(`${singletonBase}/history${query}`);
+    },
+    updateSingletonPolicy(keys: string[], expectedRevision: number, confirm: boolean): Promise<SpaceCoordinationSingletonPolicy> {
+      const parsed = validateSpaceCoordinationSingletonKeys(keys);
+      if (!parsed.ok) throw new Error(parsed.error);
+      return options.request(singletonBase, { method: "PUT", body: {
+        singleton_capability_keys: parsed.value, expected_revision: expectedRevision, confirm,
       } });
     },
     list(after?: string): Promise<SpaceCoordinationPageV2> {

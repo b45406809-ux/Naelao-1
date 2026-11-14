@@ -2,12 +2,13 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { getDOName } from "@naelao/crypto";
 import { readBoundedRequestText, verifyInternalToken } from "@naelao/http";
-import { SPACE_COORDINATION_DISCLOSURE_V1, spaceCoordinationDisclosureV2, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
+import { SPACE_COORDINATION_DISCLOSURE_V1, spaceCoordinationDisclosureV2, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys } from "@naelao/agent-sdk";
 import { resolveEndUserSpaceRole } from "../space-auth.js";
 
 const basePath = "/spaces/:spaceId/coordination-registry";
 const v2Path = `${basePath}/v2`;
 const policyPath = `${v2Path}/policy`;
+const singletonPath = `${v2Path}/singletons`;
 const proposalsPath = "/spaces/:spaceId/coordination-proposals";
 
 export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
@@ -55,6 +56,41 @@ export function registerSpaceCoordinationRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error_code: "invalid_cursor" }, 400);
     const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, limit: "50", ...(after ? { after } : {}) });
     return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-policy/history?${params}`)));
+  });
+
+  app.get(singletonPath, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-singletons?${params}`)));
+  });
+
+  app.get(`${singletonPath}/history`, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const after = c.req.query("after");
+    if (after !== undefined && (!/^(0|[1-9][0-9]*)$/.test(after) || !Number.isSafeInteger(Number(after))))
+      return c.json({ error_code: "invalid_cursor" }, 400);
+    const params = new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId, limit: "50", ...(after ? { after } : {}) });
+    return noStore(await auth.stub.fetch(new Request(`http://space/space-coordination-singletons/history?${params}`)));
+  });
+
+  app.put(singletonPath, async c => {
+    const auth = await authorize(c, true);
+    if (auth instanceof Response) return auth;
+    const raw = await readJson(c.req.raw);
+    if (raw instanceof Response) return raw;
+    const input = raw as Record<string, unknown> | null;
+    const parsed = validateSpaceCoordinationSingletonKeys(input?.singleton_capability_keys);
+    if (!input || Object.keys(input).some(key => !["singleton_capability_keys", "expected_revision", "confirm"].includes(key))
+      || !parsed.ok || !Number.isSafeInteger(input.expected_revision) || Number(input.expected_revision) < 0 || input.confirm !== true)
+      return c.json({ error_code: "coordination_singleton_policy_invalid" }, 400);
+    const response = await auth.stub.fetch(new Request(`http://space/space-coordination-singletons?${new URLSearchParams({ tenant_id: auth.tenantId, space_id: auth.spaceId })}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ singleton_capability_keys: parsed.value, expected_revision: input.expected_revision,
+        actor_id: auth.userId, actor_role: auth.role, confirmed: true }),
+    }));
+    return noStore(response);
   });
 
   app.get(`${v2Path}/requests`, async c => {

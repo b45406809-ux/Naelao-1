@@ -68,6 +68,7 @@ describe("SpaceDO migration replay", () => {
     const acceptedWorkerTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='accepted_cross_space_workers'").toArray();
     const glossaryTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_glossary_terms'").toArray();
     const coordinationTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_coordination_entries'").toArray();
+    const singletonCoordinationTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('space_coordination_singleton_policies','space_coordination_singleton_policy_events','space_coordination_singleton_reservations')").toArray();
     const blackboardProjectIndex = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_projects_space_id'").toArray();
     const foundrySchema = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray()[0]?.sql;
     const applied = storage.sql
@@ -77,6 +78,7 @@ describe("SpaceDO migration replay", () => {
       .toArray();
     const acceptedWorkerMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 69").toArray();
     const glossaryMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 70").toArray();
+    const singletonCoordinationMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 134").toArray();
     const customerVoiceColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('voice_call_sessions')").toArray().map((column) => column.name);
     const customerVoiceMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 71").toArray();
     const customModelLifecycle = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='custom_model_lifecycle'").toArray();
@@ -97,11 +99,13 @@ describe("SpaceDO migration replay", () => {
     expect(acceptedWorkerTable).toHaveLength(1);
     expect(glossaryTable).toHaveLength(1);
     expect(coordinationTable).toHaveLength(1);
+    expect(singletonCoordinationTables).toHaveLength(3);
     expect(blackboardProjectIndex).toHaveLength(1);
     expect(foundrySchema).toContain("validated_version");
     expect(applied[0]?.count).toBe(1);
     expect(acceptedWorkerMigration[0]?.count).toBe(1);
     expect(glossaryMigration[0]?.count).toBe(1);
+    expect(singletonCoordinationMigration[0]?.count).toBe(1);
     expect(customerVoiceMigration[0]?.count).toBe(1);
     expect(customModelLifecycle).toHaveLength(1);
     expect(customModelLifecycleMigration[0]?.count).toBe(1);
@@ -183,7 +187,7 @@ describe("SpaceDO migration replay", () => {
 
   it("loads the SpaceDO migration runner without generated package aliases", async () => {
     const space = await import("./SpaceDO");
-    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(132);
+    expect(space.SPACE_DO_MIGRATIONS.at(-1)?.version).toBe(134);
     const storage = createDOStorage();
     applyMigrations(storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T }, space.SPACE_DO_MIGRATIONS);
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('event_triggers')").toArray().map(column => column.name)).toContain("updated_by");

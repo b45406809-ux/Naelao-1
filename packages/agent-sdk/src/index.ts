@@ -20,11 +20,12 @@ export { SPACE_COORDINATION_DISCLOSURE_V1, validateSpaceCoordinationDraft, creat
   type SpaceCoordinationDraftV1, type SpaceCoordinationEntryV1, type SpaceCoordinationDisclosureV1,
   type SpaceCoordinationPageV1, type SpaceCoordinationClientOptions } from "./space-coordination.js";
 export { spaceCoordinationDisclosureV2, validateSpaceCoordinationDraftV2, createSpaceCoordinationClientV2,
-  createSpaceCoordinationProposalClient,
+  createSpaceCoordinationProposalClient, validateSpaceCoordinationSingletonKeys,
   type SpaceCoordinationAudienceV2, type SpaceCoordinationDraftV2, type SpaceCoordinationEntryV2,
   type SpaceCoordinationDisclosureV2, type SpaceCoordinationPageV2, type SpaceCoordinationAuditEventV2,
   type SpaceCoordinationAuditHistoryPageV2, type SpaceCoordinationPolicyV2, type SpaceCoordinationPolicyEventV2,
   type SpaceCoordinationPolicyHistoryPageV2, type SpaceCoordinationUseRequest,
+  type SpaceCoordinationSingletonPolicy, type SpaceCoordinationSingletonPolicyEvent, type SpaceCoordinationSingletonPolicyHistory,
   type SpaceCoordinationUseRequestPage, type SpaceCoordinationUseRequestResolution,
   type SpaceCoordinationUseRequestStatus, type SpaceCoordinationProposalStatus,
   type SpaceCoordinationProposalAction, type SpaceCoordinationPublicationProposal,

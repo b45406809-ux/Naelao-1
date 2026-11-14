@@ -125,6 +125,11 @@ describe("private project-owner Space coordination proposals", () => {
 
   it("retires the approved source fact and advances proposal history atomically with project archival", async () => {
     const { space, storage, draft, submit, review } = await setup();
+    const singletonPolicy = await space.fetch(new Request("http://space/space-coordination-singletons?tenant_id=tenant&space_id=space", {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ singleton_capability_keys: ["official.website"],
+        expected_revision: 0, actor_id: "space-admin", actor_role: "admin", confirmed: true }),
+    }));
+    expect(singletonPolicy.status).toBe(200);
     const adminAudienceDraft = { ...draft, audience: "space_admins" };
     await submit("10000000-0000-4000-8000-000000000002", "manager", "private-project", adminAudienceDraft);
     const approved = await review("10000000-0000-4000-8000-000000000002", "approve", 1, adminAudienceDraft);
@@ -140,6 +145,7 @@ describe("private project-owner Space coordination proposals", () => {
     ]);
     expect(storage.sql.exec("SELECT action,actor_role,status_after FROM space_coordination_audit_events").toArray())
       .toContainEqual({ action: "source_retired", actor_role: "system", status_after: "revoked" });
+    expect(storage.sql.exec("SELECT * FROM space_coordination_singleton_reservations").toArray()).toEqual([]);
     expect(storage.sql.exec("SELECT action,status_after,revision FROM space_coordination_proposal_revisions ORDER BY revision").toArray())
       .toEqual([{ action: "submitted", status_after: "pending", revision: 1 },
         { action: "approved", status_after: "approved", revision: 2 },

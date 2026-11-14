@@ -28,7 +28,7 @@ import type {
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, readBoundedResponseJson, RequestBodyTooLargeError } from "@naelao/http";
 import { verifyHmac } from "@naelao/crypto";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateExtensionSettingsValues, validateWidgetHostEvent, migrateBlueprintSetupValues, validateBlueprintSetupMigrations, validateBlueprintSetupSchema, validateBlueprintSetupGroups, validateBlueprintSetupValues, validateBlueprintSetupValuesForSchema, validateSpaceCoordinationDraft, validateSpaceCoordinationDraftV2, validateSpaceCoordinationSingletonKeys, scopedInstallationId, resolveExtensionDependencyClosure, type InstallationScope, type SpaceCoordinationDraftV2 } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, validateAssistantEmailProvisioning, type AssistantChannelPatch, type AssistantChannelTemplateDefaults, type AssistantEmailProvisioning } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2849,6 +2849,43 @@ const MIGRATIONS: Migration[] = [
         ON space_coordination_proposal_revisions(tenant_id,space_id,proposal_id,revision);
     `,
   },
+  {
+    version: 134,
+    description: "persist optional host-only Space coordination singleton rules and reservations",
+    up: `CREATE TABLE space_coordination_singleton_policies (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      capability_keys_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      updated_by TEXT NOT NULL,
+      updated_role TEXT NOT NULL CHECK(updated_role IN ('owner','admin')),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id)
+    );
+    CREATE TABLE space_coordination_singleton_policy_events (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      prior_revision INTEGER CHECK(prior_revision IS NULL OR prior_revision >= 1),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      prior_capability_keys_json TEXT NOT NULL,
+      capability_keys_json TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      actor_role TEXT NOT NULL CHECK(actor_role IN ('owner','admin')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,event_id)
+    );
+    CREATE INDEX idx_space_coordination_singleton_events_revision
+      ON space_coordination_singleton_policy_events(tenant_id,space_id,revision);
+    CREATE TABLE space_coordination_singleton_reservations (
+      tenant_id TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      capability_key TEXT NOT NULL,
+      entry_id TEXT NOT NULL,
+      reserved_at TEXT NOT NULL,
+      PRIMARY KEY(tenant_id,space_id,capability_key)
+    );`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3121,6 +3158,160 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ schema_version: schemaVersion, entries, next_after: nextAfter });
   }
 
+  private coordinationSingletonRuleKeys(sql: never, tenantId: string, spaceId: string): { revision: number; keys: string[] } {
+    const current = queryOne<{ revision: number; capability_keys_json: string }>(sql,
+      "SELECT revision,capability_keys_json FROM space_coordination_singleton_policies WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+    if (!current) return { revision: 0, keys: [] };
+    let raw: unknown;
+    try { raw = JSON.parse(current.capability_keys_json); } catch { throw new Error("coordination_singleton_policy_corrupt"); }
+    const parsed = validateSpaceCoordinationSingletonKeys(raw);
+    if (!parsed.ok || JSON.stringify(parsed.value) !== current.capability_keys_json) throw new Error("coordination_singleton_policy_corrupt");
+    return { revision: current.revision, keys: parsed.value };
+  }
+
+  private reserveSpaceCoordinationSingleton(sql: never, tenantId: string, spaceId: string, capabilityKey: string, entryId: string, now: string): boolean {
+    const policy = this.coordinationSingletonRuleKeys(sql, tenantId, spaceId);
+    if (!policy.keys.includes(capabilityKey)) return true;
+    const otherEntry = queryOne<{ entry_id: string }>(sql,
+      `SELECT entry_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND capability_key=? AND entry_id!=?
+        AND status='active' AND (expires_at IS NULL OR expires_at>?) LIMIT 1`, tenantId, spaceId, capabilityKey, entryId, now);
+    if (otherEntry) return false;
+    const reservation = queryOne<{ entry_id: string }>(sql,
+      "SELECT entry_id FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=? AND capability_key=?",
+      tenantId, spaceId, capabilityKey);
+    if (reservation && reservation.entry_id === entryId) return true;
+    if (reservation) {
+      const stillReserved = queryOne<{ entry_id: string }>(sql,
+        `SELECT entry_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=? AND capability_key=?
+          AND status='active' AND (expires_at IS NULL OR expires_at>?) LIMIT 1`, tenantId, spaceId, reservation.entry_id, capabilityKey, now);
+      if (stillReserved) return false;
+      execute(sql, "DELETE FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=? AND capability_key=?", tenantId, spaceId, capabilityKey);
+    }
+    execute(sql, `INSERT INTO space_coordination_singleton_reservations(tenant_id,space_id,capability_key,entry_id,reserved_at)
+      VALUES(?,?,?,?,?)`, tenantId, spaceId, capabilityKey, entryId, now);
+    return true;
+  }
+
+  private releaseSpaceCoordinationSingleton(sql: never, tenantId: string, spaceId: string, entryId: string, capabilityKey?: string): void {
+    execute(sql, `DELETE FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=? AND entry_id=?
+      ${capabilityKey === undefined ? "" : "AND capability_key=?"}`,
+    ...(capabilityKey === undefined ? [tenantId, spaceId, entryId] : [tenantId, spaceId, entryId, capabilityKey]));
+  }
+
+  private async spaceCoordinationSingletonPolicy(request: Request, url: URL): Promise<Response> {
+    const tenantId = url.searchParams.get("tenant_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    if (request.method === "GET") {
+      let policy: { revision: number; keys: string[] };
+      try { policy = this.coordinationSingletonRuleKeys(sql, tenantId, spaceId); }
+      catch { return Response.json({ error_code: "coordination_singleton_policy_corrupt" }, { status: 503 }); }
+      const now = new Date().toISOString();
+      const reservations = queryAll<{ capability_key: string; entry_id: string; reserved_at: string }>(sql,
+        `SELECT r.capability_key,r.entry_id,r.reserved_at FROM space_coordination_singleton_reservations r
+          JOIN space_coordination_entries e ON e.tenant_id=r.tenant_id AND e.space_id=r.space_id AND e.entry_id=r.entry_id
+          WHERE r.tenant_id=? AND r.space_id=? AND e.status='active' AND (e.expires_at IS NULL OR e.expires_at>?)
+          ORDER BY r.capability_key`, tenantId, spaceId, now);
+      const current = queryOne<{ updated_by: string; updated_at: string }>(sql,
+        "SELECT updated_by,updated_at FROM space_coordination_singleton_policies WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+      return Response.json({ schema_version: 1, configured: policy.revision > 0, singleton_capability_keys: policy.keys,
+        revision: policy.revision, reservations, ...(current ? { updated_by: current.updated_by, updated_at: current.updated_at } : {}) });
+    }
+    const body = await request.json<{ singleton_capability_keys?: unknown; expected_revision?: unknown; actor_id?: unknown; actor_role?: unknown; confirmed?: unknown }>().catch(() => null);
+    const parsed = validateSpaceCoordinationSingletonKeys(body?.singleton_capability_keys);
+    if (!body || Object.keys(body).some(key => !["singleton_capability_keys", "expected_revision", "actor_id", "actor_role", "confirmed"].includes(key))
+      || !parsed.ok || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0
+      || typeof body.actor_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(body.actor_id)
+      || (body.actor_role !== "owner" && body.actor_role !== "admin") || body.confirmed !== true)
+      return Response.json({ error_code: "coordination_singleton_policy_invalid" }, { status: 400 });
+    if (!this.isSpaceOwnerOrAdmin(body.actor_id, spaceId)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error_code: "coordination_singleton_storage_unavailable" }, { status: 503 });
+    const now = new Date().toISOString(), nextKeys = parsed.value, nextJson = JSON.stringify(nextKeys);
+    let outcome: "updated" | "unchanged" | "conflict" | "active_duplicates" = "conflict";
+    let nextRevision = 0;
+    try {
+      outcome = this.ctx.storage.transactionSync(() => {
+        const current = this.coordinationSingletonRuleKeys(sql, tenantId, spaceId);
+        if (current.revision !== body.expected_revision) return "conflict";
+        for (const key of nextKeys) {
+          const duplicates = queryOne<{ count: number }>(sql,
+            `SELECT COUNT(*) AS count FROM (SELECT entry_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=?
+              AND capability_key=? AND status='active' AND (expires_at IS NULL OR expires_at>?) LIMIT 2)`, tenantId, spaceId, key, now)?.count ?? 0;
+          if (duplicates > 1) return "active_duplicates";
+        }
+        const priorJson = JSON.stringify(current.keys);
+        const changed = priorJson !== nextJson;
+        if (!changed) {
+          nextRevision = current.revision;
+          this.syncSpaceCoordinationSingletonReservations(sql, tenantId, spaceId, current.keys, now);
+          return "unchanged";
+        }
+        nextRevision = current.revision + 1;
+        execute(sql, `INSERT INTO space_coordination_singleton_policies(tenant_id,space_id,capability_keys_json,revision,updated_by,updated_role,updated_at)
+          VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id) DO UPDATE SET capability_keys_json=excluded.capability_keys_json,
+          revision=excluded.revision,updated_by=excluded.updated_by,updated_role=excluded.updated_role,updated_at=excluded.updated_at`,
+          tenantId, spaceId, nextJson, nextRevision, body.actor_id, body.actor_role, now);
+        execute(sql, `INSERT INTO space_coordination_singleton_policy_events
+          (tenant_id,space_id,event_id,prior_revision,revision,prior_capability_keys_json,capability_keys_json,actor_id,actor_role,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`, tenantId, spaceId, crypto.randomUUID(), current.revision || null, nextRevision,
+          priorJson, nextJson, body.actor_id, body.actor_role, now);
+        this.syncSpaceCoordinationSingletonReservations(sql, tenantId, spaceId, nextKeys, now);
+        return "updated";
+      });
+    } catch { return Response.json({ error_code: "coordination_singleton_audit_write_failed" }, { status: 503 }); }
+    if (outcome === "conflict") return Response.json({ error_code: "coordination_singleton_policy_revision_conflict" }, { status: 409 });
+    if (outcome === "active_duplicates") return Response.json({ error_code: "coordination_singleton_active_duplicates" }, { status: 409 });
+    const reservations = queryAll<{ capability_key: string; entry_id: string; reserved_at: string }>(sql,
+      `SELECT r.capability_key,r.entry_id,r.reserved_at FROM space_coordination_singleton_reservations r
+        JOIN space_coordination_entries e ON e.tenant_id=r.tenant_id AND e.space_id=r.space_id AND e.entry_id=r.entry_id
+        WHERE r.tenant_id=? AND r.space_id=? AND e.status='active' AND (e.expires_at IS NULL OR e.expires_at>?)
+        ORDER BY r.capability_key`, tenantId, spaceId, now);
+    const current = queryOne<{ updated_by: string; updated_at: string }>(sql,
+      "SELECT updated_by,updated_at FROM space_coordination_singleton_policies WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+    return Response.json({ schema_version: 1, configured: Boolean(current), singleton_capability_keys: nextKeys,
+      revision: nextRevision, reservations, ...(current ? { updated_by: current.updated_by, updated_at: current.updated_at } : {}) });
+  }
+
+  private syncSpaceCoordinationSingletonReservations(sql: never, tenantId: string, spaceId: string, keys: string[], now: string): void {
+    const placeholders = keys.map(() => "?").join(",");
+    if (keys.length) execute(sql, `DELETE FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=? AND capability_key NOT IN (${placeholders})`, tenantId, spaceId, ...keys);
+    else execute(sql, "DELETE FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=?", tenantId, spaceId);
+    for (const key of keys) {
+      const active = queryOne<{ entry_id: string }>(sql,
+        `SELECT entry_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND capability_key=? AND status='active'
+          AND (expires_at IS NULL OR expires_at>?) ORDER BY entry_id LIMIT 1`, tenantId, spaceId, key, now);
+      if (!active) {
+        execute(sql, "DELETE FROM space_coordination_singleton_reservations WHERE tenant_id=? AND space_id=? AND capability_key=?", tenantId, spaceId, key);
+        continue;
+      }
+      execute(sql, `INSERT INTO space_coordination_singleton_reservations(tenant_id,space_id,capability_key,entry_id,reserved_at)
+        VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,space_id,capability_key) DO UPDATE SET entry_id=excluded.entry_id,reserved_at=excluded.reserved_at`,
+        tenantId, spaceId, key, active.entry_id, now);
+    }
+  }
+
+  private listSpaceCoordinationSingletonPolicyHistory(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const after = params.get("after");
+    const afterRevision = after === null ? 0 : Number(after);
+    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0 || (after !== null && String(afterRevision) !== after))
+      return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+    const requested = Number(params.get("limit") ?? "50");
+    const limit = Number.isInteger(requested) ? Math.min(100, Math.max(1, requested)) : 50;
+    const rows = queryAll<Record<string, unknown>>(this.ctx.storage.sql as never,
+      `SELECT event_id,prior_revision,revision,prior_capability_keys_json,capability_keys_json,actor_id,actor_role,created_at
+       FROM space_coordination_singleton_policy_events WHERE tenant_id=? AND space_id=? AND revision>? ORDER BY revision LIMIT ?`,
+      tenantId, spaceId, afterRevision, limit + 1);
+    const events = rows.slice(0, limit).map(row => ({ event_id: row.event_id, prior_revision: row.prior_revision, revision: row.revision,
+      prior_capability_keys: JSON.parse(String(row.prior_capability_keys_json)) as string[],
+      capability_keys: JSON.parse(String(row.capability_keys_json)) as string[], actor_id: row.actor_id,
+      actor_role: row.actor_role, created_at: row.created_at }));
+    const lastRevision = events.at(-1)?.revision;
+    return Response.json({ schema_version: 1, events,
+      next_after: rows.length <= limit || typeof lastRevision !== "number" ? null : String(lastRevision) });
+  }
+
   private async spaceCoordinationPolicy(request: Request, url: URL): Promise<Response> {
     const tenantId = url.searchParams.get("tenant_id") ?? "";
     const spaceId = url.searchParams.get("space_id") ?? "";
@@ -3245,7 +3436,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     if (expiresAt && Date.parse(expiresAt) <= Date.parse(now)) return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
     const eventId = crypto.randomUUID();
-    let publishOutcome: "published" | "member_facts_disabled";
+    let publishOutcome: "published" | "member_facts_disabled" | "singleton_conflict";
     try {
       publishOutcome = this.ctx.storage.transactionSync(() => {
         if (audience === "space_members") {
@@ -3254,6 +3445,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             body.tenant_id, body.space_id);
           if (policy?.member_facts_enabled !== 1) return "member_facts_disabled";
         }
+        if (!this.reserveSpaceCoordinationSingleton(sql, body.tenant_id!, body.space_id!, parsed.value.capability_key, body.entry_id!, now))
+          return "singleton_conflict";
         execute(sql,
           `INSERT INTO space_coordination_entries
            (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at)
@@ -3270,6 +3463,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "coordination_audit_write_failed" }, { status: 503 });
     }
     if (publishOutcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
+    if (publishOutcome === "singleton_conflict") return Response.json({ error_code: "coordination_singleton_conflict" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
       `SELECT entry_id,schema_version,capability_key,label,description,audience,status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at${schemaVersion === 2 ? ",created_by,approved_by,approved_role,provenance,revoked_by" : ""} FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?`,
       body.tenant_id, body.space_id, body.entry_id);
@@ -3304,6 +3498,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           VALUES (?,?,?,?,'revoked',?,?,?,?,?,?,?,?,'revoked','explicit_owner_or_admin_approval',?)`,
         body.tenant_id, body.space_id, crypto.randomUUID(), entryId, body.expected_version, body.expected_version! + 1, body.actor_id, body.approved_role,
         current.audience, current.audience, current.expires_at, current.expires_at, now);
+        this.releaseSpaceCoordinationSingleton(sql, body.tenant_id!, body.space_id!, entryId);
       });
     } catch {
       return Response.json({ error_code: "coordination_audit_write_failed" }, { status: 503 });
@@ -3331,11 +3526,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (expiresAt && Date.parse(expiresAt) <= Date.parse(validationNow)) return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
     const sql = this.ctx.storage.sql as never;
     let updatedAt = validationNow;
-    let outcome: "unavailable" | "conflict" | "updated" | "member_facts_disabled";
+    let outcome: "unavailable" | "conflict" | "updated" | "member_facts_disabled" | "singleton_conflict";
     try {
       outcome = this.ctx.storage.transactionSync(() => {
-        const current = queryOne<{ status: string; version: number; updated_at: string; audience: string; expires_at: string | null }>(sql,
-          "SELECT status,version,updated_at,audience,expires_at FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
+        const current = queryOne<{ status: string; version: number; updated_at: string; audience: string; expires_at: string | null; capability_key: string }>(sql,
+          "SELECT status,version,updated_at,audience,expires_at,capability_key FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
           body.tenant_id, body.space_id, entryId);
         if (!current) return "unavailable";
         if (current.status !== "active" || current.version !== body.expected_version) return "conflict";
@@ -3345,6 +3540,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             body.tenant_id, body.space_id);
           if (policy?.member_facts_enabled !== 1) return "member_facts_disabled";
         }
+        if (!this.reserveSpaceCoordinationSingleton(sql, body.tenant_id!, body.space_id!, parsed.value.capability_key, entryId, validationNow))
+          return "singleton_conflict";
         const previousUpdatedAt = Date.parse(current.updated_at);
         updatedAt = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
         const changed = this.ctx.storage.sql.exec(`UPDATE space_coordination_entries
@@ -3353,6 +3550,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           parsed.value.capability_key, parsed.value.label, parsed.value.description ?? null, parsed.value.audience, expiresAt,
           body.actor_id, body.approved_role, updatedAt, updatedAt, body.actor_id, body.tenant_id, body.space_id, entryId, body.expected_version);
         if (changed.rowsWritten !== 1) return "conflict";
+        if (current.capability_key !== parsed.value.capability_key) this.releaseSpaceCoordinationSingleton(sql, body.tenant_id!, body.space_id!, entryId, current.capability_key);
         execute(sql, `INSERT INTO space_coordination_audit_events
           (tenant_id,space_id,event_id,entry_id,action,prior_version,version,actor_id,actor_role,audience_before,audience_after,expires_at_before,expires_at_after,status_after,provenance,created_at)
           VALUES (?,?,?,?, 'amended',?,?,?,?,?,?,?,?,'active','explicit_owner_or_admin_approval',?)`,
@@ -3365,6 +3563,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (outcome === "unavailable") return Response.json({ error_code: "coordination_entry_unavailable" }, { status: 404 });
     if (outcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
+    if (outcome === "singleton_conflict") return Response.json({ error_code: "coordination_singleton_conflict" }, { status: 409 });
     if (outcome !== "updated") return Response.json({ error_code: "coordination_entry_version_conflict" }, { status: 409 });
     const entry = queryOne<Record<string, unknown>>(sql,
       "SELECT entry_id,schema_version,capability_key,label,description,audience,CASE WHEN status='active' AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' ELSE status END AS status,version,created_at,updated_at,revoked_at,last_confirmed_at,expires_at,created_by,approved_by,approved_role,provenance,revoked_by FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?",
@@ -3668,7 +3867,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const sql = this.ctx.storage.sql as never;
     const now = new Date().toISOString();
-    let outcome: "approved" | "rejected" | "replayed" | "missing" | "conflict" | "draft_changed" | "project_retired" | "member_facts_disabled" | "expired" | "id_conflict" = "missing";
+    let outcome: "approved" | "rejected" | "replayed" | "missing" | "conflict" | "draft_changed" | "project_retired" | "member_facts_disabled" | "expired" | "id_conflict" | "singleton_conflict" = "missing";
     try {
       outcome = this.ctx.storage.transactionSync(() => {
         const current = queryOne<{ project_id: string; requester_id: string; draft_json: string; status: string; revision: number; entry_id: string | null }>(sql,
@@ -3704,6 +3903,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const existingEntry = queryOne<{ source_proposal_id: string | null }>(sql,
           "SELECT source_proposal_id FROM space_coordination_entries WHERE tenant_id=? AND space_id=? AND entry_id=?", body.tenant_id, body.space_id, proposalId);
         if (existingEntry) return existingEntry.source_proposal_id === proposalId ? "replayed" : "id_conflict";
+        if (!this.reserveSpaceCoordinationSingleton(sql, String(body.tenant_id), String(body.space_id), parsed.capability_key, proposalId, now)) return "singleton_conflict";
         execute(sql, `INSERT INTO space_coordination_entries
           (tenant_id,space_id,entry_id,schema_version,capability_key,label,description,audience,status,advisory_only,version,provenance,created_by,approved_by,approved_role,created_at,updated_at,last_confirmed_at,last_confirmed_by,expires_at,source_project_id,source_proposal_id)
           VALUES(?,?,?,2,?,?,?,?,'active',1,1,'explicit_owner_or_admin_approval',?,?,?,?,?,?,?,?,?,?)`,
@@ -3728,6 +3928,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (outcome === "draft_changed") return Response.json({ error_code: "coordination_proposal_draft_changed" }, { status: 409 });
     if (outcome === "project_retired") return Response.json({ error_code: "coordination_proposal_source_retired" }, { status: 409 });
     if (outcome === "member_facts_disabled") return Response.json({ error_code: "coordination_member_facts_disabled" }, { status: 409 });
+    if (outcome === "singleton_conflict") return Response.json({ error_code: "coordination_singleton_conflict" }, { status: 409 });
     if (outcome === "expired") return Response.json({ error_code: "coordination_expiry_must_be_future" }, { status: 400 });
     if (outcome === "id_conflict") return Response.json({ error_code: "coordination_entry_id_conflict" }, { status: 409 });
     const proposal = queryOne<Record<string, unknown>>(sql,
@@ -4582,6 +4783,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-coordination-registry" && method === "POST") return this.publishSpaceCoordination(request);
       if (url.pathname === "/space-coordination-policy" && (method === "GET" || method === "PUT")) return this.spaceCoordinationPolicy(request, url);
       if (url.pathname === "/space-coordination-policy/history" && method === "GET") return this.listSpaceCoordinationPolicyHistory(url.searchParams);
+      if (url.pathname === "/space-coordination-singletons" && (method === "GET" || method === "PUT")) return this.spaceCoordinationSingletonPolicy(request, url);
+      if (url.pathname === "/space-coordination-singletons/history" && method === "GET") return this.listSpaceCoordinationSingletonPolicyHistory(url.searchParams);
       if (url.pathname === "/space-coordination-use-requests" && method === "GET") return this.listSpaceCoordinationUseRequests(url.searchParams);
       if (url.pathname === "/space-coordination-use-requests" && method === "POST") return this.createSpaceCoordinationUseRequest(request);
       if (url.pathname === "/space-coordination-proposals" && method === "GET") return this.listSpaceCoordinationProposals(url.searchParams);
@@ -8723,6 +8926,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
               VALUES(?,?,?,?,'source_retired',?,?,'system:source_project_retirement','system',?,?,?,?,'revoked','explicit_owner_or_admin_approval',?)`,
               coordinationTenantId, existing.space_id, crypto.randomUUID(), entry.entry_id, entry.version, Number(entry.version) + 1, entry.audience, entry.audience,
               entry.expires_at, entry.expires_at, now);
+            this.releaseSpaceCoordinationSingleton(sql, coordinationTenantId, existing.space_id, entry.entry_id);
           }
         });
       } catch {

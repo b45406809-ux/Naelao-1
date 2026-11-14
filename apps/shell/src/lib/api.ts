@@ -1,6 +1,6 @@
 import { ApiError, requestJson } from "./request";
 import type { ProjectKind } from "@naelao/agent-sdk";
-import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationPublicationProposal, SpaceCoordinationPublicationProposalPage, SpaceCoordinationProposalAction, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditHistoryPageV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPageV2, SpaceCoordinationPolicyHistoryPageV2, SpaceCoordinationPolicyV2, SpaceCoordinationPublicationProposal, SpaceCoordinationPublicationProposalPage, SpaceCoordinationProposalAction, SpaceCoordinationSingletonPolicy, SpaceCoordinationSingletonPolicyHistory, SpaceCoordinationUseRequestPage, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -132,6 +132,18 @@ export function listSpaceCoordinationPolicyHistory(spaceId: string, session: Ses
 export function updateSpaceCoordinationPolicy(spaceId: string, session: SessionCredentials, memberFactsEnabled: boolean, expectedRevision: number, confirm: boolean) {
   return apiFetch<SpaceCoordinationPolicyV2>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/policy`, {
     method: "PUT", session, body: JSON.stringify({ member_facts_enabled: memberFactsEnabled, expected_revision: expectedRevision, confirm }),
+  });
+}
+export function getSpaceCoordinationSingletonPolicy(spaceId: string, session: SessionCredentials) {
+  return apiFetch<SpaceCoordinationSingletonPolicy>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/singletons`, { session, cache: "no-store" });
+}
+export function listSpaceCoordinationSingletonPolicyHistory(spaceId: string, session: SessionCredentials, after?: string) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return apiFetch<SpaceCoordinationSingletonPolicyHistory>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/singletons/history${query}`, { session, cache: "no-store" });
+}
+export function updateSpaceCoordinationSingletonPolicy(spaceId: string, session: SessionCredentials, keys: string[], expectedRevision: number, confirm: boolean) {
+  return apiFetch<SpaceCoordinationSingletonPolicy>(`/v1/spaces/${encodeURIComponent(spaceId)}/coordination-registry/v2/singletons`, {
+    method: "PUT", session, body: JSON.stringify({ singleton_capability_keys: keys, expected_revision: expectedRevision, confirm }),
   });
 }
 export function listSpaceCoordinationUseRequests(spaceId: string, session: SessionCredentials, after?: string) {

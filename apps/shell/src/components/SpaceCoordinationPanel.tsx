@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2, SpaceCoordinationPublicationProposal, SpaceCoordinationUseRequest, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
+import type { SpaceCoordinationAuditEventV2, SpaceCoordinationAudienceV2, SpaceCoordinationDraftV2, SpaceCoordinationEntryV2, SpaceCoordinationPolicyEventV2, SpaceCoordinationPublicationProposal, SpaceCoordinationSingletonPolicyEvent, SpaceCoordinationUseRequest, SpaceCoordinationUseRequestResolution } from "@naelao/agent-sdk";
 import type { SessionCredentials } from "@/lib/api";
 import { ApiError } from "@/lib/request";
-import { amendSpaceCoordination, getSpaceCoordinationPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, listSpaceCoordinationProposalQueue, listSpaceCoordinationUseRequests, previewSpaceCoordination, publishSpaceCoordination, requestSpaceCoordinationCollaboration, resolveSpaceCoordinationRequest, reviewSpaceCoordinationProposal, revokeSpaceCoordination, updateSpaceCoordinationPolicy } from "@/lib/api";
+import { amendSpaceCoordination, getSpaceCoordinationPolicy, getSpaceCoordinationSingletonPolicy, listSpaceCoordination, listSpaceCoordinationAuditHistory, listSpaceCoordinationPolicyHistory, listSpaceCoordinationSingletonPolicyHistory, listSpaceCoordinationProposalQueue, listSpaceCoordinationUseRequests, previewSpaceCoordination, publishSpaceCoordination, requestSpaceCoordinationCollaboration, resolveSpaceCoordinationRequest, reviewSpaceCoordinationProposal, revokeSpaceCoordination, updateSpaceCoordinationPolicy, updateSpaceCoordinationSingletonPolicy } from "@/lib/api";
 
 export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   spaceId: string;
@@ -37,6 +37,11 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   const [policyConfirmed, setPolicyConfirmed] = React.useState(false);
   const [policyError, setPolicyError] = React.useState<string | null>(null);
   const [policyHistory, setPolicyHistory] = React.useState<{ events: SpaceCoordinationPolicyEventV2[]; nextAfter: string | null; open: boolean } | null>(null);
+  const [singletonPolicy, setSingletonPolicy] = React.useState<Awaited<ReturnType<typeof getSpaceCoordinationSingletonPolicy>> | null>(null);
+  const [singletonKeysDraft, setSingletonKeysDraft] = React.useState("");
+  const [singletonConfirmed, setSingletonConfirmed] = React.useState(false);
+  const [singletonError, setSingletonError] = React.useState<string | null>(null);
+  const [singletonHistory, setSingletonHistory] = React.useState<{ events: SpaceCoordinationSingletonPolicyEvent[]; nextAfter: string | null; open: boolean } | null>(null);
 
   React.useEffect(() => {
     const updateClock = () => setNowMs(Date.now());
@@ -99,6 +104,20 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
   }, [canManage, spaceId, session]);
 
   React.useEffect(() => { void refreshPolicy(); }, [refreshPolicy]);
+
+  const refreshSingletonPolicy = React.useCallback(async () => {
+    if (!canManage) return;
+    try {
+      const current = await getSpaceCoordinationSingletonPolicy(spaceId, session);
+      setSingletonPolicy(current);
+      setSingletonKeysDraft(current.singleton_capability_keys.join("\n"));
+      setSingletonError(null);
+    } catch {
+      setSingletonError("The Space singleton policy could not be loaded. Try again.");
+    }
+  }, [canManage, spaceId, session]);
+
+  React.useEffect(() => { void refreshSingletonPolicy(); }, [refreshSingletonPolicy]);
 
   async function loadMore() {
     if (!nextAfter || busy) return;
@@ -306,6 +325,43 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
     } finally { setBusy(false); }
   }
 
+  async function saveSingletonPolicy() {
+    if (!singletonPolicy || !singletonConfirmed) return;
+    const keys = singletonKeysDraft.split(/[\n,]/).map(key => key.trim()).filter(Boolean);
+    setBusy(true); setSingletonError(null);
+    try {
+      const updated = await updateSpaceCoordinationSingletonPolicy(spaceId, session, keys, singletonPolicy.revision, true);
+      setSingletonPolicy(updated);
+      setSingletonKeysDraft(updated.singleton_capability_keys.join("\n"));
+      setSingletonConfirmed(false);
+      setSingletonHistory(null);
+      setNotice("The Space singleton policy was saved. It applies only to approved coordination facts.");
+    } catch (error) {
+      const code = error instanceof ApiError ? error.errorCode ?? "" : "";
+      setSingletonError(code.includes("coordination_singleton_active_duplicates")
+        ? "This key already has multiple active facts. Unpublish or expire duplicates before enabling its singleton rule."
+        : code.includes("coordination_singleton_policy_revision_conflict")
+          ? "The singleton policy changed in another session. Reload it and review the current setting."
+          : "The singleton policy could not be saved. Check that keys are unique, lowercase, and no more than 32.");
+      await refreshSingletonPolicy();
+    } finally { setBusy(false); }
+  }
+
+  async function loadSingletonHistory(after?: string) {
+    if (!after && singletonHistory?.open) {
+      setSingletonHistory({ ...singletonHistory, open: false });
+      return;
+    }
+    setBusy(true); setSingletonError(null);
+    try {
+      const page = await listSpaceCoordinationSingletonPolicyHistory(spaceId, session, after);
+      setSingletonHistory(current => ({ events: after ? [...(current?.events ?? []), ...page.events] : page.events,
+        nextAfter: page.next_after, open: true }));
+    } catch {
+      setSingletonError("Singleton policy history could not be loaded. Check your Space role and try again.");
+    } finally { setBusy(false); }
+  }
+
   async function loadAuditHistory(entryId: string, after?: string) {
     const current = auditHistory[entryId];
     if (!after && current?.open) {
@@ -456,8 +512,50 @@ export function SpaceCoordinationPanel({ spaceId, session, canManage }: {
         {!policy && !policyError && <div className="settings-row-sub">Loading the current disclosure policy…</div>}
         {policyError && <p role="alert" className="settings-row-sub" style={{ color: "#dc2626", margin: 0 }}>{policyError}</p>}
       </div>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gap: 8 }}>
+        <div className="settings-row-label">Optional singleton rules for coordination facts</div>
+        <p className="settings-row-sub" style={{ margin: 0 }}>
+          By default, duplicate capability keys are allowed. Owners and administrators can reserve one active approved fact per exact key. This host-side rule applies to this registry only; it does not reserve provider resources or grant access.
+        </p>
+        {singletonPolicy && <>
+          <label className="settings-row-sub">Singleton capability keys (one lowercase key per line; commas also work)
+            <textarea className="form-input" rows={4} maxLength={3200} value={singletonKeysDraft} disabled={busy}
+              placeholder={"official.website\ncustomer_service.public_channel"}
+              onChange={event => { setSingletonKeysDraft(event.target.value); setSingletonConfirmed(false); setSingletonError(null); }} />
+          </label>
+          <div className="settings-row-sub">Policy revision {singletonPolicy.revision}{singletonPolicy.updated_at ? ` · last changed ${formatConfirmationTime(singletonPolicy.updated_at)}` : " · off by default"} · {singletonPolicy.singleton_capability_keys.length} key{singletonPolicy.singleton_capability_keys.length === 1 ? "" : "s"} enforced</div>
+          {singletonPolicy.reservations.length > 0 && <div className="settings-row-sub" aria-label="Active singleton reservations">
+            <strong>Current active reservations</strong>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>{singletonPolicy.reservations.map(reservation =>
+              <li key={reservation.capability_key}>{reservation.capability_key} · fact {reservation.entry_id} · {formatConfirmationTime(reservation.reserved_at)}</li>)}</ul>
+          </div>}
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void loadSingletonHistory()}>
+            {singletonHistory?.open ? "Hide singleton policy history" : "View singleton policy history"}
+          </button>
+          {singletonHistory?.open && <div style={{ display: "grid", gap: 6 }}>
+            {singletonHistory.events.map(event => <div key={event.event_id} className="settings-row-sub" style={{ borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+              <div>Revision {event.prior_revision ?? "new"} → {event.revision} · {formatConfirmationTime(event.created_at)}</div>
+              <div>{event.actor_role} actor {event.actor_id} · [{event.prior_capability_keys.join(", ")}] → [{event.capability_keys.join(", ")}]</div>
+            </div>)}
+            {!singletonHistory.events.length && <div className="settings-row-sub">No singleton policy changes are recorded.</div>}
+            {singletonHistory.nextAfter && <button type="button" className="btn btn-ghost btn-sm" disabled={busy}
+              onClick={() => void loadSingletonHistory(singletonHistory.nextAfter ?? undefined)}>Load older singleton policy changes</button>}
+          </div>}
+          {singletonKeysDraft.trim() !== singletonPolicy.singleton_capability_keys.join("\n") && <>
+            <label className="settings-row-sub" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <input type="checkbox" checked={singletonConfirmed} disabled={busy} onChange={event => setSingletonConfirmed(event.target.checked)} />
+              I approve enforcing these exact singleton capability keys for approved coordination facts.
+            </label>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !singletonConfirmed} onClick={() => void saveSingletonPolicy()}>
+              Save singleton policy
+            </button>
+          </>}
+        </>}
+        {!singletonPolicy && !singletonError && <div className="settings-row-sub">Loading the current singleton policy…</div>}
+        {singletonError && <p role="alert" className="settings-row-sub" style={{ color: "#dc2626", margin: 0 }}>{singletonError}</p>}
+      </div>
       <div className="settings-row-label">{editingEntry ? "Edit an approved fact" : "Publish an approved fact"}</div>
-      <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to the selected audience. Duplicate capability keys are allowed; this registry does not reserve or enforce a singleton resource.</p>
+      <p className="settings-row-sub" style={{ margin: 0 }}>Publishing reveals the label and description to the selected audience. Exact-key singleton rules, when configured above, prevent more than one active approved fact under that key.</p>
       <label className="settings-row-sub">Capability key
         <input className="form-input" maxLength={96} value={capabilityKey} disabled={busy} placeholder="official.website" onChange={event => { setCapabilityKey(event.target.value); changed(); }} />
       </label>
