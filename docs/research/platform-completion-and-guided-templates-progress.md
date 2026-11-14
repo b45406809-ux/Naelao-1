@@ -3,6 +3,15 @@
 
 ## Active checkpoint — 2026-11-14 (U12 verification resumed after P21)
 
+U12 fix `6ee3a16577fba9c14304aae4d4b24cb43050c254` is pushed. The P10/P24 narrow rollback path is
+implemented in the current local diff: an owner/admin loads up to 50 trusted releases, chooses an exact
+historical version, reviews the same publisher signature and package constraints, pauses/drains, and
+applies with a durable receipt. Focused Spaces suites pass **46/46**, full build **55/55 tasks**, full
+typecheck **82/82 tasks**, and `git diff --check`. Tests verify 1.2.0→1.0.0 and that the install stays
+paused; stale pins, missing exact targets and revoked publisher keys fail closed. This is local
+Worker/SQLite evidence only; no deployment or live acceptance ran. Broader migrations, authority and
+configuration changes, compromise response, scanning, retention and live acceptance remain open.
+
 P13 unknown/misrouted and malformed queue messages now retry to configured DLQs in Workflows, Billing, Notifications, Analytics, Provisioner and Agents (`4de53055`, `d640dbae`, pushed). Focused local suites and six affected Worker typechecks pass. DLQs are worker/environment-specific; Admin's consumer targets a separate queue and stores/logs raw payloads, so generic replay remains uncoded pending a safe retention/idempotency contract. P23 Notifications has a durable non-PII terminal status view. True backlog/age/DLQ remains unknown without supported provider evidence.
 
 P14 code `31aac278b7962fd28bbe592abf1783a816bbd07e` is pushed. Portal and Shell Product-user clients await server generation revocation; Portal and Dashboard builder clients await `/v1/auth/revoke`; Shell also awaits the HttpOnly DeskDrop cookie endpoint. Failed revocation leaves credentials available for retry and the UI shows the error; already-revoked builder tokens (401) clear locally. Evidence: Shell **3/3**, Portal **3/3**, Spaces logout route **17/17**, Shell/Portal/Dashboard typechecks and `git diff --check`. P14 remains PARTIAL for localStorage bearer storage, cross-origin/embedded cookie and CSRF/XSS transport decisions, and deployed copied-token acceptance.
@@ -11,7 +20,7 @@ P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b508
 
 U03 Agent37 lifecycle recovery and U11 supported metering, cost, threshold/alert and owner controls are already source-to-caller audited; no independent U11 caller gap was found. U12 verification fixed an actual Lemon Squeezy test mock typing error. Frozen Corepack pnpm 9.12.0 install, Billing **52/52**, full build **55/55 tasks** and full typecheck **82/82 tasks** pass. Turbo child processes needed a temporary PATH wrapper because the global fallback is pnpm 11; the repository remains pinned to pnpm 9. Build included local image builds and Wrangler dry runs only. No CI event, deployment, provider account, or live acceptance ran. U12 is locally implemented for build wiring and remains partial for future CI execution and deployed-image parity. The managed-services matrix remains authoritative for S4–S9/U01–U12; U05/U06 runtime contracts remain unsupported rather than credential-blocked. Rollouts stay disabled.
 
-Exact next action: implement owner-reviewed rollback to a previously signed Space-shared release for static Canvas/channel code packages with unchanged authority/configuration. Add trusted release-history discovery and a version selector, reuse signed review plus installation pause/drain/apply, and verify stale/revoked releases fail closed while successful apply leaves the installation paused. Then continue S4–S9 and the platform plan's dependency queue; do not repeat completed audits without new evidence.
+Exact next action after saving and pushing the rollback checkpoint: expose signed release version and publisher identity in the trusted per-install runtime response, return only validated metadata through the owner-only voice operations API, render it in the signed keypad package dashboard, and test installation isolation plus revoked-release denial. Then continue uncoded guided-template, voice, shared-Space and managed-services requirements in dependency order; do not repeat completed audits without new evidence.
 
 ## Previous checkpoint details
 

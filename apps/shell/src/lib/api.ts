@@ -1690,6 +1690,12 @@ export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCr
 export function listSpaceSharedExtensionCatalog(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ extensions: SpaceSharedExtensionCatalogEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-catalog`, { session, cache: "no-store" });
 }
+export async function listSpaceSharedExtensionReleases(spaceId: string, installationId: string, session: SessionCredentials): Promise<ExtensionRelease[]> {
+  const result = await apiFetch<{ releases: ExtensionRelease[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/releases`,
+    { session, cache: "no-store" });
+  return result.releases;
+}
 export function previewSpaceSharedExtensionUpdate(spaceId: string, installationId: string, session: SessionCredentials,
   expectedCurrentVersion: string, candidateVersion: string) {
   return apiFetch<SpaceSharedExtensionUpdateReview>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/update-review`, {

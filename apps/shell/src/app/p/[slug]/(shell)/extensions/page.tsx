@@ -8,10 +8,10 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { applySpaceSharedExtensionUpdate, callSpaceExtensionSettingsAudit, importSpaceSharedExtension, installSpaceSharedExtension,
   listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, listSpaceSharedExtensionUpdateReceipts,
-  previewSpaceSharedExtensionImport, previewSpaceSharedExtensionInstall,
+  listSpaceSharedExtensionReleases, previewSpaceSharedExtensionImport, previewSpaceSharedExtensionInstall,
   previewSpaceSharedExtensionUpdate, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants,
   type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry, type SpaceSharedExtensionInstallReview,
-  type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReviewPackage, type SpaceSharedExtensionUpdateReceipt,
+  type ExtensionRelease, type SpaceSharedExtensionImportReview, type SpaceSharedExtensionInstallReviewPackage, type SpaceSharedExtensionUpdateReceipt,
   type SpaceSharedExtensionUpdateReview } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
@@ -44,6 +44,7 @@ export default function ExtensionsPage() {
       ]);
       setApps(result.apps); setCatalog(available.extensions); setInstallReviews({});
       setUpdateReceipts(updateHistory.receipts);
+      setReleaseHistory({}); setSelectedReleaseVersion({});
       setActive(current => current && result.apps.some(app => app.app_id === current.app_id) ? current : null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load Space extensions.");
@@ -62,6 +63,9 @@ export default function ExtensionsPage() {
   const [updateReviews, setUpdateReviews] = React.useState<Record<string, SpaceSharedExtensionUpdateReview>>({});
   const [updateReceipts, setUpdateReceipts] = React.useState<SpaceSharedExtensionUpdateReceipt[]>([]);
   const [applyingUpdate, setApplyingUpdate] = React.useState<string | null>(null);
+  const [releaseHistory, setReleaseHistory] = React.useState<Record<string, ExtensionRelease[]>>({});
+  const [loadingReleaseHistory, setLoadingReleaseHistory] = React.useState<string | null>(null);
+  const [selectedReleaseVersion, setSelectedReleaseVersion] = React.useState<Record<string, string>>({});
   React.useEffect(() => setSelectedGrants(current => {
     const next = { ...current };
     for (const entry of catalog) if (!(entry.id in next)) next[entry.id] = [];
@@ -157,11 +161,22 @@ export default function ExtensionsPage() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not check extension drain status."); }
     finally { setChangingLifecycle(null); }
   }
-  async function reviewUpdate(app: SpaceSharedExtensionApp, candidate: SpaceSharedExtensionCatalogEntry) {
-    if (!credentials || !app.release_version || !candidate.version) return;
+  async function loadReleaseHistory(app: SpaceSharedExtensionApp) {
+    if (!credentials) return;
+    setLoadingReleaseHistory(app.installation_id); setError(null);
+    try {
+      const releases = await listSpaceSharedExtensionReleases(activeSpaceId, app.installation_id, credentials);
+      setReleaseHistory(current => ({ ...current, [app.installation_id]: releases }));
+      setSelectedReleaseVersion(current => ({ ...current, [app.installation_id]: current[app.installation_id]
+        ?? releases.find(release => release.signatureValid && release.version !== app.release_version)?.version ?? "" }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load trusted release history."); }
+    finally { setLoadingReleaseHistory(null); }
+  }
+  async function reviewUpdate(app: SpaceSharedExtensionApp, candidateVersion: string) {
+    if (!credentials || !app.release_version || !candidateVersion) return;
     setReviewingUpdate(app.installation_id); setError(null);
     try {
-      const review = await previewSpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, app.release_version, candidate.version);
+      const review = await previewSpaceSharedExtensionUpdate(activeSpaceId, app.installation_id, credentials, app.release_version, candidateVersion);
       setUpdateReviews(current => ({ ...current, [app.installation_id]: review }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not review the signed package update."); }
     finally { setReviewingUpdate(null); }
@@ -223,15 +238,36 @@ export default function ExtensionsPage() {
           ? app.dependency_pins.map(pin => `${pin.extensionId}@${pin.version} (${pin.manifestSha256.slice(0, 12)})`).join(", ") : "none"}</p>}
       {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Previously admitted work must finish before a package update; saved data and grants are retained.</p>}
       {app.release_version && <p style={{ color: "var(--text3)", fontSize: 12 }}>Installed signed release: {app.release_version}</p>}
-      {catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version) && (() => {
-        const candidate = catalog.find(entry => entry.id === app.extension_id && entry.version && app.release_version && entry.version !== app.release_version)!;
+      {app.release_version && (() => {
+        const releases = releaseHistory[app.installation_id];
+        const eligibleReleases = (releases ?? []).filter(release => release.signatureValid && release.publisher?.revoked !== true
+          && release.version !== app.release_version);
+        const selectedVersion = selectedReleaseVersion[app.installation_id] ?? "";
+        const selectedRelease = eligibleReleases.find(release => release.version === selectedVersion);
+        const currentRelease = releases?.find(release => release.version === app.release_version);
+        const rollingBack = Boolean(selectedRelease && currentRelease
+          && Date.parse(selectedRelease.createdAt) < Date.parse(currentRelease.createdAt));
         const review = updateReviews[app.installation_id];
         return <section style={{ margin: "12px 0", padding: 12, border: "1px solid var(--border, #ddd)", borderRadius: 8 }}>
-          <strong>Signed update available: {candidate.version}</strong>
-          <p style={{ color: "var(--text3)", fontSize: 12 }}>Review verifies the signed candidate and compares its authority, settings, dependencies, connections and storage. Preview does not change the installation.</p>
-          <Button variant="secondary" disabled={reviewingUpdate !== null} onClick={() => void reviewUpdate(app, candidate)}>
-            {reviewingUpdate === app.installation_id ? "Reviewing…" : "Review update"}
-          </Button>
+          <strong>Signed release history</strong>
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>Choose an exact signed release to review. The host rechecks the publisher and package; only static Canvas and channel-code changes with unchanged authority/configuration can be applied here. The installation must be paused and drained, and stays paused after apply.</p>
+          {!releases ? <Button variant="secondary" disabled={loadingReleaseHistory !== null} onClick={() => void loadReleaseHistory(app)}>
+            {loadingReleaseHistory === app.installation_id ? "Loading releases…" : "Load signed releases"}
+          </Button> : <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <label>Target release <select aria-label="Target signed release" value={selectedVersion}
+              onChange={event => {
+                setSelectedReleaseVersion(current => ({ ...current, [app.installation_id]: event.target.value }));
+                setUpdateReviews(current => { const next = { ...current }; delete next[app.installation_id]; return next; });
+              }}>
+              <option value="">Choose a signed release…</option>
+              {eligibleReleases.map(release => <option key={release.version} value={release.version}>{release.version}</option>)}
+            </select></label>
+            <Button variant="secondary" disabled={reviewingUpdate !== null || !selectedVersion} onClick={() => void reviewUpdate(app, selectedVersion)}>
+              {reviewingUpdate === app.installation_id ? "Reviewing release…" : "Review selected release"}
+            </Button>
+            <Button variant="secondary" disabled={loadingReleaseHistory !== null} onClick={() => void loadReleaseHistory(app)}>Refresh history</Button>
+          </div>}
+          {releases && eligibleReleases.length === 0 && <p role="status">No other currently trusted signed release is available for this installation.</p>}
           {review && <div role="status" style={{ marginTop: 12, fontSize: 12 }}>
             <p>Verified publisher: {review.candidate.publisher_id} · {review.current.version} → {review.candidate.version}</p>
             <p>Permissions added: {review.permissions.added.join(", ") || "none"}; removed: {review.permissions.removed.join(", ") || "none"}</p>
@@ -245,7 +281,8 @@ export default function ExtensionsPage() {
             {review.review.apply_supported
               ? <><p>This candidate changes only release versions and artifact code for static Canvas and channel handlers. The signed manifest keeps the same permissions, capabilities, settings, dependencies, provider connections, shared-drive grants and package configuration. Gadget schemas, data migrations and authority changes are not supported by this update path. Pause the installation and wait until all admitted runtime work has drained; it stays paused after the update.</p>
                 <Button disabled={applyingUpdate !== null || app.status !== "disabled" || !review.update_review_token || (review.update_review_expires_at ?? 0) <= Date.now()}
-                  onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed update…" : "Apply update and keep paused"}</Button></>
+                  onClick={() => void applyUpdate(app)}>{applyingUpdate === app.installation_id ? "Applying reviewed release…" : rollingBack
+                    ? "Roll back to selected release and keep paused" : "Apply selected release and keep paused"}</Button></>
               : <p>Update is unavailable: {review.review.apply_block_reason ?? "refresh the review"}. {review.review.active_work_count > 0
                 ? `${review.review.active_work_count} admitted runtime operation(s) still need to finish before review can issue an apply token.` : ""}</p>}
           </div>}

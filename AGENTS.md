@@ -14,6 +14,9 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 
 ## Active checkpoint — 2026-11-14
 
+The U12 typing fix is pushed to `origin/Mcbt5s-Backup-2` as
+`6ee3a16577fba9c14304aae4d4b24cb43050c254`.
+
 P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b5089286cf4fbd13727b252ba75`.
 Auth stores the encrypted reset payload atomically with its token in migration 0245, uses bounded
 leased retries with stable Notification IDs and superseded-token cancellation, preserves the neutral
@@ -33,13 +36,23 @@ pnpm 11 invocation still fails in this non-TTY workspace; the repository remains
 Build included local image builds and Wrangler dry runs only. No deploy, CI event, provider call or
 live acceptance ran; U12 remains PARTIAL for future CI execution and deployed image parity.
 
-Exact next action: add owner-reviewed rollback to a previously signed Space-shared release when the
-package consists only of static Canvas/channel code with unchanged authority/configuration. Extend
-the trusted release history caller, reuse the existing pause/drain + signed update review/apply flow,
-and test that the installation stays paused and stale/revoked releases fail closed. Keep all rollouts
-disabled. Preserve the existing untracked `infra/scripts/__pycache__/`. After compaction, interruption
-or a new session, read both plans and both progress records, inspect the actual worktree, and resume
-from this action.
+P10/P24 rollback to an earlier signed Space-shared static Canvas/channel-code release is implemented
+in the current local diff. The authenticated Space-admin release-history route limits results to 50
+and rechecks publisher trust; the Shell selects an exact historical release and reuses signed review,
+pause/drain and durable apply receipts. Tests cover a 1.2.0→1.0.0 rollback that remains paused, stale
+pins, unavailable exact releases, revoked keys and release-list bounds. Focused Spaces suites pass
+**46/46**, full workspace build **55/55 tasks**, full workspace typecheck **82/82 tasks**, and
+`git diff --check`. These are local Worker/SQLite/build checks only; nothing deployed or live was
+exercised. P10/P24 remain PARTIAL for data/schema migration recovery, authority/config changes, key
+compromise response, scanning, retention and live acceptance.
+
+Exact next action after saving and pushing this checkpoint: add signed release version and publisher
+identity to the trusted per-install runtime response, expose only that validated metadata through the
+owner-only voice operations API, render it in the bounded phone-menu dashboard, and test exact-install
+isolation plus revoked-release denial. Continue uncoded S3–S9/U01–U12 and platform requirements after
+that slice; keep all rollouts disabled and preserve the existing untracked
+`infra/scripts/__pycache__/`. After compaction, interruption or a new session, read both plans and
+both progress records, inspect the actual worktree, and resume from the exact next unfinished action.
 
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 

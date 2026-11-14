@@ -2455,6 +2455,32 @@ function spacePackageReviewConnectionRows(manifest: SpacePackageReviewManifest) 
 }
 
 const sharedExtensionUpdateReviewPath = "/spaces/:spaceId/shared-extension-installations/:instanceId/update-review";
+const sharedExtensionReleasesPath = "/spaces/:spaceId/shared-extension-installations/:instanceId/releases";
+app.use(sharedExtensionReleasesPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use(sharedExtensionReleasesPath, requireSpaceMembership({ GET: "admin" }));
+app.get(sharedExtensionReleasesPath, async c => {
+  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  if (!/^[A-Za-z0-9._:-]{1,768}$/.test(instanceId)) return c.json({ error_code: "extension_installation_id_invalid" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const installationsResponse = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+    tenant_id: owned.tenantId, space_id: spaceId, extension_id: "__all__", include_manifest: "1",
+  })}`));
+  if (!installationsResponse.ok) return c.json({ error_code: "extension_release_history_installation_lookup_unavailable" }, 503);
+  const installations = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string;
+    project_id: string | null; scope: string; status: string }> }>(installationsResponse, 2 * 1024 * 1024);
+  const installed = installations.installations?.find(item => item.instance_id === instanceId);
+  if (!installed || installed.project_id !== null || installed.scope !== "SPACE_SHARED" || !["active", "disabled"].includes(installed.status))
+    return c.json({ error_code: "extension_update_review_installation_not_found" }, 404);
+  const releaseResponse = await stub.fetch(new Request(`http://space-do/extension-releases?${new URLSearchParams({
+    extension_id: installed.extension_id, limit: "50",
+  })}`));
+  if (!releaseResponse.ok) return c.json({ error_code: "extension_release_history_unavailable" }, 503);
+  const result = await readBoundedResponseJson<{ releases?: Array<PublisherTaggedRelease & { version?: string }> }>(releaseResponse, 1024 * 1024);
+  const releases = await currentPublisherReleases(c.env, owned.tenantId, spaceId, result.releases ?? []);
+  return c.json({ releases }, 200, { "cache-control": "private, no-store" });
+});
 app.use(sharedExtensionUpdateReviewPath, requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use(sharedExtensionUpdateReviewPath, requireSpaceMembership({ POST: "admin" }));
 app.post(sharedExtensionUpdateReviewPath, async c => {
@@ -2487,12 +2513,6 @@ app.post(sharedExtensionUpdateReviewPath, async c => {
     return c.json({ error_code: "extension_update_review_installation_not_found" }, 404);
   if (installed.release_version !== body.expected_current_version)
     return c.json({ error_code: "extension_update_review_stale_pin", current_version: installed.release_version ?? null }, 409);
-
-  const catalogResponse = await stub.fetch(new Request("http://space-do/extension-package-catalog"));
-  if (!catalogResponse.ok) return c.json({ error_code: "extension_update_review_catalog_unavailable" }, 503);
-  const catalog = await readBoundedResponseJson<{ releases?: Array<{ extension_id: string; version: string }> }>(catalogResponse, 256 * 1024);
-  if (!catalog.releases?.some(item => item.extension_id === installed.extension_id && item.version === body.candidate_version))
-    return c.json({ error_code: "extension_update_review_candidate_not_current" }, 409);
 
   let currentManifest: SpacePackageReviewManifest, candidateManifest: SpacePackageReviewManifest;
   try {

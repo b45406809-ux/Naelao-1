@@ -714,6 +714,9 @@ describe("runtime extension installation", () => {
         version: "1.2.0", manifestJson: JSON.stringify(candidateManifest), artifactSha256: "c".repeat(64), publisherId: "pub_example",
         publisherKeyId, publisherSignature: "signed-candidate-release", publisherPayloadSha256: "e".repeat(64) }) }));
     expect(importCandidate.status).toBe(201);
+    const limitedReleases = await space.fetch(new Request("http://space/extension-releases?extension_id=ext_static_canvas&limit=1"));
+    expect((await limitedReleases.json() as { releases: unknown[] }).releases).toHaveLength(1);
+    expect((await space.fetch(new Request("http://space/extension-releases?extension_id=ext_static_canvas&limit=0"))).status).toBe(400);
     const acquireLease = () => space.fetch(new Request("http://space/extension-runtime-work", { method: "POST",
       headers: { "content-type": "application/json", "x-naelao-internal-token": token },
       body: JSON.stringify({ action: "acquire", tenantId: "tenant", spaceId: "space", projectId: null,
@@ -761,6 +764,19 @@ describe("runtime extension installation", () => {
     expect(await receiptLookup.json()).toMatchObject({ receipt: { request_id: claims.requestId, installation_id: installationId } });
     const unauthenticatedHistory = await space.fetch(new Request("http://space/space-shared-extension-updates?tenant_id=tenant&space_id=space"));
     expect(unauthenticatedHistory.status).toBe(403);
+
+    const rollbackClaims = { ...claims, fromVersion: "1.2.0", toVersion: "1.0.0", artifactSha256: "a".repeat(64),
+      expiresAt: Date.now() + 60_000, requestId: "43f83d14-14df-4c9a-a0a5-07ccf87a5d82" };
+    const rollbackPayload = JSON.stringify(rollbackClaims);
+    const rollbackToken = btoa(rollbackPayload).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")
+      + "." + await signHmac(rollbackPayload, secret);
+    const rollback = await space.fetch(new Request("http://space/space-shared-extension-update", { method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", claims: rollbackClaims, reviewToken: rollbackToken }) }));
+    expect(rollback.status, await rollback.clone().text()).toBe(200);
+    expect(await rollback.json()).toMatchObject({ updated: true, replayed: false, receipt: { from_version: "1.2.0", to_version: "1.0.0" } });
+    expect(storage.sql.exec<{ release_version: string; status: string }>("SELECT release_version,status FROM extension_instances WHERE instance_id=?", installationId).toArray())
+      .toEqual([{ release_version: "1.0.0", status: "disabled" }]);
   });
 
   it("imports publisher-attested release metadata idempotently and rejects immutable conflicts", async () => {

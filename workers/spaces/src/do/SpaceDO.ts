@@ -4039,7 +4039,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       if (url.pathname === "/extension-releases/rollback" && method === "POST") return this.rollbackExtensionRelease(request);
-      if (url.pathname === "/extension-releases" && method === "GET") return await this.listExtensionReleases(url.searchParams.get("extension_id") ?? "");
+      if (url.pathname === "/extension-releases" && method === "GET") {
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit === null ? undefined : /^\d{1,3}$/.test(rawLimit) && Number(rawLimit) >= 1 && Number(rawLimit) <= 100
+          ? Number(rawLimit) : 0;
+        if (limit === 0) return Response.json({ error_code: "extension_release_limit_invalid" }, { status: 400 });
+        return await this.listExtensionReleases(url.searchParams.get("extension_id") ?? "", limit);
+      }
       if (url.pathname === "/extension-package-catalog" && method === "GET") return await this.listExtensionPackageCatalog();
       if (url.pathname === "/extension-package-release" && method === "GET") return await this.getExtensionPackageRelease(url.searchParams);
       if (url.pathname === "/extension-package-release/import" && method === "POST") return await this.importExtensionPackageRelease(request);
@@ -14075,10 +14081,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       : Response.json({ error_code: "publisher_revocation_receipt_not_found" }, { status: 404, headers: { "cache-control": "private, no-store" } });
   }
 
-  private async listExtensionReleases(extensionId: string): Promise<Response> {
+  private async listExtensionReleases(extensionId: string, limit?: number): Promise<Response> {
     if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)) return Response.json({ error: "extension_id_invalid" }, { status: 400 });
     const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string } & PublisherReleaseFields>(this.ctx.storage.sql as never,
-      "SELECT version,manifest_json,artifact_sha256,host_signature,created_at,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC", extensionId);
+      `SELECT version,manifest_json,artifact_sha256,host_signature,created_at,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at
+       FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC${limit ? " LIMIT ?" : ""}`,
+      ...(limit ? [extensionId, limit] : [extensionId]));
     const releases = await Promise.all(rows.map(async row => {
       let permissions: string[] = [], capabilities: string[] = [], manifestValid = true;
       try {
