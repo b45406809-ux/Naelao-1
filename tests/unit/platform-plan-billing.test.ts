@@ -186,6 +186,7 @@ async function loadDb() {
     m("0061_reseller_ledger_kind.sql"),
     m("0127_launchpad_order_seat_user_id.sql"),
     m("0225_billing_dunning_outbox.sql"),
+    m("0243_billing_purchase_price_snapshots.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
     .bind(ORG_ID).run();
@@ -216,6 +217,20 @@ function planEventBody(eventName: string, opts: { subId?: string; status?: strin
   });
 }
 
+function paidPlanEventBody(opts: { plan?: string; variantId?: string; amount?: number } = {}): string {
+  const custom = { kind: "platform_plan", org_id: ORG_ID, plan: opts.plan ?? "growth", spaceId: ORG_ID };
+  return JSON.stringify({
+    meta: { event_name: "subscription_payment_success", custom_data: custom },
+    data: {
+      id: "sub_1",
+      attributes: {
+        subscription_id: "sub_1", order_id: "ls-order-plan-1", total: opts.amount ?? 2500,
+        currency: "USD", variant_id: opts.variantId ?? "variant-growth", custom_data: custom,
+      },
+    },
+  });
+}
+
 async function webhookEnv(fakeDb: unknown) {
   return {
     PLATFORM_SECRET: SECRET,
@@ -240,6 +255,39 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     // wrote it, so upgrades never unlocked free-tier gates. This is what makes the upgrade real.
     const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
     expect(org).toMatchObject({ plan_tier: "growth" });
+  });
+
+  it("pins the signed purchase terms by provider event and rejects conflicting reuse", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const body = paidPlanEventBody();
+    const first = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), await webhookEnv(fakeDb) as never);
+    expect(first.status).toBe(200);
+    const repeated = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), await webhookEnv(fakeDb) as never);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toMatchObject({ duplicate: true });
+    expect(await fakeDb.prepare(`SELECT provider,provider_event_id,purchase_scope,org_id,plan_tier,subscription_id,
+      provider_variant_id,amount_cents,currency FROM billing_plan_purchase_receipts`).first()).toMatchObject({
+      provider: "lemon_squeezy", provider_event_id: "ls-order-plan-1", purchase_scope: "platform_plan",
+      org_id: ORG_ID, plan_tier: "growth", subscription_id: "sub_1", provider_variant_id: "variant-growth",
+      amount_cents: 2500, currency: "USD",
+    });
+
+    const conflictingBody = paidPlanEventBody({ plan: "business", variantId: "variant-business", amount: 9900 });
+    const conflict = await handleLemonSqueezyWebhook(await signedWebhook(conflictingBody, "whsec_test"), await webhookEnv(fakeDb) as never);
+    expect(conflict.status).toBe(500);
+    expect(await fakeDb.prepare("SELECT plan_tier FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first()).toMatchObject({ plan_tier: "growth" });
+    expect(await fakeDb.prepare("SELECT COUNT(*) AS count FROM billing_plan_purchase_receipts").first()).toMatchObject({ count: 1 });
+  });
+
+  it("does not apply a paid-plan entitlement when the signed purchase has no provider variant", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const body = paidPlanEventBody({ variantId: "" });
+    const result = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), await webhookEnv(fakeDb) as never);
+    expect(result.status).toBe(500);
+    expect(await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first()).toMatchObject({ plan_tier: "free" });
+    expect(await fakeDb.prepare("SELECT COUNT(*) AS count FROM billing_plan_purchase_receipts").first()).toMatchObject({ count: 0 });
   });
 
   it("records platform billing events without an Agents binding", async () => {

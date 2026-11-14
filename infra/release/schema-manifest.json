@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0242_extension_provider_cleanup_operation_kinds",
+  "requiredSchemaVersion": "0244_marketplace_purchase_price_snapshots",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -971,6 +971,14 @@
     {
       "filename": "0242_extension_provider_cleanup_operation_kinds.sql",
       "sha256": "0dadaa93dc54fbcd83add6ed12f3b5863f9cf662d34c0b966410835f43874cb8"
+    },
+    {
+      "filename": "0243_billing_purchase_price_snapshots.sql",
+      "sha256": "770695a409d7a0a265503625cfcd487cbfdd738d4126281efcecc382ef091247"
+    },
+    {
+      "filename": "0244_marketplace_purchase_price_snapshots.sql",
+      "sha256": "cfc44a4206f7cbfb62a3b81b66bf86f1a789382c109dee5a12af613fdafae18a"
     }
   ]
 }

@@ -38,4 +38,37 @@ describe("Product user subscription entitlements", () => {
     expect(writes.at(-1)?.sql).toContain("provider_event_at");
     expect(writes.at(-1)?.sql).toContain("excluded.provider_event_at IS NULL AND product_user_subscriptions.provider_event_at IS NULL");
   });
+
+  it("stores a provider purchase snapshot before applying a Product-user paid plan", async () => {
+    const statements: Array<{ sql: string; args: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) { return { bind(...args: unknown[]) {
+        statements.push({ sql, args });
+        return { first: async () => ({ active: 1 }), run: async () => ({ meta: { changes: 1 } }) };
+      } }; },
+    } as unknown as D1Database;
+    await expect(recordProductUserPlanSubscription(event({ type: "payment.success", providerUpdatedAt: undefined }), {
+      PLATFORM_DB: db, PLATFORM_SECRET: "secret",
+    })).resolves.toBe(true);
+    const receipt = statements.find(statement => statement.sql.includes("INSERT INTO billing_plan_purchase_receipts"));
+    expect(receipt?.args).toEqual([
+      "lemon_squeezy", "event-1", "product_user_plan", null, "product-1", "user-1", "growth", "subscription-1",
+      "variant-1", 1000, "USD", null,
+    ]);
+    expect(statements.at(-1)?.sql).toContain("INSERT INTO product_user_subscriptions");
+  });
+
+  it("rejects a purchase identity conflict before writing Product-user entitlement", async () => {
+    const statements: Array<{ sql: string; args: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) { return { bind(...args: unknown[]) {
+        statements.push({ sql, args });
+        return { first: async () => ({ active: 1 }), run: async () => ({ meta: { changes: sql.includes("billing_plan_purchase_receipts") ? 0 : 1 } }) };
+      } }; },
+    } as unknown as D1Database;
+    await expect(recordProductUserPlanSubscription(event({ type: "payment.success" }), {
+      PLATFORM_DB: db, PLATFORM_SECRET: "secret",
+    })).rejects.toThrow("conflicts with its recorded price snapshot");
+    expect(statements.some(statement => statement.sql.includes("INSERT INTO product_user_subscriptions"))).toBe(false);
+  });
 });

@@ -31,6 +31,56 @@ function requiredMetadataString(metadata: Record<string, unknown>, key: string, 
   return value.trim();
 }
 
+function requiredPurchaseIdentity(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 256) {
+    throw new Error(`plan purchase is missing a valid ${field}`);
+  }
+  return value.trim();
+}
+
+/** Store an immutable provider-reported plan purchase snapshot. Replays with the same terms are
+ * idempotent; reuse of one provider event identity with different terms fails before entitlement
+ * state is changed. Subscription lifecycle and refund policy remain in their existing paths. */
+async function recordPlanPurchaseReceipt(
+  event: NormalizedBillingEvent,
+  db: D1Database,
+  scope: "platform_plan" | "product_user_plan",
+  identity: { orgId: string } | { productId: string; endUserId: string },
+  plan: string,
+): Promise<void> {
+  if (event.type !== "payment.success") return;
+  const providerEventId = requiredPurchaseIdentity(event.providerEventId, "provider event identity");
+  const providerVariantId = requiredPurchaseIdentity(event.variantOrPriceId, "provider variant/price identity");
+  if (!Number.isSafeInteger(event.amountCents) || event.amountCents < 0) {
+    throw new Error("plan purchase has an invalid provider amount");
+  }
+  if (!/^[A-Za-z]{3}$/.test(event.currency)) throw new Error("plan purchase has an invalid provider currency");
+  const orgId = "orgId" in identity ? identity.orgId : null;
+  const productId = "productId" in identity ? identity.productId : null;
+  const endUserId = "endUserId" in identity ? identity.endUserId : null;
+  const receipt = await db.prepare(`INSERT INTO billing_plan_purchase_receipts
+      (provider,provider_event_id,purchase_scope,org_id,product_id,end_user_id,plan_tier,subscription_id,
+       provider_variant_id,amount_cents,currency,provider_event_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(provider,provider_event_id) DO UPDATE
+      SET provider_event_id=billing_plan_purchase_receipts.provider_event_id
+      WHERE billing_plan_purchase_receipts.purchase_scope IS excluded.purchase_scope
+        AND billing_plan_purchase_receipts.org_id IS excluded.org_id
+        AND billing_plan_purchase_receipts.product_id IS excluded.product_id
+        AND billing_plan_purchase_receipts.end_user_id IS excluded.end_user_id
+        AND billing_plan_purchase_receipts.plan_tier IS excluded.plan_tier
+        AND billing_plan_purchase_receipts.subscription_id IS excluded.subscription_id
+        AND billing_plan_purchase_receipts.provider_variant_id IS excluded.provider_variant_id
+        AND billing_plan_purchase_receipts.amount_cents IS excluded.amount_cents
+        AND billing_plan_purchase_receipts.currency IS excluded.currency
+        AND billing_plan_purchase_receipts.provider_event_at IS excluded.provider_event_at`)
+    .bind(event.provider, providerEventId, scope, orgId, productId, endUserId, plan, event.subscriptionId,
+      providerVariantId, event.amountCents, event.currency.toUpperCase(), event.providerUpdatedAt ?? null).run();
+  if ((receipt.meta?.changes ?? 0) !== 1) {
+    throw new Error("provider purchase event identity conflicts with its recorded price snapshot");
+  }
+}
+
 export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
@@ -148,6 +198,8 @@ export async function recordPlatformPlanSubscription(
   }
   if (event.type === "refund.issued") return true;
   if (event.type !== "payment.success" && !event.type.startsWith("subscription.")) return true;
+
+  await recordPlanPurchaseReceipt(event, env.PLATFORM_DB, "platform_plan", { orgId }, plan);
 
   const status = mapSubscriptionStatus(event);
   // Access policy: cancelled keeps the paid tier until LS sends subscription.expired at period
@@ -271,6 +323,7 @@ export async function recordProductUserPlanSubscription(event: NormalizedBilling
      WHERE p.id=? AND p.status='active' AND u.end_user_id=? AND u.deleted_at IS NULL`
   ).bind(productId, endUserId).first();
   if (!active) throw new Error("Product user plan references an inactive account");
+  await recordPlanPurchaseReceipt(event, env.PLATFORM_DB, "product_user_plan", { productId, endUserId }, plan);
   const status = mapSubscriptionStatus(event);
   const planTier = status === "expired" ? "free" : plan;
   const result = await env.PLATFORM_DB.prepare(

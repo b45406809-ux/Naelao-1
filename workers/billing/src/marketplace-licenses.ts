@@ -50,6 +50,30 @@ async function attachPendingRefundCases(env: LicenseSettlementEnv, providerOrder
     .bind(purchaseId, purchaseId, purchaseId, purchaseId, purchaseId, providerOrderId, tenantId, listingId).run();
 }
 
+async function recordMarketplaceOverpayment(
+  env: LicenseSettlementEnv,
+  event: NormalizedBillingEvent,
+  purchaseId: string,
+  tenantId: string,
+  listingId: string,
+): Promise<void> {
+  const result = await env.PLATFORM_DB.prepare(`INSERT INTO marketplace_license_overpayments
+      (provider_event_id,purchase_id,tenant_id,listing_id,amount_cents,provider,provider_variant_id,currency)
+    VALUES (?,?,?,?,?,?,?,?)
+    ON CONFLICT(provider_event_id) DO UPDATE SET
+      provider_event_id=marketplace_license_overpayments.provider_event_id
+      WHERE marketplace_license_overpayments.purchase_id IS excluded.purchase_id
+        AND marketplace_license_overpayments.tenant_id IS excluded.tenant_id
+        AND marketplace_license_overpayments.listing_id IS excluded.listing_id
+        AND marketplace_license_overpayments.amount_cents IS excluded.amount_cents
+        AND marketplace_license_overpayments.provider IS excluded.provider
+        AND marketplace_license_overpayments.provider_variant_id IS excluded.provider_variant_id
+        AND marketplace_license_overpayments.currency IS excluded.currency`)
+    .bind(event.providerEventId, purchaseId, tenantId, listingId, event.amountCents, event.provider,
+      event.variantOrPriceId, event.currency.toUpperCase()).run();
+  if ((result.meta?.changes ?? 0) !== 1) throw new Error("marketplace overpayment identity conflicts with its price snapshot");
+}
+
 /** Record a signed marketplace refund without choosing license access or author-clawback policy. */
 export async function recordMarketplaceLicenseRefundEvent(
   event: NormalizedBillingEvent,
@@ -249,13 +273,16 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
   if (event.type !== "payment.success" || event.metadata?.kind !== "marketplace_license") return false;
   const listingId = event.metadata.listing_id;
   const tenantId = event.metadata.buyer_tenant_id;
-  if (!listingId || !tenantId || tenantId !== event.spaceId || !event.providerEventId || !Number.isSafeInteger(event.amountCents) || event.amountCents <= 0 || event.currency?.toUpperCase() !== "USD") {
+  if (event.provider !== "lemon_squeezy" || !listingId || !tenantId || tenantId !== event.spaceId || !event.providerEventId ||
+      !event.variantOrPriceId || event.variantOrPriceId.length > 256 || !Number.isSafeInteger(event.amountCents) ||
+      event.amountCents <= 0 || !/^[A-Za-z]{3}$/.test(event.currency) || event.currency.toUpperCase() !== "USD") {
     throw new Error("marketplace license payment metadata is invalid");
   }
-  const listing = await env.PLATFORM_DB.prepare(`SELECT id, tenant_id, developer_user_id, space_type_id, pricing_model, price_cents,
+  const listing = await env.PLATFORM_DB.prepare(`SELECT id, tenant_id, developer_user_id, space_type_id, pricing_model, price_cents, ls_license_variant_id,
     conformance_artifact_json, conformance_certificate_json FROM marketplace_listings WHERE id = ? AND status = 'published'`)
-    .bind(listingId).first<{ id: string; tenant_id: string; developer_user_id: string | null; space_type_id: string; pricing_model: string; price_cents: number; conformance_artifact_json: string | null; conformance_certificate_json: string | null }>();
-  if (!listing || listing.pricing_model !== "fixed_license" || listing.price_cents !== event.amountCents || !listing.developer_user_id || listing.tenant_id === tenantId) {
+    .bind(listingId).first<{ id: string; tenant_id: string; developer_user_id: string | null; space_type_id: string; pricing_model: string; price_cents: number; ls_license_variant_id: string | null; conformance_artifact_json: string | null; conformance_certificate_json: string | null }>();
+  if (!listing || listing.pricing_model !== "fixed_license" || listing.price_cents !== event.amountCents ||
+      listing.ls_license_variant_id !== event.variantOrPriceId || !listing.developer_user_id || listing.tenant_id === tenantId) {
     throw new Error("marketplace license payment does not match a purchasable listing");
   }
   let artifact: Record<string, unknown> | null;
@@ -266,26 +293,31 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
       !await verifyArtifactCertificate(artifact, certificate, env.PLATFORM_SECRET, "state-delta")) {
     throw new Error("marketplace license listing is missing its certified artifact");
   }
-  const prior = await env.PLATFORM_DB.prepare("SELECT id, provider_event_id FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ?")
-    .bind(tenantId, listing.id).first<{ id: string; provider_event_id: string }>();
+  const prior = await env.PLATFORM_DB.prepare(`SELECT id, provider_event_id, amount_cents, provider, provider_variant_id, currency
+    FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ?`)
+    .bind(tenantId, listing.id).first<{ id: string; provider_event_id: string; amount_cents: number; provider: string; provider_variant_id: string | null; currency: string }>();
   if (prior) {
     if (prior.provider_event_id === event.providerEventId) {
+      if (prior.amount_cents !== event.amountCents || prior.provider !== event.provider ||
+          prior.provider_variant_id !== event.variantOrPriceId || prior.currency !== event.currency.toUpperCase()) {
+        throw new Error("marketplace purchase event identity conflicts with its price snapshot");
+      }
       await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, prior.id);
       return true;
     }
     // A second provider charge must not create another license or earning. Record a concrete
     // refund task so it is visible to operations instead of retrying the webhook forever.
-    await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_overpayments
-      (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)`)
-      .bind(event.providerEventId, prior.id, tenantId, listing.id, event.amountCents).run();
+    await recordMarketplaceOverpayment(env, event, prior.id, tenantId, listing.id);
     await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, prior.id);
     return true;
   }
   const purchaseId = crypto.randomUUID();
   await env.PLATFORM_DB.batch([
-    env.PLATFORM_DB.prepare(`INSERT INTO marketplace_license_purchases (id, provider_event_id, tenant_id, listing_id, buyer_space_id, amount_cents)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
-      .bind(purchaseId, event.providerEventId, tenantId, listing.id, tenantId, event.amountCents),
+    env.PLATFORM_DB.prepare(`INSERT INTO marketplace_license_purchases
+      (id,provider_event_id,tenant_id,listing_id,buyer_space_id,amount_cents,provider,provider_variant_id,currency)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
+      .bind(purchaseId, event.providerEventId, tenantId, listing.id, tenantId, event.amountCents,
+        event.provider, event.variantOrPriceId, event.currency.toUpperCase()),
     env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_forks (id, tenant_id, listing_id, blueprint_id, artifact_json, certificate_json)
       SELECT ?, ?, id, space_type_id, conformance_artifact_json, conformance_certificate_json FROM marketplace_listings
       WHERE id = ? AND EXISTS (SELECT 1 FROM marketplace_license_purchases WHERE provider_event_id = ? AND tenant_id = ? AND listing_id = ?)`)
@@ -306,9 +338,7 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
       await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, existing.id);
       return true;
     }
-    await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_overpayments
-      (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)`)
-      .bind(event.providerEventId, existing.id, tenantId, listing.id, event.amountCents).run();
+    await recordMarketplaceOverpayment(env, event, existing.id, tenantId, listing.id);
     await attachPendingRefundCases(env, event.providerEventId, tenantId, listing.id, existing.id);
     return true;
   }
