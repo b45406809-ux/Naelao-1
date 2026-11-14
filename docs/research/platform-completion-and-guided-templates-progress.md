@@ -1,34 +1,24 @@
 # Platform completion and guided templates progress
 
-## Active checkpoint — 2026-11-14 (P10 sequential additive Gadget migration pins)
+## Active checkpoint — 2026-11-14 (P10/P24 Gadget code rollback with schema retained)
 
-Code `63297b3f` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
-`MicroAppDO` continues verifying its original signed Canvas proof and now separately pins the current
-schema release, manifest digest and artifact digest. Each additive migration must match those exact
-current source pins; success atomically advances all three. This enables sequential signed updates
-without treating the original artifact proof as the current release and still rejects stale sources.
+Code `0866ca38b5db82e09ffd99acb56d6f57691efe16` is pushed to `origin/Mcbt5s-Backup-2` after fetch
+and ancestry verification. The signed Space-shared Gadget rollback path now requires owner confirmation
+and an exact prefix of unchanged additive migrations. Review, short-lived token and durable SpaceDO
+receipt bind source/candidate manifests and artifacts; the UI states migrations/data remain applied and
+no rollback SQL runs. The installation remains paused. Stale and revoked releases fail closed.
 
-Verification: focused extension-schema and signed package route tests **32/32**, Spaces typecheck,
-and `git diff --check` pass. These are local SQLite/Worker mocks; no deployment, provider, browser or
-live acceptance ran. P10 remains PARTIAL for migration-aware rollback, dependencies, connections and
-prices, package scanning/retention, and deployment/live acceptance. P01/P02 release/environment gates
-and P03/P12 policy/live-delivery gaps remain as recorded. Rollouts remain disabled; preserve
-`infra/scripts/__pycache__/`.
+Local verification: focused Spaces migration/update/receipt suites **70/70**, Spaces/Shell typechecks,
+and `git diff --check`. These are mocks/SQLite, not browser, deployed, provider or live acceptance.
+P10/P24 remain PARTIAL for dependency, provider-connection and price changes, broader data migration,
+package scanning/retention and live acceptance. No rollout was enabled; preserve the untracked Python
+cache.
 
-The prior `12e0163d` checkpoint permits only owner-confirmed additive top-level Space-shared package
-authority, with exact token and durable receipt binding. The bounded-phone-menu package and dashboard
-are locally implemented; first-party listing still requires Naelao publisher identity, signing/key
-custody, canonical distribution and catalog policy. Space coordination remains advisory and does not
-grant project/service access. Earlier S4/P01, P03/P12, archive and Knowledge work remains in prior
-checkpoints and the P01–P24 matrix.
-
-Exact next action: support a paused owner-confirmed code rollback for a Space-shared Gadget package
-only when the candidate's additive migration history is an exact prefix of the current signed
-manifest. Keep the database schema and data forward, execute no rollback DDL, show owners which
-migrations remain applied, and bind review/apply to both manifest hashes. Add contract, route and
-SpaceDO tests proving stale/revoked candidates fail and no schema rows are removed. Then continue the
-remaining P01–P24 and S3–S9/U01–U12 gaps in dependency order. Fetch and safely integrate before every
-push.
+Exact next action: reconcile the active signed dependency closure with update and activation callers;
+implement only owner-confirmed same-Space pin changes when each exact candidate dependency is already
+active and trusted. Bind the change to review/apply/receipt, leave child installations untouched, and
+reject unresolved, revoked, conflicting or cross-Space pins. Continue P01–P24 and S3–S9/U01–U12 after
+that checkpoint.
 
 ## Previous checkpoint — 2026-11-14 (P05 Project Knowledge activation handoff)
 
@@ -1541,7 +1531,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
-| P10 | PARTIAL | Signed Marketplace setup, validated setup forms/drafts and setup-only schema migrations are local. `c7412170` adds owner-approved paused version-only static Canvas/channel-code updates; `15a04f7e` adds runtime-work admission/drain; `0d121ab2` adds exact historical signed-release rollback for that bounded package class. `035a3274` adds exact-digest owner review and atomic retryable additive Gadget-schema migrations per Space-shared MicroApp actor. `a75c0862` adds durable provider cleanup for direct disconnect and channel-package uninstall. `12e0163d` adds owner-only additive top-level authority expansion bound to exact signed artifacts/manifests; `63297b3f` pins each sequential Gadget migration to the current persisted schema release, manifest and artifact. Focused tests pass **32/32**, Spaces typecheck passes. Migration-aware rollback, dependency/connection/price changes, broader data migration, scanning/retention and live acceptance remain. |
+| P10 | PARTIAL | Signed setup, encrypted drafts, setup-only migrations, paused same-publisher code updates, exact historical rollback, runtime drain, retryable additive Gadget upgrades, owner-approved authority expansion and sequential current-schema pins are local. Code `0866ca38` adds owner-confirmed Gadget code rollback only for an exact prefix of unchanged additive migration histories; receipts retain the schema summary and Shell states schema/data remain forward. Focused migration/update/receipt tests **70/70**, Spaces/Shell typechecks, diff check. Dependency-pin changes, provider connections, price approval, broader data migration, scanning/retention and deployed/live acceptance remain. |
 | P11 | PARTIAL | Development checkout is explicitly gated. `16386d95` adds signed, idempotent platform/Product-user price receipts and Marketplace provider/variant/amount/currency snapshots; live provider-to-entitlement acceptance remains. |
 | P12 | PARTIAL | Versioned dunning queue/workflow and notification outcomes exist; Product-user dispatch now verifies current product tenancy against the durable outbox (`ca9aead9`). Retry scheduling still follows bounded dispatch retry plus Cloudflare Workflow behavior; policy, exhausted-operation visibility and provider delivery acceptance remain. |
 | P13 | PARTIAL | Honest interval-health observations/alerts persist; `4de53055`/`d640dbae` route unknown and malformed messages to their configured DLQs. `da6245fe` detects when the Cloudflare GraphQL query hits its 100-row limit and persists a `queue_analytics_row_limit_reached` alert; status remains incomplete. Current backlog/age/DLQ lack a supported source. Admin's consumer targets a different queue, retains raw payload, and has no reachable Router/service-binding path or supported `platform_admin` identity issuance. Generic replay remains uncoded pending those scope, retention/redaction and duplicate-side-effect contracts. |
@@ -1555,7 +1545,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P21 | PARTIAL | Product-user and builder reset email use encrypted bounded outboxes, retry/cancellation, stable Notification IDs, provider acceptance receipts and HMAC-scoped metadata status. Builder Auth outbox is migration 0245 (`814c429a`); local Auth suite **39/39** and typecheck pass. Unverified-user/session policy, provider/inbox and deployed acceptance remain. |
 | P22 | PARTIAL | Document/Space cleanup and semantic-cache deletion status are durable locally; AutoRAG provider-index deletion and deployed store acceptance remain unverified. |
 | P23 | PARTIAL | Async and synchronous operation outcomes are persisted locally; approved retention, audited operator replay, remaining receipt coverage and provider/deployed live acceptance remain. |
-| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive artifact restore, owner-authorized cross-Space package import (`b4cf5214`) connected to guided activation (`536853b9`), revoked-key recheck before copy (`b646ec16`), reload resume via destination install review (`edf08814`), paused static Canvas/channel-code update and exact historical rollback receipts (`c7412170`, `0d121ab2`), runtime-work admission/drain (`15a04f7e`), authenticated revocation receipts/readback (`f5b3c1dd`, `0ba70840`), and installed-package trust warning/revocation-aware Shell actions (`f3a04010`, `ad3888eb`) are local. Cross-tenant artifact rights, broader schema/data migration and rollback, proactive alert policy, scanning, retention and live acceptance remain. |
+| P24 | PARTIAL | Exact signed dependency review/install recovery, same-Space archive restore, owner-authorized cross-Space package import and retry, revoked-key rechecks, paused code updates/rollback, runtime drain, durable revocation receipts and installed-package trust warnings are local. Code `0866ca38` adds a bounded owner-confirmed Gadget code rollback with exact additive-history prefix and durable schema-retention receipt. Cross-tenant artifact rights, broader migrations, dependency update lifecycle, publisher-compromise alerting, scanning/retention and live acceptance remain. |
 
 ## S4 source-to-caller correction
 

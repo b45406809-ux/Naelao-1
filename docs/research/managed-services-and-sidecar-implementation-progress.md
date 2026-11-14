@@ -1,32 +1,26 @@
 # Managed services and sidecar implementation progress
 
-## Active checkpoint — 2026-11-14 (P10 sequential additive Gadget migration pins)
+## Active checkpoint — 2026-11-14 (P10/P24 Gadget code rollback with schema retained)
 
-Code `63297b3f` is pushed to `origin/Mcbt5s-Backup-2` after fetch and fast-forward verification.
-`MicroAppDO` continues verifying its original signed Canvas proof and now separately pins the current
-schema release, manifest digest and artifact digest. Each additive migration must match those exact
-current source pins; success atomically advances all three. This enables sequential signed updates
-without treating the original artifact proof as the current release and still rejects stale sources.
+Code `0866ca38b5db82e09ffd99acb56d6f57691efe16` is pushed to `origin/Mcbt5s-Backup-2` from
+`autonomous-managed-services-20261111` after fetch and fast-forward verification. Space-shared Gadget
+code rollback is owner-confirmed and allowed only for an older signed release whose unchanged Gadget
+migration histories are exact prefixes of the current additive histories. Both manifests and artifacts
+are pinned in the review token and receipt; all retained migrations/data stay forward, no rollback DDL
+runs, and the installation remains paused. Stale/revoked candidates are rejected.
 
-Verification: focused extension-schema and signed package route tests **32/32**, Spaces typecheck,
-and `git diff --check` pass. These are local SQLite/Worker mocks; no deployment, provider, browser or
-live acceptance ran. P10 remains PARTIAL for migration-aware rollback, dependencies, connections and
-prices, package scanning/retention, and deployment/live acceptance. P02 resource isolation/evidence,
-P03/P12 policy and delivery, and S4 runtime/private-state/purge/U05/U06 contracts remain as recorded.
-Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
+Verification: Spaces focused migration/update/receipt suites **70/70**, Spaces and Shell typechecks,
+and `git diff --check` pass using local Worker/SQLite mocks. No browser, deployed, provider or live
+acceptance ran. P10/P24 remain PARTIAL for dependency, connection and price updates, broader data
+migration, package scanning/retention and live acceptance. Space-wide provider scope/payer/revocation,
+first-party publisher/key custody and the U06 runtime adapter are product/platform gates, not credential
+blockers. All rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-The prior `12e0163d` checkpoint permits only owner-confirmed additive top-level Space-shared package
-authority, with exact token and durable receipt binding. The bounded-phone-menu package and dashboard
-are locally implemented; first-party listing still requires Naelao publisher identity, signing/key
-custody, canonical distribution and catalog policy. Space coordination remains advisory and does not
-grant project/service access. Earlier S4/P01, P03/P12, archive and Knowledge work remains in the ledger.
-
-Exact next action: support a paused owner-confirmed code rollback for a Space-shared Gadget package
-only when the candidate's additive migration history is an exact prefix of the current signed
-manifest. Keep the database schema and data forward, execute no rollback DDL, show owners which
-migrations remain applied, and bind review/apply to both manifest hashes. Add contract, route and
-SpaceDO tests proving stale/revoked candidates fail and no schema rows are removed. Then continue
-the next uncoded S3–S9/U01–U12/P01–P24 requirement. Fetch and safely integrate before every push.
+Exact next action: map signed dependency closure and update callers; implement owner-confirmed
+same-Space dependency pin changes only when every exact candidate dependency is already active and
+trusted. Do not install, remove or mutate child packages in this slice. Bind review/apply/receipt to
+exact pins and reject missing, revoked, conflicting or cross-Space packages. Then continue the next
+independent S3–S9/U01–U12/P01–P24 code gap.
 
 ## Previous checkpoint — 2026-11-14 (P05 activation handoff; P04 restore safety next)
 
@@ -1605,7 +1599,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P13 queue health | PARTIAL | Code `2625ea34` removes fabricated current depth/age/DLQ from interval analytics and persists honest status. Codes `4de53055`/`d640dbae` route unknown/malformed messages to configured DLQs across Workflows, Billing, Notifications, Analytics, Provisioner and Agents; known stale messages still ACK. Focused suites: Workflows **11/11**, Notifications **10/10**, platform-plan queue/webhook **23/23**, Analytics **2/2**, Provisioner **4/4**, Agents **3/3**, plus six Worker typechecks. DLQ bindings are worker-specific; the Admin consumer targets a separate queue and stores/logs raw payloads. P23 Notification terminal status is durable, but generic safe replay is uncoded. True backlog/age/DLQ and live Cloudflare evidence remain unknown. |
 | §4 / P14 browser sessions | PARTIAL | Product logout advances the server security generation; Portal and Shell await Product-user logout, Portal and Dashboard await builder `/v1/auth/revoke`, and Shell awaits HttpOnly DeskDrop cookie logout. Failed revocation retains usable local state and is surfaced for retry; already-revoked builder tokens (401) are cleared. Builder reset atomically updates password and `token_version`; Product reset checks generation and journals retryable DO cleanup. Local evidence: Shell **3/3**, Portal **3/3**, Spaces logout route **17/17**, Shell/Portal/Dashboard typechecks. Bearer tokens still use localStorage; transport, CSP/XSS/CSRF and cross-product copied-token browser acceptance remain unresolved/unverified. |
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
-| §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Signed SpaceBlueprint setup fields, bounded server validation, encrypted resumable drafts, activation preview/apply receipts, setup-only schema migration, Foundry visual authoring and same-publisher static updates are locally implemented. `12e0163d` adds owner-only additive top-level authority expansion bound to source/candidate artifact and manifest hashes, with explicit confirmation and durable receipt; `63297b3f` pins sequential Gadget migrations to the exact current schema release, manifest and artifact. Focused tests pass **32/32** with Spaces typecheck. Migration-aware rollback, dependency/connection/price changes, broader data migration, scanning/retention and onboarding-wide catalog freshness remain. P17 identity/install handoff and live acceptance remain partial. |
+| §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Signed setup, encrypted drafts, activation receipts, setup-only migrations, same-publisher paused code updates, exact historic rollback, runtime drain, additive Gadget migrations, owner-approved authority expansion and sequential source pins are locally implemented. Code `0866ca38` adds owner-confirmed Gadget code rollback only when current migration histories are additive and the older signed candidate is an exact prefix; manifest/artifact pins and retained migration summary are durably bound, no rollback SQL runs, and the install stays paused. Focused Spaces suites **70/70**, Spaces/Shell typechecks, diff check. Dependency/connection/price changes, broader data migration, scanning/retention and live acceptance remain. P17 listing and install handoff are improved; accounting and cross-origin identity remain. |
 | §6 / P05 and P16 extension media | PARTIAL | Code `5e0c6501` adds explicit owner-approved, per-channel `read_text` opt-in, scope-bound attachment rows, opaque metadata in the exact message event and host revalidation before grounded text extraction. It supports declared text/CSV/Markdown/JSON/XML, PDF and DOCX within 3-file/2-MiB bounds; no provider URL, key or raw bytes reaches guest code. Migration 0238 and ingress, SDK, install approval, runtime, answer and Shell callers are wired. Agents **18/18**, Spaces **36/36**, SDK **29/29**, affected typechecks and `git diff --check` pass locally. P16 Discord non-ephemeral retrieval remains unsupported; image/audio/raw binary access, richer multi-message responses and provider/deployed acceptance remain open. |
 | §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad interactions, signed handler discovery, per-installation IVR call history/status/cost view, owner-confirmed API cost reads and bounded synthetic call/DTMF/Twilio-speech simulation are local. `ce252033` adds exact binding selection for installations serving multiple lines. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated list rates and an explicitly incomplete estimate. A conversational customer voice-agent package, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain incomplete. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
