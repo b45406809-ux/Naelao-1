@@ -55,7 +55,7 @@ describe("Lemon Squeezy provider response boundaries", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("uses the configured success URL for a marketplace license checkout", async () => {
-    const fetchMock = vi.fn(async () => Response.json({ data: { attributes: { url: "https://store.lemonsqueezy.com/checkout/buy/variant" } } }));
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({ data: { attributes: { url: "https://store.lemonsqueezy.com/checkout/buy/variant" } } }));
     vi.stubGlobal("fetch", fetchMock);
     const configured = new LemonSqueezyProvider({ LEMON_SQUEEZY_API_KEY: "key", LEMON_SQUEEZY_STORE_ID: "store" });
     await configured.createCheckout({ spaceId: "buyer", variantOrPriceId: "variant", successUrl: "https://naelao-marketplace.pages.dev/listing/listing-a?license=complete" });

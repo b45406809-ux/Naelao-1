@@ -15,19 +15,31 @@ worktree and uncommitted changes; then resume from the exact next unfinished act
 ## Active checkpoint — 2026-11-14
 
 P21 builder reset-email dispatch is implemented and pushed as `814c429af84f0b5089286cf4fbd13727b252ba75`.
-Auth now atomically stores the encrypted reset payload with its token in migration 0245, uses a
-bounded leased dispatcher with stable Notification IDs and superseded-token cancellation, preserves
-the neutral reset response, and exposes tenant-HMAC-scoped metadata diagnostics. Auth tests pass
-**39/39**, Auth typecheck, release/deployment manifest checks, release-migration tests **15/15**,
-staging/production Wrangler dry runs and `git diff --check` pass. Migration inventory is 245. This is
-local/mocked evidence; no deployment, provider acceptance or inbox delivery was exercised. P21 remains
-PARTIAL for real delivery, unverified-user/session policy and deployed acceptance. The managed ledger
-already records U03 Agent37 lifecycle recovery as locally implemented and audited with no independent
-code gap. Exact next action: continue U11's settlement outbox, provider-cost sources, threshold/alert
-delivery, owner controls and billed-idle/invoice-feed audit; close any independently implementable
-caller gap, then audit U12 and finish S4–S9 reconciliation. Preserve the existing untracked
-`infra/scripts/__pycache__/`; keep rollout disabled. After compaction, interruption or a new session,
-read both plans and both progress records, inspect the actual worktree and resume from this action.
+Auth stores the encrypted reset payload atomically with its token in migration 0245, uses bounded
+leased retries with stable Notification IDs and superseded-token cancellation, preserves the neutral
+reset response, and exposes tenant-HMAC-scoped metadata diagnostics. Auth tests pass **39/39**, Auth
+typecheck, release/deployment manifest checks, release-migration tests **15/15**, staging/production
+Wrangler dry runs and `git diff --check` pass. Migration inventory is 245. This is local/mocked
+evidence; no deployment, provider acceptance or inbox delivery was exercised. P21 remains PARTIAL for
+real delivery, unverified-user/session policy and deployed acceptance.
+
+U03 Agent37 lifecycle recovery and U11's supported settlement, provider-cost, threshold/alert and
+owner-control callers were already audited; no independent U11 caller gap was found. Do not repeat
+those audits absent new source evidence. U12's current toolchain checks found and fixed a real
+`fetchMock` call-argument type error in the Lemon Squeezy provider test. With the pinned pnpm 9.12.0
+invoked for Turbo child processes, the focused Billing suite passes **52/52**, the full workspace
+build passes **55/55 tasks**, and the full workspace typecheck passes **82/82 tasks**. A bare global
+pnpm 11 invocation still fails in this non-TTY workspace; the repository remains pinned to pnpm 9.
+Build included local image builds and Wrangler dry runs only. No deploy, CI event, provider call or
+live acceptance ran; U12 remains PARTIAL for future CI execution and deployed image parity.
+
+Exact next action: add owner-reviewed rollback to a previously signed Space-shared release when the
+package consists only of static Canvas/channel code with unchanged authority/configuration. Extend
+the trusted release history caller, reuse the existing pause/drain + signed update review/apply flow,
+and test that the installation stays paused and stale/revoked releases fail closed. Keep all rollouts
+disabled. Preserve the existing untracked `infra/scripts/__pycache__/`. After compaction, interruption
+or a new session, read both plans and both progress records, inspect the actual worktree, and resume
+from this action.
 
 P13 queue routing fixes are pushed as `4de53055` and `d640dbae` to `origin/Mcbt5s-Backup-2`. Unknown/misrouted and malformed poison messages in Workflows, Billing, Notifications, Analytics, Provisioner and Agents now retry into their configured DLQs; known stale messages still ACK. Local suites and six affected Worker typechecks pass. Queue bindings are worker-specific; the Admin DLQ consumer is bound to a separate queue and stores/logs raw payloads, so no generic replay was added. P23 Notification terminal status is durable, but other DLQs lack a safe payload-retention/idempotency contract. Queue depth/age/DLQ remain unknown without a supported API or operator evidence.
 
