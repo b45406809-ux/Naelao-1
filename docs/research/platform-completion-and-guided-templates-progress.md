@@ -1,7 +1,33 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (joint mission; coordination policy pushed)
+## Active continuation — 2026-11-14 (shared-Space assistant context)
+
+Code commits `d973388858a854f740de959e578120530a3c598c` and
+`96c3da48f103c3515afe5e0ddbc8c44e6d47a166` are pushed to `origin/Mcbt5s-Backup-2`. Current
+audience-filtered coordination facts are refreshed before each assistant planning decision and
+passed as advisory/untrusted context with confirmation/expiry metadata and an accurate continuation
+hint. Agents planner/prebuilt/baseline suites pass **35/35** and Agents `tsc --noEmit` passes; prior
+Spaces route/registry tests pass **19/19**. This is local/mock evidence only. No deployed, browser,
+provider or live multi-user acceptance ran. `infra/scripts/__pycache__/` remains preserved.
+
+P05 remains PARTIAL for provider connection handoff, broader install lifecycle, verified total cost,
+standalone knowledge/action authoring semantics, unsupported media and live acceptance. The existing
+signed dependency preview exposes package-level permissions/actions/knowledge; it does not itself
+grant runtime authority. P06 remains PARTIAL for conversational streaming, customer voice lifecycle,
+managed billing/invoices and live region/provider acceptance. S2 is IMPLEMENTED_LOCAL for supported
+lanes; S3–S9/U01–U12 retain the row-specific gaps in the managed-services ledger. U05 has a verifier
+and coordinator caller but lacks candidate/reservation and trusted observation producers; U06's
+pinned runtime write-admission/drain/flush/reconnect/handoff contract is absent. U09 registry and
+generation-fencing source work is complete locally and will not be repeated without new evidence.
+
+Exact next action: implement guided-template selection of existing UserPort-owned extension
+connection references, persisted per installation as opaque references and reauthorized by the
+host at use. The activation preview currently labels extension connections unsupported. Do not
+accept secrets in template fields or create/provision accounts from signed package metadata. Keep
+rollouts disabled and continue after this caller slice.
+
+## Previous checkpoint — 2026-11-14 (joint mission; coordination policy pushed)
 
 Space coordination disclosure policy commit `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed
 to `origin/Mcbt5s-Backup-2`. The v2 owner/admin policy defaults off for new member-visible facts,
@@ -19,11 +45,10 @@ customer lifecycle, managed billing/invoices and live region/provider acceptance
 unverified. S2 is IMPLEMENTED_LOCAL for supported lanes; S3–S9/U01–U12 retain the specific gaps in the
 managed-services ledger. Rollouts remain disabled; preserve `infra/scripts/__pycache__/`.
 
-Exact next action: trace current `SpaceBlueprint` declarations through Foundry export, signed artifact
-validation, activation review and runtime consumers for P05's recorded knowledge/action authoring
-gap. Implement only declarations backed by an existing or newly enforced host runtime contract; do
-not use a template declaration to grant authority. Then continue §10 lifecycle and the remaining
-independent requirements in both active plans.
+The earlier next action to trace P05's knowledge/action authoring gap is complete. Package-level
+actions and knowledge already flow through signed dependencies and owner review; the standalone
+SpaceBlueprint contract remains uncoded pending host-enforced semantics. Resume from the active
+connection-reference implementation above.
 
 
 ## Previous checkpoint — 2026-11-14 (P05 Foundry authoring draft recovery; completed)
@@ -1031,9 +1056,9 @@ P02 remains fail-closed as recorded above. Continue in dependency order:
    work admission/drain is in `15a04f7e`, and P04's owner export caller is in `6fccacaa`. Keep Gadget/
    data migration, authority, dependency, connection and price changes gated until their own
    review/migration/recovery paths exist. Foundry visual setup and durable conformance/publication
-   recovery are implemented locally. The exact next platform code gap is §10.3's owner/admin policy
-   gate for new member-visible coordination facts, with no member-sharing default, expected-revision
-   writes and an explicit unpublish step before disabling a policy with active facts. P22's
+   recovery are implemented locally. §10.3's owner/admin policy gate is complete in `4c458a9e`; the
+   assistant read caller and fresh pre-planning context are complete in `a6c3233a`, `d9733888` and
+   `96c3da48`. Implement the active P05 connection-reference action from the top of this ledger. P22's
    independent local cache-entry purge and whole-Space cleanup status gaps are closed in `7b6942e8`;
    retain the exact provider/deployed evidence boundary and keep AutoRAG retrieval disabled.
 4. P16's capability/limit disclosure code is committed, while scoped extension handles, ordinary

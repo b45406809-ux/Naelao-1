@@ -12,7 +12,29 @@ work or claim a requirement complete from historical notes alone. After compacti
 a new session, read both plans, both progress records, and this runbook; inspect the actual branch,
 worktree and uncommitted changes; then resume from the exact next unfinished action in the records.
 
-## Latest checkpoint — 2026-11-14 (Space coordination disclosure policy)
+## Latest checkpoint — 2026-11-14 (shared-Space assistant context)
+
+Code commits `d973388858a854f740de959e578120530a3c598c` and
+`96c3da48f103c3515afe5e0ddbc8c44e6d47a166` are pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. The first adds current audience-filtered registry facts
+before every assistant planning decision; the second preserves each fact's `last_confirmed_at`,
+marks bounded context as having more entries when it truncates, and tells the model to treat facts as
+untrusted, advisory and freshness-bound. Local Agents checks: **35/35** focused tests and `tsc
+--noEmit`; earlier Spaces route/registry suites passed **19/19**. No browser, deployment or live
+multi-user acceptance ran. P05's signed package dependency review and P06 keypad voice work remain
+partial as described in the ledgers. U05's verifier/caller exists; candidate/reservation and trusted
+runtime-observation producers remain absent. U06 remains gated on undocumented writer/drain/flush/
+reconnect/handoff semantics. U09's project-main registry and branch/generation fencing are already
+source-present; do not repeat that audit. Preserve `infra/scripts/__pycache__/`.
+
+Exact next action: implement a guided-template extension connection review for an existing
+UserPort-owned connection reference. Trace the current signed `ExtensionConnectionRequirement`,
+UserPort authorization and installation/runtime call path; persist only an opaque scoped reference,
+enforce owner/grant checks when selected and used, and keep unsupported providers blocked. Do not
+accept provider secrets in template fields, provision from package metadata, or claim live provider
+support. Update both ledgers after the implementation checkpoint. Keep every rollout disabled.
+
+## Prior checkpoint — 2026-11-14 (Space coordination disclosure policy)
 
 Code commit `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed to
 `origin/Mcbt5s-Backup-2` on `autonomous-managed-services-20261111`. Space coordination now has a

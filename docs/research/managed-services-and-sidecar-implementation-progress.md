@@ -1,7 +1,34 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (joint mission; coordination policy pushed)
+## Active continuation — 2026-11-14 (shared-Space assistant context)
+
+Code commits `d973388858a854f740de959e578120530a3c598c` and
+`96c3da48f103c3515afe5e0ddbc8c44e6d47a166` are pushed to `origin/Mcbt5s-Backup-2` on
+`autonomous-managed-services-20261111`. The Agents host supplies fresh, audience-filtered approved
+Space facts before all three planner decision paths; the prompt payload marks them untrusted and
+advisory. Context includes `last_confirmed_at`, expiration and an accurate truncation/continuation
+hint. Fresh local verification: Agents planner/prebuilt/baseline suites **35/35**, Agents
+`tsc --noEmit`, and `git diff --check`; the earlier Spaces route/registry suite was **19/19**. These
+are local Worker/SQLite mocks. No browser, deployment or live multi-user acceptance ran.
+
+S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at the recorded
+code, policy, runtime/provider contract and live-evidence gates. U05's verifier/caller is present;
+product candidate/reservation and trusted runtime mount/sync/flush observations are not. U06 lacks
+the pinned runtime write-admission, drain/flush, generation-fenced reconnect and handoff contract.
+U09's stable project registry, branch isolation and generation fencing are already present; do not
+repeat its source audit. P05's standalone SpaceBlueprint knowledge/action contract remains uncoded
+because a declaration alone cannot grant host authority. Keep rollouts disabled and preserve
+`infra/scripts/__pycache__/`.
+
+Exact next action: implement guided-template selection of an existing UserPort-owned extension
+connection reference. Trace `ExtensionConnectionRequirement` through the signed activation preview,
+UserPort grants and extension runtime; persist only an opaque installation-scoped reference and
+recheck authorization at use. Do not accept provider credentials in template fields, provision
+based on metadata, or claim unsupported provider/live behavior. Continue S3–S9/U01–U12 and the
+platform plan after this caller slice.
+
+## Previous checkpoint — 2026-11-14 (joint mission; coordination policy pushed)
 
 Space member-disclosure policy code `4c458a9e695ea6bbdcd04c083dea0ea758a51a2f` is pushed to
 `origin/Mcbt5s-Backup-2`. New member-visible publications/amendments are disabled unless an owner or
@@ -12,15 +39,13 @@ Local evidence: Agent SDK coordination **4/4**, SpaceDO/route/migration **26/26*
 typechecks, SDK build and `git diff --check`. No deployed multi-user acceptance ran.
 
 S2 remains IMPLEMENTED_LOCAL for supported lanes. S3–S9/U01–U12 remain PARTIAL at their row-specific
-uncoded code, authority/runtime contracts, feeds, product/legal choices and deployed/live gates; U05
-candidate observation and U06 runtime writer/adapter contracts are missing implementation, not
-credential blockers. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
+uncoded code, authority/runtime contracts, feeds, product/legal choices and deployed/live gates. U05
+has a local verifier/caller but lacks a product candidate/reservation/observation producer; U06 lacks
+the supported runtime adapter contract. Keep rollouts disabled and preserve `infra/scripts/__pycache__/`.
 
-Exact next action: trace current `SpaceBlueprint` declarations through Foundry export, signed artifact
-validation, activation review and runtime consumers for P05's recorded knowledge/action authoring
-gap. Implement only declarations backed by an existing or newly enforced host runtime contract; do
-not use a template declaration to grant authority. Then continue §10 lifecycle and the remaining
-independent S3–S9/U01–U12 code gaps.
+The earlier P05 knowledge/action source trace is complete: package-level declarations already pass
+through signed dependencies and owner review; a standalone SpaceBlueprint contract remains uncoded
+pending host-enforced semantics. Resume from the active connection-reference action above.
 
 
 ## Previous checkpoint — 2026-11-14 (P06 phone routing readiness; completed)
