@@ -1,7 +1,31 @@
 # Managed services and sidecar implementation progress
 
 
-## Active continuation — 2026-11-14 (signed template coordination-default handoff)
+## Active continuation — 2026-11-14 (multi-line signed phone-handler simulation)
+
+Code `ce252033` extends the owner-only signed phone-menu dashboard to test an exact active line when
+one installation serves several lines. The Space route accepts an opaque binding ID, rechecks it
+against fresh active line state for the exact signed installation and provider, then invokes the
+synthetic handler. A single-line request without an ID remains compatible; a missing or ambiguous
+selection fails closed. The response identifies only the binding ID/provider, not the phone number.
+Local evidence: Agent SDK dashboard/handler **5/5**, Spaces gadget route **18/18**, SDK/Spaces
+typechecks and `git diff --check`. These tests ran via installed Vitest/TypeScript binaries because
+pnpm's non-TTY dependency bootstrap aborted before test execution. No browser, carrier, deployment or
+live acceptance ran; no call or session is created, and speech remains Twilio-only with owner policy.
+Code is committed locally; the next push will include this checkpoint and its progress record.
+
+P06's bounded IVR now supports multi-line installation tests, while first-party release publication,
+conversational voice, streaming, provisioning, full invoice reconciliation and live provider acceptance
+remain open. S6 still lacks generic provider identity/content/command callers and external-consumer
+durable acceptance. P01/P02 resource receipts/baselines, P03/P20 policy, and U05/U06 runtime contracts
+remain the named independent gates; no rollout is enabled.
+
+Exact next action: attach each owner-visible per-installation call-history row to its exact binding and
+display only that line's provider and masked number hint. Recheck calls against the active installation
+and line, keep caller IDs masked and unknown prices unknown, and test both providers. Then continue the
+remaining S3–S9/U01–U12 and P01–P24 implementation queue. Fetch and safely integrate before push.
+
+## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed to `origin/Mcbt5s-Backup-2`. Signed
 `SpaceBlueprint` supports optional member-fact and singleton-key suggestions; Foundry authoring persists
@@ -1415,7 +1439,7 @@ Statuses compare plan requirements with current source, reachable callers, persi
 | §4 / P15 large-Space discovery | PARTIAL, bounded indexed path IMPLEMENTED_LOCAL | `SpaceDO` migration 110 adds `(space_id,id)` and an ACL-filtered keyset API capped at 90; the Spaces Worker fetches each card page only after current ACL checks. Cursor order, revocation between pages, archived/private/subspace filtering, inherited parent-owner access, malformed response rejection and index use are covered locally. Focused Spaces tests **9/9**, AgentPort tests **10/10**, Spaces typecheck, targeted Wrangler runtime **1/1**. The saved 100/1,000/10,000 fixture traversed 2/12/112 pages and found first/middle/last exact-reference targets; 10k elapsed **512–565 ms**, page p95 **6–8 ms**, zero provider calls. Historical 8.79 s was a different run, not a controlled A/B. Full runtime suite had five unrelated planner-fixture failures. Private-membership density, representative query/task quality, repeated-run latency distribution and deployed acceptance remain. Do not ship the materialize-all comparator. |
 | §5 / P10 guided templates and §7 / P17 catalog | PARTIAL | Signed SpaceBlueprint setup fields, bounded server validation, encrypted resumable drafts, activation preview/apply receipts, setup-only schema migration, Foundry visual authoring and same-publisher static updates are locally implemented. Remaining code includes broader Gadget/schema/data migration and recovery, full lifecycle/uninstall reconciliation, authority/connection/price changes, and onboarding-wide catalog freshness; preserve review gates for each class. P17 identity/install handoff and live acceptance remain partial. |
 | §6 / P05 and P16 extension media | PARTIAL | Code `5e0c6501` adds explicit owner-approved, per-channel `read_text` opt-in, scope-bound attachment rows, opaque metadata in the exact message event and host revalidation before grounded text extraction. It supports declared text/CSV/Markdown/JSON/XML, PDF and DOCX within 3-file/2-MiB bounds; no provider URL, key or raw bytes reaches guest code. Migration 0238 and ingress, SDK, install approval, runtime, answer and Shell callers are wired. Agents **18/18**, Spaces **36/36**, SDK **29/29**, affected typechecks and `git diff --check` pass locally. P16 Discord non-ephemeral retrieval remains unsupported; image/audio/raw binary access, richer multi-message responses and provider/deployed acceptance remain open. |
-| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad interactions, signed handler discovery, per-installation IVR call history/status/cost view, owner-confirmed API cost reads and bounded synthetic call/DTMF/Twilio-speech simulation are local. Code `b2140aaf` adds draft-only preview to the signed keypad package dashboard. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated list rates and an explicitly incomplete estimate. A conversational customer voice-agent package, multi-line selection for the installed-handler test, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain incomplete. Carrier/region/billing acceptance is a separate live gate. |
+| §6 / P06 and §9 voice extension/dashboard | PARTIAL | Owner in-app calling, Telnyx media bridge, keypad interactions, signed handler discovery, per-installation IVR call history/status/cost view, owner-confirmed API cost reads and bounded synthetic call/DTMF/Twilio-speech simulation are local. `ce252033` adds exact binding selection for installations serving multiple lines. The owner voice API and Assistant Voice Shell/reference microapp expose host catalog model IDs, languages, dated list rates and an explicitly incomplete estimate. A conversational customer voice-agent package, full test/publish/monitor lifecycle, invoice-aware calculator and streaming remain incomplete. Carrier/region/billing acceptance is a separate live gate. |
 | §6 / P07 private/local/custom worker model routing | PARTIAL | `workers/agents/src/script-engine/worker-model-routing.ts` preserves private/local/custom routes, blocks cloud catalog discovery and rejects cloud model IDs on private routes; shared-context OpenRouter choices remain bounded by configured pools, verified catalog cards, price ceilings and payer scope. This meets the fail-closed privacy boundary, but private/local/custom worker selection does not yet choose among authorized local candidates by capability. No private route is silently sent to a cloud worker.
 | §6 / P08 video frames | PARTIAL | Bounded, task-authorized sampling of at most three frames from the first 30 seconds and separate Space-owner enablement are implemented locally (`87374fc2`); audio-track transcription remains separate. Keep sampled-frame evidence limits explicit. Deployed Container and Workers AI acceptance remain unverified. |
 | §6 / P09 provider training | PARTIAL | Imported model lifecycle exists; provider training submission is disabled pending a verified API/contract. Dataset consent, provenance, deletion, evaluation and rollback are also incomplete; provider enablement is externally gated but local lifecycle work is not thereby complete. |

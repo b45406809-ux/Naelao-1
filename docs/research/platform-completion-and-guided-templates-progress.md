@@ -1,7 +1,24 @@
 # Platform completion and guided templates progress
 
 
-## Active continuation — 2026-11-14 (signed template coordination-default handoff)
+## Active continuation — 2026-11-14 (multi-line signed phone-handler simulation)
+
+Local code commit `ce252033` extends the owner-only signed phone-menu dashboard to test one exact
+active line when an installation is assigned to multiple lines. The route rechecks the supplied
+binding ID against fresh active tenant/Space/installation/provider state before calling the synthetic
+handler; omitted IDs remain supported only when exactly one line matches. The result identifies the
+provider and binding ID without exposing a number. Local evidence: Agent SDK **5/5**, Spaces route
+**18/18**, SDK/Spaces typechecks and `git diff --check`. Tests ran with installed binaries because
+pnpm's non-TTY dependency bootstrap aborted before execution. No browser, carrier, deployed or live
+acceptance ran. This adds no call/session; owner-enabled speech remains Twilio-only. Fetch and push
+this code checkpoint with the accompanying updated records.
+
+Exact next action: show each call-history record's exact line using a binding-to-masked-line map
+scoped to the current signed installation; add focused Telnyx/Twilio route and dashboard checks. Keep
+caller IDs masked and costs unknown until a final provider report exists. Then continue guided-template
+P05/P10 and S3–S9/U01–U12/P01–P24 gaps without repeating completed audits.
+
+## Previous continuation — 2026-11-14 (signed template coordination-default handoff)
 
 Code `06250151d426a4a1d15e4b81314f81d2a0b7737b` is pushed. The signed SpaceBlueprint carries optional
 member-fact and exact singleton-key suggestions; Foundry authoring persists/restores them; activation
@@ -1328,7 +1345,7 @@ policy or acceptance gap remains. There is no live-accepted P requirement.
 | P03 | PARTIAL | Durable dunning/outcomes exist; grace, restriction, escalation and live delivery policy remain undecided. |
 | P04 | PARTIAL | Bounded encrypted archives include project/shared workspace, Space Assistant files, learned skills, four agent configuration files and Space-local extension artifacts, plus authenticated WorkspaceCoordinatorDO committed heads, merge bases, manifests and referenced R2 content (`cf375473`). New format-v2 object capture uses 512 KiB AES-GCM chunks, 16 MiB/object and 64 MiB aggregate caps while retaining v1 reads and the 8 MiB manifest, 10,000 rows/table and 5,000 reference limits; local retry, restore and key-rewrap callers verify the chunks. Restore remains additive and refuses conflicting objects/heads. Other service D1/DO/provider/runtime state, private inbound communications/attachments, approved key/legal/retention policy, RPO/RTO and isolated/deployed recovery remain open. Cross-Space signed package closure import is separately implemented under P24. |
 | P05 | PARTIAL | `3007890d` adds bounded signed SpaceBlueprint knowledge/action requirement references, Foundry authoring from active trusted candidates, server checks against exact pinned version/digest and manifest declarations, activation preview/blockers, explicit owner review and durable actor/time/requirements-digest receipt. Declarations never grant authority. P05's exact-message channel access now supports owner-approved text extraction and a distinct one-image mode (PNG/JPEG/WebP, 480 KiB max) with signature/size checks, install/provider/message binding and Shell disclosure. Earlier form preview, multi-project groups, trusted dependency selection/draft recovery, conformance lifecycle, exact-pin import/recovery and setup compensation remain as recorded. Space/Project collection selection/binding and per-action grants/revocation lack a compatible Space-scope contract; provider connection scope, broader lifecycle, verified rates/total cost and deployed/live acceptance remain. |
-| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
+| P06 | PARTIAL | Owner voice, bounded keypad paths, signed handler discovery/readiness, per-installation call history/operations view, synthetic call-start/DTMF and Twilio speech preview/test, cost observations and dated host-catalog estimates are local. Code `ce252033` adds exact binding selection for synthetic tests where one installation serves multiple lines. Signed phone-menu example `eec28faf` adds one completed Twilio speech turn; `36400108` pins persisted call history to the admitted handler; `6cb043fb` adds owner-confirmed inbound Calls API reads bound to exact SID/account/line/direction/pin. Twilio `price` is delayed connectivity-only API evidence, not an invoice; Telnyx remains DTMF-only. The bounded IVR is not a conversational voice-agent product. First-party listing requires Naelao publisher identity, signing/key custody and canonical distribution/catalog policy; streaming, managed provisioning, complete cost/quality evidence and live acceptance remain. |
 | P07 | PARTIAL | Code `0da0abdb` adds local-machine owner-declared modality/context/tool profiles, exact authorized-machine lookup and capability-aware private model selection with no cloud discovery/fallback. Profiles are not independent quality evidence. Custom-model capability selection and deployed/provider acceptance remain. |
 | P08 | PARTIAL | Audio-track transcription and bounded, separately owner-enabled sampled-frame questions are implemented locally in `87374fc2`. The route verifies task-owned attachment scope, egress, provider enablement, bounded timestamps/dimensions and shared quota, and discloses that motion and video beyond the first 30 seconds may be missed. Deployed Container and Workers AI/provider acceptance remain. |
 | P09 | PARTIAL | Imported model lifecycle exists; provider training submission remains disabled pending a verified product/provider contract. |
