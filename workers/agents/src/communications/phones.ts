@@ -645,7 +645,7 @@ export async function handlePhoneAction(
           .results
       : [];
     const recentTwilioExtensionCalls = manager
-      ? (await env.PLATFORM_DB.prepare(`SELECT e.id AS call_sid,e.binding_id,e.extension_installation_id,e.handler_sha256,e.sender,e.status,
+      ? (await env.PLATFORM_DB.prepare(`SELECT e.id AS call_sid,e.binding_id,e.extension_installation_id,e.handler_sha256,e.settings_revision,e.settings_pinned,e.sender,e.status,
           b.provider_account_sid,
           CAST(strftime('%s',e.created_at) AS INTEGER) AS started_at,e.duration_seconds
           FROM assistant_phone_events e JOIN assistant_phone_bindings b ON b.id=e.binding_id
@@ -653,7 +653,7 @@ export async function handlePhoneAction(
             AND e.kind='call' AND e.created_at>=datetime('now','-7 days')
           ORDER BY e.created_at DESC,e.id DESC LIMIT 50`)
           .bind(identity.id)
-          .all<{ call_sid:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;sender:string;status:string;
+          .all<{ call_sid:string;binding_id:string;extension_installation_id:string|null;handler_sha256:string|null;settings_revision:number|null;settings_pinned:number;sender:string;status:string;
             provider_account_sid:string;started_at:number|null;duration_seconds:number|null }>())
           .results
       : [];
@@ -728,6 +728,8 @@ export async function handlePhoneAction(
         binding_id: row.binding_id,
         installation_id: row.extension_installation_id,
         handler_sha256: row.handler_sha256,
+        settings_revision: row.settings_revision,
+        settings_pinned: row.settings_pinned === 1,
         state: row.status,
         started_at: Number.isSafeInteger(row.started_at) ? row.started_at : null,
         duration_seconds: Number.isSafeInteger(row.duration_seconds) ? row.duration_seconds : null,

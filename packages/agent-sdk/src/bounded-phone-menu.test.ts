@@ -28,7 +28,7 @@ describe("bounded phone menu package", () => {
   it("declares signed per-installation settings and only the host-supported phone channel", () => {
     const parsed = validateExtensionManifest(manifest);
     expect(parsed.id).toBe("ext_bounded_phone_menu");
-    expect(manifest.releaseVersion).toBe("1.0.8");
+    expect(manifest.releaseVersion).toBe("1.0.9");
     expect(manifest.bundle.version).toBe(manifest.releaseVersion);
     expect(parsed.settingsActivation).toBe("owner_publish");
     expect(parsed.settingsSchema?.fields).toHaveLength(7);
@@ -59,6 +59,9 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("latest 20 published settings revisions are retained");
     expect(dashboard).toContain("window.confirm('Publish this menu draft");
     expect(dashboard).toContain("Telnyx calls");
+    expect(dashboard).toContain("Twilio and Telnyx calls pin the handler and published settings revision admitted at call start");
+    expect(dashboard).toContain("A later turn fails closed if its pinned handler or settings revision is no longer available");
+    expect(dashboard).not.toContain("Calls do not pin a settings revision");
     expect(dashboard).toContain("An owner or admin can explicitly check a Twilio call against the carrier Calls API");
     expect(dashboard).toContain("Read this inbound call from the connected Twilio account");
     expect(dashboard).toContain("/api/phone-dashboard");

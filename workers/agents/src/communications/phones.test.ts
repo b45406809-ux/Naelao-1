@@ -1149,7 +1149,8 @@ describe("assistant telephone safety and lifecycle", () => {
   const dispatchedRequests: Request[] = [];
   const dispatch = vi.fn(async (request: Request) => {
    dispatchedRequests.push(request.clone());
-   const body = await request.json() as { validateOnly?: boolean; event?: { type: string; payload: Record<string, unknown> } };
+   const body = await request.json() as { validateOnly?: boolean; pinCall?: boolean; event?: { type: string; payload: Record<string, unknown> } };
+   if (body.pinCall) return Response.json({ settings_revision: 7 });
    if (body.validateOnly) return Response.json({ valid: true });
    if (body.event?.type === "call.received")
     return Response.json({ response: { actions: [
@@ -1195,21 +1196,30 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await invoke("menu", { SpeechResult: "x".repeat(2_001) })).status).toBe(403);
   const dispatched = dispatchedRequests
    .filter((request) => request.url.endsWith("/phone-extension-dispatch"));
-  expect(dispatched).toHaveLength(3); // validation plus two voice turns
+  expect(dispatched).toHaveLength(4); // validation, call pin, and two voice turns
+  const bodies = await Promise.all(dispatched.map(async request => request.clone().json() as Promise<Record<string, unknown>>));
+  expect(bodies[1]).toMatchObject({ pinCall: true, expectedInstallationId: "extension", expectedHandlerSha256: "a".repeat(64) });
+  expect(bodies.filter(body => body.event).map(body => body.settingsRevision)).toEqual([7, 7]);
   const voiceEvents: string[] = [];
-  for (const request of dispatched.slice(1)) {
+  for (const request of dispatched.slice(2)) {
    const body = await request.clone().json() as { event: { type: string; payload: Record<string, unknown> } };
    voiceEvents.push(body.event.type);
    expect(body.event.payload.provider).toBe("twilio");
   }
   expect(voiceEvents).toEqual(["call.received", "call.speech"]);
-  expect((await dispatched[2]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload)
+  expect((await dispatched[3]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload)
    .toMatchObject({ provider: "twilio", speech: "Check my order", confidence: 0.91 });
  });
 
  it("persists signed Twilio extension call outcomes against the admitted release", async () => {
   const f = await phoneFixture();
-  const dispatch = vi.fn(async () => Response.json({ valid: true, response: { actions: [{ type: "say", text: "Welcome" }] } }));
+  const seenRequests: Request[] = [];
+  const dispatch = vi.fn(async (request: Request) => {
+   seenRequests.push(request.clone());
+   const body = await request.json() as { pinCall?: boolean };
+   return body.pinCall ? Response.json({ settings_revision: 12 })
+    : Response.json({ valid: true, response: { actions: [{ type: "say", text: "Welcome" }] } });
+  });
   f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
   await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
   const app = new Hono<{ Bindings: AgentsEnv }>();
@@ -1227,14 +1237,18 @@ describe("assistant telephone safety and lifecycle", () => {
   const answer = await invoke("answer");
   expect(answer.status).toBe(200);
   expect(await answer.text()).toContain("Welcome");
-  expect(await f.db.prepare("SELECT status,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=?")
+  expect(await f.db.prepare("SELECT status,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_phone_events WHERE id=?")
    .bind(sid).first()).toMatchObject({ status: "received", extension_installation_id: "extension", handler_sha256: "a".repeat(64) });
-  expect(await dispatch.mock.calls[1]?.[0].clone().json()).toMatchObject({ expectedInstallationId: "extension", expectedHandlerSha256: "a".repeat(64) });
+  expect(await f.db.prepare("SELECT settings_revision,settings_pinned FROM assistant_phone_events WHERE id=?").bind(sid).first())
+   .toEqual({ settings_revision: 12, settings_pinned: 1 });
+  expect(await seenRequests[1]?.clone().json()).toMatchObject({ pinCall: true, expectedInstallationId: "extension", expectedHandlerSha256: "a".repeat(64) });
+  expect(await seenRequests[2]?.clone().json()).toMatchObject({ settingsRevision: 12,
+    expectedInstallationId: "extension", expectedHandlerSha256: "a".repeat(64) });
 
   await f.db.prepare("UPDATE assistant_phone_extension_handlers SET handler_sha256=? WHERE binding_id=?")
    .bind("b".repeat(64), f.binding.id).run();
   expect((await invoke("menu", { Digits: "1" })).status).toBe(403);
-  expect(dispatch).toHaveBeenCalledTimes(2); // Assignment validation and the admitted greeting only.
+  expect(dispatch).toHaveBeenCalledTimes(3); // Assignment validation, call pin and admitted greeting.
 
   const final = await invoke("status", { CallStatus: "completed", CallDuration: "37" });
   expect(final.status).toBe(200);
@@ -1247,7 +1261,40 @@ describe("assistant telephone safety and lifecycle", () => {
    .toEqual({ status: "completed", duration_seconds: 37 });
   const status = await f.act("phone-status") as { recent_twilio_extension_calls: Array<Record<string, unknown>> };
   expect(status.recent_twilio_extension_calls).toContainEqual(expect.objectContaining({ installation_id: "extension",
-   handler_sha256: "a".repeat(64), state: "completed", duration_seconds: 37, caller_hint: "•••• 0101" }));
+   handler_sha256: "a".repeat(64), settings_revision: 12, settings_pinned: true,
+   state: "completed", duration_seconds: 37, caller_hint: "•••• 0101" }));
+ });
+
+ it("rejects Twilio call admission without a settings pin and old unpinned continuations", async () => {
+  const f = await phoneFixture();
+  const dispatch = vi.fn(async (request: Request) => {
+   const body = await request.json() as { pinCall?: boolean };
+   return body.pinCall ? Response.json({ error_code: "phone_call_pin_unavailable" }, { status: 503 })
+    : Response.json({ valid: true });
+  });
+  f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
+  await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
+  const app = new Hono<{ Bindings: AgentsEnv }>();
+  registerPhoneWebhooks(app);
+  const invoke = async (sid: string, event: "answer" | "menu", fields: Record<string, string> = {}) => {
+   const path = `/assistant-phone/twilio/${f.binding.id}/${event}`;
+   const params = { AccountSid: account, CallSid: sid, From: other, To: number, ...fields };
+   return app.request(path, { method: "POST", headers: {
+    "content-type": "application/x-www-form-urlencoded",
+    "x-twilio-signature": getExpectedTwilioSignature(token, `https://phone.example.com${path}`, params),
+   }, body: new URLSearchParams(params).toString() }, f.env);
+  };
+
+  const rejectedStart = "CA" + "9".repeat(32);
+  expect((await invoke(rejectedStart, "answer")).status).toBe(403);
+  expect(await f.db.prepare("SELECT id FROM assistant_phone_events WHERE id=?").bind(rejectedStart).first()).toBeNull();
+  expect(dispatch).toHaveBeenCalledTimes(2); // assignment validation and failed call pin only
+
+  const oldCall = "CA" + "8".repeat(32);
+  await f.db.prepare(`INSERT INTO assistant_phone_events(id,binding_id,kind,sender,status,extension_installation_id,handler_sha256)
+    VALUES(?,?,'call',?,'received','extension',?)`).bind(oldCall, f.binding.id, other, "a".repeat(64)).run();
+  expect((await invoke(oldCall, "menu", { Digits: "1" })).status).toBe(403);
+  expect(dispatch).toHaveBeenCalledTimes(2);
  });
 
  it("owner-confirms an exact inbound Twilio extension cost into the minimized ledger and read model", async () => {

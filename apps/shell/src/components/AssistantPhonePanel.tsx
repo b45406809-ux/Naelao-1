@@ -57,6 +57,19 @@ type RecentExtensionCall = {
     leg_count: number | null;
   };
 };
+type RecentTwilioExtensionCall = {
+  call_sid: string;
+  binding_id: string;
+  installation_id: string | null;
+  handler_sha256: string | null;
+  settings_revision: number | null;
+  settings_pinned: boolean;
+  state: string;
+  started_at: number | null;
+  duration_seconds: number | null;
+  caller_hint: string | null;
+  cost_report: { status: "reported" | "unknown"; provider_cost_micros: number | null; currency: string | null; provenance: string | null };
+};
 export function AssistantPhonePanel({
   spaceId,
   projectId,
@@ -78,6 +91,7 @@ export function AssistantPhonePanel({
       telnyx_release?: { operation_id: string; status: string; phone_number: string; next_reconcile_at: string | null; error_code: string | null } | null;
       extension_lines?:Array<{id:string;provider:"twilio"|"telnyx";phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
       recent_telnyx_extension_calls?: RecentExtensionCall[];
+      recent_twilio_extension_calls?: RecentTwilioExtensionCall[];
       phone_handler_candidates?: PhoneHandlerCandidate[];
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
@@ -169,6 +183,7 @@ export function AssistantPhonePanel({
           status: string;
         }>;
         recent_telnyx_extension_calls?: RecentExtensionCall[];
+        recent_twilio_extension_calls?: RecentTwilioExtensionCall[];
         phone_handler_candidates?: PhoneHandlerCandidate[];
         legacy_numbers?: Array<{ id: string; phone_number: string; provider_number_sid: string; status: string }>;
       }>(
@@ -392,7 +407,7 @@ export function AssistantPhonePanel({
           </div>}
         </fieldset>;
       })}
-      {((state?.extension_lines?.length ?? 0) > 0 || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
+      {((state?.extension_lines?.some(line => line.provider === "telnyx") ?? false) || (state?.recent_telnyx_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
         <summary>Recent customer extension calls · Telnyx</summary>
         <p>The latest 50 call records from the last 7 days. Caller IDs are masked. Costs appear only when a signed Telnyx report is linked. No linked report means the amount is unknown, not zero. These provider-reported amounts are not invoices or customer charges.</p>
         {state?.recent_telnyx_extension_calls?.length ? (() => {
@@ -432,6 +447,19 @@ export function AssistantPhonePanel({
             </section>;
           });
         })() : <p>No recent Telnyx extension calls are recorded.</p>}
+      </details>}
+      {((state?.extension_lines?.some(line => line.provider === "twilio") ?? false) || (state?.recent_twilio_extension_calls?.length ?? 0) > 0) && <details style={{ marginTop: 12 }}>
+        <summary>Recent customer extension calls · Twilio</summary>
+        <p>The latest 50 calls from the last 7 days. Caller IDs are masked. Settings history is pinned when the call is admitted; older calls may not have a saved settings revision. Twilio price observations can be delayed and cover carrier connectivity only; they are not invoices or customer charges.</p>
+        {state?.recent_twilio_extension_calls?.length ? <ol>{state.recent_twilio_extension_calls.map(call => {
+          const cost = call.cost_report.status === "reported" && call.cost_report.provider_cost_micros !== null && call.cost_report.currency
+            ? `Twilio API observed ${call.cost_report.currency} ${(call.cost_report.provider_cost_micros / 1_000_000).toFixed(6)} (connectivity only)`
+            : "No linked provider price · amount unknown, not zero";
+          const settings = call.settings_pinned
+            ? call.settings_revision === null ? "no settings schema at call start" : `published settings r${call.settings_revision}`
+            : "settings revision unavailable";
+          return <li key={call.call_sid}>{call.started_at === null ? "time unavailable" : new Date(call.started_at * 1000).toLocaleString()} · {call.state} · {call.caller_hint ?? "Caller unavailable"} · {call.duration_seconds === null ? "duration unavailable" : `${call.duration_seconds}s`} · {settings} · {cost}</li>;
+        })}</ol> : <p>No recent Twilio extension calls are recorded.</p>}
       </details>}
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}

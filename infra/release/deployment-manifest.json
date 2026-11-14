@@ -7,7 +7,7 @@
   },
   "schema": {
     "manifest": "infra/release/schema-manifest.json",
-    "requiredSchemaVersion": "0252_product_user_dunning_status_scope",
+    "requiredSchemaVersion": "0254_twilio_extension_call_settings_revision",
     "migrationExecution": "infra/scripts/release_migrations.py",
     "compatibilityPolicy": "expand_contract_required",
     "rollbackPolicy": "never reverse an applied schema migration; deploy compatible code or use a reviewed forward repair"

@@ -383,14 +383,15 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       || !/^[a-f0-9]{64}$/.test(configuredHandler.handler_sha256)))
       return reject();
     if (event === "answer" || event === "menu") {
-      const admitted = await c.env.PLATFORM_DB.prepare(
-        "SELECT id,sender,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
+      let admitted = await c.env.PLATFORM_DB.prepare(
+        "SELECT id,sender,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
       )
         .bind(sid, binding.id, from)
-        .first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null }>();
+        .first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number }>();
       if (event === "menu" && !admitted) return reject();
       if (admitted && (admitted.extension_installation_id !== configuredHandler!.installation_id
         || admitted.handler_sha256 !== configuredHandler!.handler_sha256)) return reject();
+      if (admitted && admitted.settings_pinned !== 1) return reject();
       if (event === "answer" && !admitted) {
         const quota = await c.env.PLATFORM_DB.prepare(
           "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
@@ -398,20 +399,37 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           .bind(binding.id, policy.maxDailyInboundCalls)
           .run();
         if (!quota.meta.changes) return reject();
+        let settingsRevision: number | null;
+        try {
+          const pinned = await c.env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-dispatch", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": identity.tenant_id,
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenant_id),
+            },
+            body: JSON.stringify({ spaceId: identity.space_id, bindingId: binding.id, pinCall: true,
+              expectedInstallationId: configuredHandler!.installation_id, expectedHandlerSha256: configuredHandler!.handler_sha256 }),
+          }));
+          const result = await readBoundedResponseJson<{ settings_revision?: unknown }>(pinned, 8_192);
+          if (!pinned.ok || !(result.settings_revision === null
+            || Number.isSafeInteger(result.settings_revision) && Number(result.settings_revision) >= 0)) return reject();
+          settingsRevision = result.settings_revision as number | null;
+        } catch { return reject(); }
         const inserted = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_phone_events(
-          id,binding_id,kind,sender,status,extension_installation_id,handler_sha256)
-          SELECT ?,?,'call',?,'received',h.installation_id,h.handler_sha256
+          id,binding_id,kind,sender,status,extension_installation_id,handler_sha256,settings_revision,settings_pinned)
+          SELECT ?,?,'call',?,'received',h.installation_id,h.handler_sha256,?,1
           FROM assistant_phone_extension_handlers h
           WHERE h.binding_id=? AND h.status='active' AND h.installation_id=? AND h.handler_sha256=?`)
-          .bind(sid, binding.id, from, binding.id, configuredHandler!.installation_id, configuredHandler!.handler_sha256)
+          .bind(sid, binding.id, from, settingsRevision, binding.id, configuredHandler!.installation_id, configuredHandler!.handler_sha256)
           .run();
-        if (!inserted.meta.changes) {
-          const raced = await c.env.PLATFORM_DB.prepare(
-            "SELECT id,sender,extension_installation_id,handler_sha256 FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call'"
-          ).bind(sid, binding.id).first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null }>();
-          if (!raced || raced.sender !== from || raced.extension_installation_id !== configuredHandler!.installation_id
-            || raced.handler_sha256 !== configuredHandler!.handler_sha256) return reject();
-        }
+        const admittedCall = inserted.meta.changes ? null : await c.env.PLATFORM_DB.prepare(
+          "SELECT id,sender,extension_installation_id,handler_sha256,settings_revision,settings_pinned FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call'"
+        ).bind(sid, binding.id).first<{ id: string; sender: string; extension_installation_id: string | null; handler_sha256: string | null; settings_revision: number | null; settings_pinned: number }>();
+        admitted = inserted.meta.changes ? { id: sid, sender: from, extension_installation_id: configuredHandler!.installation_id,
+          handler_sha256: configuredHandler!.handler_sha256, settings_revision: settingsRevision, settings_pinned: 1 } : admittedCall;
+        if (!admitted || admitted.sender !== from || admitted.extension_installation_id !== configuredHandler!.installation_id
+          || admitted.handler_sha256 !== configuredHandler!.handler_sha256 || admitted.settings_pinned !== 1) return reject();
       }
       const digits = form.get("Digits") ?? "";
       const speech = form.get("SpeechResult") ?? "";
@@ -440,6 +458,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
             bindingId: binding.id,
             expectedInstallationId: admitted?.extension_installation_id ?? configuredHandler!.installation_id,
             expectedHandlerSha256: admitted?.handler_sha256 ?? configuredHandler!.handler_sha256,
+            ...(admitted ? { settingsRevision: admitted.settings_revision } : {}),
             event: {
               id: event === "answer" ? sid : `${sid}:${speech ? "speech" : "digits"}:${eventHash}`,
               type: voiceEvent,

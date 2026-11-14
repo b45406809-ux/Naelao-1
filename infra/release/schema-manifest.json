@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "migrationDirectory": "infra/migrations",
-  "requiredSchemaVersion": "0253_telnyx_extension_call_settings_revision",
+  "requiredSchemaVersion": "0254_twilio_extension_call_settings_revision",
   "legacyBaselinePolicy": "operator_verified_only",
   "migrations": [
     {
@@ -1015,6 +1015,10 @@
     {
       "filename": "0253_telnyx_extension_call_settings_revision.sql",
       "sha256": "168bccd4b6ad3476eb9ddc33f76d67eab1a470210a321923f214b5c075a99ab5"
+    },
+    {
+      "filename": "0254_twilio_extension_call_settings_revision.sql",
+      "sha256": "6c558aba6586e71d995a04d580e92200f8790457df0245e9206fd990458eab0b"
     }
   ]
 }

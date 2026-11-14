@@ -14,9 +14,10 @@ selection as an owner-reviewed draft through the existing per-installation setti
 or admin explicitly publishes a revision; the handler keeps reading the published row until then.
 The dashboard retains the latest 20 published configurations for review. Preparing a rollback
 copies a schema-compatible revision into a new draft and still requires explicit publication;
-uninstall removes draft and version data. Publication affects the next handler invocation, including
-later events on a call already in progress, because the current phone path does not pin settings for
-the full call lifecycle. Its channel handler receives the host's validated settings snapshot
+uninstall removes draft and version data. Twilio and Telnyx calls pin the handler and published
+settings revision admitted at call start, so later edits apply to new calls. A later turn fails
+closed if its pinned handler or settings revision is no longer available. Its channel handler
+receives the host's validated settings snapshot
 and returns the versioned data-only `say`, `gather` and `hangup` response contract. The host checks
 the signed installation and handler digest, validates the response, enforces number policy and
 renders carrier-specific actions. The dashboard previews call-start, keypad, and completed-transcript
