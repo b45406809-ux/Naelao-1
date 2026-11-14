@@ -12,11 +12,12 @@ const row = {
   attempt_count: 1,
 };
 
-function env(send = vi.fn(async () => undefined), payloadJson = row.payload_json) {
+function env(send = vi.fn(async () => undefined), payloadJson = row.payload_json, productTenantId: string | null = null) {
   const updates: Array<{ query: string; values: unknown[] }> = [];
   const db = {
     prepare(query: string) {
       return { bind: (...values: unknown[]) => ({
+        async first() { return query.includes("FROM products") && productTenantId ? { tenant_id: productTenantId } : null; },
         async all() { return { results: [{ ...row, payload_json: payloadJson }] }; },
         async run() { updates.push({ query, values }); return { meta: { changes: 1 } }; },
       }) };
@@ -58,6 +59,24 @@ describe("durable dunning outbox", () => {
       .toEqual({ claimed: 1, sent: 0, deferred: 1 });
     expect(invalid.send).not.toHaveBeenCalled();
     expect(invalid.updates[0]?.query).toContain("status='pending'");
+  });
+
+  it("binds Product-user dispatch to the owning tenant recorded in the outbox", async () => {
+    const productPayload = JSON.stringify({
+      type: "dunning", version: 1, workflow_id: workflowId, scope: "product_user_subscription",
+      productId: "product-a", endUserId: "user-a", provider: "lemon_squeezy", subscriptionId: "sub-a",
+      providerEventId: "event-a", providerUpdatedAt: null,
+    });
+    const matching = env(vi.fn(async () => undefined), productPayload, "org-1");
+    await expect(dispatchDunningOutbox(matching, new Date("2026-11-12T15:00:00.000Z")))
+      .resolves.toEqual({ claimed: 1, sent: 1, deferred: 0 });
+    expect(matching.send).toHaveBeenCalledOnce();
+
+    const mismatched = env(vi.fn(async () => undefined), productPayload, "other-org");
+    await expect(dispatchDunningOutbox(mismatched, new Date("2026-11-12T15:00:00.000Z")))
+      .resolves.toEqual({ claimed: 1, sent: 0, deferred: 1 });
+    expect(mismatched.send).not.toHaveBeenCalled();
+    expect(mismatched.updates[0]?.query).toContain("status='pending'");
   });
 
   it("rejects invalid batch bounds before touching storage", async () => {

@@ -12,10 +12,13 @@ interface DunningOutboxRow {
   attempt_count: number;
 }
 
-function validDunningPayload(value: unknown, row: DunningOutboxRow): value is DunningEventMessage {
+async function validDunningPayload(db: D1Database, value: unknown, row: DunningOutboxRow): Promise<boolean> {
   if (!isDunningEventMessage(value)) return false;
-  const scopeMatchesOutbox = value.scope === "platform_subscription" ? value.orgId === row.tenant_id : true;
-  return scopeMatchesOutbox && value.workflow_id === row.workflow_id;
+  if (value.workflow_id !== row.workflow_id) return false;
+  if (value.scope === "platform_subscription") return value.orgId === row.tenant_id;
+  const product = await db.prepare("SELECT tenant_id FROM products WHERE id=?")
+    .bind(value.productId).first<{ tenant_id: string }>();
+  return product?.tenant_id === row.tenant_id;
 }
 
 /** Lease and retry committed dunning intents. A stable workflow ID makes an ambiguous Queue send
@@ -38,7 +41,7 @@ export async function dispatchDunningOutbox(env: DunningOutboxEnv, now = new Dat
   for (const row of claimed.results ?? []) {
     try {
       const payload: unknown = JSON.parse(row.payload_json);
-      if (!validDunningPayload(payload, row)) throw new Error("billing_dunning_payload_invalid");
+      if (!await validDunningPayload(env.PLATFORM_DB, payload, row)) throw new Error("billing_dunning_payload_invalid");
       await env.DUNNING_EVENTS.send(payload);
       await env.PLATFORM_DB.prepare(`UPDATE billing_dunning_outbox SET status='sent',lease_until=NULL,sent_at=?,
         last_error=NULL,updated_at=? WHERE workflow_id=? AND status='leased' AND lease_until=?`)
