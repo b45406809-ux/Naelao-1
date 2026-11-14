@@ -20,6 +20,7 @@ class EnvironmentResourceMapTests(unittest.TestCase):
         self.assertEqual(len(source_map["source_files"]), 28)
         self.assertEqual(source_map["status"], "source_inventory_only")
         self.assertEqual(source_map["unresolved_service_targets"], ["naelao-calls"])
+        self.assertEqual(source_map["unresolved_durable_object_script_targets"], [])
         self.assertGreater(len(source_map["required_existence_receipts"]), 0)
         self.assertTrue(all(row["status"] == "unverified" for row in source_map["required_existence_receipts"]))
         required = {(row["kind"], row["environment"]) for row in source_map["required_existence_receipts"]}
@@ -219,6 +220,45 @@ class EnvironmentResourceMapTests(unittest.TestCase):
             receipts_path.write_text(json.dumps({"version": 1, "resources": [], "account_id": ACCOUNT_ID, "observed_at": "2026-11-12T12:00:00Z"}), encoding="utf-8")
             errors = validate(workers, map_path, receipts_path)
         self.assertIn("resource map is stale; regenerate it from the current Worker Wrangler TOMLs", errors)
+
+    def test_cross_script_durable_object_targets_require_an_environment_worker_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "workers" / "consumer"
+            worker.mkdir(parents=True)
+            (worker / "wrangler.toml").write_text(
+                '''name = "consumer"
+[env.staging]
+name = "consumer-staging"
+[[env.staging.durable_objects.bindings]]
+name = "CACHE"
+class_name = "CacheDO"
+script_name = "missing-cache-owner"
+[env.production]
+name = "consumer-production"
+[[env.production.durable_objects.bindings]]
+name = "CACHE"
+class_name = "CacheDO"
+script_name = "missing-cache-owner-production"
+''',
+                encoding="utf-8",
+            )
+            source_map = build_source_map(root / "workers")
+            map_path = root / "map.json"
+            map_path.write_text(json.dumps(source_map), encoding="utf-8")
+            receipts_path = root / "receipts.json"
+            receipts_path.write_text(json.dumps({
+                "version": 1,
+                "account_id": ACCOUNT_ID,
+                "observed_at": "2026-11-13T12:00:00Z",
+                "resources": [],
+            }), encoding="utf-8")
+            errors = validate(root / "workers", map_path, receipts_path, datetime(2026, 11, 14, 12, tzinfo=timezone.utc))
+
+        self.assertEqual(source_map["unresolved_durable_object_script_targets"], [
+            "missing-cache-owner", "missing-cache-owner-production",
+        ])
+        self.assertTrue(any("Durable Object script targets have no named Worker owner in the same environment" in error for error in errors))
 
     def test_deployment_surface_inventory_records_routes_and_redacts_variable_values(self):
         with tempfile.TemporaryDirectory() as directory:

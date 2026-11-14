@@ -148,6 +148,7 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
     by_binding: dict[tuple[str, str], dict[str, dict[str, set[str]]]] = {}
     receipt_requirements: set[tuple[str, str, str]] = set()
     service_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
+    durable_object_script_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
     known_targets: dict[str, set[str]] = {environment: set() for environment in ENVIRONMENTS}
     deployment_surfaces: list[dict[str, Any]] = []
 
@@ -170,6 +171,8 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
                 environment_resources.setdefault(resource, set()).add(relative)
                 if kind == "service":
                     service_targets[environment_name].add(resource)
+                if kind == "durable_object_script":
+                    durable_object_script_targets[environment_name].add(resource)
                 if kind in RECEIPT_KINDS:
                     receipt_requirements.add((kind, environment_name, resource))
                 if kind in {"d1", "kv"}:
@@ -205,6 +208,9 @@ def build_source_map(workers_dir: Path = WORKERS) -> dict[str, Any]:
         },
         "unresolved_service_targets": sorted(
             set.union(*(service_targets[name] - known_targets[name] for name in ENVIRONMENTS))
+        ),
+        "unresolved_durable_object_script_targets": sorted(
+            set.union(*(durable_object_script_targets[name] - known_targets[name] for name in ENVIRONMENTS))
         ),
         "required_existence_receipts": [
             {"kind": kind, "environment": environment_name, "id_or_name": name, "status": "unverified"}
@@ -353,6 +359,9 @@ def validate(
     unresolved = source_map["unresolved_service_targets"]
     if unresolved:
         errors.append("service targets have no named Worker owner: " + ", ".join(unresolved))
+    unresolved_do_scripts = source_map["unresolved_durable_object_script_targets"]
+    if unresolved_do_scripts:
+        errors.append("Durable Object script targets have no named Worker owner in the same environment: " + ", ".join(unresolved_do_scripts))
 
     receipts, receipt_errors = _read_json(receipts_path, "resource receipts")
     errors.extend(receipt_errors)

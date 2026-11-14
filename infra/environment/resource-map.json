@@ -4006,6 +4006,7 @@
   "unresolved_service_targets": [
     "naelao-calls"
   ],
+  "unresolved_durable_object_script_targets": [],
   "required_existence_receipts": [
     {
       "kind": "d1",
