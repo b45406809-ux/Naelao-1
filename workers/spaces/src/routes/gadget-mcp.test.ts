@@ -221,7 +221,7 @@ describe("gadget MCP host adapter", () => {
       recent_twilio_calls: [{ call_sid: `CA${"c".repeat(32)}`, handler_sha256: "c".repeat(64), state: "completed", started_at: 1_800_000_002,
         duration_seconds: 37, caller_hint: "•••• 0124", cost_report: { status: "reported", provider_cost_micros: 42000,
           currency: "USD", provenance: "provider_api_observed" } }],
-      cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown." });
+      cost_disclosure: "Provider call costs appear only after an owner confirms a carrier API read. These are provider API observations, not invoices or customer charges; missing or pending prices remain unknown. Twilio Calls API price covers call connectivity and may exclude other call-related features." });
     expect(JSON.stringify(result)).not.toContain("+14155550123");
     expect(JSON.stringify(result)).not.toContain("binding-b");
     expect(JSON.stringify(result)).not.toContain("install-b");

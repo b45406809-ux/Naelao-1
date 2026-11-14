@@ -41,7 +41,7 @@ describe("bounded phone menu package", () => {
     expect(dashboard).toContain("Run installed handler test (synthetic)");
     expect(dashboard).toContain("saved installation settings");
     expect(dashboard).toContain("Telnyx calls");
-    expect(dashboard).toContain("owner or admin can explicitly check a completed Twilio call");
+    expect(dashboard).toContain("An owner or admin can explicitly check a Twilio call against the carrier Calls API");
     expect(dashboard).toContain("Read this inbound call from the connected Twilio account");
     expect(dashboard).toContain("/api/phone-dashboard");
     expect(dashboard).toContain("not invoices or customer charges");
